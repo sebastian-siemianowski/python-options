@@ -84,14 +84,14 @@ export default function OverviewPage() {
 
       {/* Errors banner */}
       {overviewErrors.length > 0 && (
-        <div className="glass-card p-4 mb-5 fade-up" style={{ borderLeft: '2px solid #f59e0b' }}>
-          <div className="flex items-center gap-2 text-xs" style={{ color: '#f59e0b' }}>
+        <div className="glass-card p-4 mb-5 fade-up" style={{ borderLeft: '2px solid var(--accent-amber)' }}>
+          <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--accent-amber)' }}>
             <AlertTriangle className="w-4 h-4" />
             <span className="font-medium">Partial data returned</span>
           </div>
           <ul className="mt-1.5 space-y-0.5">
             {overviewErrors.map((e, i) => (
-              <li key={i} className="text-[10px] text-[#64748b] pl-6">{e}</li>
+              <li key={i} className="text-[10px] pl-6" style={{ color: 'var(--text-muted)' }}>{e}</li>
             ))}
           </ul>
         </div>
@@ -138,14 +138,14 @@ export default function OverviewPage() {
         />
         <div className="glass-card px-5 py-4 flex items-center gap-3 hover-lift">
           <div className="w-9 h-9 rounded-xl flex items-center justify-center"
-               style={{ background: `${healthOk === false ? '#fb7185' : '#34d399'}10` }}>
-            <HeartPulse className="w-5 h-5" style={{ color: healthOk === undefined ? '#64748b' : healthOk ? '#34d399' : '#fb7185' }} />
+               style={{ background: `${healthOk === false ? '#ff6b8a' : '#3ee8a5'}10` }}>
+            <HeartPulse className="w-5 h-5" style={{ color: healthOk === undefined ? '#7a8ba4' : healthOk ? '#3ee8a5' : '#ff6b8a' }} />
           </div>
           <div>
             <p className="text-lg font-bold text-[#f1f5f9] tabular-nums">{healthOk === undefined ? '...' : healthOk ? 'OK' : 'Issue'}</p>
-            <p className="text-[10px] text-[#64748b] tracking-wide">System Health</p>
+            <p className="text-[10px] text-[#7a8ba4] tracking-wide">System Health</p>
           </div>
-          <span className="w-2 h-2 rounded-full ml-auto pulse-dot" style={{ background: healthOk === false ? '#fb7185' : '#34d399' }} />
+          <span className="w-2 h-2 rounded-full ml-auto pulse-dot" style={{ background: healthOk === false ? '#ff6b8a' : '#3ee8a5' }} />
         </div>
       </div>
 
@@ -213,11 +213,11 @@ export default function OverviewPage() {
                   <div key={sec.name}>
                     <div className="flex items-center justify-between text-xs mb-1.5">
                       <span className="text-[#f1f5f9] font-medium truncate max-w-[140px]">{sec.name}</span>
-                      <span className="text-[#64748b] tabular-nums">{bullish}/{total}</span>
+                      <span className="text-[#7a8ba4] tabular-nums">{bullish}/{total}</span>
                     </div>
                     <div className="h-1.5 rounded-full bg-white/[0.03] overflow-hidden">
                       <div
-                        className="h-full rounded-full bg-gradient-to-r from-[#34d399] to-[#6ee7b7] bar-fill"
+                        className="h-full rounded-full bg-gradient-to-r from-[#3ee8a5] to-[#6ff0c0] bar-fill"
                         style={{ '--bar-width': `${pct}%`, width: `${pct}%` } as React.CSSProperties}
                       />
                     </div>

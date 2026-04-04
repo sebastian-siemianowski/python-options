@@ -39,12 +39,12 @@ function getSavedCollapsed(): boolean {
 
 /* ─── Badge color helpers ───────────────────────────────────────── */
 const badgeColors = {
-  emerald: 'bg-[rgba(52,211,153,0.12)] text-[#34D399]',
-  rose: 'bg-[rgba(251,113,133,0.12)] text-[#FB7185]',
-  amber: 'bg-[rgba(251,191,36,0.12)] text-[#FBBF24]',
+  emerald: 'bg-[rgba(62,232,165,0.12)] text-[#3ee8a5]',
+  rose: 'bg-[rgba(255,107,138,0.12)] text-[#ff6b8a]',
+  amber: 'bg-[rgba(245,197,66,0.12)] text-[#f5c542]',
   violet: 'bg-[rgba(139,92,246,0.12)] text-[#C4B5FD]',
-  fuchsia: 'bg-[rgba(232,121,249,0.12)] text-[#E879F9]',
-  cyan: 'bg-[rgba(34,211,238,0.12)] text-[#22D3EE]',
+  fuchsia: 'bg-[rgba(226,122,245,0.12)] text-[#e27af5]',
+  cyan: 'bg-[rgba(56,217,245,0.12)] text-[#38d9f5]',
 };
 
 /* ─── Layout component ──────────────────────────────────────────── */
@@ -305,35 +305,42 @@ export default function Layout() {
         aria-label="Main navigation"
       >
         {/* Logo */}
-        <div className={`px-4 py-5 ${collapsed ? 'flex items-center justify-center' : ''}`}>
+        <div className={`px-4 py-6 ${collapsed ? 'flex items-center justify-center' : ''}`}>
           {collapsed ? (
-            <div className="w-8 h-8 rounded-xl flex items-center justify-center"
-                 style={{ background: 'linear-gradient(135deg, rgba(139,92,246,0.15) 0%, rgba(99,102,241,0.1) 100%)' }}>
-              <Activity className="w-4 h-4" style={{ color: 'var(--accent-violet)' }} />
+            <div className="w-9 h-9 rounded-xl flex items-center justify-center"
+                 style={{
+                   background: 'linear-gradient(135deg, rgba(139,92,246,0.18) 0%, rgba(56,217,245,0.08) 100%)',
+                   boxShadow: '0 0 20px rgba(139,92,246,0.12)',
+                 }}>
+              <Activity className="w-4.5 h-4.5" style={{ color: 'var(--accent-violet-bright)' }} />
             </div>
           ) : (
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3.5">
               <div className="relative">
                 <div
-                  className="w-9 h-9 rounded-xl flex items-center justify-center"
-                  style={{ background: 'linear-gradient(135deg, rgba(139,92,246,0.15) 0%, rgba(99,102,241,0.1) 100%)' }}
+                  className="w-10 h-10 rounded-xl flex items-center justify-center"
+                  style={{
+                    background: 'linear-gradient(135deg, rgba(139,92,246,0.18) 0%, rgba(56,217,245,0.08) 100%)',
+                    boxShadow: '0 0 24px rgba(139,92,246,0.12)',
+                    border: '1px solid rgba(139,92,246,0.12)',
+                  }}
                 >
-                  <Activity className="w-5 h-5" style={{ color: 'var(--accent-violet)' }} />
+                  <Activity className="w-5 h-5" style={{ color: 'var(--accent-violet-bright)' }} />
                 </div>
                 <span
                   className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 pulse-dot`}
                   style={{
                     background: allServicesOk ? 'var(--accent-emerald)' : 'var(--accent-rose)',
                     ringColor: 'var(--void)',
-                    boxShadow: `0 0 6px ${allServicesOk ? 'rgba(52,211,153,0.5)' : 'rgba(251,113,133,0.5)'}`,
+                    boxShadow: `0 0 8px ${allServicesOk ? 'rgba(62,232,165,0.6)' : 'rgba(255,107,138,0.6)'}`,
                   }}
                 />
               </div>
               <div>
-                <h1 className="text-[13px] font-semibold gradient-text tracking-tight leading-tight">
+                <h1 className="text-[14px] font-semibold gradient-text tracking-tight leading-tight">
                   Signal Engine
                 </h1>
-                <p className="text-[10px] font-medium tracking-wider mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                <p className="text-[10px] font-medium tracking-widest uppercase mt-0.5" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>
                   BMA + Kalman v5.30
                 </p>
               </div>
@@ -344,7 +351,7 @@ export default function Layout() {
         <div className="divider-fade mx-4" />
 
         {/* Navigation */}
-        <nav className="flex-1 py-3 px-2 space-y-0.5 overflow-y-auto" aria-label="Pages">
+        <nav className="flex-1 py-3 px-2.5 space-y-0.5 overflow-y-auto" aria-label="Pages">
           {navItems.map((item) => {
             const badge = item.badgeFn?.();
             const isActive = item.to === '/'
@@ -362,25 +369,25 @@ export default function Layout() {
                 <NavLink
                   to={item.to}
                   end={item.to === '/'}
-                  className={`flex items-center gap-3 rounded-xl text-[13px] transition-all duration-200 ${
-                    collapsed ? 'justify-center px-2 py-2.5' : 'px-3 py-2'
+                  className={`flex items-center gap-3 rounded-xl text-[13px] font-medium transition-all duration-200 ${
+                    collapsed ? 'justify-center px-2 py-2.5' : 'px-3 py-2.5'
                   } ${
                     isActive
                       ? 'nav-active-indicator nav-cosmic-active'
-                      : 'hover:bg-[rgba(139,92,246,0.04)]'
+                      : 'hover:bg-[rgba(139,92,246,0.05)]'
                   }`}
                   style={{
-                    color: isActive ? 'var(--accent-violet)' : 'var(--text-muted)',
+                    color: isActive ? 'var(--accent-violet-bright)' : 'var(--text-muted)',
                   }}
                 >
-                  <Icon className="w-[18px] h-[18px] flex-shrink-0" />
+                  <Icon className="w-[18px] h-[18px] flex-shrink-0" style={{ opacity: isActive ? 1 : 0.7 }} />
 
                   {!collapsed && (
                     <>
                       <span
                         className="flex-1 truncate"
                         style={{
-                          color: isActive ? 'var(--accent-violet)' : 'var(--text-secondary)',
+                          color: isActive ? 'var(--accent-violet-bright)' : 'var(--text-secondary)',
                         }}
                       >
                         {item.label}
@@ -392,7 +399,7 @@ export default function Layout() {
                           className="w-2 h-2 rounded-full ml-auto pulse-dot"
                           style={{
                             background: allServicesOk ? 'var(--accent-emerald)' : 'var(--accent-rose)',
-                            boxShadow: `0 0 6px ${allServicesOk ? 'rgba(52,211,153,0.4)' : 'rgba(251,113,133,0.4)'}`,
+                            boxShadow: `0 0 8px ${allServicesOk ? 'rgba(62,232,165,0.5)' : 'rgba(255,107,138,0.5)'}`,
                           }}
                         />
                       ) : badge ? (
@@ -411,11 +418,11 @@ export default function Layout() {
         </nav>
 
         {/* Collapse toggle */}
-        <div className="px-3 py-3">
+        <div className="px-3 py-4">
           <div className="divider-fade mb-3" />
           <button
             onClick={() => setCollapsed(c => !c)}
-            className="flex items-center justify-center w-full rounded-lg py-1.5 transition-all duration-200 hover:bg-[rgba(139,92,246,0.06)]"
+            className="flex items-center justify-center w-full rounded-xl py-2 transition-all duration-200 hover:bg-[rgba(139,92,246,0.07)]"
             style={{ color: 'var(--text-muted)' }}
             title={collapsed ? 'Expand sidebar (Cmd+B)' : 'Collapse sidebar (Cmd+B)'}
           >
@@ -424,12 +431,12 @@ export default function Layout() {
             ) : (
               <div className="flex items-center gap-2 text-[10px]">
                 <ChevronsLeft className="w-3.5 h-3.5" />
-                <span className="tracking-wide" style={{ color: 'var(--text-muted)' }}>Collapse</span>
+                <span className="tracking-widest uppercase font-medium" style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}>Collapse</span>
               </div>
             )}
           </button>
           {!collapsed && (
-            <p className="text-[10px] font-medium tracking-wide text-center mt-2" style={{ color: 'var(--text-muted)', opacity: 0.5 }}>
+            <p className="text-[9px] font-medium tracking-widest text-center mt-2.5 uppercase" style={{ color: 'var(--text-muted)', opacity: 0.4, letterSpacing: '0.14em' }}>
               Bayesian Model Averaging
             </p>
           )}
@@ -452,7 +459,14 @@ export default function Layout() {
       )}
 
       {/* Main content */}
-      <main className="flex-1 overflow-auto" style={{ background: 'var(--void-surface)' }} role="main" aria-label="Page content">
+      <main
+        className="flex-1 overflow-auto"
+        style={{
+          background: 'linear-gradient(180deg, var(--void) 0%, var(--void-surface) 15%, var(--void-surface) 100%)',
+        }}
+        role="main"
+        aria-label="Page content"
+      >
         <div className="p-8 max-w-[1600px] mx-auto">
           <BreadcrumbBar />
           <Outlet />

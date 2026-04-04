@@ -17,14 +17,14 @@ export function SignalStrengthBar({ label, pUp, kelly }: { label: string; pUp?: 
   let gradient: string;
   let glowColor: string;
   if (isBuy) {
-    gradient = 'linear-gradient(90deg, rgba(52,211,153,0.3) 0%, var(--accent-emerald) 100%)';
-    glowColor = 'rgba(52,211,153,0.25)';
+    gradient = 'linear-gradient(90deg, rgba(62,232,165,0.3) 0%, var(--accent-emerald) 100%)';
+    glowColor = 'rgba(62,232,165,0.30)';
   } else if (isSell) {
-    gradient = 'linear-gradient(90deg, rgba(251,113,133,0.3) 0%, var(--accent-rose) 100%)';
-    glowColor = 'rgba(251,113,133,0.25)';
+    gradient = 'linear-gradient(90deg, rgba(255,107,138,0.3) 0%, var(--accent-rose) 100%)';
+    glowColor = 'rgba(255,107,138,0.30)';
   } else {
-    gradient = 'linear-gradient(90deg, rgba(139,92,246,0.2) 0%, rgba(139,92,246,0.4) 100%)';
-    glowColor = 'rgba(139,92,246,0.15)';
+    gradient = 'linear-gradient(90deg, rgba(139,92,246,0.2) 0%, rgba(139,92,246,0.45) 100%)';
+    glowColor = 'rgba(139,92,246,0.18)';
   }
 
   return (
@@ -58,16 +58,16 @@ function SignalLabel({ label }: { label: string }) {
     'EXIT': 'var(--accent-amber)',
   };
   const bgMap: Record<string, string> = {
-    'STRONG BUY': 'rgba(52,211,153,0.12)',
-    'BUY': 'rgba(52,211,153,0.08)',
-    'HOLD': 'rgba(71,85,105,0.12)',
-    'SELL': 'rgba(251,113,133,0.08)',
-    'STRONG SELL': 'rgba(251,113,133,0.12)',
-    'EXIT': 'rgba(251,191,36,0.08)',
+    'STRONG BUY': 'rgba(62,232,165,0.14)',
+    'BUY': 'rgba(62,232,165,0.09)',
+    'HOLD': 'rgba(74,85,104,0.14)',
+    'SELL': 'rgba(255,107,138,0.09)',
+    'STRONG SELL': 'rgba(255,107,138,0.14)',
+    'EXIT': 'rgba(245,197,66,0.10)',
   };
   return (
     <span
-      className="text-[10px] font-semibold px-1.5 py-0.5 rounded"
+      className="text-[10px] font-semibold px-2 py-0.5 rounded-md"
       style={{ color: colorMap[label] || 'var(--text-muted)', background: bgMap[label] || 'transparent' }}
     >
       {label}
@@ -83,19 +83,19 @@ export function MomentumBadge({ value }: { value: number }) {
   const isStrong = absV >= 70;
 
   const textColor = isPositive ? 'var(--accent-emerald)' : v < -1 ? 'var(--accent-rose)' : 'var(--text-muted)';
-  const bgAlpha = Math.min(0.15, (absV / 100) * 0.15);
+  const bgAlpha = Math.min(0.16, (absV / 100) * 0.16);
   const bgColor = isPositive
-    ? `rgba(52,211,153,${bgAlpha})`
-    : `rgba(251,113,133,${bgAlpha})`;
+    ? `rgba(62,232,165,${bgAlpha})`
+    : `rgba(255,107,138,${bgAlpha})`;
   const glow = isStrong
     ? isPositive
-      ? '0 0 8px rgba(52,211,153,0.12)'
-      : '0 0 8px rgba(251,113,133,0.12)'
+      ? '0 0 10px rgba(62,232,165,0.15)'
+      : '0 0 10px rgba(255,107,138,0.15)'
     : 'none';
 
   return (
     <span
-      className="inline-block text-[10px] font-medium tabular-nums px-1.5 py-0.5 rounded-[6px]"
+      className="inline-block text-[10px] font-semibold tabular-nums px-2 py-0.5 rounded-md"
       style={{
         color: textColor,
         background: bgColor,
@@ -112,10 +112,10 @@ export function CrashRiskHeat({ score }: { score: number }) {
   const s = Math.min(100, Math.max(0, score ?? 0));
   // 4 segments: 0-25, 25-50, 50-75, 75-100
   const segments = [
-    { threshold: 25, filled: 'var(--accent-emerald)', glow: 'rgba(52,211,153,0.3)' },
-    { threshold: 50, filled: 'var(--accent-amber)', glow: 'rgba(251,191,36,0.3)' },
-    { threshold: 75, filled: '#F97316', glow: 'rgba(249,115,22,0.3)' },
-    { threshold: 100, filled: 'var(--accent-rose)', glow: 'rgba(251,113,133,0.3)' },
+    { threshold: 25, filled: 'var(--accent-emerald)', glow: 'rgba(62,232,165,0.35)' },
+    { threshold: 50, filled: 'var(--accent-amber)', glow: 'rgba(245,197,66,0.35)' },
+    { threshold: 75, filled: '#F97316', glow: 'rgba(249,115,22,0.35)' },
+    { threshold: 100, filled: 'var(--accent-rose)', glow: 'rgba(255,107,138,0.35)' },
   ];
 
   return (
@@ -174,8 +174,8 @@ export function HorizonCell({ expRet, pUp }: { expRet: number | null | undefined
   const fontWeight = isStrong ? 600 : 400;
   const textShadow = isStrong
     ? isUp
-      ? '0 0 6px rgba(52,211,153,0.3)'
-      : '0 0 6px rgba(251,113,133,0.3)'
+      ? '0 0 6px rgba(62,232,165,0.3)'
+      : '0 0 6px rgba(255,107,138,0.3)'
     : 'none';
 
   return (

@@ -50,8 +50,8 @@ function SparklineInner({ ticker, width = 60, height = 28 }: SparklineProps) {
     const lastClose = closes[closes.length - 1];
     const aboveSma = lastClose >= sma20;
 
-    const emerald = '#34D399';
-    const rose = '#FB7185';
+    const emerald = '#3ee8a5';
+    const rose = '#ff6b8a';
     const lineColor = aboveSma ? emerald : rose;
 
     // Draw line
@@ -95,8 +95,8 @@ function SparklineInner({ ticker, width = 60, height = 28 }: SparklineProps) {
         width,
         height,
         filter: aboveSma
-          ? 'drop-shadow(0 0 2px rgba(52,211,153,0.4))'
-          : 'drop-shadow(0 0 2px rgba(251,113,133,0.4))',
+          ? 'drop-shadow(0 0 2px rgba(62,232,165,0.4))'
+          : 'drop-shadow(0 0 2px rgba(255,107,138,0.4))',
       }}
     />
   );

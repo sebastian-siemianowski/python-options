@@ -53,13 +53,13 @@ class SignalsErrorBoundary extends Component<
           <div className="glass-card p-6 border border-red-500/50">
             <h2 className="text-red-400 text-lg font-bold mb-2">Signals Page Error</h2>
             <p className="text-red-300 text-sm mb-3">{this.state.error?.message}</p>
-            <pre className="text-[#64748b] text-xs overflow-auto max-h-48 bg-[#0a0a1a] p-3 rounded">
+            <pre className="text-[#7a8ba4] text-xs overflow-auto max-h-48 bg-[#0a0a1a] p-3 rounded">
               {this.state.error?.stack}
             </pre>
             <button
               onClick={() => this.setState({ hasError: false, error: null })}
               className="mt-3 px-3 py-1 rounded text-sm"
-              style={{ background: 'rgba(139,92,246,0.15)', color: '#a78bfa' }}
+              style={{ background: 'rgba(139,92,246,0.15)', color: '#b49aff' }}
             >
               Retry
             </button>
@@ -84,7 +84,7 @@ function useWindowWidth(): number {
 
 /** Story 6.4: WebSocket connection status indicator. */
 function WsStatusDot({ status }: { status: WSStatus }) {
-  const color = status === 'connected' ? '#34d399' : status === 'connecting' ? '#f59e0b' : '#f87171';
+  const color = status === 'connected' ? '#3ee8a5' : status === 'connecting' ? '#f5c542' : '#f87171';
   const label = status === 'connected' ? 'Live' : status === 'connecting' ? 'Connecting' : 'Offline';
   return (
     <span className="inline-flex items-center gap-1 ml-2 text-[10px]" title={`WebSocket: ${status}`}>
@@ -387,12 +387,12 @@ function SignalsPageInner() {
       {/* Stats bar */}
       {stats && (
         <div className="grid grid-cols-3 md:grid-cols-6 gap-3 mb-6 fade-up">
-          <MiniStat label="Strong Buy" value={stats.strong_buy_signals} color="#34d399" icon={'\u25B2\u25B2'} />
-          <MiniStat label="Buy" value={stats.buy_signals - stats.strong_buy_signals} color="#6ee7b7" icon={'\u25B2'} />
-          <MiniStat label="Hold" value={stats.hold_signals} color="#64748b" icon={'\u2014'} />
+          <MiniStat label="Strong Buy" value={stats.strong_buy_signals} color="#3ee8a5" icon={'\u25B2\u25B2'} />
+          <MiniStat label="Buy" value={stats.buy_signals - stats.strong_buy_signals} color="#6ff0c0" icon={'\u25B2'} />
+          <MiniStat label="Hold" value={stats.hold_signals} color="#7a8ba4" icon={'\u2014'} />
           <MiniStat label="Sell" value={stats.sell_signals - stats.strong_sell_signals} color="#f87171" icon={'\u25BC'} />
-          <MiniStat label="Strong Sell" value={stats.strong_sell_signals} color="#fb7185" icon={'\u25BC\u25BC'} />
-          <MiniStat label="Exit" value={stats.exit_signals} color="#f59e0b" icon={'\u2298'} />
+          <MiniStat label="Strong Sell" value={stats.strong_sell_signals} color="#ff6b8a" icon={'\u25BC\u25BC'} />
+          <MiniStat label="Exit" value={stats.exit_signals} color="#f5c542" icon={'\u2298'} />
         </div>
       )}
 
@@ -423,7 +423,7 @@ function SignalsPageInner() {
               key={key}
               onClick={() => setView(key)}
               className={`px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all duration-200 ${
-                view === key ? 'bg-[#8b5cf6]/15 text-[#a78bfa]' : 'text-[#64748b] hover:text-[#94a3b8] hover:bg-white/[0.02]'
+                view === key ? 'bg-[#8b5cf6]/15 text-[#b49aff]' : 'text-[#7a8ba4] hover:text-[#94a3b8] hover:bg-white/[0.02]'
               }`}
             >
               {label}
@@ -434,20 +434,20 @@ function SignalsPageInner() {
         {/* Signal filter */}
         {view !== 'strong' && (
           <div className="flex items-center gap-0.5 glass-card px-2.5 py-1.5">
-            <Filter className="w-3 h-3 text-[#64748b] mr-1.5" />
+            <Filter className="w-3 h-3 text-[#7a8ba4] mr-1.5" />
             {([
-              { key: 'all' as SignalFilter, label: 'All', c: '#a78bfa' },
-              { key: 'strong_buy' as SignalFilter, label: '\u25B2\u25B2 SB', c: '#34d399' },
-              { key: 'buy' as SignalFilter, label: '\u25B2 Buy', c: '#6ee7b7' },
-              { key: 'hold' as SignalFilter, label: '\u2014 Hold', c: '#64748b' },
+              { key: 'all' as SignalFilter, label: 'All', c: '#b49aff' },
+              { key: 'strong_buy' as SignalFilter, label: '\u25B2\u25B2 SB', c: '#3ee8a5' },
+              { key: 'buy' as SignalFilter, label: '\u25B2 Buy', c: '#6ff0c0' },
+              { key: 'hold' as SignalFilter, label: '\u2014 Hold', c: '#7a8ba4' },
               { key: 'sell' as SignalFilter, label: '\u25BC Sell', c: '#f87171' },
-              { key: 'strong_sell' as SignalFilter, label: '\u25BC\u25BC SS', c: '#fb7185' },
+              { key: 'strong_sell' as SignalFilter, label: '\u25BC\u25BC SS', c: '#ff6b8a' },
             ]).map(({ key, label, c }) => (
               <button
                 key={key}
                 onClick={() => setFilter(key)}
                 className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all duration-200"
-                style={filter === key ? { color: c, background: `${c}15` } : { color: '#64748b' }}
+                style={filter === key ? { color: c, background: `${c}15` } : { color: '#7a8ba4' }}
               >
                 {label}
               </button>
@@ -625,7 +625,7 @@ function MiniStat({ label, value, color, icon }: { label: string; value: number;
       <span className="text-lg font-bold" style={{ color }}>{icon}</span>
       <div>
         <p className="text-lg font-bold text-[#e2e8f0] tabular-nums">{value}</p>
-        <p className="text-[10px] text-[#64748b]">{label}</p>
+        <p className="text-[10px] text-[#7a8ba4]">{label}</p>
       </div>
     </div>
   );
@@ -755,9 +755,9 @@ function SectorPanels({
               {/* AC-1: Sector sentiment bar */}
               <div className="flex h-[4px] w-[80px] rounded-[2px] overflow-hidden flex-shrink-0" style={{ border: '1px solid var(--border-void)' }}>
                 <div style={{ width: `${strongBuyPct}%`, background: 'var(--accent-emerald)' }} />
-                <div style={{ width: `${buyPct}%`, background: 'rgba(52,211,153,0.5)' }} />
+                <div style={{ width: `${buyPct}%`, background: 'rgba(62,232,165,0.5)' }} />
                 <div style={{ width: `${holdPct}%`, background: 'var(--void-active)' }} />
-                <div style={{ width: `${sellPct}%`, background: 'rgba(251,113,133,0.5)' }} />
+                <div style={{ width: `${sellPct}%`, background: 'rgba(255,107,138,0.5)' }} />
                 <div style={{ width: `${strongSellPct}%`, background: 'var(--accent-rose)' }} />
               </div>
 
@@ -822,7 +822,7 @@ function SectorPanels({
                   </table>
                 </div>
                 {assets.length === 0 && (
-                  <p className="px-4 py-3 text-xs text-[#64748b]">No assets match current filter</p>
+                  <p className="px-4 py-3 text-xs text-[#7a8ba4]">No assets match current filter</p>
                 )}
               </div>
             )}
@@ -839,25 +839,25 @@ function StrongSignalsView({ strongBuy, strongSell }: { strongBuy: StrongSignalE
     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
       <div className="glass-card overflow-hidden">
         <div className="px-4 py-3 flex items-center gap-2" style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
-          <TrendingUp className="w-4 h-4" style={{ color: '#34d399' }} />
-          <h3 className="text-sm font-medium" style={{ color: '#34d399' }}>Strong Buy Signals</h3>
-          <span className="ml-auto text-xs text-[#64748b]">{strongBuy.length} assets</span>
+          <TrendingUp className="w-4 h-4" style={{ color: '#3ee8a5' }} />
+          <h3 className="text-sm font-medium" style={{ color: '#3ee8a5' }}>Strong Buy Signals</h3>
+          <span className="ml-auto text-xs text-[#7a8ba4]">{strongBuy.length} assets</span>
         </div>
         {strongBuy.length === 0 ? (
-          <p className="px-4 py-6 text-xs text-[#64748b] text-center">No strong buy signals</p>
+          <p className="px-4 py-6 text-xs text-[#7a8ba4] text-center">No strong buy signals</p>
         ) : (
           <div>
             {strongBuy.map((s, i) => (
               <div key={i} className="px-4 py-2.5 flex items-center gap-3 transition-all duration-150" style={{ borderBottom: '1px solid rgba(139,92,246,0.04)' }}>
                 <div className="flex-1">
                   <span className="text-sm font-medium text-[#e2e8f0]">{s.asset_label || '—'}</span>
-                  <span className="text-[10px] text-[#64748b] ml-2">{s.sector}</span>
+                  <span className="text-[10px] text-[#7a8ba4] ml-2">{s.sector}</span>
                 </div>
-                <span className="text-[10px] text-[#64748b]">{s.horizon || '—'}</span>
-                <span className="text-xs font-medium" style={{ color: '#34d399' }}>
+                <span className="text-[10px] text-[#7a8ba4]">{s.horizon || '—'}</span>
+                <span className="text-xs font-medium" style={{ color: '#3ee8a5' }}>
                   {s.exp_ret != null ? `${s.exp_ret >= 0 ? '+' : ''}${(s.exp_ret * 100).toFixed(1)}%` : '—'}
                 </span>
-                <span className="text-[10px] text-[#64748b]">p={s.p_up != null ? s.p_up.toFixed(2) : '—'}</span>
+                <span className="text-[10px] text-[#7a8ba4]">p={s.p_up != null ? s.p_up.toFixed(2) : '—'}</span>
                 <MomentumBadge value={s.momentum} />
               </div>
             ))}
@@ -867,25 +867,25 @@ function StrongSignalsView({ strongBuy, strongSell }: { strongBuy: StrongSignalE
 
       <div className="glass-card overflow-hidden">
         <div className="px-4 py-3 flex items-center gap-2" style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
-          <TrendingDown className="w-4 h-4" style={{ color: '#fb7185' }} />
-          <h3 className="text-sm font-medium" style={{ color: '#fb7185' }}>Strong Sell Signals</h3>
-          <span className="ml-auto text-xs text-[#64748b]">{strongSell.length} assets</span>
+          <TrendingDown className="w-4 h-4" style={{ color: '#ff6b8a' }} />
+          <h3 className="text-sm font-medium" style={{ color: '#ff6b8a' }}>Strong Sell Signals</h3>
+          <span className="ml-auto text-xs text-[#7a8ba4]">{strongSell.length} assets</span>
         </div>
         {strongSell.length === 0 ? (
-          <p className="px-4 py-6 text-xs text-[#64748b] text-center">No strong sell signals</p>
+          <p className="px-4 py-6 text-xs text-[#7a8ba4] text-center">No strong sell signals</p>
         ) : (
           <div>
             {strongSell.map((s, i) => (
               <div key={i} className="px-4 py-2.5 flex items-center gap-3 transition-all duration-150" style={{ borderBottom: '1px solid rgba(139,92,246,0.04)' }}>
                 <div className="flex-1">
                   <span className="text-sm font-medium text-[#e2e8f0]">{s.asset_label || '—'}</span>
-                  <span className="text-[10px] text-[#64748b] ml-2">{s.sector}</span>
+                  <span className="text-[10px] text-[#7a8ba4] ml-2">{s.sector}</span>
                 </div>
-                <span className="text-[10px] text-[#64748b]">{s.horizon || '—'}</span>
-                <span className="text-xs font-medium" style={{ color: '#fb7185' }}>
+                <span className="text-[10px] text-[#7a8ba4]">{s.horizon || '—'}</span>
+                <span className="text-xs font-medium" style={{ color: '#ff6b8a' }}>
                   {s.exp_ret != null ? `${(s.exp_ret * 100).toFixed(1)}%` : '—'}
                 </span>
-                <span className="text-[10px] text-[#64748b]">p={s.p_up != null ? s.p_up.toFixed(2) : '—'}</span>
+                <span className="text-[10px] text-[#7a8ba4]">p={s.p_up != null ? s.p_up.toFixed(2) : '—'}</span>
                 <MomentumBadge value={s.momentum} />
               </div>
             ))}
@@ -1185,7 +1185,7 @@ function MiniChartPanel({ ticker, onNavigateChart }: { ticker: string; onNavigat
 
     // Gradient fill
     const isUp = closes[closes.length - 1] >= closes[0];
-    const lineColor = isUp ? '#34d399' : '#fb7185';
+    const lineColor = isUp ? '#3ee8a5' : '#ff6b8a';
     const gradient = ctx.createLinearGradient(0, padding, 0, rect.height);
     gradient.addColorStop(0, isUp ? 'rgba(52, 211, 153, 0.15)' : 'rgba(251, 113, 133, 0.15)');
     gradient.addColorStop(1, 'transparent');
@@ -1240,7 +1240,7 @@ function MiniChartPanel({ ticker, onNavigateChart }: { ticker: string; onNavigat
               <div className="w-4 h-4 border-2 border-[#2a2a4a] border-t-[#8b5cf6] rounded-full animate-spin" />
             </div>
           ) : error ? (
-            <div className="h-full flex items-center justify-center text-[10px] text-[#64748b]">Chart unavailable</div>
+            <div className="h-full flex items-center justify-center text-[10px] text-[#7a8ba4]">Chart unavailable</div>
           ) : (
             <canvas ref={canvasRef} className="w-full h-full" />
           )}
@@ -1251,16 +1251,16 @@ function MiniChartPanel({ ticker, onNavigateChart }: { ticker: string; onNavigat
           <p className="text-sm font-bold text-[#e2e8f0] tabular-nums">
             {lastPrice > 0 ? (lastPrice < 10 ? lastPrice.toFixed(4) : lastPrice.toFixed(2)) : '--'}
           </p>
-          <p className={`text-xs font-semibold tabular-nums ${isUp ? 'text-[#34d399]' : 'text-[#fb7185]'}`}>
+          <p className={`text-xs font-semibold tabular-nums ${isUp ? 'text-[#3ee8a5]' : 'text-[#ff6b8a]'}`}>
             {isUp ? '+' : ''}{changePct.toFixed(2)}%
           </p>
-          <p className="text-[9px] text-[#475569]">3M change</p>
+          <p className="text-[9px] text-[#6b7a90]">3M change</p>
         </div>
 
         {/* Navigate to full chart */}
         <button
           onClick={onNavigateChart}
-          className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-medium text-[#a78bfa] bg-[#8b5cf6]/10 hover:bg-[#8b5cf6]/20 transition-all"
+          className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-medium text-[#b49aff] bg-[#8b5cf6]/10 hover:bg-[#8b5cf6]/20 transition-all"
         >
           <ExternalLink className="w-3 h-3" />
           Full Chart
@@ -1328,7 +1328,7 @@ function HighConvictionCard({
   title: string; signals: HighConvictionSignal[]; color: 'green' | 'red';
 }) {
   const Icon = color === 'green' ? ArrowUpCircle : ArrowDownCircle;
-  const accent = color === 'green' ? '#34d399' : '#fb7185';
+  const accent = color === 'green' ? '#3ee8a5' : '#ff6b8a';
   const top5 = signals.slice(0, 5);
 
   return (
@@ -1338,18 +1338,18 @@ function HighConvictionCard({
           <Icon className="w-4 h-4" style={{ color: accent }} />
         </div>
         <h3 className="text-[13px] font-medium" style={{ color: accent }}>{title}</h3>
-        <span className="ml-auto text-[11px] text-[#64748b] tabular-nums">{signals.length} signals</span>
+        <span className="ml-auto text-[11px] text-[#7a8ba4] tabular-nums">{signals.length} signals</span>
       </div>
       {top5.length === 0 ? (
-        <p className="text-xs text-[#475569]">No signals</p>
+        <p className="text-xs text-[#6b7a90]">No signals</p>
       ) : (
         <div className="space-y-2">
           {top5.map((s, i) => (
             <div key={i} className="flex items-center justify-between text-xs py-1 border-b border-white/[0.03] last:border-0">
               <span className="text-[#f1f5f9] font-semibold tracking-wide">{s.ticker || '\u2014'}</span>
-              <span className="text-[#64748b]">{s.horizon_days != null ? formatHorizon(s.horizon_days) : '\u2014'}</span>
+              <span className="text-[#7a8ba4]">{s.horizon_days != null ? formatHorizon(s.horizon_days) : '\u2014'}</span>
               <span className="font-semibold tabular-nums" style={{ color: accent }}>{s.expected_return_pct != null ? `${s.expected_return_pct.toFixed(1)}%` : '\u2014'}</span>
-              <span className="text-[#475569] tabular-nums">p={s.probability_up != null ? s.probability_up.toFixed(2) : '\u2014'}</span>
+              <span className="text-[#6b7a90] tabular-nums">p={s.probability_up != null ? s.probability_up.toFixed(2) : '\u2014'}</span>
             </div>
           ))}
         </div>

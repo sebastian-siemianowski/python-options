@@ -103,7 +103,7 @@ export default function MicroGauge({ value, label, caption, gradient, id }: Prop
       </svg>
       <span
         className="text-[10px] tracking-wider uppercase"
-        style={{ color: 'var(--text-muted, #475569)' }}
+        style={{ color: 'var(--text-muted, #6b7a90)' }}
       >
         {caption}
       </span>

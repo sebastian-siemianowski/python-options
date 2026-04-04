@@ -20,14 +20,14 @@ function MetricCard({ label, value, target, unit = '' }: {
   label: string; value: number | null; target: number; unit?: string;
 }) {
   const pass = value != null && value >= target;
-  const color = value == null ? '#64748b' : pass ? '#34d399' : '#fb7185';
+  const color = value == null ? '#7a8ba4' : pass ? '#3ee8a5' : '#ff6b8a';
   return (
     <div className="glass-card p-4 hover-lift stat-shine">
-      <p className="text-[10px] text-[#64748b] uppercase tracking-wider font-medium">{label}</p>
+      <p className="text-[10px] text-[#7a8ba4] uppercase tracking-wider font-medium">{label}</p>
       <p className="text-lg font-bold mt-1 tabular-nums" style={{ color }}>
         {value != null ? `${(value * 100).toFixed(1)}${unit}` : '--'}
       </p>
-      <p className="text-[9px] text-[#64748b] mt-0.5">
+      <p className="text-[9px] text-[#7a8ba4] mt-0.5">
         Target: {(target * 100).toFixed(1)}{unit}
       </p>
       <div
@@ -40,7 +40,7 @@ function MetricCard({ label, value, target, unit = '' }: {
 }
 
 /* ── Chart wrapper for each metric ─────────────────────────── */
-function MetricChart({ title, data, targetValue, color = '#a78bfa' }: {
+function MetricChart({ title, data, targetValue, color = '#b49aff' }: {
   title: string; data: { date: string; value: number }[];
   targetValue: number; color?: string;
 }) {
@@ -51,9 +51,9 @@ function MetricChart({ title, data, targetValue, color = '#a78bfa' }: {
         <ResponsiveContainer width="100%" height={200}>
           <LineChart data={data} margin={{ top: 5, right: 10, bottom: 5, left: 10 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(139,92,246,0.06)" />
-            <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#64748b' }} />
+            <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#7a8ba4' }} />
             <YAxis
-              tick={{ fontSize: 9, fill: '#64748b' }}
+              tick={{ fontSize: 9, fill: '#7a8ba4' }}
               tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`}
             />
             <Tooltip
@@ -62,9 +62,9 @@ function MetricChart({ title, data, targetValue, color = '#a78bfa' }: {
             />
             <ReferenceLine
               y={targetValue}
-              stroke="#fb7185"
+              stroke="#ff6b8a"
               strokeDasharray="6 3"
-              label={{ value: 'Target', position: 'right', fill: '#fb7185', fontSize: 9 }}
+              label={{ value: 'Target', position: 'right', fill: '#ff6b8a', fontSize: 9 }}
             />
             <Line
               type="monotone"
@@ -130,15 +130,15 @@ export default function ProfitabilityPage() {
       </div>
 
       {!hasData ? (
-        <div className="glass-card p-8 text-center text-[#64748b] text-sm">
-          No profitability history yet. Run <code style={{ color: '#a78bfa' }}>make calibrate</code> to generate data.
+        <div className="glass-card p-8 text-center text-[#7a8ba4] text-sm">
+          No profitability history yet. Run <code style={{ color: '#b49aff' }}>make calibrate</code> to generate data.
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 fade-up-delay-1">
-          <MetricChart title="Hit Rate 7D" data={hitRate7d} targetValue={targets.hit_rate_7d || 0.55} color="#34d399" />
-          <MetricChart title="Hit Rate 21D" data={hitRate21d} targetValue={targets.hit_rate_21d || 0.53} color="#6ee7b7" />
-          <MetricChart title="Signal Rate" data={signalRates} targetValue={targets.signal_rate || 0.15} color="#a78bfa" />
-          <MetricChart title="Sharpe 7D" data={sharpe7d} targetValue={targets.sharpe_7d || 0.50} color="#f59e0b" />
+          <MetricChart title="Hit Rate 7D" data={hitRate7d} targetValue={targets.hit_rate_7d || 0.55} color="#3ee8a5" />
+          <MetricChart title="Hit Rate 21D" data={hitRate21d} targetValue={targets.hit_rate_21d || 0.53} color="#6ff0c0" />
+          <MetricChart title="Signal Rate" data={signalRates} targetValue={targets.signal_rate || 0.15} color="#b49aff" />
+          <MetricChart title="Sharpe 7D" data={sharpe7d} targetValue={targets.sharpe_7d || 0.50} color="#f5c542" />
           <MetricChart title="CRPS" data={crpsData} targetValue={0.02} color="#f87171" />
           <MetricChart title="ECE" data={eceData} targetValue={targets.ece_max || 0.03} color="#8b5cf6" />
         </div>

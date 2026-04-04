@@ -19,10 +19,10 @@ const GATES = {
 };
 
 function gateColor(val: number | null | undefined, gate: keyof typeof GATES): string {
-  if (val == null) return 'text-[#64748b]';
+  if (val == null) return 'text-[#7a8ba4]';
   const g = GATES[gate];
-  if ('cmp' in g && g.cmp === 'lt') return val < g.pass ? 'text-[#34d399]' : 'text-[#fb7185]';
-  return val >= g.pass ? 'text-[#34d399]' : 'text-[#fb7185]';
+  if ('cmp' in g && g.cmp === 'lt') return val < g.pass ? 'text-[#3ee8a5]' : 'text-[#ff6b8a]';
+  return val >= g.pass ? 'text-[#3ee8a5]' : 'text-[#ff6b8a]';
 }
 
 export default function ArenaPage() {
@@ -47,7 +47,7 @@ export default function ArenaPage() {
             className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm transition-all duration-200 disabled:opacity-50"
             style={{
               background: 'rgba(139,92,246,0.08)',
-              color: '#a78bfa',
+              color: '#b49aff',
               border: '1px solid rgba(139,92,246,0.12)',
             }}
           >
@@ -99,7 +99,7 @@ export default function ArenaPage() {
                 className="px-2.5 py-1 rounded-xl text-xs font-medium transition-colors cursor-default"
                 style={{
                   background: 'rgba(139,92,246,0.06)',
-                  color: '#a78bfa',
+                  color: '#b49aff',
                   border: '1px solid rgba(139,92,246,0.1)',
                 }}
               >
@@ -114,12 +114,12 @@ export default function ArenaPage() {
       <div className="glass-card overflow-hidden fade-up-delay-1">
         <div className="px-4 py-3 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
           <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Safe Storage Models</h3>
-          <span className="text-xs text-[#64748b]">
+          <span className="text-xs text-[#7a8ba4]">
             {scoredModels.length} scored / {models.length} total
           </span>
         </div>
         {models.length === 0 ? (
-          <div className="p-6 text-center text-[#64748b] text-sm">No models in safe storage</div>
+          <div className="p-6 text-center text-[#7a8ba4] text-sm">No models in safe storage</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
@@ -163,8 +163,8 @@ export default function ArenaPage() {
             { gate: 'CRPS < 0.020', desc: 'Calibration + sharpness' },
           ].map((g) => (
             <div key={g.gate} className="rounded-xl p-2.5" style={{ background: 'rgba(10,10,26,0.6)', border: '1px solid rgba(139,92,246,0.06)' }}>
-              <p className="font-mono font-bold" style={{ color: '#f59e0b' }}>{g.gate}</p>
-              <p className="mt-0.5" style={{ color: '#64748b' }}>{g.desc}</p>
+              <p className="font-mono font-bold" style={{ color: '#f5c542' }}>{g.gate}</p>
+              <p className="mt-0.5" style={{ color: '#7a8ba4' }}>{g.desc}</p>
             </div>
           ))}
         </div>
@@ -179,17 +179,17 @@ function ModelRow({ model: m, rank }: { model: SafeStorageModel; rank: number })
   if (!m.has_scores) {
     return (
       <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.04)' }} className="transition-all duration-150">
-        <td className="px-3 py-2.5" style={{ color: '#64748b' }}>{rank}</td>
+        <td className="px-3 py-2.5" style={{ color: '#7a8ba4' }}>{rank}</td>
         <td className="px-3 py-2.5 font-medium" style={{ color: 'var(--text-luminous)' }}>{formatName(m.name)}</td>
-        <td colSpan={8} className="px-3 py-2.5 italic" style={{ color: '#64748b' }}>No scoring data</td>
-        <td className="px-3 py-2.5 text-right" style={{ color: '#64748b' }}>{m.size_kb} KB</td>
+        <td colSpan={8} className="px-3 py-2.5 italic" style={{ color: '#7a8ba4' }}>No scoring data</td>
+        <td className="px-3 py-2.5 text-right" style={{ color: '#7a8ba4' }}>{m.size_kb} KB</td>
       </tr>
     );
   }
 
   return (
     <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.04)' }} className="transition-all duration-150">
-      <td className="px-3 py-2.5" style={{ color: '#64748b' }}>{rank}</td>
+      <td className="px-3 py-2.5" style={{ color: '#7a8ba4' }}>{rank}</td>
       <td className="px-3 py-2.5">
         <span className="font-medium" style={{ color: 'var(--text-luminous)' }}>{formatName(m.name)}</span>
       </td>
@@ -206,7 +206,7 @@ function ModelRow({ model: m, rank }: { model: SafeStorageModel; rank: number })
         {m.hyv?.toFixed(0) ?? '--'}
       </td>
       <td className="px-3 py-2.5 text-center">
-        <span style={{ color: m.pit === 'PASS' ? '#34d399' : '#fb7185', fontWeight: m.pit === 'PASS' ? 700 : 400 }}>
+        <span style={{ color: m.pit === 'PASS' ? '#3ee8a5' : '#ff6b8a', fontWeight: m.pit === 'PASS' ? 700 : 400 }}>
           {m.pit ?? '--'}
         </span>
       </td>
@@ -219,7 +219,7 @@ function ModelRow({ model: m, rank }: { model: SafeStorageModel; rank: number })
       <td className="px-3 py-2.5 text-right" style={{ color: 'var(--text-secondary)' }}>
         {m.time_ms != null ? `${(m.time_ms / 1000).toFixed(1)}s` : '--'}
       </td>
-      <td className="px-3 py-2.5 text-right" style={{ color: '#64748b' }}>{m.size_kb} KB</td>
+      <td className="px-3 py-2.5 text-right" style={{ color: '#7a8ba4' }}>{m.size_kb} KB</td>
     </tr>
   );
 }

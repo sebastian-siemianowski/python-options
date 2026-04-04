@@ -66,13 +66,13 @@ interface SignalStyle {
 function getSignalStyle(label: string): SignalStyle {
   const u = (label || '').toUpperCase().replace(/[\s-]/g, '_');
   if (u.includes('STRONG_BUY'))
-    return { kind: 'buy', pillBg: 'linear-gradient(135deg, #064e3b, #047857)', pillFg: '#34D399', rgb: BUY_RGB, primary: '#34D399', glow: 'rgba(52,211,153,0.18)' };
+    return { kind: 'buy', pillBg: 'linear-gradient(135deg, #064e3b, #047857)', pillFg: '#3ee8a5', rgb: BUY_RGB, primary: '#3ee8a5', glow: 'rgba(62,232,165,0.18)' };
   if (u.includes('BUY'))
-    return { kind: 'buy', pillBg: 'linear-gradient(135deg, #064e3b, #065f46)', pillFg: '#6EE7B7', rgb: BUY_RGB, primary: '#34D399', glow: 'rgba(52,211,153,0.12)' };
+    return { kind: 'buy', pillBg: 'linear-gradient(135deg, #064e3b, #065f46)', pillFg: '#6EE7B7', rgb: BUY_RGB, primary: '#3ee8a5', glow: 'rgba(62,232,165,0.12)' };
   if (u.includes('STRONG_SELL'))
-    return { kind: 'sell', pillBg: 'linear-gradient(135deg, #4c0519, #9f1239)', pillFg: '#FB7185', rgb: SELL_RGB, primary: '#FB7185', glow: 'rgba(251,113,133,0.18)' };
+    return { kind: 'sell', pillBg: 'linear-gradient(135deg, #4c0519, #9f1239)', pillFg: '#ff6b8a', rgb: SELL_RGB, primary: '#ff6b8a', glow: 'rgba(255,107,138,0.18)' };
   if (u.includes('SELL'))
-    return { kind: 'sell', pillBg: 'linear-gradient(135deg, #4c0519, #881337)', pillFg: '#FDA4AF', rgb: SELL_RGB, primary: '#FB7185', glow: 'rgba(251,113,133,0.12)' };
+    return { kind: 'sell', pillBg: 'linear-gradient(135deg, #4c0519, #881337)', pillFg: '#FDA4AF', rgb: SELL_RGB, primary: '#ff6b8a', glow: 'rgba(255,107,138,0.12)' };
   return { kind: 'hold', pillBg: 'linear-gradient(135deg, #1e1b4b, #312e81)', pillFg: '#A5B4FC', rgb: HOLD_RGB, primary: '#94A3B8', glow: 'rgba(148,163,184,0.08)' };
 }
 
@@ -395,7 +395,7 @@ function ZoneChart({
               <ReferenceArea
                 y1={zoneY1}
                 y2={zoneY2}
-                fill={isBuy ? 'rgba(52,211,153,0.07)' : 'rgba(251,113,133,0.07)'}
+                fill={isBuy ? 'rgba(62,232,165,0.07)' : 'rgba(255,107,138,0.07)'}
                 fillOpacity={1}
                 stroke="none"
               />

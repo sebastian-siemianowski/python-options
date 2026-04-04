@@ -130,9 +130,9 @@ export default function BriefingCard({
     const total = bullish + bearish + signals.hold_signals;
     if (total === 0) return 'radial-gradient(ellipse at 30% 50%, rgba(139,92,246,0.15) 0%, transparent 70%)';
     const ratio = bullish / total;
-    if (ratio > 0.55) return 'radial-gradient(ellipse at 50% 50%, rgba(52,211,153,0.06) 0%, transparent 70%)';
-    if (ratio < 0.45) return 'radial-gradient(ellipse at 50% 50%, rgba(251,113,133,0.06) 0%, transparent 70%)';
-    return 'radial-gradient(ellipse at 30% 50%, rgba(139,92,246,0.10) 0%, transparent 70%)';
+    if (ratio > 0.55) return 'radial-gradient(ellipse at 50% 50%, rgba(62,232,165,0.07) 0%, transparent 70%)';
+    if (ratio < 0.45) return 'radial-gradient(ellipse at 50% 50%, rgba(255,107,138,0.07) 0%, transparent 70%)';
+    return 'radial-gradient(ellipse at 30% 50%, rgba(139,92,246,0.12) 0%, transparent 70%)';
   }, [signals]);
 
   // ── System Pulse gauges ─────────────────────────────────────────
@@ -150,18 +150,26 @@ export default function BriefingCard({
     <div
       className="briefing-card relative overflow-hidden rounded-2xl mb-8"
       style={{
-        background: 'linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%)',
+        background: 'linear-gradient(135deg, #0e0b24 0%, #1a1550 40%, #12102a 70%, #0c1445 100%)',
+        border: '1px solid rgba(139,92,246,0.10)',
+        boxShadow: '0 4px 40px rgba(0,0,0,0.3), 0 0 80px rgba(139,92,246,0.04)',
         opacity: visible ? 1 : 0,
         transform: visible ? 'translateY(0)' : 'translateY(12px)',
         transition: 'opacity 400ms cubic-bezier(0.16, 1, 0.3, 1), transform 400ms cubic-bezier(0.16, 1, 0.3, 1)',
       }}
     >
+      {/* Top edge light */}
+      <div
+        className="absolute top-0 left-0 right-0 h-px pointer-events-none"
+        style={{ background: 'linear-gradient(90deg, transparent 10%, rgba(139,92,246,0.15) 50%, transparent 90%)' }}
+      />
+
       {/* Gradient glass edge (visible on hover) */}
       <div
         className="absolute inset-0 rounded-2xl pointer-events-none opacity-0 hover-parent-edge"
         style={{
           padding: '1px',
-          background: 'linear-gradient(135deg, rgba(139,92,246,0.2) 0%, rgba(59,130,246,0.1) 50%, rgba(139,92,246,0.05) 100%)',
+          background: 'linear-gradient(135deg, rgba(139,92,246,0.22) 0%, rgba(56,217,245,0.08) 50%, rgba(139,92,246,0.05) 100%)',
           WebkitMask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
           WebkitMaskComposite: 'xor',
           maskComposite: 'exclude',
@@ -189,7 +197,7 @@ export default function BriefingCard({
         >
           <h3
             className="text-[11px] font-medium uppercase tracking-widest mb-4"
-            style={{ color: 'var(--text-muted, #475569)' }}
+            style={{ color: 'var(--text-muted, #6b7a90)' }}
           >
             Since Last Visit
           </h3>
@@ -207,7 +215,7 @@ export default function BriefingCard({
                 <p className="text-sm font-medium" style={{ color: 'var(--text-violet, #C4B5FD)' }}>
                   Welcome back
                 </p>
-                <p className="text-[11px]" style={{ color: 'var(--text-muted, #475569)' }}>
+                <p className="text-[11px]" style={{ color: 'var(--text-muted, #6b7a90)' }}>
                   Your first session this cycle
                 </p>
               </div>
@@ -235,7 +243,7 @@ export default function BriefingCard({
                 </div>
               ))}
               {timeSinceVisit && (
-                <p className="text-[10px] mt-2" style={{ color: 'var(--text-muted, #475569)' }}>
+                <p className="text-[10px] mt-2" style={{ color: 'var(--text-muted, #6b7a90)' }}>
                   Last visit: {timeSinceVisit}
                 </p>
               )}
@@ -245,15 +253,15 @@ export default function BriefingCard({
             <div className="flex items-center gap-3">
               <div
                 className="w-10 h-10 rounded-xl flex items-center justify-center"
-                style={{ background: 'rgba(52,211,153,0.08)' }}
+                style={{ background: 'rgba(62,232,165,0.08)' }}
               >
-                <CheckCircle className="w-5 h-5" style={{ color: 'var(--accent-emerald, #34D399)' }} />
+                <CheckCircle className="w-5 h-5" style={{ color: 'var(--accent-emerald, #3ee8a5)' }} />
               </div>
               <div>
                 <p className="text-sm font-medium" style={{ color: 'var(--text-violet, #C4B5FD)' }}>
                   All caught up
                 </p>
-                <p className="text-[11px]" style={{ color: 'var(--text-muted, #475569)' }}>
+                <p className="text-[11px]" style={{ color: 'var(--text-muted, #6b7a90)' }}>
                   No signal changes since {timeSinceVisit}
                 </p>
               </div>
@@ -278,7 +286,7 @@ export default function BriefingCard({
         >
           <h3
             className="text-[11px] font-medium uppercase tracking-widest mb-4"
-            style={{ color: 'var(--text-muted, #475569)' }}
+            style={{ color: 'var(--text-muted, #6b7a90)' }}
           >
             Today&apos;s Conviction
           </h3>
@@ -308,7 +316,7 @@ export default function BriefingCard({
                   background: topConviction.direction === 'buy'
                     ? 'linear-gradient(135deg, #064e3b 0%, #065f46 50%, #047857 100%)'
                     : 'linear-gradient(135deg, #4c0519 0%, #6b0f2a 50%, #881337 100%)',
-                  color: topConviction.direction === 'buy' ? '#34D399' : '#FB7185',
+                  color: topConviction.direction === 'buy' ? '#3ee8a5' : '#ff6b8a',
                 }}
               >
                 {topConviction.direction === 'buy'
@@ -321,7 +329,7 @@ export default function BriefingCard({
               {/* Expected return */}
               <span
                 className="text-xl font-bold tabular-nums"
-                style={{ color: topConviction.direction === 'buy' ? '#34D399' : '#FB7185' }}
+                style={{ color: topConviction.direction === 'buy' ? '#3ee8a5' : '#ff6b8a' }}
               >
                 {topConviction.exp_ret >= 0 ? '+' : ''}{(topConviction.exp_ret * 100).toFixed(1)}%
               </span>
@@ -335,7 +343,7 @@ export default function BriefingCard({
                     transform="rotate(135 10 10)" strokeLinecap="round"
                   />
                   <circle cx="10" cy="10" r="8" fill="none"
-                    stroke={topConviction.direction === 'buy' ? '#34D399' : '#FB7185'}
+                    stroke={topConviction.direction === 'buy' ? '#3ee8a5' : '#ff6b8a'}
                     strokeWidth="2"
                     strokeDasharray={`${Math.PI * 16 * 0.75} ${Math.PI * 16}`}
                     strokeDashoffset={Math.PI * 16 * 0.75 * (1 - topConviction.p_up)}
@@ -348,7 +356,7 @@ export default function BriefingCard({
               </div>
 
               <span className="text-[10px] mt-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                style={{ color: 'var(--text-muted, #475569)' }}>
+                style={{ color: 'var(--text-muted, #6b7a90)' }}>
                 Click to view chart
               </span>
             </button>
@@ -357,7 +365,7 @@ export default function BriefingCard({
               <span className="text-lg font-medium" style={{ color: 'var(--text-secondary, #94a3b8)' }}>
                 No strong signals
               </span>
-              <span className="text-[11px]" style={{ color: 'var(--text-muted, #475569)' }}>
+              <span className="text-[11px]" style={{ color: 'var(--text-muted, #6b7a90)' }}>
                 Markets in equilibrium
               </span>
             </div>
@@ -381,7 +389,7 @@ export default function BriefingCard({
         >
           <h3
             className="text-[11px] font-medium uppercase tracking-widest mb-4"
-            style={{ color: 'var(--text-muted, #475569)' }}
+            style={{ color: 'var(--text-muted, #6b7a90)' }}
           >
             System Pulse
           </h3>
@@ -392,21 +400,21 @@ export default function BriefingCard({
               value={riskNorm}
               label={riskTemp.toFixed(1)}
               caption="Risk"
-              gradient={['#8B5CF6', '#FB7185']}
+              gradient={['#8B5CF6', '#ff6b8a']}
             />
             <MicroGauge
               id="pit-pass"
               value={pitPassRate}
               label={`${Math.round(pitPassRate * 100)}%`}
               caption="PIT"
-              gradient={pitPassRate >= 0.8 ? ['#34D399', '#059669'] : pitPassRate >= 0.6 ? ['#FBBF24', '#D97706'] : ['#FB7185', '#E11D48']}
+              gradient={pitPassRate >= 0.8 ? ['#3ee8a5', '#059669'] : pitPassRate >= 0.6 ? ['#f5c542', '#D97706'] : ['#ff6b8a', '#E11D48']}
             />
             <MicroGauge
               id="data-fresh"
               value={dataFresh}
               label={`${Math.round(dataFresh * 100)}%`}
               caption="Data"
-              gradient={dataFresh >= 0.9 ? ['#34D399', '#059669'] : dataFresh >= 0.7 ? ['#FBBF24', '#D97706'] : ['#FB7185', '#E11D48']}
+              gradient={dataFresh >= 0.9 ? ['#3ee8a5', '#059669'] : dataFresh >= 0.7 ? ['#f5c542', '#D97706'] : ['#ff6b8a', '#E11D48']}
             />
             <MicroGauge
               id="asset-cov"

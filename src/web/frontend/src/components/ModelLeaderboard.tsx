@@ -24,13 +24,13 @@ interface ModelRow {
 }
 
 const MEDAL_GRADIENTS: Record<number, string> = {
-  1: 'linear-gradient(135deg, #F59E0B 0%, #D97706 100%)',
+  1: 'linear-gradient(135deg, #f5c542 0%, #D97706 100%)',
   2: 'linear-gradient(135deg, #94A3B8 0%, #64748B 100%)',
   3: 'linear-gradient(135deg, #FB923C 0%, #C2410C 100%)',
 };
 
 const MEDAL_GLOW: Record<number, string> = {
-  1: 'rgba(245,158,11,0.12)',
+  1: 'rgba(245,197,66,0.12)',
   2: 'rgba(148,163,184,0.08)',
   3: 'rgba(251,146,60,0.10)',
 };
@@ -130,7 +130,7 @@ export default function ModelLeaderboard({ modelsDistribution, pitPass, pitFail,
                   </div>
                 ) : (
                   <div className="w-7 h-7 flex items-center justify-center flex-shrink-0 text-[11px]"
-                    style={{ color: 'var(--text-muted, #475569)' }}>
+                    style={{ color: 'var(--text-muted, #6b7a90)' }}>
                     {model.rank}
                   </div>
                 )}
@@ -175,15 +175,15 @@ export default function ModelLeaderboard({ modelsDistribution, pitPass, pitFail,
                     className="text-[9px] px-1.5 py-0.5 rounded flex-shrink-0"
                     style={{
                       background: overallPassRate >= 0.8
-                        ? 'rgba(52,211,153,0.12)'
+                        ? 'rgba(62,232,165,0.12)'
                         : overallPassRate >= 0.6
-                          ? 'rgba(251,191,36,0.12)'
-                          : 'rgba(251,113,133,0.12)',
+                          ? 'rgba(245,197,66,0.12)'
+                          : 'rgba(255,107,138,0.12)',
                       color: overallPassRate >= 0.8
-                        ? '#34D399'
+                        ? '#3ee8a5'
                         : overallPassRate >= 0.6
-                          ? '#FBBF24'
-                          : '#FB7185',
+                          ? '#f5c542'
+                          : '#ff6b8a',
                     }}
                   >
                     {Math.round(overallPassRate * 100)}%
@@ -200,7 +200,7 @@ export default function ModelLeaderboard({ modelsDistribution, pitPass, pitFail,
                 }}
               >
                 <div className="px-3 pb-3 pt-1 ml-10 text-[10px] space-y-1.5">
-                  <p style={{ color: 'var(--text-muted, #475569)' }}>
+                  <p style={{ color: 'var(--text-muted, #6b7a90)' }}>
                     Selected {model.count}x across {total || '?'} assets
                     ({total && total > 0 ? `${((model.count / total) * 100).toFixed(1)}%` : '?'} of universe)
                   </p>

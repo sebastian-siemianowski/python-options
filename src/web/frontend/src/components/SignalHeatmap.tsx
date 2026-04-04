@@ -50,11 +50,11 @@ function cellOpacity(sig: { position_strength?: number } | undefined): number {
 function SectorSentimentBar({ sector }: { sector: SectorGroup }) {
   const total = sector.asset_count || 1;
   const segments = [
-    { pct: (sector.strong_sell / total) * 100, color: '#FB7185' },
-    { pct: (sector.sell / total) * 100, color: 'rgba(251,113,133,0.4)' },
+    { pct: (sector.strong_sell / total) * 100, color: '#ff6b8a' },
+    { pct: (sector.sell / total) * 100, color: 'rgba(255,107,138,0.4)' },
     { pct: (sector.hold / total) * 100, color: '#1c1845' },
-    { pct: (sector.buy / total) * 100, color: 'rgba(52,211,153,0.4)' },
-    { pct: (sector.strong_buy / total) * 100, color: '#34D399' },
+    { pct: (sector.buy / total) * 100, color: 'rgba(62,232,165,0.4)' },
+    { pct: (sector.strong_buy / total) * 100, color: '#3ee8a5' },
   ];
   return (
     <div className="flex h-1 w-20 rounded-full overflow-hidden" style={{ background: 'var(--void-active, #1c1845)' }}>
@@ -198,19 +198,19 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
         <div className="flex items-center gap-4">
           {/* Color scale legend */}
           <div className="flex items-center gap-2">
-            <span className="text-[9px] tabular-nums" style={{ color: 'var(--text-muted, #475569)' }}>-10%</span>
+            <span className="text-[9px] tabular-nums" style={{ color: 'var(--text-muted, #6b7a90)' }}>-10%</span>
             <div className="w-[120px] h-2 rounded-full overflow-hidden flex"
               style={{ background: 'var(--void-surface, #0a0a23)' }}>
               <div className="h-full w-1/2" style={{
-                background: 'linear-gradient(90deg, rgba(251,113,133,0.5) 0%, rgba(251,113,133,0.08) 80%, transparent 100%)',
+                background: 'linear-gradient(90deg, rgba(255,107,138,0.5) 0%, rgba(255,107,138,0.08) 80%, transparent 100%)',
               }} />
               <div className="h-full w-1/2" style={{
-                background: 'linear-gradient(90deg, transparent 0%, rgba(52,211,153,0.08) 20%, rgba(52,211,153,0.5) 100%)',
+                background: 'linear-gradient(90deg, transparent 0%, rgba(62,232,165,0.08) 20%, rgba(62,232,165,0.5) 100%)',
               }} />
             </div>
-            <span className="text-[9px] tabular-nums" style={{ color: 'var(--text-muted, #475569)' }}>+10%</span>
+            <span className="text-[9px] tabular-nums" style={{ color: 'var(--text-muted, #6b7a90)' }}>+10%</span>
           </div>
-          <span className="text-[10px]" style={{ color: 'var(--text-muted, #475569)' }}>
+          <span className="text-[10px]" style={{ color: 'var(--text-muted, #6b7a90)' }}>
             {totalSignals} active signals
           </span>
         </div>
@@ -236,17 +236,17 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
             }}
           >
             <div className="text-xs font-medium mb-1" style={{ color: '#e2e8f0' }}>
-              {tooltipData.asset} <span style={{ color: 'var(--text-muted, #475569)' }}>{tooltipData.horizon}</span>
+              {tooltipData.asset} <span style={{ color: 'var(--text-muted, #6b7a90)' }}>{tooltipData.horizon}</span>
             </div>
             <div className="flex items-baseline gap-2 mb-1">
               <span
                 className="text-base font-bold tabular-nums"
                 style={{
-                  color: tooltipData.expRet >= 0 ? '#34D399' : '#FB7185',
+                  color: tooltipData.expRet >= 0 ? '#3ee8a5' : '#ff6b8a',
                   ...(Math.abs(tooltipData.expRet) > 0.05 ? {
                     background: tooltipData.expRet > 0
-                      ? 'linear-gradient(135deg, #f8fafc 0%, #34D399 100%)'
-                      : 'linear-gradient(135deg, #f8fafc 0%, #FB7185 100%)',
+                      ? 'linear-gradient(135deg, #f8fafc 0%, #3ee8a5 100%)'
+                      : 'linear-gradient(135deg, #f8fafc 0%, #ff6b8a 100%)',
                     WebkitBackgroundClip: 'text',
                     WebkitTextFillColor: 'transparent',
                   } : {}),
@@ -264,7 +264,7 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
                     transform="rotate(135 8 8)" strokeLinecap="round"
                   />
                   <circle cx="8" cy="8" r="6" fill="none"
-                    stroke={tooltipData.expRet >= 0 ? '#34D399' : '#FB7185'}
+                    stroke={tooltipData.expRet >= 0 ? '#3ee8a5' : '#ff6b8a'}
                     strokeWidth="1.5"
                     strokeDasharray={`${Math.PI * 12 * 0.75} ${Math.PI * 12}`}
                     strokeDashoffset={Math.PI * 12 * 0.75 * (1 - tooltipData.pUp)}
@@ -286,7 +286,7 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
                       }}
                     />
                   </div>
-                  <span style={{ color: 'var(--text-muted, #475569)' }}>
+                  <span style={{ color: 'var(--text-muted, #6b7a90)' }}>
                     Kelly {(tooltipData.kelly * 100).toFixed(0)}%
                   </span>
                 </div>
@@ -300,7 +300,7 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
                     background: tooltipData.expRet >= 0
                       ? 'linear-gradient(135deg, #064e3b 0%, #047857 100%)'
                       : 'linear-gradient(135deg, #4c0519 0%, #881337 100%)',
-                    color: tooltipData.expRet >= 0 ? '#34D399' : '#FB7185',
+                    color: tooltipData.expRet >= 0 ? '#3ee8a5' : '#ff6b8a',
                   }}
                 >
                   {tooltipData.label}
@@ -317,7 +317,7 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
             <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
               <th className="text-left px-4 py-2 font-medium w-36"
                 style={{
-                  color: 'var(--text-muted, #475569)',
+                  color: 'var(--text-muted, #6b7a90)',
                   background: 'linear-gradient(135deg, #1a0533 0%, #0d1b3e 40%, #0a2540 100%)',
                   backdropFilter: 'blur(12px)',
                   position: 'sticky', left: 0, zIndex: 10,
@@ -327,7 +327,7 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
               {horizons.map(h => (
                 <th key={h} className="text-center px-1 py-2 font-medium w-16"
                   style={{
-                    color: 'var(--text-muted, #475569)',
+                    color: 'var(--text-muted, #6b7a90)',
                     background: 'linear-gradient(135deg, #1a0533 0%, #0d1b3e 40%, #0a2540 100%)',
                     backdropFilter: 'blur(12px)',
                   }}>
@@ -362,8 +362,8 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
                             display: 'flex',
                           }}>
                             {isCollapsed
-                              ? <ChevronRight className="w-3.5 h-3.5" style={{ color: 'var(--text-muted, #475569)' }} />
-                              : <ChevronDown className="w-3.5 h-3.5" style={{ color: 'var(--text-muted, #475569)' }} />
+                              ? <ChevronRight className="w-3.5 h-3.5" style={{ color: 'var(--text-muted, #6b7a90)' }} />
+                              : <ChevronDown className="w-3.5 h-3.5" style={{ color: 'var(--text-muted, #6b7a90)' }} />
                             }
                           </span>
                           <span className="text-[11px] font-medium" style={{ color: 'var(--text-violet, #C4B5FD)' }}>
@@ -372,14 +372,14 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
                         </span>
                         <span
                           className="px-1.5 py-0.5 rounded text-[9px]"
-                          style={{ background: 'rgba(139,92,246,0.08)', color: 'var(--text-muted, #475569)' }}
+                          style={{ background: 'rgba(139,92,246,0.08)', color: 'var(--text-muted, #6b7a90)' }}
                         >
                           {sector.asset_count}
                         </span>
                         <SectorSentimentBar sector={sector} />
                         <span
                           className="text-[10px] tabular-nums font-medium"
-                          style={{ color: avgMom > 5 ? '#34D399' : avgMom < -5 ? '#FB7185' : 'var(--text-muted, #475569)' }}
+                          style={{ color: avgMom > 5 ? '#3ee8a5' : avgMom < -5 ? '#ff6b8a' : 'var(--text-muted, #6b7a90)' }}
                         >
                           {avgMom > 0 ? '+' : ''}{avgMom.toFixed(1)}
                         </span>
@@ -453,7 +453,7 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
                                   style={{
                                     color: sig?.exp_ret != null
                                       ? (Math.abs(sig.exp_ret) > 0.03 ? '#f8fafc' : 'var(--text-secondary, #94a3b8)')
-                                      : 'var(--text-muted, #475569)',
+                                      : 'var(--text-muted, #6b7a90)',
                                   }}>
                                   {sig?.exp_ret != null ? `${(sig.exp_ret * 100).toFixed(1)}` : '\u2014'}
                                 </span>

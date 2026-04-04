@@ -31,11 +31,11 @@ type SignalFilter = 'all' | 'strong_buy' | 'buy' | 'hold' | 'sell' | 'strong_sel
 
 const FILTER_OPTIONS: { value: SignalFilter; label: string; color: string }[] = [
   { value: 'all', label: 'All Signals', color: 'var(--text-secondary)' },
-  { value: 'strong_buy', label: 'Strong Buy', color: '#34D399' },
-  { value: 'buy', label: 'Buy', color: 'rgba(52,211,153,0.7)' },
+  { value: 'strong_buy', label: 'Strong Buy', color: '#3ee8a5' },
+  { value: 'buy', label: 'Buy', color: 'rgba(62,232,165,0.7)' },
   { value: 'hold', label: 'Hold', color: 'var(--text-muted)' },
-  { value: 'sell', label: 'Sell', color: 'rgba(251,113,133,0.7)' },
-  { value: 'strong_sell', label: 'Strong Sell', color: '#FB7185' },
+  { value: 'sell', label: 'Sell', color: 'rgba(255,107,138,0.7)' },
+  { value: 'strong_sell', label: 'Strong Sell', color: '#ff6b8a' },
 ];
 
 /** Extract ticker from "Company Name (TICKER)" */
@@ -121,7 +121,7 @@ function ExpandedAssetRow({
                 const lbl = (sig.label || 'HOLD').toUpperCase().replace(/[\s-]/g, '_');
                 const isBuy = lbl.includes('BUY');
                 const isSell = lbl.includes('SELL');
-                const dotColor = isBuy ? '#34D399' : isSell ? '#FB7185' : 'var(--text-muted)';
+                const dotColor = isBuy ? '#3ee8a5' : isSell ? '#ff6b8a' : 'var(--text-muted)';
                 return (
                   <div
                     key={h}
@@ -132,7 +132,7 @@ function ExpandedAssetRow({
                       {formatHorizon(h)}
                     </p>
                     <p className="text-[14px] font-bold tabular-nums leading-none"
-                      style={{ color: isPos ? '#34D399' : '#FB7185' }}>
+                      style={{ color: isPos ? '#3ee8a5' : '#ff6b8a' }}>
                       {isPos ? '+' : ''}{ret.toFixed(1)}%
                     </p>
                     <div className="mt-1 flex items-center justify-center gap-1">
@@ -183,8 +183,8 @@ function heatColor(expRet: number | null | undefined): string {
   const mag = Math.abs(c) / 0.10;
   if (Math.abs(c) < 0.003) return 'var(--void-surface)';
   return c > 0
-    ? `rgba(52,211,153,${(0.06 + mag * 0.50).toFixed(3)})`
-    : `rgba(251,113,133,${(0.06 + mag * 0.50).toFixed(3)})`;
+    ? `rgba(62,232,165,${(0.06 + mag * 0.50).toFixed(3)})`
+    : `rgba(255,107,138,${(0.06 + mag * 0.50).toFixed(3)})`;
 }
 
 function signalMatchesFilter(row: SummaryRow, filter: SignalFilter): boolean {
@@ -197,11 +197,11 @@ function signalMatchesFilter(row: SummaryRow, filter: SignalFilter): boolean {
 function SentimentStrip({ sector }: { sector: SectorGroup }) {
   const total = sector.asset_count || 1;
   const segs = [
-    { pct: (sector.strong_sell / total) * 100, c: '#FB7185' },
-    { pct: (sector.sell / total) * 100, c: 'rgba(251,113,133,0.35)' },
+    { pct: (sector.strong_sell / total) * 100, c: '#ff6b8a' },
+    { pct: (sector.sell / total) * 100, c: 'rgba(255,107,138,0.35)' },
     { pct: (sector.hold / total) * 100, c: 'rgba(139,92,246,0.10)' },
-    { pct: (sector.buy / total) * 100, c: 'rgba(52,211,153,0.35)' },
-    { pct: (sector.strong_buy / total) * 100, c: '#34D399' },
+    { pct: (sector.buy / total) * 100, c: 'rgba(62,232,165,0.35)' },
+    { pct: (sector.strong_buy / total) * 100, c: '#3ee8a5' },
   ];
   return (
     <div className="flex h-[5px] rounded-full overflow-hidden" style={{ width: 80, background: 'var(--void-active)' }}>
@@ -232,11 +232,11 @@ function SummaryStrip({ sectors }: { sectors: SectorGroup[] }) {
   const items = [
     { label: 'Assets', value: stats.totalAssets, color: 'var(--text-primary)' },
     { label: 'Sectors', value: stats.sectors, color: 'var(--accent-violet)' },
-    { label: 'Strong Buy', value: stats.strongBuys, color: '#34D399' },
-    { label: 'Buy', value: stats.buys, color: 'rgba(52,211,153,0.7)' },
+    { label: 'Strong Buy', value: stats.strongBuys, color: '#3ee8a5' },
+    { label: 'Buy', value: stats.buys, color: 'rgba(62,232,165,0.7)' },
     { label: 'Hold', value: stats.holds, color: 'var(--text-muted)' },
-    { label: 'Sell', value: stats.sells, color: 'rgba(251,113,133,0.7)' },
-    { label: 'Strong Sell', value: stats.strongSells, color: '#FB7185' },
+    { label: 'Sell', value: stats.sells, color: 'rgba(255,107,138,0.7)' },
+    { label: 'Strong Sell', value: stats.strongSells, color: '#ff6b8a' },
   ];
 
   return (
@@ -262,11 +262,11 @@ interface TooltipInfo {
 
 function HeatTooltip({ info }: { info: TooltipInfo }) {
   const labelColors: Record<string, { bg: string; fg: string }> = {
-    STRONG_BUY: { bg: 'linear-gradient(135deg, #064e3b, #047857)', fg: '#34D399' },
+    STRONG_BUY: { bg: 'linear-gradient(135deg, #064e3b, #047857)', fg: '#3ee8a5' },
     BUY: { bg: 'linear-gradient(135deg, #064e3b, #065f46)', fg: '#6EE7B7' },
     HOLD: { bg: 'linear-gradient(135deg, #1e1b4b, #312e81)', fg: '#A5B4FC' },
     SELL: { bg: 'linear-gradient(135deg, #4c0519, #881337)', fg: '#FDA4AF' },
-    STRONG_SELL: { bg: 'linear-gradient(135deg, #4c0519, #9f1239)', fg: '#FB7185' },
+    STRONG_SELL: { bg: 'linear-gradient(135deg, #4c0519, #9f1239)', fg: '#ff6b8a' },
   };
   const labelKey = (info.label || 'HOLD').toUpperCase().replace(/[\s-]/g, '_');
   const lc = labelColors[labelKey] || labelColors.HOLD;
@@ -300,8 +300,8 @@ function HeatTooltip({ info }: { info: TooltipInfo }) {
             className="text-[22px] font-black tabular-nums tracking-tight"
             style={{
               background: info.expRet >= 0
-                ? 'linear-gradient(135deg, #f8fafc 0%, #34D399 100%)'
-                : 'linear-gradient(135deg, #f8fafc 0%, #FB7185 100%)',
+                ? 'linear-gradient(135deg, #f8fafc 0%, #3ee8a5 100%)'
+                : 'linear-gradient(135deg, #f8fafc 0%, #ff6b8a 100%)',
               WebkitBackgroundClip: 'text',
               WebkitTextFillColor: 'transparent',
             }}
@@ -320,7 +320,7 @@ function HeatTooltip({ info }: { info: TooltipInfo }) {
                 strokeDasharray={`${Math.PI * 16 * 0.75} ${Math.PI * 16}`}
                 transform="rotate(135 10 10)" strokeLinecap="round" />
               <circle cx="10" cy="10" r="8" fill="none"
-                stroke={info.pUp >= 0.5 ? '#34D399' : '#FB7185'}
+                stroke={info.pUp >= 0.5 ? '#3ee8a5' : '#ff6b8a'}
                 strokeWidth="2"
                 strokeDasharray={`${Math.PI * 16 * 0.75} ${Math.PI * 16}`}
                 strokeDashoffset={Math.PI * 16 * 0.75 * (1 - info.pUp)}
@@ -329,7 +329,7 @@ function HeatTooltip({ info }: { info: TooltipInfo }) {
             <div>
               <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>P(up)</div>
               <div className="text-[12px] font-bold tabular-nums"
-                style={{ color: info.pUp >= 0.5 ? '#34D399' : '#FB7185' }}>
+                style={{ color: info.pUp >= 0.5 ? '#3ee8a5' : '#ff6b8a' }}>
                 {(info.pUp * 100).toFixed(0)}%
               </div>
             </div>
@@ -349,7 +349,7 @@ function HeatTooltip({ info }: { info: TooltipInfo }) {
           <div>
             <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Mom</div>
             <div className="text-[12px] font-bold tabular-nums"
-              style={{ color: info.momentum > 0 ? '#34D399' : info.momentum < 0 ? '#FB7185' : 'var(--text-muted)' }}>
+              style={{ color: info.momentum > 0 ? '#3ee8a5' : info.momentum < 0 ? '#ff6b8a' : 'var(--text-muted)' }}>
               {info.momentum > 0 ? '+' : ''}{Math.round(info.momentum)}%
             </div>
           </div>
@@ -371,21 +371,21 @@ function HeatTooltip({ info }: { info: TooltipInfo }) {
 function ColorScaleLegend() {
   return (
     <div className="flex items-center gap-3">
-      <span className="text-[10px] font-medium tabular-nums" style={{ color: '#FB7185' }}>-10%</span>
+      <span className="text-[10px] font-medium tabular-nums" style={{ color: '#ff6b8a' }}>-10%</span>
       <div className="relative" style={{ width: 160, height: 10 }}>
         <div className="absolute inset-0 rounded-full overflow-hidden flex"
           style={{ background: 'var(--void-surface)' }}>
           <div className="h-full w-1/2" style={{
-            background: 'linear-gradient(90deg, rgba(251,113,133,0.55) 0%, rgba(251,113,133,0.06) 85%, transparent 100%)',
+            background: 'linear-gradient(90deg, rgba(255,107,138,0.55) 0%, rgba(255,107,138,0.06) 85%, transparent 100%)',
           }} />
           <div className="h-full w-1/2" style={{
-            background: 'linear-gradient(90deg, transparent 0%, rgba(52,211,153,0.06) 15%, rgba(52,211,153,0.55) 100%)',
+            background: 'linear-gradient(90deg, transparent 0%, rgba(62,232,165,0.06) 15%, rgba(62,232,165,0.55) 100%)',
           }} />
         </div>
         {/* Center tick */}
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-px h-full" style={{ background: 'rgba(139,92,246,0.3)' }} />
       </div>
-      <span className="text-[10px] font-medium tabular-nums" style={{ color: '#34D399' }}>+10%</span>
+      <span className="text-[10px] font-medium tabular-nums" style={{ color: '#3ee8a5' }}>+10%</span>
     </div>
   );
 }
@@ -777,19 +777,19 @@ export default function HeatmapPage() {
 
                           {/* Buy / Sell counts */}
                           {sector.strong_buy > 0 && (
-                            <span className="flex items-center gap-0.5 text-[10px] font-medium" style={{ color: '#34D399' }}>
+                            <span className="flex items-center gap-0.5 text-[10px] font-medium" style={{ color: '#3ee8a5' }}>
                               <TrendingUp className="w-3 h-3" />{sector.strong_buy + sector.buy}
                             </span>
                           )}
                           {sector.strong_sell > 0 && (
-                            <span className="flex items-center gap-0.5 text-[10px] font-medium" style={{ color: '#FB7185' }}>
+                            <span className="flex items-center gap-0.5 text-[10px] font-medium" style={{ color: '#ff6b8a' }}>
                               <TrendingDown className="w-3 h-3" />{sector.strong_sell + sector.sell}
                             </span>
                           )}
 
                           {/* Average momentum */}
                           <span className="text-[10px] tabular-nums font-semibold ml-auto"
-                            style={{ color: avgMom > 5 ? '#34D399' : avgMom < -5 ? '#FB7185' : 'var(--text-muted)' }}>
+                            style={{ color: avgMom > 5 ? '#3ee8a5' : avgMom < -5 ? '#ff6b8a' : 'var(--text-muted)' }}>
                             {avgMom > 0 ? '+' : ''}{avgMom.toFixed(1)}
                           </span>
                         </div>
@@ -902,8 +902,8 @@ export default function HeatmapPage() {
                               <span
                                 className="text-[10px] tabular-nums font-medium"
                                 style={{
-                                  color: mom > 30 ? '#34D399' : mom > 0 ? 'rgba(52,211,153,0.7)'
-                                    : mom < -30 ? '#FB7185' : mom < 0 ? 'rgba(251,113,133,0.7)'
+                                  color: mom > 30 ? '#3ee8a5' : mom > 0 ? 'rgba(62,232,165,0.7)'
+                                    : mom < -30 ? '#ff6b8a' : mom < 0 ? 'rgba(255,107,138,0.7)'
                                     : 'var(--text-muted)',
                                 }}
                               >

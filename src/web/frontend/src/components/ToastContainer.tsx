@@ -37,7 +37,7 @@ const VARIANTS: Record<ToastVariant, {
     borderGradient: 'linear-gradient(180deg, var(--accent-rose) 0%, #E11D48 100%)',
     icon: XCircle,
     iconColor: 'var(--accent-rose)',
-    glow: '0 0 20px rgba(251,113,133,0.08)',
+    glow: '0 0 20px rgba(255,107,138,0.08)',
   },
   progress: {
     borderGradient: 'linear-gradient(180deg, var(--accent-violet) 0%, var(--accent-cyan) 100%)',

@@ -119,14 +119,14 @@ export default function SignalDistributionBar({ signals, sectors, onFilterSignal
       key: 'Strong Sell',
       label: 'Strong Sell',
       count: signals.strong_sell_signals,
-      color: '#FB7185',
+      color: '#ff6b8a',
       bgGradient: 'linear-gradient(135deg, #4c0519 0%, #6b0f2a 50%, #881337 100%)',
     },
     {
       key: 'Sell',
       label: 'Sell',
       count: signals.sell_signals,
-      color: 'rgba(251,113,133,0.5)',
+      color: 'rgba(255,107,138,0.5)',
       bgGradient: 'linear-gradient(135deg, #4c0519 0%, #881337 100%)',
     },
     {
@@ -140,14 +140,14 @@ export default function SignalDistributionBar({ signals, sectors, onFilterSignal
       key: 'Buy',
       label: 'Buy',
       count: signals.buy_signals,
-      color: 'rgba(52,211,153,0.5)',
+      color: 'rgba(62,232,165,0.5)',
       bgGradient: 'linear-gradient(135deg, #064e3b 0%, #047857 100%)',
     },
     {
       key: 'Strong Buy',
       label: 'Strong Buy',
       count: signals.strong_buy_signals,
-      color: '#34D399',
+      color: '#3ee8a5',
       bgGradient: 'linear-gradient(135deg, #064e3b 0%, #065f46 50%, #047857 100%)',
     },
   ], [signals]);
@@ -199,11 +199,11 @@ export default function SignalDistributionBar({ signals, sectors, onFilterSignal
     const t = snap.strong_sell + snap.sell + snap.hold + snap.buy + snap.strong_buy;
     if (t === 0) return [];
     return [
-      { pct: (snap.strong_sell / t) * 100, color: '#FB7185' },
-      { pct: (snap.sell / t) * 100, color: 'rgba(251,113,133,0.5)' },
+      { pct: (snap.strong_sell / t) * 100, color: '#ff6b8a' },
+      { pct: (snap.sell / t) * 100, color: 'rgba(255,107,138,0.5)' },
       { pct: (snap.hold / t) * 100, color: '#1c1845' },
-      { pct: (snap.buy / t) * 100, color: 'rgba(52,211,153,0.5)' },
-      { pct: (snap.strong_buy / t) * 100, color: '#34D399' },
+      { pct: (snap.buy / t) * 100, color: 'rgba(62,232,165,0.5)' },
+      { pct: (snap.strong_buy / t) * 100, color: '#3ee8a5' },
     ];
   }
 
@@ -319,7 +319,7 @@ export default function SignalDistributionBar({ signals, sectors, onFilterSignal
             style={{ opacity: hoveredSegment && hoveredSegment !== seg.key ? 0.4 : 1, transition: 'opacity 150ms' }}
           >
             <span className="w-2 h-2 rounded-full" style={{ background: seg.color }} />
-            <span style={{ color: 'var(--text-muted, #475569)' }}>{seg.label}</span>
+            <span style={{ color: 'var(--text-muted, #6b7a90)' }}>{seg.label}</span>
             <span className="font-semibold tabular-nums" style={{ color: '#f8fafc' }}>{seg.count}</span>
           </div>
         ))}
@@ -333,7 +333,7 @@ export default function SignalDistributionBar({ signals, sectors, onFilterSignal
             return (
               <div key={snap.date} className="flex items-center gap-2">
                 <span className="text-[9px] tabular-nums w-10 text-right flex-shrink-0"
-                  style={{ color: 'var(--text-muted, #475569)' }}>
+                  style={{ color: 'var(--text-muted, #6b7a90)' }}>
                   {snap.date.slice(5)}
                 </span>
                 <div
@@ -360,12 +360,12 @@ export default function SignalDistributionBar({ signals, sectors, onFilterSignal
       {shiftSummary && (
         <p className="text-xs mt-3 text-center" style={{ color: 'var(--text-secondary, #94a3b8)' }}>
           {shiftSummary.direction === 'neutral' ? (
-            <span style={{ color: 'var(--text-muted, #475569)' }}>{shiftSummary.text}</span>
+            <span style={{ color: 'var(--text-muted, #6b7a90)' }}>{shiftSummary.text}</span>
           ) : (
             <>
               Distribution shifted{' '}
               <span style={{
-                color: shiftSummary.direction === 'bullish' ? '#34D399' : '#FB7185',
+                color: shiftSummary.direction === 'bullish' ? '#3ee8a5' : '#ff6b8a',
                 fontWeight: 600,
               }}>
                 {shiftSummary.text.match(/[+-]\d+%\s\w+/)?.[0] || shiftSummary.text}

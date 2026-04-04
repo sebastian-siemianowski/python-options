@@ -58,7 +58,7 @@ export default function DataPage() {
             className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm transition-all duration-200 disabled:opacity-50"
             style={{
               background: 'rgba(139,92,246,0.08)',
-              color: '#a78bfa',
+              color: '#b49aff',
               border: '1px solid rgba(139,92,246,0.12)',
             }}
           >
@@ -96,7 +96,7 @@ export default function DataPage() {
             {Object.entries(dirs).map(([name, info]) => (
               <div key={name} className="flex items-center justify-between text-xs">
                 <span style={{ color: 'var(--text-luminous)' }}>{name}</span>
-                <span style={{ color: info.exists ? '#34d399' : '#fb7185' }}>
+                <span style={{ color: info.exists ? '#3ee8a5' : '#ff6b8a' }}>
                   {info.exists ? `${info.file_count} files` : 'missing'}
                 </span>
               </div>
@@ -145,9 +145,9 @@ export default function DataPage() {
 }
 
 function FileRow({ file }: { file: PriceFile }) {
-  const ageColor = file.age_hours < 24 ? '#34d399'
-    : file.age_hours < 72 ? '#f59e0b'
-    : '#fb7185';
+  const ageColor = file.age_hours < 24 ? '#3ee8a5'
+    : file.age_hours < 72 ? '#f5c542'
+    : '#ff6b8a';
 
   return (
     <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.04)' }} className="transition-all duration-150">
@@ -157,7 +157,7 @@ function FileRow({ file }: { file: PriceFile }) {
       <td className="px-3 py-2 text-right" style={{ color: ageColor }}>
         {file.age_hours < 1 ? '<1h' : `${Math.round(file.age_hours)}h`}
       </td>
-      <td className="px-3 py-2 text-right" style={{ color: '#64748b' }}>
+      <td className="px-3 py-2 text-right" style={{ color: '#7a8ba4' }}>
         {new Date(file.last_modified).toLocaleDateString()}
       </td>
     </tr>

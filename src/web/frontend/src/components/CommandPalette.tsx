@@ -256,8 +256,8 @@ export default function CommandPalette({ open, onClose }: { open: boolean; onClo
 
   const badgeStyle = (variant: string) => {
     switch (variant) {
-      case 'bull': return 'bg-[rgba(52,211,153,0.12)] text-[#34D399]';
-      case 'bear': return 'bg-[rgba(251,113,133,0.12)] text-[#FB7185]';
+      case 'bull': return 'bg-[rgba(62,232,165,0.12)] text-[#3ee8a5]';
+      case 'bear': return 'bg-[rgba(255,107,138,0.12)] text-[#ff6b8a]';
       default: return 'bg-[rgba(139,92,246,0.08)] text-[#C4B5FD]';
     }
   };
@@ -293,7 +293,7 @@ export default function CommandPalette({ open, onClose }: { open: boolean; onClo
               onChange={e => setQuery(e.target.value)}
               onKeyDown={onKeyDown}
               placeholder="Search pages, assets, actions..."
-              className="flex-1 bg-transparent text-[15px] font-medium outline-none placeholder:text-[#475569]"
+              className="flex-1 bg-transparent text-[15px] font-medium outline-none placeholder:text-[#6b7a90]"
               style={{ color: 'var(--text-luminous)' }}
               autoComplete="off"
               spellCheck={false}

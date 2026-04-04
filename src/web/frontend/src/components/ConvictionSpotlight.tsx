@@ -44,10 +44,10 @@ function EmptyState() {
   return (
     <div className="flex flex-col items-center justify-center py-10 gap-3">
       <div className="animate-float-subtle">
-        <Scale className="w-10 h-10" style={{ color: 'var(--text-muted, #475569)' }} strokeWidth={1.2} />
+        <Scale className="w-10 h-10" style={{ color: 'var(--text-muted, #6b7a90)' }} strokeWidth={1.2} />
       </div>
       <p className="text-sm" style={{ color: 'var(--text-secondary, #94a3b8)' }}>No strong signals today</p>
-      <p className="text-[11px]" style={{ color: 'var(--text-muted, #475569)' }}>Markets in equilibrium</p>
+      <p className="text-[11px]" style={{ color: 'var(--text-muted, #6b7a90)' }}>Markets in equilibrium</p>
       <style>{`
         @keyframes float-subtle {
           0%, 100% { transform: translateY(0); }
@@ -62,11 +62,11 @@ function EmptyState() {
 function SignalCard({ entry, accent }: { entry: StrongSignalEntry; accent: 'emerald' | 'rose' }) {
   const navigate = useNavigate();
   const isEmerald = accent === 'emerald';
-  const accentColor = isEmerald ? '#34D399' : '#FB7185';
-  const accentGlow = isEmerald ? 'rgba(52,211,153,0.06)' : 'rgba(251,113,133,0.06)';
+  const accentColor = isEmerald ? '#3ee8a5' : '#ff6b8a';
+  const accentGlow = isEmerald ? 'rgba(62,232,165,0.06)' : 'rgba(255,107,138,0.06)';
   const gradientText = isEmerald
-    ? 'linear-gradient(135deg, #f8fafc 0%, #34D399 100%)'
-    : 'linear-gradient(135deg, #f8fafc 0%, #FB7185 100%)';
+    ? 'linear-gradient(135deg, #f8fafc 0%, #3ee8a5 100%)'
+    : 'linear-gradient(135deg, #f8fafc 0%, #ff6b8a 100%)';
 
   // Kelly rough estimate from p_up and exp_ret
   const kelly = Math.abs(entry.exp_ret) > 0 ? Math.min(Math.abs(entry.p_up - 0.5) * 2, 0.5) : 0;
@@ -103,7 +103,7 @@ function SignalCard({ entry, accent }: { entry: StrongSignalEntry; accent: 'emer
           {/* Sector badge */}
           <span
             className="inline-block px-2 py-0.5 rounded text-[9px] mt-1"
-            style={{ background: 'var(--void-active, #1c1845)', color: 'var(--text-muted, #475569)' }}
+            style={{ background: 'var(--void-active, #1c1845)', color: 'var(--text-muted, #6b7a90)' }}
           >
             {entry.sector}
           </span>
@@ -118,7 +118,7 @@ function SignalCard({ entry, accent }: { entry: StrongSignalEntry; accent: 'emer
             {entry.exp_ret >= 0 ? '+' : ''}{(entry.exp_ret * 100).toFixed(1)}%
           </div>
           {/* Horizon */}
-          <span className="text-[9px]" style={{ color: 'var(--text-muted, #475569)' }}>
+          <span className="text-[9px]" style={{ color: 'var(--text-muted, #6b7a90)' }}>
             {entry.horizon}
           </span>
         </div>
@@ -143,14 +143,14 @@ function SignalCard({ entry, accent }: { entry: StrongSignalEntry; accent: 'emer
               }}
             />
           </div>
-          <span className="text-[9px] tabular-nums" style={{ color: 'var(--text-muted, #475569)' }}>
+          <span className="text-[9px] tabular-nums" style={{ color: 'var(--text-muted, #6b7a90)' }}>
             K {(kelly * 100).toFixed(0)}%
           </span>
         </div>
 
         {entry.momentum != null && (
           <span className="text-[9px] tabular-nums ml-auto"
-            style={{ color: entry.momentum > 0 ? '#34D399' : entry.momentum < 0 ? '#FB7185' : 'var(--text-muted, #475569)' }}>
+            style={{ color: entry.momentum > 0 ? '#3ee8a5' : entry.momentum < 0 ? '#ff6b8a' : 'var(--text-muted, #6b7a90)' }}>
             {entry.momentum > 0 ? '+' : ''}{Math.round(entry.momentum)}% mom
           </span>
         )}
@@ -175,16 +175,16 @@ export default function ConvictionSpotlight({ strongBuy, strongSell }: Props) {
         {/* Emerald aurora glow */}
         <div className="absolute inset-0 pointer-events-none"
           style={{
-            background: 'radial-gradient(ellipse at 10% 10%, rgba(52,211,153,0.08) 0%, transparent 60%)',
+            background: 'radial-gradient(ellipse at 10% 10%, rgba(62,232,165,0.08) 0%, transparent 60%)',
           }}
         />
         <div className="relative z-10 p-5">
           <div className="flex items-center gap-2 mb-4">
             <div className="w-6 h-6 rounded-lg flex items-center justify-center"
-              style={{ background: 'rgba(52,211,153,0.1)' }}>
-              <TrendingUp className="w-3.5 h-3.5" style={{ color: '#34D399' }} />
+              style={{ background: 'rgba(62,232,165,0.1)' }}>
+              <TrendingUp className="w-3.5 h-3.5" style={{ color: '#3ee8a5' }} />
             </div>
-            <h3 className="text-[15px] font-semibold" style={{ color: '#34D399' }}>
+            <h3 className="text-[15px] font-semibold" style={{ color: '#3ee8a5' }}>
               Strongest Buys
             </h3>
           </div>
@@ -210,16 +210,16 @@ export default function ConvictionSpotlight({ strongBuy, strongSell }: Props) {
         {/* Rose aurora glow */}
         <div className="absolute inset-0 pointer-events-none"
           style={{
-            background: 'radial-gradient(ellipse at 90% 10%, rgba(251,113,133,0.08) 0%, transparent 60%)',
+            background: 'radial-gradient(ellipse at 90% 10%, rgba(255,107,138,0.08) 0%, transparent 60%)',
           }}
         />
         <div className="relative z-10 p-5">
           <div className="flex items-center gap-2 mb-4">
             <div className="w-6 h-6 rounded-lg flex items-center justify-center"
-              style={{ background: 'rgba(251,113,133,0.1)' }}>
-              <TrendingDown className="w-3.5 h-3.5" style={{ color: '#FB7185' }} />
+              style={{ background: 'rgba(255,107,138,0.1)' }}>
+              <TrendingDown className="w-3.5 h-3.5" style={{ color: '#ff6b8a' }} />
             </div>
-            <h3 className="text-[15px] font-semibold" style={{ color: '#FB7185' }}>
+            <h3 className="text-[15px] font-semibold" style={{ color: '#ff6b8a' }}>
               Strongest Sells
             </h3>
           </div>

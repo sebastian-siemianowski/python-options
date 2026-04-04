@@ -106,11 +106,11 @@ export function ExportButton({ filename, columns, data, filteredCount, totalCoun
                     {isActive ? (
                       <Loader2 size={14} className="animate-spin" style={{ color: '#8b5cf6' }} />
                     ) : isSuccess ? (
-                      <Check size={14} style={{ color: '#34d399' }} />
+                      <Check size={14} style={{ color: '#3ee8a5' }} />
                     ) : isError ? (
-                      <X size={14} style={{ color: '#fb7185' }} />
+                      <X size={14} style={{ color: '#ff6b8a' }} />
                     ) : (
-                      <Icon size={14} style={{ color: '#a78bfa' }} />
+                      <Icon size={14} style={{ color: '#b49aff' }} />
                     )}
                   </div>
                   <div>

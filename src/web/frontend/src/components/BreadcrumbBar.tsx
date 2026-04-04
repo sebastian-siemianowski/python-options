@@ -35,18 +35,18 @@ function freshnessBadge(ageSeconds: number | null | undefined): {
     return { label: 'Unknown', color: 'var(--text-muted)', glow: 'transparent', pulseSpeed: '0s' };
   }
   if (ageSeconds < 60) {
-    return { label: 'Live', color: 'var(--accent-emerald)', glow: 'rgba(52,211,153,0.3)', pulseSpeed: '2s' };
+    return { label: 'Live', color: 'var(--accent-emerald)', glow: 'rgba(62,232,165,0.3)', pulseSpeed: '2s' };
   }
   if (ageSeconds < 300) {
     const m = Math.round(ageSeconds / 60);
-    return { label: `${m}m ago`, color: 'var(--accent-amber)', glow: 'rgba(251,191,36,0.25)', pulseSpeed: '3s' };
+    return { label: `${m}m ago`, color: 'var(--accent-amber)', glow: 'rgba(245,197,66,0.25)', pulseSpeed: '3s' };
   }
   if (ageSeconds < 3600) {
     const m = Math.round(ageSeconds / 60);
-    return { label: `${m}m ago`, color: 'var(--accent-amber)', glow: 'rgba(251,191,36,0.2)', pulseSpeed: '3s' };
+    return { label: `${m}m ago`, color: 'var(--accent-amber)', glow: 'rgba(245,197,66,0.2)', pulseSpeed: '3s' };
   }
   const h = Math.round(ageSeconds / 3600);
-  return { label: `Stale: ${h}h`, color: 'var(--accent-rose)', glow: 'rgba(251,113,133,0.3)', pulseSpeed: '1.5s' };
+  return { label: `Stale: ${h}h`, color: 'var(--accent-rose)', glow: 'rgba(255,107,138,0.3)', pulseSpeed: '1.5s' };
 }
 
 /* ─── Component ─────────────────────────────────────────────────── */

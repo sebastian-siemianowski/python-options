@@ -147,7 +147,7 @@ export default function StatusStrip() {
               className="w-1.5 h-1.5 rounded-full pulse-dot"
               style={{
                 background: allServicesOk ? 'var(--accent-emerald)' : 'var(--accent-rose)',
-                boxShadow: `0 0 6px ${allServicesOk ? 'rgba(52,211,153,0.4)' : 'rgba(251,113,133,0.4)'}`,
+                boxShadow: `0 0 6px ${allServicesOk ? 'rgba(62,232,165,0.45)' : 'rgba(255,107,138,0.45)'}`,
               }}
             />
             <span className="font-semibold" style={{ color: allServicesOk ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}>
