@@ -20,6 +20,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import CommandPalette from './CommandPalette';
 import BreadcrumbBar from './BreadcrumbBar';
 import StatusStrip from './StatusStrip';
+import AmbientOrbs from './AmbientOrbs';
 import { KeyboardShortcutOverlay } from './KeyboardShortcuts';
 
 /* ─── Types ─────────────────────────────────────────────────────── */
@@ -295,6 +296,9 @@ export default function Layout() {
 
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: 'var(--void)' }}>
+      {/* Living background */}
+      <AmbientOrbs />
+
       {/* Ambient Status Strip */}
       <StatusStrip />
 
@@ -467,7 +471,7 @@ export default function Layout() {
         role="main"
         aria-label="Page content"
       >
-        <div className="p-8 max-w-[1600px] mx-auto">
+        <div className="px-10 py-9 max-w-[1600px] mx-auto">
           <BreadcrumbBar />
           <Outlet />
         </div>

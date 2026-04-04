@@ -148,11 +148,11 @@ export default function BriefingCard({
 
   return (
     <div
-      className="briefing-card relative overflow-hidden rounded-2xl mb-8"
+      className="briefing-card relative overflow-hidden rounded-3xl mb-10"
       style={{
-        background: 'linear-gradient(135deg, #0e0b24 0%, #1a1550 40%, #12102a 70%, #0c1445 100%)',
-        border: '1px solid rgba(139,92,246,0.10)',
-        boxShadow: '0 4px 40px rgba(0,0,0,0.3), 0 0 80px rgba(139,92,246,0.04)',
+        background: 'linear-gradient(160deg, #0e0b24 0%, #1a1550 40%, #12102a 70%, #0c1445 100%)',
+        border: '1px solid rgba(139,92,246,0.08)',
+        boxShadow: '0 4px 60px rgba(0,0,0,0.35), 0 0 100px rgba(139,92,246,0.04), inset 0 1px 0 rgba(255,255,255,0.03)',
         opacity: visible ? 1 : 0,
         transform: visible ? 'translateY(0)' : 'translateY(12px)',
         transition: 'opacity 400ms cubic-bezier(0.16, 1, 0.3, 1), transform 400ms cubic-bezier(0.16, 1, 0.3, 1)',

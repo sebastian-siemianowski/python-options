@@ -164,7 +164,7 @@ export default function ConvictionSpotlight({ strongBuy, strongSell }: Props) {
   const hasSells = strongSell.length > 0;
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
       {/* Strongest Buys panel */}
       <div
         className="glass-card overflow-hidden relative"

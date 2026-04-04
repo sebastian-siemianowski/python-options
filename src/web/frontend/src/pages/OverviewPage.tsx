@@ -108,7 +108,7 @@ export default function OverviewPage() {
       />
 
       {/* Top stats row */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8 fade-up">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-5 mb-10 fade-up">
         <StatCard
           title="Total Assets"
           value={signals.total_assets}
@@ -136,21 +136,23 @@ export default function OverviewPage() {
           icon={<TrendingDown className="w-5 h-5" />}
           color="red"
         />
-        <div className="glass-card px-5 py-4 flex items-center gap-3 hover-lift">
-          <div className="w-9 h-9 rounded-xl flex items-center justify-center"
-               style={{ background: `${healthOk === false ? '#ff6b8a' : '#3ee8a5'}10` }}>
-            <HeartPulse className="w-5 h-5" style={{ color: healthOk === undefined ? '#7a8ba4' : healthOk ? '#3ee8a5' : '#ff6b8a' }} />
+        <div className="glass-card hover-lift" style={{ padding: '20px 24px' }}>
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl flex items-center justify-center"
+                 style={{ background: `${healthOk === false ? '#ff6b8a' : '#3ee8a5'}10` }}>
+              <HeartPulse className="w-5 h-5" style={{ color: healthOk === undefined ? 'var(--text-muted)' : healthOk ? '#3ee8a5' : '#ff6b8a' }} />
+            </div>
+            <div>
+              <p className="text-lg font-bold tabular-nums" style={{ color: 'var(--text-luminous)' }}>{healthOk === undefined ? '...' : healthOk ? 'OK' : 'Issue'}</p>
+              <p className="text-[10px] tracking-wide" style={{ color: 'var(--text-muted)' }}>System Health</p>
+            </div>
+            <span className="w-2 h-2 rounded-full ml-auto pulse-dot" style={{ background: healthOk === false ? '#ff6b8a' : '#3ee8a5' }} />
           </div>
-          <div>
-            <p className="text-lg font-bold text-[#f1f5f9] tabular-nums">{healthOk === undefined ? '...' : healthOk ? 'OK' : 'Issue'}</p>
-            <p className="text-[10px] text-[#7a8ba4] tracking-wide">System Health</p>
-          </div>
-          <span className="w-2 h-2 rounded-full ml-auto pulse-dot" style={{ background: healthOk === false ? '#ff6b8a' : '#3ee8a5' }} />
         </div>
       </div>
 
       {/* Second row: Tuning + Data */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8 fade-up-delay-1">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-5 mb-10 fade-up-delay-1">
         <StatCard
           title="Tuned Models"
           value={tuning.total}
@@ -181,7 +183,7 @@ export default function OverviewPage() {
       </div>
 
       {/* Charts row */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-8 fade-up-delay-2">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-10 fade-up-delay-2">
         {/* Signal Distribution Flowing Gradient Bar */}
         <SignalDistributionBar
           signals={signals}
@@ -197,8 +199,8 @@ export default function OverviewPage() {
         />
 
         {/* Top Sectors */}
-        <div className="glass-card p-6 hover-lift">
-          <h3 className="text-[13px] font-medium text-[#94a3b8] mb-5 tracking-wide">Top Sectors</h3>
+        <div className="glass-card hover-lift" style={{ padding: '24px' }}>
+          <h3 className="text-[11px] font-semibold uppercase mb-5" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>Top Sectors</h3>
           {topSectors.length === 0 ? (
             <div className="space-y-3">
               {[1,2,3,4].map(i => <div key={i} className="skeleton h-8" />)}
@@ -212,8 +214,8 @@ export default function OverviewPage() {
                 return (
                   <div key={sec.name}>
                     <div className="flex items-center justify-between text-xs mb-1.5">
-                      <span className="text-[#f1f5f9] font-medium truncate max-w-[140px]">{sec.name}</span>
-                      <span className="text-[#7a8ba4] tabular-nums">{bullish}/{total}</span>
+                      <span className="font-medium truncate max-w-[140px]" style={{ color: 'var(--text-luminous)' }}>{sec.name}</span>
+                      <span className="tabular-nums" style={{ color: 'var(--text-muted)' }}>{bullish}/{total}</span>
                     </div>
                     <div className="h-1.5 rounded-full bg-white/[0.03] overflow-hidden">
                       <div
@@ -231,7 +233,7 @@ export default function OverviewPage() {
 
       {/* Conviction Spotlight -- dual nebula panels */}
       {strongQ.data && (
-        <div className="mb-8 fade-up-delay-3">
+        <div className="mb-10 fade-up-delay-3">
           <ConvictionSpotlight
             strongBuy={strongQ.data.strong_buy || []}
             strongSell={strongQ.data.strong_sell || []}

@@ -64,10 +64,10 @@ export default function ModelLeaderboard({ modelsDistribution, pitPass, pitFail,
     : null;
 
   return (
-    <div className="glass-card p-6 hover-lift">
+    <div className="glass-card hover-lift" style={{ padding: '24px' }}>
       <h3
-        className="text-[13px] font-medium tracking-wide mb-5"
-        style={{ color: 'var(--text-secondary, #94a3b8)' }}
+        className="text-[11px] font-semibold uppercase tracking-wide mb-5"
+        style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}
       >
         Model Leaderboard
       </h3>

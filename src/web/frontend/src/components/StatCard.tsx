@@ -8,47 +8,60 @@ interface Props {
   color?: 'green' | 'red' | 'blue' | 'amber' | 'purple' | 'cyan';
 }
 
-const COLOR_MAP = {
-  green: 'text-[#3ee8a5]',
-  red: 'text-[#ff6b8a]',
-  blue: 'text-[#b49aff]',
-  amber: 'text-[#f5c542]',
-  purple: 'text-[#c084fc]',
-  cyan: 'text-[#38d9f5]',
-};
-
-const BG_MAP = {
-  green: 'from-[#3ee8a5]/[0.08] to-transparent',
-  red: 'from-[#ff6b8a]/[0.08] to-transparent',
-  blue: 'from-[#b49aff]/[0.08] to-transparent',
-  amber: 'from-[#f5c542]/[0.08] to-transparent',
-  purple: 'from-[#c084fc]/[0.08] to-transparent',
-  cyan: 'from-[#38d9f5]/[0.08] to-transparent',
-};
-
-const GLOW_MAP: Record<string, string> = {
-  green: '0 0 30px rgba(62,232,165,0.06)',
-  red: '0 0 30px rgba(255,107,138,0.06)',
-  blue: '0 0 30px rgba(167,139,250,0.06)',
-  amber: '0 0 30px rgba(245,197,66,0.06)',
-  purple: '0 0 30px rgba(192,132,252,0.06)',
-  cyan: '0 0 30px rgba(56,217,245,0.06)',
+const ACCENT: Record<string, { text: string; rgb: string }> = {
+  green:  { text: '#3ee8a5', rgb: '62,232,165' },
+  red:    { text: '#ff6b8a', rgb: '255,107,138' },
+  blue:   { text: '#b49aff', rgb: '167,139,250' },
+  amber:  { text: '#f5c542', rgb: '245,197,66' },
+  purple: { text: '#c084fc', rgb: '192,132,252' },
+  cyan:   { text: '#38d9f5', rgb: '56,217,245' },
 };
 
 export default function StatCard({ title, value, subtitle, icon, color = 'blue' }: Props) {
+  const a = ACCENT[color] || ACCENT.blue;
   return (
     <div
-      className="glass-card p-5 hover-lift stat-shine group"
-      style={{ boxShadow: GLOW_MAP[color] }}
+      className="glass-card hover-lift stat-shine group relative"
+      style={{
+        padding: '24px 24px 20px',
+        boxShadow: `0 0 0 1px rgba(${a.rgb},0.06), 0 4px 24px rgba(0,0,0,0.2), 0 0 60px rgba(${a.rgb},0.03), inset 0 1px 0 rgba(255,255,255,0.04)`,
+      }}
     >
-      <div className={`absolute inset-0 rounded-2xl bg-gradient-to-br ${BG_MAP[color]} opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none`} />
+      {/* Ambient color glow -- visible in top-left corner */}
+      <div
+        className="absolute top-0 left-0 w-32 h-32 pointer-events-none opacity-60 group-hover:opacity-100 transition-opacity duration-700"
+        style={{
+          background: `radial-gradient(circle at 0% 0%, rgba(${a.rgb},0.08) 0%, transparent 70%)`,
+        }}
+      />
       <div className="relative flex items-start justify-between">
         <div>
-          <p className="text-[10px] uppercase tracking-[0.14em] font-semibold" style={{ color: 'var(--text-muted)' }}>{title}</p>
-          <p className={`text-[26px] font-bold mt-2 tabular-nums tracking-tight leading-none ${COLOR_MAP[color]}`}>{value}</p>
-          {subtitle && <p className="text-[11px] mt-2" style={{ color: 'var(--text-muted)' }}>{subtitle}</p>}
+          <p
+            className="text-[10px] uppercase font-semibold"
+            style={{ color: 'var(--text-muted)', letterSpacing: '0.14em' }}
+          >
+            {title}
+          </p>
+          <p
+            className="font-bold mt-2.5 tabular-nums tracking-tight leading-none"
+            style={{ fontSize: '28px', color: a.text }}
+          >
+            {value}
+          </p>
+          {subtitle && (
+            <p className="text-[11px] mt-2.5" style={{ color: 'var(--text-secondary)' }}>
+              {subtitle}
+            </p>
+          )}
         </div>
-        {icon && <div className={`${COLOR_MAP[color]} opacity-30 group-hover:opacity-50 transition-opacity duration-400`}>{icon}</div>}
+        {icon && (
+          <div
+            className="opacity-20 group-hover:opacity-40 transition-opacity duration-500"
+            style={{ color: a.text }}
+          >
+            {icon}
+          </div>
+        )}
       </div>
     </div>
   );
