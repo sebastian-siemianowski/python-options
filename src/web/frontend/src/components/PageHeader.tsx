@@ -10,11 +10,10 @@ export default function PageHeader({ title, children, action }: Props) {
       <div className="flex items-end justify-between">
         <div>
           <h1
-            className="text-[32px] font-bold tracking-tight leading-none"
+            className="text-[32px] font-bold tracking-tight leading-none page-title-glow"
             style={{
               color: 'var(--text-luminous)',
               letterSpacing: '-0.03em',
-              textShadow: '0 0 80px var(--violet-15)',
             }}
           >
             {title}

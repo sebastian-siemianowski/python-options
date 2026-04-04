@@ -219,11 +219,12 @@ export default function TuningPage() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search assets..."
-              className="flex-1 px-3 py-1.5 rounded-lg text-sm outline-none transition-all duration-200"
+              className="flex-1 px-3 py-2 rounded-lg text-sm outline-none transition-all duration-200 focus-ring"
               style={{
                 background: 'rgba(10,10,26,0.6)',
                 border: '1px solid var(--violet-8)',
                 color: 'var(--text-primary)',
+                backdropFilter: 'blur(8px)',
               }}
             />
             {/* Failures only toggle */}
@@ -258,7 +259,7 @@ export default function TuningPage() {
           {/* Summary bar (Story 6.3 AC-4) */}
           {stats && (
             <div className="px-3 py-1.5 flex items-center gap-2 text-[10px]" style={{ background: 'var(--violet-2)' }}>
-              <div className="flex-1 h-1.5 rounded-full overflow-hidden flex" style={{ background: 'var(--violet-4)' }}>
+              <div className="flex-1 h-2.5 rounded-md overflow-hidden flex" style={{ background: 'var(--violet-4)' }}>
                 <div style={{ flex: stats.pit_pass, background: 'linear-gradient(90deg, var(--accent-emerald), #6ff0c0)' }} />
                 <div style={{ flex: stats.pit_fail, background: 'linear-gradient(90deg, var(--accent-rose), #ff5577)' }} />
                 <div style={{ flex: stats.pit_unknown, background: 'rgba(100,116,139,0.3)' }} />
@@ -283,8 +284,8 @@ export default function TuningPage() {
                       title={`${a.symbol} - ${formatModelName(a.best_model)} - PIT: ${a.ad_pass == null ? 'Unknown' : a.ad_pass ? 'Pass' : 'Fail'}`}
                       className="transition-all duration-150"
                       style={{
-                        width: 20, height: 20, borderRadius: 4,
-                        fontSize: 7, fontWeight: 600, lineHeight: '20px', textAlign: 'center',
+                        width: 28, height: 28, borderRadius: 6,
+                        fontSize: 7, fontWeight: 600, lineHeight: '28px', textAlign: 'center',
                         color: isPassing ? 'var(--accent-emerald)' : isFailing ? 'var(--accent-rose)' : '#7a8ba4',
                         background: isPassing
                           ? 'var(--emerald-15)'
@@ -312,8 +313,8 @@ export default function TuningPage() {
           ) : (
             /* Table View */
             <div className="overflow-y-auto max-h-[400px]">
-              <table className="w-full text-xs">
-                <thead className="sticky top-0" style={{ background: 'rgba(26,26,46,0.95)' }}>
+              <table className="premium-table w-full text-xs">
+                <thead>
                   <tr style={{ borderBottom: '1px solid var(--violet-8)' }}>
                     <th className="text-left px-3 py-2" style={{ color: 'var(--text-muted)' }}>Symbol</th>
                     <th className="text-left px-3 py-2" style={{ color: 'var(--text-muted)' }}>Best Model</th>
@@ -452,7 +453,8 @@ function RetunePanel({
         className="p-3 overflow-y-auto max-h-[240px] font-mono text-[11px]"
         style={{ background: 'rgba(10,10,26,0.8)', borderRadius: '0 0 12px 12px', position: 'relative' }}>
         {logs.map((entry, i) => (
-          <div key={i} className={`py-0.5 ${logColor(entry.type)}`}>{entry.message}</div>
+          <div key={i} className={`py-0.5 ${logColor(entry.type)}`}
+            style={{ borderLeft: entry.type === 'progress' ? '2px solid var(--accent-emerald)' : entry.type === 'error' || entry.type === 'failed' ? '2px solid var(--accent-rose)' : '2px solid transparent', paddingLeft: 8 }}>{entry.message}</div>
         ))}
         <div ref={logEndRef} />
         {/* Resume auto-scroll floating button */}

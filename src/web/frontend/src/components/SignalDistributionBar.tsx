@@ -120,35 +120,35 @@ export default function SignalDistributionBar({ signals, sectors, onFilterSignal
       label: 'Strong Sell',
       count: signals.strong_sell_signals,
       color: 'var(--accent-rose)',
-      bgGradient: 'linear-gradient(135deg, #4c0519 0%, #6b0f2a 50%, #881337 100%)',
+      bgGradient: 'linear-gradient(90deg, rgba(255,107,138,0.6), var(--accent-rose))',
     },
     {
       key: 'Sell',
       label: 'Sell',
       count: signals.sell_signals,
       color: 'var(--rose-50)',
-      bgGradient: 'linear-gradient(135deg, #4c0519 0%, #881337 100%)',
+      bgGradient: 'linear-gradient(90deg, rgba(255,107,138,0.35), rgba(255,107,138,0.6))',
     },
     {
       key: 'Hold',
       label: 'Hold',
       count: signals.hold_signals,
-      color: '#1c1845',
-      bgGradient: 'linear-gradient(135deg, #16133a 0%, #1c1845 100%)',
+      color: 'var(--text-muted)',
+      bgGradient: 'var(--glass-surface)',
     },
     {
       key: 'Buy',
       label: 'Buy',
       count: signals.buy_signals,
       color: 'var(--emerald-50)',
-      bgGradient: 'linear-gradient(135deg, #064e3b 0%, #047857 100%)',
+      bgGradient: 'linear-gradient(90deg, rgba(62,232,165,0.35), rgba(62,232,165,0.6))',
     },
     {
       key: 'Strong Buy',
       label: 'Strong Buy',
       count: signals.strong_buy_signals,
       color: 'var(--accent-emerald)',
-      bgGradient: 'linear-gradient(135deg, #064e3b 0%, #065f46 50%, #047857 100%)',
+      bgGradient: 'linear-gradient(90deg, var(--accent-emerald), rgba(62,232,165,0.6))',
     },
   ], [signals]);
 
@@ -212,13 +212,8 @@ export default function SignalDistributionBar({ signals, sectors, onFilterSignal
   const hoveredTickers = hoveredSeg && sectors ? topTickersForCategory(sectors, hoveredSeg.key) : [];
 
   return (
-    <div className="glass-card hover-lift" style={{ padding: '24px' }}>
-      <h3
-        className="text-[11px] font-semibold uppercase tracking-wide mb-5"
-        style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}
-      >
-        Signal Distribution
-      </h3>
+    <div className="glass-card hover-lift p-6">
+      <h3 className="premium-section-label mb-5">Signal Distribution</h3>
 
       {/* Flowing gradient bar */}
       <div
@@ -229,6 +224,7 @@ export default function SignalDistributionBar({ signals, sectors, onFilterSignal
           margin: '0 auto',
           transition: 'width 400ms cubic-bezier(0.16, 1, 0.3, 1)',
           background: 'var(--void-surface, #0a0a23)',
+          boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.3)',
         }}
       >
         {segments.map((seg) => {
@@ -239,13 +235,14 @@ export default function SignalDistributionBar({ signals, sectors, onFilterSignal
               key={seg.key}
               className="h-full relative cursor-pointer"
               style={{
-                width: `${pct}%`,
-                background: seg.color,
-                transition: 'box-shadow 150ms ease',
+                '--bar-width': `${pct}%`,
+                width: 'var(--bar-width)',
+                background: seg.bgGradient,
+                transition: 'width 600ms cubic-bezier(0.16,1,0.3,1), box-shadow 150ms ease',
                 boxShadow: hoveredSegment === seg.key
                   ? '0 0 12px var(--violet-15)'
                   : 'none',
-              }}
+              } as React.CSSProperties}
               onMouseEnter={(e) => handleSegmentHover(seg.key, e)}
               onMouseMove={(e) => handleSegmentHover(seg.key, e)}
               onMouseLeave={() => handleSegmentHover(null)}
@@ -314,12 +311,12 @@ export default function SignalDistributionBar({ signals, sectors, onFilterSignal
         {segments.map(seg => (
           <div
             key={seg.key}
-            className="flex items-center gap-1.5 text-[10px] cursor-pointer"
+            className="flex items-center gap-1.5 text-caption cursor-pointer"
             onClick={() => handleSegmentClick(seg.key)}
             style={{ opacity: hoveredSegment && hoveredSegment !== seg.key ? 0.4 : 1, transition: 'opacity 150ms' }}
           >
             <span className="w-2 h-2 rounded-full" style={{ background: seg.color }} />
-            <span style={{ color: 'var(--text-muted, #6b7a90)' }}>{seg.label}</span>
+            <span>{seg.label}</span>
             <span className="font-semibold tabular-nums" style={{ color: 'var(--text-luminous)' }}>{seg.count}</span>
           </div>
         ))}

@@ -55,10 +55,10 @@ export default function DataPage() {
           <button
             onClick={handleRefresh}
             disabled={refreshing}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm transition-all duration-200 disabled:opacity-50"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm transition-all duration-200 disabled:opacity-50 hover-lift press-spring"
             style={{
               background: 'var(--violet-8)',
-              color: '#b49aff',
+              color: 'var(--text-violet)',
               border: '1px solid var(--violet-12)',
             }}
           >
@@ -96,8 +96,8 @@ export default function DataPage() {
             {Object.entries(dirs).map(([name, info]) => (
               <div key={name} className="flex items-center justify-between text-xs">
                 <span style={{ color: 'var(--text-luminous)' }}>{name}</span>
-                <span style={{ color: info.exists ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}>
-                  {info.exists ? `${info.file_count} files` : 'missing'}
+                <span className={info.exists ? 'status-pill status-pass' : 'status-pill status-fail'}>
+                  {info.exists ? `${info.file_count} files` : 'Missing'}
                 </span>
               </div>
             ))}
@@ -112,16 +112,17 @@ export default function DataPage() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search symbols..."
-              className="w-full px-3 py-2 rounded-xl text-sm outline-none transition-all duration-200"
+              className="w-full px-3 py-2.5 rounded-xl text-sm outline-none transition-all duration-200 focus-ring"
               style={{
                 background: 'rgba(10,10,26,0.6)',
+                backdropFilter: 'blur(8px)',
                 border: '1px solid var(--violet-8)',
                 color: 'var(--text-primary)',
               }}
             />
           </div>
           <div className="overflow-y-auto max-h-[500px]">
-            <table className="w-full text-xs">
+            <table className="premium-table">
               <thead className="premium-thead">
                 <tr>
                   <th className="text-left">Symbol</th>
@@ -145,21 +146,28 @@ export default function DataPage() {
 }
 
 function FileRow({ file }: { file: PriceFile }) {
-  const ageColor = file.age_hours < 24 ? 'var(--accent-emerald)'
-    : file.age_hours < 72 ? 'var(--accent-amber)'
-    : 'var(--accent-rose)';
+  const ageClass = file.age_hours < 24 ? 'age-badge-fresh'
+    : file.age_hours < 168 ? 'age-badge-stale'
+    : 'age-badge-old';
+
+  const ageLabel = file.age_hours < 1 ? '<1h'
+    : file.age_hours < 24 ? `${Math.round(file.age_hours)}h`
+    : file.age_hours < 168 ? `${Math.round(file.age_hours / 24)}d`
+    : `${Math.round(file.age_hours / 24)}d`;
+
+  const relTime = file.age_hours < 1 ? 'just now'
+    : file.age_hours < 24 ? `${Math.round(file.age_hours)}h ago`
+    : `${Math.round(file.age_hours / 24)}d ago`;
 
   return (
     <tr className="premium-row">
-      <td className="font-medium" style={{ color: 'var(--text-luminous)' }}>{file.symbol}</td>
+      <td style={{ color: 'var(--text-luminous)', fontWeight: 600 }}>{file.symbol}</td>
       <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{file.rows.toLocaleString()}</td>
       <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{file.size_kb} KB</td>
-      <td className="text-right font-medium" style={{ color: ageColor }}>
-        {file.age_hours < 1 ? '<1h' : `${Math.round(file.age_hours)}h`}
+      <td className="text-right">
+        <span className={`age-badge ${ageClass}`}>{ageLabel}</span>
       </td>
-      <td className="text-right" style={{ color: 'var(--text-muted)' }}>
-        {new Date(file.last_modified).toLocaleDateString()}
-      </td>
+      <td className="text-right text-caption">{relTime}</td>
     </tr>
   );
 }

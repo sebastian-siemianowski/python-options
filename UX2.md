@@ -58,9 +58,9 @@ adapts to a quantitative trading dashboard:
 
 ---
 
-## E1: Global Design System
+## E1: Global Design System [DONE]
 
-**Current Rating**: 7/10
+**Current Rating**: 9.5/10 (was 7/10)
 **Target Rating**: 9.5/10
 **Files**: `src/index.css`
 
@@ -71,7 +71,7 @@ scale, and interactive states are inconsistently applied.
 
 ---
 
-### S1.1: Typographic Scale System
+### S1.1: Typographic Scale System [DONE]
 
 **As a** developer,
 **I want** a defined 6-tier typographic scale in CSS custom properties,
@@ -136,7 +136,7 @@ reference a scale token or Tailwind equivalent mapped to the scale.
 
 ---
 
-### S1.2: Spacing Scale Enforcement
+### S1.2: Spacing Scale Enforcement [DONE]
 
 **As a** developer,
 **I want** a consistent spacing scale used across all padding, margin, and gap values,
@@ -171,7 +171,7 @@ the index.css design system file.
 
 ---
 
-### S1.3: Colour Variable Consolidation
+### S1.3: Colour Variable Consolidation [DONE]
 
 **As a** developer,
 **I want** every hardcoded hex, rgb, and rgba colour in component files replaced with
@@ -213,7 +213,7 @@ modifiers, or are defined as named semantic tokens:
 
 ---
 
-### S1.4: Interactive State System
+### S1.4: Interactive State System [DONE]
 
 **As a** developer,
 **I want** a unified set of CSS classes for hover, active, focus, and disabled states,
@@ -323,7 +323,7 @@ appropriate state classes. No interactive element exists without a defined hover
 
 ---
 
-### S1.5: Premium Loading Skeletons
+### S1.5: Premium Loading Skeletons [DONE]
 
 **As a** developer,
 **I want** sophisticated skeleton placeholder patterns for every loading state,
@@ -358,7 +358,7 @@ contextual skeletons when given a `variant` prop.
 
 ---
 
-### S1.6: Premium Empty States
+### S1.6: Premium Empty States [DONE]
 
 **As a** developer,
 **I want** branded empty state designs with illustrations and helpful copy,
@@ -399,7 +399,7 @@ to empty states, preventing them from feeling like dead ends. Particles use
 
 ---
 
-### S1.7: Premium Error States
+### S1.7: Premium Error States [DONE]
 
 **As a** developer,
 **I want** elevated error state designs that communicate severity without panic,
@@ -424,7 +424,7 @@ to empty states, preventing them from feeling like dead ends. Particles use
 
 ---
 
-### S1.8: Recharts Theme Configuration
+### S1.8: Recharts Theme Configuration [DONE]
 
 **As a** developer,
 **I want** a centralised Recharts theme object that applies the design system colours
@@ -483,7 +483,7 @@ chart the LumenLingo "reveal" feel.
 
 ---
 
-### S1.9: Global Scrollbar Theming
+### S1.9: Global Scrollbar Theming [DONE]
 
 **As a** developer,
 **I want** all scrollbars to use subtle branded styling,
@@ -523,7 +523,7 @@ inner panels (4px).
 
 ---
 
-### S1.10: Noise Texture & Depth Layer
+### S1.10: Noise Texture & Depth Layer [DONE]
 
 **As a** developer,
 **I want** a subtle noise/grain texture overlaid on glass-card surfaces,
@@ -571,7 +571,7 @@ matching LumenLingo's "every pixel considered" standard.
 
 ---
 
-### S1.11: Spring Physics & Motion Tokens
+### S1.11: Spring Physics & Motion Tokens [DONE]
 
 **As a** developer,
 **I want** named motion timing tokens instead of ad-hoc cubic-bezier values,
@@ -615,9 +615,9 @@ export const SPRING = {
 
 ---
 
-## E2: Overview Page
+## E2: Overview Page [DONE]
 
-**Current Rating**: 8/10
+**Current Rating**: 9.5/10
 **Target Rating**: 9.5/10
 **Files**: `src/pages/OverviewPage.tsx`, `src/components/BriefingCard.tsx`, `src/components/StatCard.tsx`
 
@@ -627,7 +627,7 @@ lack the same depth as the hero, and hardcoded colour values throughout.
 
 ---
 
-### S2.1: StatCard Colour Variable Migration
+### S2.1: StatCard Colour Variable Migration [DONE]
 
 **As a** user,
 **I want** StatCard colours to come from the design system,
@@ -666,7 +666,7 @@ cards that feel like real glass surfaces floating above the void.
 
 ---
 
-### S2.2: BriefingCard Sentiment Colour Extraction
+### S2.2: BriefingCard Sentiment Colour Extraction [DONE]
 
 **As a** user,
 **I want** BriefingCard sentiment colours to use CSS classes instead of inline styles,
@@ -696,7 +696,7 @@ wide tracking) instead of inline style objects.
 
 ---
 
-### S2.3: ModelLeaderboard Premium Elevation
+### S2.3: ModelLeaderboard Premium Elevation [DONE]
 
 **As a** user,
 **I want** the Model Leaderboard section to have the same visual depth as the
@@ -723,7 +723,7 @@ satisfying "growing bars" reveal when the section loads.
 
 ---
 
-### S2.4: ConvictionSpotlight Card Enhancement
+### S2.4: ConvictionSpotlight Card Enhancement [DONE]
 
 **As a** user,
 **I want** ConvictionSpotlight buy/sell cards to have dramatic colour glow and hover
@@ -767,7 +767,7 @@ glow that breathes at 3s intervals, creating urgency:
 
 ---
 
-### S2.5: SignalDistributionBar Redesign
+### S2.5: SignalDistributionBar Redesign [DONE]
 
 **As a** user,
 **I want** the signal distribution bar (buy/hold/sell breakdown) to be a premium
@@ -792,7 +792,7 @@ React style prop for each segment -- no hardcoded `width: 40` pixel values.
 
 ---
 
-### S2.6: Overview Page Entrance Choreography
+### S2.6: Overview Page Entrance Choreography [DONE]
 
 **As a** user,
 **I want** the Overview page to feel like a "reveal" when I navigate to it,
@@ -821,7 +821,7 @@ continuous visual payoff -- the page keeps "revealing" as you explore.
 
 ---
 
-### S2.7: Overview Scroll-Triggered Data Reveals
+### S2.7: Overview Scroll-Triggered Data Reveals [DONE]
 
 **As a** user,
 **I want** numbers and bars in the Overview page to animate when I scroll to them,
@@ -843,7 +843,7 @@ instantly.
 
 ## E3: Risk Dashboard
 
-**Current Rating**: 7/10
+**Current Rating**: 9.5/10 [DONE]
 **Target Rating**: 9.5/10
 **Files**: `src/pages/RiskPage.tsx`
 
@@ -853,7 +853,7 @@ cross-asset/metals/equity which are utilitarian.
 
 ---
 
-### S3.1: Temperature Gauge Responsive Scaling
+### S3.1: Temperature Gauge Responsive Scaling [DONE]
 
 **As a** user,
 **I want** the temperature gauge to scale with the viewport instead of being fixed-size,
@@ -882,7 +882,7 @@ tail -- this is the hero moment of the Risk page.
 
 ---
 
-### S3.2: Regime Colour CSS Class System
+### S3.2: Regime Colour CSS Class System [DONE]
 
 **As a** user,
 **I want** regime colours to be CSS classes instead of inline functions,
@@ -912,7 +912,7 @@ use these shared classes.
 
 ---
 
-### S3.3: Tab Navigation Premium Upgrade
+### S3.3: Tab Navigation Premium Upgrade [DONE]
 
 **As a** user,
 **I want** the Risk page tab navigation to feel like a premium selector,
@@ -940,7 +940,7 @@ feel -- a solid surface that physically moves between options.
 
 ---
 
-### S3.4: Sparkline Premium Styling
+### S3.4: Sparkline Premium Styling [DONE]
 
 **As a** user,
 **I want** the temperature sparkline to look like a premium data visualisation,
@@ -964,7 +964,7 @@ with the premium `CHART_TOOLTIP_STYLE` from the theme.
 
 ---
 
-### S3.5: Risk Sub-Tab Table Styling
+### S3.5: Risk Sub-Tab Table Styling [DONE]
 
 **As a** user,
 **I want** the cross-asset, metals, equity, and currency tables in the Risk page
@@ -990,7 +990,7 @@ the risk level, not just a coloured number.
 
 ## E4: Signals Page
 
-**Current Rating**: 6/10
+**Current Rating**: 9.5/10 [DONE]
 **Target Rating**: 9.5/10
 **Files**: `src/pages/SignalsPage.tsx`, `src/components/SignalTableVisuals.tsx`
 
@@ -1001,7 +1001,7 @@ StrongSignalsView rows. SignalTableVisuals components use hardcoded colour maps.
 
 ---
 
-### S4.1: Signal Filter Pills Premium Redesign
+### S4.1: Signal Filter Pills Premium Redesign [DONE]
 
 **As a** user,
 **I want** signal filter pills (Buy/Sell/Hold/All) to feel like premium toggles,
@@ -1048,7 +1048,7 @@ rather than toggling visibility.
 
 ---
 
-### S4.2: Search Bar Focus Elevation
+### S4.2: Search Bar Focus Elevation [DONE]
 
 **As a** user,
 **I want** the signal search bar to glow when focused,
@@ -1070,7 +1070,7 @@ spacious touch target.
 
 ---
 
-### S4.3: WebSocket Status Indicator
+### S4.3: WebSocket Status Indicator [DONE]
 
 **As a** user,
 **I want** the WebSocket connection indicator to pulse when connected and show a
@@ -1107,7 +1107,7 @@ through amber to rose, providing at-a-glance data staleness.
 
 ---
 
-### S4.4: Signal Change Log Entrance Animation
+### S4.4: Signal Change Log Entrance Animation [DONE]
 
 **As a** user,
 **I want** new signal changes in the aurora trail to slide in with a staggered
@@ -1132,7 +1132,7 @@ new entry insertion, not on page load.
 
 ---
 
-### S4.5: SignalTableVisuals Colour Variable Migration
+### S4.5: SignalTableVisuals Colour Variable Migration [DONE]
 
 **As a** user,
 **I want** all SignalTableVisuals components to use design system colours,
@@ -1161,7 +1161,7 @@ new entry insertion, not on page load.
 
 ---
 
-### S4.6: StrongSignalsView Premium Rows
+### S4.6: StrongSignalsView Premium Rows [DONE]
 
 **As a** user,
 **I want** Strong Buy and Strong Sell signal rows to have dramatic hover effects
@@ -1186,7 +1186,7 @@ a threshold (e.g. |ret| > 5%), making standout signals visually larger.
 
 ---
 
-### S4.8: Signal Deep-Dive Drawer
+### S4.8: Signal Deep-Dive Drawer [DONE]
 
 **As a** user,
 **I want** clicking a signal row to open a glass-morphic slide-out drawer,
@@ -1213,7 +1213,7 @@ after the drawer slide finishes, creating a two-phase reveal.
 
 ---
 
-### S4.7: Signal Table Number Animation
+### S4.7: Signal Table Number Animation [DONE]
 
 **As a** user,
 **I want** numeric values in the signal table to smoothly animate when updated
@@ -1236,7 +1236,7 @@ not all rows.
 
 ## E5: Data Management Page
 
-**Current Rating**: 6/10
+**Current Rating**: 9/10 [DONE]
 **Target Rating**: 9/10
 **Files**: `src/pages/DataPage.tsx`
 
@@ -1245,7 +1245,7 @@ it lacks depth, hover effects, and visual richness. Section headers are plain.
 
 ---
 
-### S5.1: File Table Row Enhancement
+### S5.1: File Table Row Enhancement [DONE]
 
 **As a** user,
 **I want** file table rows to feel like interactive data surfaces,
@@ -1283,7 +1283,7 @@ instead of raw date, with `var(--text-muted)` colour.
 
 ---
 
-### S5.2: Directory Status Visualisation
+### S5.2: Directory Status Visualisation [DONE]
 
 **As a** user,
 **I want** directory status indicators to be clear visual badges,
@@ -1303,7 +1303,7 @@ with a `FolderOpen` icon in `var(--accent-violet)`.
 
 ---
 
-### S5.3: Data Page Search Enhancement
+### S5.3: Data Page Search Enhancement [DONE]
 
 **As a** user,
 **I want** the file search bar to have a premium focus state,
@@ -1319,7 +1319,7 @@ with a `FolderOpen` icon in `var(--accent-violet)`.
 
 ---
 
-### S5.4: Refresh Action Feedback
+### S5.4: Refresh Action Feedback [DONE]
 
 **As a** user,
 **I want** the refresh action to provide rich visual feedback,
@@ -1338,7 +1338,7 @@ error message and a retry button.
 
 ---
 
-### S5.5: Data Freshness Dashboard Header
+### S5.5: Data Freshness Dashboard Header [DONE]
 
 **As a** user,
 **I want** a visual dashboard strip at the top of the Data page showing overall
@@ -1365,7 +1365,7 @@ legend items below the ring.
 
 ## E6: Arena Competition Page
 
-**Current Rating**: 7/10
+**Current Rating**: 9.5/10 [DONE]
 **Target Rating**: 9.5/10
 **Files**: `src/pages/ArenaPage.tsx`
 
@@ -1376,7 +1376,7 @@ entrance choreography.
 
 ---
 
-### S6.1: Gate Indicator Depth Enhancement
+### S6.1: Gate Indicator Depth Enhancement [DONE]
 
 **As a** user,
 **I want** the hard gate indicators (CSS, FEC, Hyv, PIT, vs STD) to have dramatic
@@ -1422,7 +1422,7 @@ makes the gate system self-documenting without cluttering the row.
 
 ---
 
-### S6.2: Model Competition Detail Panel
+### S6.2: Model Competition Detail Panel [DONE]
 
 **As a** user,
 **I want** expanding a model row to reveal a detailed panel,
@@ -1448,7 +1448,7 @@ content appearing before the container is sized.
 
 ---
 
-### S6.3: Star Map Grid Elevation
+### S6.3: Star Map Grid Elevation [DONE]
 
 **As a** user,
 **I want** the experimental model star map to feel like a premium constellation chart,
@@ -1484,7 +1484,7 @@ at 0.02 opacity when idle, brightening to 0.08 on connected-star hover.
 
 ---
 
-### S6.4: Arena Scoring Radar Chart
+### S6.4: Arena Scoring Radar Chart [DONE]
 
 **As a** user,
 **I want** a small radar/spider chart for each model's scoring breakdown,
@@ -1508,7 +1508,7 @@ This transforms a static chart into a satisfying "radar scan" reveal.
 
 ---
 
-### S6.5: Arena Entrance Animation
+### S6.5: Arena Entrance Animation [DONE]
 
 **As a** user,
 **I want** the Arena page to animate in with model rows staggering,
@@ -1535,7 +1535,7 @@ the rank badge. On mount, the crown has a subtle gold particle burst effect
 
 ## E7: Diagnostics & Calibration Page
 
-**Current Rating**: 6/10
+**Current Rating**: 9.5/10 [DONE]
 **Target Rating**: 9.5/10
 **Files**: `src/pages/DiagnosticsPage.tsx`
 
@@ -1546,7 +1546,7 @@ glass-card depth.
 
 ---
 
-### S7.1: PIT Histogram Premium Styling
+### S7.1: PIT Histogram Premium Styling [DONE]
 
 **As a** user,
 **I want** the PIT histogram to use brand colours and glass tooltip,
@@ -1570,7 +1570,7 @@ with `var(--spring-bounce)`. Each bar is staggered by 40ms, creating a cascading
 
 ---
 
-### S7.2: Model Comparison Table Elevation
+### S7.2: Model Comparison Table Elevation [DONE]
 
 **As a** user,
 **I want** the model comparison table to have premium visual hierarchy,
@@ -1591,7 +1591,7 @@ the full parameter set displayed in a two-column grid.
 
 ---
 
-### S7.3: Calibration Matrix Heat Styling
+### S7.3: Calibration Matrix Heat Styling [DONE]
 
 **As a** user,
 **I want** the calibration matrix to use a premium heat colour scale,
@@ -1619,7 +1619,7 @@ a "scanning" reveal that takes ~800ms total for a 20x20 matrix.
 
 ---
 
-### S7.4: Regime Distribution Chart
+### S7.4: Regime Distribution Chart [DONE]
 
 **As a** user,
 **I want** the Regimes tab charts to use regime-specific brand colours,
@@ -1647,7 +1647,7 @@ as a coloured block), giving temporal context to the frequency data.
 
 ---
 
-### S7.5: Failures Tab Severity Styling
+### S7.5: Failures Tab Severity Styling [DONE]
 
 **As a** user,
 **I want** calibration failure entries to have severity-appropriate colours,
@@ -1669,7 +1669,7 @@ the severity colour.
 
 ---
 
-### S7.6: Diagnostics Tab Switching Animation
+### S7.6: Diagnostics Tab Switching Animation [DONE]
 
 **As a** user,
 **I want** switching between diagnostic tabs to have smooth content transitions,
@@ -1687,7 +1687,7 @@ the severity colour.
 
 ---
 
-### S7.7: Diagnostics Summary Hero
+### S7.7: Diagnostics Summary Hero [DONE]
 
 **As a** user,
 **I want** a summary hero strip at the top of the Diagnostics page,
@@ -1712,7 +1712,7 @@ change vs. last tuning run.
 
 ## E8: Charts & Technical Analysis
 
-**Current Rating**: 7/10
+**Current Rating**: 9.5/10 [DONE]
 **Target Rating**: 9.5/10
 **Files**: `src/pages/ChartsPage.tsx`
 
@@ -1722,7 +1722,7 @@ have gaps.
 
 ---
 
-### S8.1: Symbol List Sidebar Premium Rows
+### S8.1: Symbol List Sidebar Premium Rows [DONE]
 
 **As a** user,
 **I want** the symbol list sidebar to feel like a premium navigation surface,
@@ -1752,7 +1752,7 @@ Company name (if shown) uses `var(--text-muted)` below at `font-size: var(--font
 
 ---
 
-### S8.2: Sector Header Styling
+### S8.2: Sector Header Styling [DONE]
 
 **As a** user,
 **I want** sector headers in the symbol list to be visually distinct,
@@ -1779,7 +1779,7 @@ next to the sector name.
 
 ---
 
-### S8.3: Overlay Toggle Premium Controls
+### S8.3: Overlay Toggle Premium Controls [DONE]
 
 **As a** user,
 **I want** chart overlay toggles (volume, indicators) to be premium pill buttons,
@@ -1801,7 +1801,7 @@ horizontal spacing.
 
 ---
 
-### S8.4: Chart Area Premium Polish
+### S8.4: Chart Area Premium Polish [DONE]
 
 **As a** user,
 **I want** the chart area to have a premium border treatment and loading state,
@@ -1821,7 +1821,7 @@ with a chart icon and "Select a symbol to view its chart" message.
 
 ---
 
-### S8.5: Charts Sidebar Responsive Behaviour
+### S8.5: Charts Sidebar Responsive Behaviour [DONE]
 
 **As a** user,
 **I want** the sidebar to collapse on smaller screens,
@@ -1843,7 +1843,7 @@ the sidebar on any screen size.
 
 ## E9: Heatmap & Sentiment
 
-**Current Rating**: 6/10
+**Current Rating**: 9.5/10 [DONE]
 **Target Rating**: 9.5/10
 **Files**: `src/pages/HeatmapPage.tsx`
 
@@ -1854,7 +1854,7 @@ anemic (5px).
 
 ---
 
-### S9.1: Heatmap Cell Size and Hover
+### S9.1: Heatmap Cell Size and Hover [DONE]
 
 **As a** user,
 **I want** heatmap cells to be large enough to see and interact with,
@@ -1890,7 +1890,7 @@ static image into a "radar ping" reveal that users will remember.
 
 ---
 
-### S9.2: Heatmap Tooltip Premium Entrance
+### S9.2: Heatmap Tooltip Premium Entrance [DONE]
 
 **As a** user,
 **I want** the heatmap tooltip to feel like a premium data surface,
@@ -1919,7 +1919,7 @@ static image into a "radar ping" reveal that users will remember.
 
 ---
 
-### S9.3: Sentiment Strip Enhancement
+### S9.3: Sentiment Strip Enhancement [DONE]
 
 **As a** user,
 **I want** the sentiment strip at the top/bottom of the heatmap to be a substantial
@@ -1949,7 +1949,7 @@ to the extreme (within 10% of either end triggers the pulse).
 
 ---
 
-### S9.4: Heatmap Summary Strip Cards
+### S9.4: Heatmap Summary Strip Cards [DONE]
 
 **As a** user,
 **I want** summary statistics above the heatmap to be premium stat cards,
@@ -1968,7 +1968,7 @@ negative get rose, neutral get violet.
 
 ---
 
-### S9.5: Heatmap Axis Labels
+### S9.5: Heatmap Axis Labels [DONE]
 
 **As a** user,
 **I want** the heatmap axis labels to be legible and styled,
@@ -1986,7 +1986,7 @@ on hover over 150ms.
 
 ---
 
-### S9.6: Heatmap Zone Annotation Layer
+### S9.6: Heatmap Zone Annotation Layer [DONE]
 
 **As a** user,
 **I want** to see labelled zones on the heatmap (e.g. "High Correlation Cluster",
@@ -2012,7 +2012,7 @@ focusing visual attention on the cluster.
 
 ## E10: Tuning Mission Control
 
-**Current Rating**: 6/10
+**Current Rating**: 9.5/10 [DONE]
 **Target Rating**: 9.5/10
 **Files**: `src/pages/TuningPage.tsx`
 
@@ -2022,7 +2022,7 @@ running state lacks a dramatic indicator, and the PIT summary bar is flat.
 
 ---
 
-### S10.1: Star Map Grid Cell Enhancement
+### S10.1: Star Map Grid Cell Enhancement [DONE]
 
 **As a** user,
 **I want** star map grid cells to be larger and more expressive,
@@ -2076,7 +2076,7 @@ board into a live mission control surface.
 
 ---
 
-### S10.2: Mission Control Button Upgrade
+### S10.2: Mission Control Button Upgrade [DONE]
 
 **As a** user,
 **I want** the "Tune", "Tune All", and "Stop" buttons to feel like premium actions,
@@ -2111,7 +2111,7 @@ board into a live mission control surface.
 
 ---
 
-### S10.3: PIT Summary Bar Premium Styling
+### S10.3: PIT Summary Bar Premium Styling [DONE]
 
 **As a** user,
 **I want** the PIT summary bar to display pass/fail calibration quality as a
@@ -2133,7 +2133,7 @@ using `.text-caption` typography with contrasting colour.
 
 ---
 
-### S10.4: Retune Log Stagger Animation
+### S10.4: Retune Log Stagger Animation [DONE]
 
 **As a** user,
 **I want** tuning log entries to appear with staggered animations,
@@ -2158,7 +2158,7 @@ a left rose border, active entries have a pulsing violet left border.
 
 ---
 
-### S10.5: Tuning Progress Indicator
+### S10.5: Tuning Progress Indicator [DONE]
 
 **As a** user,
 **I want** a premium progress indicator during batch tuning,
@@ -2200,7 +2200,7 @@ celebrates every success; so do we.
 
 ---
 
-### S10.6: Tuning Completion Celebration
+### S10.6: Tuning Completion Celebration [DONE]
 
 **As a** user,
 **I want** a dramatic visual celebration when a full tuning run completes,
@@ -2230,7 +2230,7 @@ in reverse (slide down + fade).
 
 ## E11: Services & Health
 
-**Current Rating**: 7/10
+**Current Rating**: 9/10 [DONE]
 **Target Rating**: 9/10
 **Files**: `src/pages/ServicesPage.tsx`
 
@@ -2240,7 +2240,7 @@ icons lack background badges.
 
 ---
 
-### S11.1: Service Card Hover Animation
+### S11.1: Service Card Hover Animation [DONE]
 
 **As a** user,
 **I want** service cards to respond to hover with lift and glow,
@@ -2266,7 +2266,7 @@ in a real operations centre.
 
 ---
 
-### S11.2: Metric Icon Background Badge
+### S11.2: Metric Icon Background Badge [DONE]
 
 **As a** user,
 **I want** metric icons on service cards to have a coloured background badge,
@@ -2303,7 +2303,7 @@ This micro-detail rewards cursor exploration.
 
 ---
 
-### S11.3: Error Log Premium Rows
+### S11.3: Error Log Premium Rows [DONE]
 
 **As a** user,
 **I want** the error log to feel like a premium data surface,
@@ -2325,7 +2325,7 @@ shield-check icon and "No errors recorded" message with emerald accent.
 
 ---
 
-### S11.4: Status Hero Entrance Animation
+### S11.4: Status Hero Entrance Animation [DONE]
 
 **As a** user,
 **I want** the status hero section to animate dramatically on page load,
@@ -2343,7 +2343,7 @@ intervals.
 
 ---
 
-### S11.5: Uptime Sparkline Timeline
+### S11.5: Uptime Sparkline Timeline [DONE]
 
 **As a** user,
 **I want** each service card to show a 30-day uptime sparkline,
@@ -2369,7 +2369,7 @@ line at 100% as a placeholder, not an empty void.
 
 ## E12: Profitability Analytics
 
-**Current Rating**: 5/10 (weakest page)
+**Current Rating**: 9.5/10 [DONE]
 **Target Rating**: 9.5/10
 **Files**: `src/pages/ProfitabilityPage.tsx`
 
@@ -2379,7 +2379,7 @@ for targets has no visual emphasis. This page needs the most dramatic transforma
 
 ---
 
-### S12.1: MetricCard Gradient Background
+### S12.1: MetricCard Gradient Background [DONE]
 
 **As a** user,
 **I want** profitability metric cards to have subtle gradient backgrounds that
@@ -2421,7 +2421,7 @@ cards feel like premium financial data surfaces.
 
 ---
 
-### S12.2: Number Counting Animation
+### S12.2: Number Counting Animation [DONE]
 
 **As a** user,
 **I want** profitability numbers (CAGR, Sharpe, etc.) to count up from zero to
@@ -2451,7 +2451,7 @@ to its default colour. This "arrival flash" creates a micro-celebration per metr
 
 ---
 
-### S12.3: Recharts Brand Palette Override
+### S12.3: Recharts Brand Palette Override [DONE]
 
 **As a** user,
 **I want** all profitability charts to use the app's colour palette,
@@ -2478,7 +2478,7 @@ animation of the Profitability page.
 
 ---
 
-### S12.4: Chart Tooltip Glass-Morphism
+### S12.4: Chart Tooltip Glass-Morphism [DONE]
 
 **As a** user,
 **I want** chart tooltips to use the premium glass-morphic style,
@@ -2499,7 +2499,7 @@ all chart pages (Profitability, Risk, Diagnostics, Charts).
 
 ---
 
-### S12.5: Target Reference Line Glow
+### S12.5: Target Reference Line Glow [DONE]
 
 **As a** user,
 **I want** target/benchmark reference lines on charts to have a glowing visual
@@ -2533,7 +2533,7 @@ different dash patterns and accent colours to differentiate.
 
 ---
 
-### S12.6: Equity Curve Full-Width Hero
+### S12.6: Equity Curve Full-Width Hero [DONE]
 
 **As a** user,
 **I want** the equity curve chart to span the full page width as a hero element,
@@ -2557,7 +2557,7 @@ full width, using rose gradient fill. The two charts share the same X-axis zoom.
 
 ---
 
-### S12.7: Performance Comparison Overlay
+### S12.7: Performance Comparison Overlay [DONE]
 
 **As a** user,
 **I want** to toggle a benchmark overlay (SPY, equal-weight) on the equity curve,
@@ -2582,7 +2582,7 @@ and information ratio with `useCountUp` animation.
 
 ## E13: Shared Components
 
-**Current Rating**: 8/10
+**Current Rating**: 9.5/10 [DONE]
 **Target Rating**: 9.5/10
 **Files**: Layout.tsx, PageHeader.tsx, LoadingSpinner.tsx, StatCard.tsx, AmbientOrbs.tsx
 
@@ -2591,7 +2591,7 @@ missing entrance animations, and opportunities for micro-interaction polish.
 
 ---
 
-### S13.1: Layout Sidebar Badge Variable Migration
+### S13.1: Layout Sidebar Badge Variable Migration [DONE]
 
 **As a** user,
 **I want** sidebar notification badges to use CSS variables,
@@ -2624,7 +2624,7 @@ the count changes, making badge updates feel alive rather than silently swapping
 
 ---
 
-### S13.2: PageHeader Glow Variable Extraction
+### S13.2: PageHeader Glow Variable Extraction [DONE]
 
 **As a** user,
 **I want** PageHeader glow and text-shadow styles extracted to CSS classes,
@@ -2658,7 +2658,7 @@ feel on first encounter.
 
 ---
 
-### S13.3: LoadingSpinner Cosmic Upgrade
+### S13.3: LoadingSpinner Cosmic Upgrade [DONE]
 
 **As a** user,
 **I want** the loading spinner to feel like a cosmic loading experience,
@@ -2719,7 +2719,7 @@ mesmerising micro-animation that users actually enjoy watching.
 
 ---
 
-### S13.4: StatCard Entrance Animation
+### S13.4: StatCard Entrance Animation [DONE]
 
 **As a** user,
 **I want** StatCards to animate in with staggered reveals,
@@ -2741,7 +2741,7 @@ animation completes, then settles to normal intensity.
 
 ---
 
-### S13.5: AmbientOrbs Performance Optimisation
+### S13.5: AmbientOrbs Performance Optimisation [DONE]
 
 **As a** user,
 **I want** ambient orbs to be GPU-accelerated and not cause layout thrashing,
@@ -2769,7 +2769,7 @@ subtle ambient colour adaptation that most users feel but can't quite identify.
 
 ---
 
-### S13.6: Global Micro-Interaction Library
+### S13.6: Global Micro-Interaction Library [DONE]
 
 **As a** user,
 **I want** a set of reusable micro-interaction CSS classes I can compose,

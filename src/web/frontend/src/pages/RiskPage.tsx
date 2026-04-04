@@ -63,6 +63,26 @@ function regimeGlow(status: string) {
   }
 }
 
+function regimeClass(status: string) {
+  switch (status) {
+    case 'Calm': return 'regime-calm';
+    case 'Elevated': return 'regime-elevated';
+    case 'Stressed': return 'regime-stressed';
+    case 'Crisis': return 'regime-crisis';
+    default: return '';
+  }
+}
+
+function regimeGlowClass(status: string) {
+  switch (status) {
+    case 'Calm': return 'regime-calm-glow';
+    case 'Elevated': return 'regime-elevated-glow';
+    case 'Stressed': return 'regime-stressed-glow';
+    case 'Crisis': return 'regime-crisis-glow';
+    default: return '';
+  }
+}
+
 /* ── Temperature History (localStorage) ───────────────────────── */
 
 const TEMP_HISTORY_KEY = 'risk-temp-history';
@@ -198,21 +218,15 @@ export default function RiskPage() {
       </div>
 
       {/* ── Tab nav ───────────────────────────────────────────────── */}
-      <div className="flex gap-0.5 mb-8 overflow-x-auto fade-up-delay-2">
+      <div className="premium-tabs mb-8 overflow-x-auto fade-up-delay-2">
         {tabs.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             onClick={() => setTab(id)}
-            className="flex items-center gap-2 px-4 py-2.5 text-[13px] font-medium transition-all duration-200 rounded-xl whitespace-nowrap"
-            style={tab === id ? {
-              background: 'var(--violet-10)',
-              color: '#b49aff',
-              boxShadow: '0 0 12px var(--violet-8)',
-            } : {
-              color: '#7a8ba4',
-            }}
+            className="premium-tab"
+            data-active={tab === id}
           >
-            <Icon className="w-4 h-4" />
+            <Icon className="w-4 h-4 tab-icon" />
             {label}
           </button>
         ))}
@@ -294,8 +308,10 @@ function TemperatureGauge({ temperature, status, computedAt }: {
 
       <div className="flex flex-col items-center relative z-10">
         {/* SVG Gauge */}
-        <div style={{ width: 200, height: 200, position: 'relative' }}>
-          <svg viewBox="0 0 200 200" width={200} height={200}>
+        <div className="w-48 h-48 md:w-52 md:h-52 lg:w-56 lg:h-56 relative"
+          style={{ animation: 'gauge-entrance 0.6s cubic-bezier(0.16, 1, 0.3, 1) both' }}>
+          <svg viewBox="0 0 200 200" className="w-full h-full"
+            style={{ filter: `drop-shadow(0 0 12px ${glow})` }}>
             <defs>
               <linearGradient id="gauge-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
                 <stop offset="0%" stopColor="var(--accent-violet)" />
@@ -338,19 +354,16 @@ function TemperatureGauge({ temperature, status, computedAt }: {
           </svg>
 
           {/* Center text overlay */}
-          <div style={{
-            position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -40%)',
-            textAlign: 'center',
-          }}>
-            <div style={{
-              fontSize: 40, fontWeight: 700, lineHeight: 1,
-              background: `linear-gradient(135deg, ${color}, ${color}88)`,
-              WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
-              fontVariantNumeric: 'tabular-nums',
-            }}>
+          <div className="absolute top-1/2 left-1/2 text-center"
+            style={{ transform: 'translate(-50%, -40%)' }}>
+            <div className="text-stat-value"
+              style={{
+                background: `linear-gradient(135deg, ${color}, ${color}88)`,
+                WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
+              }}>
               {temperature.toFixed(2)}
             </div>
-            <div style={{ fontSize: 13, fontWeight: 600, color, marginTop: 4 }}>
+            <div className="text-caption mt-1" style={{ color, fontWeight: 600 }}>
               {status}
             </div>
           </div>
@@ -391,6 +404,23 @@ function TemperatureGauge({ temperature, status, computedAt }: {
 function TemperatureSparkline({ history }: { history: TempPoint[] }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const W = 160, H = 32;
+  const [drawProgress, setDrawProgress] = useState(0);
+
+  // Animate draw from left-to-right
+  useEffect(() => {
+    if (history.length < 2) return;
+    let frame: number;
+    const start = performance.now();
+    const duration = 800;
+    function tick(now: number) {
+      const t = Math.min((now - start) / duration, 1);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setDrawProgress(eased);
+      if (t < 1) frame = requestAnimationFrame(tick);
+    }
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [history.length]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -409,44 +439,71 @@ function TemperatureSparkline({ history }: { history: TempPoint[] }) {
     const max = Math.max(...vals) * 1.1 || 1;
     const range = max - min || 1;
 
-    // Fill below
+    // Only draw up to current progress
+    const visibleCount = Math.max(2, Math.ceil(vals.length * drawProgress));
+    const visibleVals = vals.slice(0, visibleCount);
+
+    // Fill below curve
     ctx.beginPath();
     ctx.moveTo(0, H);
-    vals.forEach((v, i) => {
+    visibleVals.forEach((v, i) => {
       const x = (i / (vals.length - 1)) * W;
       const y = H - ((v - min) / range) * (H - 4);
-      if (i === 0) ctx.lineTo(x, y);
-      else ctx.lineTo(x, y);
+      ctx.lineTo(x, y);
     });
-    ctx.lineTo(W, H);
+    const lastVisibleX = ((visibleCount - 1) / (vals.length - 1)) * W;
+    ctx.lineTo(lastVisibleX, H);
     ctx.closePath();
     const fillGrad = ctx.createLinearGradient(0, 0, 0, H);
-    fillGrad.addColorStop(0, 'var(--violet-5)');
-    fillGrad.addColorStop(1, 'rgba(139,92,246,0.0)');
+    fillGrad.addColorStop(0, 'rgba(139,92,246,0.12)');
+    fillGrad.addColorStop(1, 'rgba(15,15,35,0)');
     ctx.fillStyle = fillGrad;
     ctx.fill();
 
-    // Line
+    // Line - 2px with rounded caps
     ctx.beginPath();
-    vals.forEach((v, i) => {
+    visibleVals.forEach((v, i) => {
       const x = (i / (vals.length - 1)) * W;
       const y = H - ((v - min) / range) * (H - 4);
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });
-    ctx.strokeStyle = 'var(--accent-violet)';
-    ctx.lineWidth = 1.5;
-    ctx.shadowColor = 'var(--violet-40)';
+    // Use regime accent for the last point's status
+    const lastStatus = history[visibleCount - 1]?.status || '';
+    ctx.strokeStyle = regimeColor(lastStatus) || '#8B5CF6';
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.shadowColor = 'rgba(139,92,246,0.4)';
     ctx.shadowBlur = 4;
     ctx.stroke();
     ctx.shadowBlur = 0;
 
+    // Pulsing dot at the most recent point
+    if (drawProgress >= 0.95) {
+      const lastVal = visibleVals[visibleVals.length - 1];
+      const dotX = ((visibleCount - 1) / (vals.length - 1)) * W;
+      const dotY = H - ((lastVal - min) / range) * (H - 4);
+      ctx.beginPath();
+      ctx.arc(dotX, dotY, 3, 0, Math.PI * 2);
+      ctx.fillStyle = regimeColor(lastStatus) || '#8B5CF6';
+      ctx.fill();
+      // Outer glow ring
+      ctx.beginPath();
+      ctx.arc(dotX, dotY, 5, 0, Math.PI * 2);
+      ctx.strokeStyle = regimeColor(lastStatus) || '#8B5CF6';
+      ctx.lineWidth = 1;
+      ctx.globalAlpha = 0.3;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+
     // Regime transition markers
-    for (let i = 1; i < history.length; i++) {
+    for (let i = 1; i < visibleCount && i < history.length; i++) {
       if (history[i].status !== history[i - 1].status) {
         const x = (i / (vals.length - 1)) * W;
         ctx.setLineDash([2, 2]);
-        ctx.strokeStyle = 'var(--violet-30)';
+        ctx.strokeStyle = 'rgba(139,92,246,0.3)';
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(x, 0);
@@ -460,7 +517,7 @@ function TemperatureSparkline({ history }: { history: TempPoint[] }) {
         ctx.fill();
       }
     }
-  }, [history]);
+  }, [history, drawProgress]);
 
   return (
     <canvas
@@ -662,25 +719,25 @@ function MetalsTab({ metals: data }: { metals: RiskDashboardFull['metals_risk_te
         /* Comparison matrix mode */
         <div className="glass-card overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr style={{ borderBottom: '1px solid var(--violet-8)' }}>
-                  <th className="text-left px-3 py-2 text-[10px] uppercase tracking-wider" style={{ color: 'var(--accent-violet)' }}>Metal</th>
-                  <th className="text-center px-3 py-2 text-[10px] uppercase tracking-wider" style={{ color: 'var(--accent-violet)' }}>Mom</th>
-                  <th className="text-center px-3 py-2 text-[10px] uppercase tracking-wider" style={{ color: 'var(--accent-violet)' }}>Stress</th>
+            <table className="premium-table">
+              <thead className="premium-thead">
+                <tr>
+                  <th className="text-left">Metal</th>
+                  <th className="text-center">Mom</th>
+                  <th className="text-center">Stress</th>
                   {['7D', '30D', '90D', '180D', '365D'].map(h => (
-                    <th key={h} className="text-center px-3 py-2 text-[10px] uppercase tracking-wider" style={{ color: 'var(--accent-violet)' }}>{h}</th>
+                    <th key={h} className="text-center">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {metalEntries.map(([name, m]) => (
-                  <tr key={name} style={{ borderBottom: '1px solid var(--violet-4)' }}>
-                    <td className="px-3 py-2 font-medium" style={{ color: 'var(--text-luminous)' }}>{name}</td>
-                    <td className="px-3 py-2 text-center"><MomentumBadge signal={m.momentum_signal} /></td>
-                    <td className="px-3 py-2 text-center"><span className={stressColor(m.stress_level)}>{m.stress_level.toFixed(2)}</span></td>
+                  <tr key={name}>
+                    <td className="font-medium" style={{ color: 'var(--text-luminous)' }}>{name}</td>
+                    <td className="text-center"><MomentumBadge signal={m.momentum_signal} /></td>
+                    <td className="text-center"><span className={stressColor(m.stress_level)}>{m.stress_level.toFixed(2)}</span></td>
                     {[m.forecast_7d, m.forecast_30d, m.forecast_90d, m.forecast_180d, m.forecast_365d].map((f, i) => (
-                      <td key={i} className="px-3 py-2">
+                      <td key={i}>
                         <SpectrumCell value={f} />
                       </td>
                     ))}
@@ -985,28 +1042,28 @@ function CurrenciesTab({ currencies }: { currencies?: Record<string, CurrencyMet
         /* Heatmap mode */
         <div className="glass-card overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr style={{ borderBottom: '1px solid var(--violet-8)' }}>
-                  <th className="text-left px-3 py-2 text-[10px] uppercase tracking-wider" style={{ color: 'var(--accent-violet)' }}>Pair</th>
-                  <th className="text-center px-3 py-2 text-[10px] uppercase tracking-wider" style={{ color: 'var(--accent-violet)' }}>Mom</th>
-                  <th className="text-center px-3 py-2 text-[10px] uppercase tracking-wider" style={{ color: 'var(--accent-violet)' }}>Risk</th>
+            <table className="premium-table">
+              <thead className="premium-thead">
+                <tr>
+                  <th className="text-left">Pair</th>
+                  <th className="text-center">Mom</th>
+                  <th className="text-center">Risk</th>
                   {['7D', '30D', '90D', '180D', '365D'].map(h => (
-                    <th key={h} className="text-center px-3 py-2 text-[10px] uppercase tracking-wider" style={{ color: 'var(--accent-violet)' }}>{h}</th>
+                    <th key={h} className="text-center">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {entries.map(([name, c]) => (
-                  <tr key={name} style={{ borderBottom: '1px solid var(--violet-4)' }}>
-                    <td className="px-3 py-2 font-medium" style={{ color: 'var(--text-luminous)' }}>
+                  <tr key={name}>
+                    <td className="font-medium" style={{ color: 'var(--text-luminous)' }}>
                       {name}
                       {c.is_inverse && <span className="ml-1 text-[10px]" style={{ color: 'var(--accent-amber)' }}>inv</span>}
                     </td>
-                    <td className="px-3 py-2 text-center"><MomentumBadge signal={c.momentum_signal} /></td>
-                    <td className="px-3 py-2 text-center"><RiskScoreCell score={c.risk_score} /></td>
+                    <td className="text-center"><MomentumBadge signal={c.momentum_signal} /></td>
+                    <td className="text-center"><RiskScoreCell score={c.risk_score} /></td>
                     {[c.forecast_7d, c.forecast_30d, c.forecast_90d, c.forecast_180d, c.forecast_365d].map((f, i) => (
-                      <td key={i} className="px-3 py-2"><SpectrumCell value={f} /></td>
+                      <td key={i}><SpectrumCell value={f} /></td>
                     ))}
                   </tr>
                 ))}
@@ -1212,42 +1269,41 @@ function SpectrumCell({ value, label, showLabel, compact }: {
 
 function IndicatorsTable({ indicators }: { indicators: RiskStressIndicator[] }) {
   return (
-    <table className="w-full text-xs">
-      <thead>
-        <tr style={{ borderBottom: '1px solid var(--violet-8)' }}>
-          <th className="text-left px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>Indicator</th>
-          <th className="text-right px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>Value</th>
-          <th className="text-right px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>Z-Score</th>
-          <th className="text-right px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>Contrib</th>
-          <th className="text-center px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>Data</th>
+    <table className="premium-table">
+      <thead className="premium-thead">
+        <tr>
+          <th className="text-left">Indicator</th>
+          <th className="text-right">Value</th>
+          <th className="text-right">Z-Score</th>
+          <th className="text-right">Contrib</th>
+          <th className="text-center">Data</th>
         </tr>
       </thead>
       <tbody>
         {indicators.map((ind, i) => (
-          <tr key={i} style={{ borderBottom: '1px solid var(--violet-4)' }}>
-            <td className="px-2 py-1.5" style={{ color: 'var(--text-secondary)' }}>
+          <tr key={i}>
+            <td style={{ color: 'var(--text-secondary)' }}>
               <div className="flex items-center gap-1.5">
                 <StressPip level={ind.contribution * 4} size={6} />
                 {ind.name}
               </div>
             </td>
-            <td className="px-2 py-1.5 text-right" style={{ color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>
+            <td className="text-right" style={{ color: 'var(--text-primary)' }}>
               {ind.value != null ? ind.value.toFixed(4) : '--'}
             </td>
-            <td className="px-2 py-1.5 text-right">
+            <td className="text-right">
               <span style={{
                 color: ind.zscore != null && Math.abs(ind.zscore) > 2 ? 'var(--accent-rose)'
                   : ind.zscore != null && Math.abs(ind.zscore) > 1 ? 'var(--accent-amber)'
                   : 'var(--text-secondary)',
-                fontVariantNumeric: 'tabular-nums',
               }}>
                 {ind.zscore != null ? ind.zscore.toFixed(2) : '--'}
               </span>
             </td>
-            <td className="px-2 py-1.5 text-right" style={{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
+            <td className="text-right" style={{ color: 'var(--text-secondary)' }}>
               {ind.contribution.toFixed(4)}
             </td>
-            <td className="px-2 py-1.5 text-center">
+            <td className="text-center">
               {ind.data_available
                 ? <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: 'var(--accent-emerald)' }} />
                 : <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: 'var(--accent-rose)' }} />}

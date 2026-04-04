@@ -59,43 +59,36 @@ function EmptyState() {
   );
 }
 
-function SignalCard({ entry, accent }: { entry: StrongSignalEntry; accent: 'emerald' | 'rose' }) {
+function SignalCard({ entry, accent, index }: { entry: StrongSignalEntry; accent: 'emerald' | 'rose'; index: number }) {
   const navigate = useNavigate();
   const isEmerald = accent === 'emerald';
   const accentColor = isEmerald ? 'var(--accent-emerald)' : 'var(--accent-rose)';
-  const accentGlow = isEmerald ? 'var(--emerald-6)' : 'var(--rose-6)';
   const gradientText = isEmerald
     ? 'linear-gradient(135deg, var(--text-luminous) 0%, var(--accent-emerald) 100%)'
     : 'linear-gradient(135deg, var(--text-luminous) 0%, var(--accent-rose) 100%)';
 
   // Kelly rough estimate from p_up and exp_ret
   const kelly = Math.abs(entry.exp_ret) > 0 ? Math.min(Math.abs(entry.p_up - 0.5) * 2, 0.5) : 0;
+  const isUrgent = Math.abs(entry.exp_ret) > 0.08;
+  const cardClass = isEmerald ? 'conviction-buy' : 'conviction-sell';
+  const urgentClass = isUrgent ? (isEmerald ? 'conviction-urgent' : 'conviction-urgent-sell') : '';
+  const fadeClass = `fade-up-delay-${Math.min(index, 4)}`;
 
   return (
     <div
-      className="px-4 py-3 rounded-xl cursor-pointer transition-all duration-150"
-      style={{ background: 'transparent' }}
+      className={`${cardClass} ${urgentClass} ${fadeClass} px-4 py-3 rounded-xl cursor-pointer`}
       onClick={() => navigate(`/charts/${entry.symbol}`)}
-      onMouseEnter={(e) => {
-        (e.currentTarget as HTMLElement).style.background = 'var(--void-hover, #16133a)';
-        (e.currentTarget as HTMLElement).style.transform = 'translateY(-1px)';
-        (e.currentTarget as HTMLElement).style.boxShadow = `0 0 20px ${accentGlow}`;
-      }}
-      onMouseLeave={(e) => {
-        (e.currentTarget as HTMLElement).style.background = 'transparent';
-        (e.currentTarget as HTMLElement).style.transform = 'translateY(0)';
-        (e.currentTarget as HTMLElement).style.boxShadow = 'none';
-      }}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
           {/* Ticker */}
           <div
-            className="text-base font-bold"
+            className="text-section"
             style={{
               background: gradientText,
               WebkitBackgroundClip: 'text',
               WebkitTextFillColor: 'transparent',
+              color: 'var(--text-luminous)',
             }}
           >
             {entry.symbol}
@@ -111,14 +104,11 @@ function SignalCard({ entry, accent }: { entry: StrongSignalEntry; accent: 'emer
 
         <div className="text-right flex-shrink-0">
           {/* Expected return */}
-          <div
-            className="text-xl font-bold tabular-nums"
-            style={{ color: accentColor }}
-          >
+          <div className="text-stat-value" style={{ color: accentColor }}>
             {entry.exp_ret >= 0 ? '+' : ''}{(entry.exp_ret * 100).toFixed(1)}%
           </div>
           {/* Horizon */}
-          <span className="text-[9px]" style={{ color: 'var(--text-muted, #6b7a90)' }}>
+          <span className="text-caption">
             {entry.horizon}
           </span>
         </div>
@@ -191,7 +181,7 @@ export default function ConvictionSpotlight({ strongBuy, strongSell }: Props) {
           {hasBuys ? (
             <div className="space-y-1">
               {strongBuy.slice(0, 5).map((s, i) => (
-                <SignalCard key={`${s.symbol}-${i}`} entry={s} accent="emerald" />
+                <SignalCard key={`${s.symbol}-${i}`} entry={s} accent="emerald" index={i} />
               ))}
             </div>
           ) : (
@@ -226,7 +216,7 @@ export default function ConvictionSpotlight({ strongBuy, strongSell }: Props) {
           {hasSells ? (
             <div className="space-y-1">
               {strongSell.slice(0, 5).map((s, i) => (
-                <SignalCard key={`${s.symbol}-${i}`} entry={s} accent="rose" />
+                <SignalCard key={`${s.symbol}-${i}`} entry={s} accent="rose" index={i} />
               ))}
             </div>
           ) : (

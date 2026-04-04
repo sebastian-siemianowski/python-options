@@ -79,28 +79,14 @@ function SignalLabel({ label }: { label: string }) {
 export function MomentumBadge({ value }: { value: number }) {
   const v = value ?? 0;
   const absV = Math.abs(v);
-  const isPositive = v > 0;
+  const sentiment = v > 0 ? 'positive' : v < -1 ? 'negative' : 'neutral';
   const isStrong = absV >= 70;
-
-  const textColor = isPositive ? 'var(--accent-emerald)' : v < -1 ? 'var(--accent-rose)' : 'var(--text-muted)';
-  const bgAlpha = Math.min(0.16, (absV / 100) * 0.16);
-  const bgColor = isPositive
-    ? `rgba(62,232,165,${bgAlpha})`
-    : `rgba(255,107,138,${bgAlpha})`;
-  const glow = isStrong
-    ? isPositive
-      ? '0 0 10px var(--emerald-15)'
-      : '0 0 10px var(--rose-15)'
-    : 'none';
 
   return (
     <span
-      className="inline-block text-[10px] font-semibold tabular-nums px-2 py-0.5 rounded-md"
-      style={{
-        color: textColor,
-        background: bgColor,
-        boxShadow: glow,
-      }}
+      className="momentum-badge"
+      data-sentiment={sentiment}
+      data-strong={isStrong}
     >
       {v > 0 ? '+' : ''}{Math.round(v)}%
     </span>
@@ -114,7 +100,7 @@ export function CrashRiskHeat({ score }: { score: number }) {
   const segments = [
     { threshold: 25, filled: 'var(--accent-emerald)', glow: 'rgba(62,232,165,0.35)' },
     { threshold: 50, filled: 'var(--accent-amber)', glow: 'rgba(245,197,66,0.35)' },
-    { threshold: 75, filled: '#F97316', glow: 'rgba(249,115,22,0.35)' },
+    { threshold: 75, filled: 'var(--accent-orange)', glow: 'rgba(249,115,22,0.35)' },
     { threshold: 100, filled: 'var(--accent-rose)', glow: 'rgba(255,107,138,0.35)' },
   ];
 
@@ -165,29 +151,15 @@ export function HorizonCell({ expRet, pUp }: { expRet: number | null | undefined
   const pct = expRet * 100;
   const absPct = Math.abs(pct);
   const isUp = pct > 0;
-  const direction: 'up' | 'down' | 'neutral' = absPct < 0.1 ? 'neutral' : isUp ? 'up' : 'down';
-
+  const direction: 'up' | 'down' | 'flat' = absPct < 0.1 ? 'flat' : isUp ? 'up' : 'down';
+  const arrowDir: 'up' | 'down' | 'neutral' = absPct < 0.1 ? 'neutral' : isUp ? 'up' : 'down';
   const isStrong = absPct > 5;
-  const color = absPct < 1
-    ? 'var(--text-muted)'
-    : isUp ? 'var(--accent-emerald)' : 'var(--accent-rose)';
-  const fontWeight = isStrong ? 600 : 400;
-  const textShadow = isStrong
-    ? isUp
-      ? '0 0 6px var(--emerald-30)'
-      : '0 0 6px var(--rose-30)'
-    : 'none';
 
   return (
     <div className="leading-[1.2]">
-      <div>
-        <HorizonArrow direction={direction} />
-        <span
-          className="text-[10px] font-mono tabular-nums"
-          style={{ color, fontWeight, textShadow }}
-        >
-          {pct >= 0 ? '+' : ''}{pct.toFixed(1)}%
-        </span>
+      <div className="horizon-cell text-[10px] font-mono tabular-nums" data-direction={direction} data-strong={isStrong}>
+        <HorizonArrow direction={arrowDir} />
+        {pct >= 0 ? '+' : ''}{pct.toFixed(1)}%
       </div>
       {pUp != null && (
         <span className="block text-[9px] text-[var(--text-muted)] font-mono tabular-nums">

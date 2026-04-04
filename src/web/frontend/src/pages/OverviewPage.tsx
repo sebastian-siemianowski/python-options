@@ -10,6 +10,7 @@ import BriefingCard from '../components/BriefingCard';
 import SignalDistributionBar from '../components/SignalDistributionBar';
 import ModelLeaderboard from '../components/ModelLeaderboard';
 import ConvictionSpotlight from '../components/ConvictionSpotlight';
+import { useScrollReveal } from '../hooks/useScrollReveal';
 import {
   Signal, TrendingUp, TrendingDown, Database, Settings,
   AlertTriangle, CheckCircle, Clock, HeartPulse,
@@ -76,8 +77,10 @@ export default function OverviewPage() {
   // Errors from overview
   const overviewErrors = data.errors || [];
 
+  const scrollRef = useScrollReveal();
+
   return (
-    <>
+    <div ref={scrollRef}>
       <PageHeader title="Dashboard">
         System-wide snapshot {'\u2014'} {signals.total_assets} assets monitored
       </PageHeader>
@@ -98,7 +101,8 @@ export default function OverviewPage() {
       )}
 
       {/* Morning Briefing Hero Card */}
-      <BriefingCard
+      <div className="fade-up-hero">
+        <BriefingCard
         signals={signals}
         tuning={tuning}
         dataStatus={dataStatus}
@@ -106,9 +110,10 @@ export default function OverviewPage() {
         strongBuy={strongQ.data?.strong_buy || []}
         strongSell={strongQ.data?.strong_sell || []}
       />
+      </div>
 
       {/* Top stats row */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-5 mb-10 fade-up">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-5 mb-10 fade-up-delay-2">
         <StatCard
           title="Total Assets"
           value={signals.total_assets}
@@ -152,7 +157,7 @@ export default function OverviewPage() {
       </div>
 
       {/* Second row: Tuning + Data */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-5 mb-10 fade-up-delay-1">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-5 mb-10 fade-up-delay-4">
         <StatCard
           title="Tuned Models"
           value={tuning.total}
@@ -182,8 +187,8 @@ export default function OverviewPage() {
         />
       </div>
 
-      {/* Charts row */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-10 fade-up-delay-2">
+      {/* Charts row -- below fold, scroll-triggered */}
+      <div className="scroll-reveal grid grid-cols-1 md:grid-cols-3 gap-5 mb-10">
         {/* Signal Distribution Flowing Gradient Bar */}
         <SignalDistributionBar
           signals={signals}
@@ -233,7 +238,7 @@ export default function OverviewPage() {
 
       {/* Conviction Spotlight -- dual nebula panels */}
       {strongQ.data && (
-        <div className="mb-10 fade-up-delay-3">
+        <div className="scroll-reveal mb-10">
           <ConvictionSpotlight
             strongBuy={strongQ.data.strong_buy || []}
             strongSell={strongQ.data.strong_sell || []}
@@ -242,6 +247,6 @@ export default function OverviewPage() {
       )}
 
 
-    </>
+    </div>
   );
 }

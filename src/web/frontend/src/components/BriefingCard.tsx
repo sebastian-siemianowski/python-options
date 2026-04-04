@@ -124,15 +124,15 @@ export default function BriefingCard({
   }, [strongBuy, strongSell]);
 
   // ── Sentiment glow ──────────────────────────────────────────────
-  const sentimentGlow = useMemo(() => {
+  const sentimentGlowClass = useMemo(() => {
     const bullish = signals.strong_buy_signals + signals.buy_signals;
     const bearish = signals.strong_sell_signals + signals.sell_signals;
     const total = bullish + bearish + signals.hold_signals;
-    if (total === 0) return 'radial-gradient(ellipse at 30% 50%, var(--violet-15) 0%, transparent 70%)';
+    if (total === 0) return 'sentiment-glow-neutral';
     const ratio = bullish / total;
-    if (ratio > 0.55) return 'radial-gradient(ellipse at 50% 50%, rgba(62,232,165,0.07) 0%, transparent 70%)';
-    if (ratio < 0.45) return 'radial-gradient(ellipse at 50% 50%, rgba(255,107,138,0.07) 0%, transparent 70%)';
-    return 'radial-gradient(ellipse at 30% 50%, var(--violet-12) 0%, transparent 70%)';
+    if (ratio > 0.55) return 'sentiment-glow-bull';
+    if (ratio < 0.45) return 'sentiment-glow-bear';
+    return 'sentiment-glow-neutral';
   }, [signals]);
 
   // ── System Pulse gauges ─────────────────────────────────────────
@@ -148,14 +148,11 @@ export default function BriefingCard({
 
   return (
     <div
-      className="briefing-card relative overflow-hidden rounded-3xl mb-10"
+      className={`briefing-card briefing-enter relative overflow-hidden rounded-3xl mb-10 ${visible ? 'is-visible' : ''}`}
       style={{
         background: 'linear-gradient(160deg, #0e0b24 0%, #1a1550 40%, #12102a 70%, #0c1445 100%)',
         border: '1px solid var(--violet-8)',
         boxShadow: '0 4px 60px rgba(0,0,0,0.35), 0 0 100px var(--violet-4), inset 0 1px 0 rgba(255,255,255,0.03)',
-        opacity: visible ? 1 : 0,
-        transform: visible ? 'translateY(0)' : 'translateY(12px)',
-        transition: 'opacity 400ms cubic-bezier(0.16, 1, 0.3, 1), transform 400ms cubic-bezier(0.16, 1, 0.3, 1)',
       }}
     >
       {/* Top edge light */}
@@ -179,28 +176,17 @@ export default function BriefingCard({
 
       {/* Sentiment-aware cosmic glow overlay */}
       <div
-        className="absolute inset-0 pointer-events-none briefing-glow-drift"
-        style={{ background: sentimentGlow }}
+        className={`absolute inset-0 pointer-events-none briefing-glow-drift ${sentimentGlowClass}`}
       />
 
       {/* Content: Three columns */}
       <div className="relative z-10 grid grid-cols-1 md:grid-cols-3 gap-0">
         {/* ── Left: Since Last Visit ─────────────────────────── */}
         <div
-          className="p-6 md:p-8"
-          style={{
-            opacity: visible ? 1 : 0,
-            transform: visible ? 'translateY(0)' : 'translateY(8px)',
-            transition: 'opacity 400ms cubic-bezier(0.16, 1, 0.3, 1), transform 400ms cubic-bezier(0.16, 1, 0.3, 1)',
-            transitionDelay: '0ms',
-          }}
+          className={`p-6 md:p-8 briefing-section ${visible ? 'is-visible' : ''}`}
+          style={{ transitionDelay: '0ms' }}
         >
-          <h3
-            className="text-[11px] font-medium uppercase tracking-widest mb-4"
-            style={{ color: 'var(--text-muted, #6b7a90)' }}
-          >
-            Since Last Visit
-          </h3>
+          <h3 className="text-label mb-4">Since Last Visit</h3>
 
           {!lastVisitTs ? (
             /* First visit */
@@ -276,20 +262,10 @@ export default function BriefingCard({
 
         {/* ── Center: Today's Conviction ─────────────────────── */}
         <div
-          className="p-6 md:p-8 flex flex-col items-center justify-center text-center"
-          style={{
-            opacity: visible ? 1 : 0,
-            transform: visible ? 'translateY(0)' : 'translateY(8px)',
-            transition: 'opacity 400ms cubic-bezier(0.16, 1, 0.3, 1), transform 400ms cubic-bezier(0.16, 1, 0.3, 1)',
-            transitionDelay: '80ms',
-          }}
+          className={`p-6 md:p-8 flex flex-col items-center justify-center text-center briefing-section ${visible ? 'is-visible' : ''}`}
+          style={{ transitionDelay: '80ms' }}
         >
-          <h3
-            className="text-[11px] font-medium uppercase tracking-widest mb-4"
-            style={{ color: 'var(--text-muted, #6b7a90)' }}
-          >
-            Today&apos;s Conviction
-          </h3>
+          <h3 className="text-label mb-4">Today&apos;s Conviction</h3>
 
           {topConviction ? (
             <button
@@ -311,13 +287,8 @@ export default function BriefingCard({
 
               {/* Signal badge */}
               <span
-                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-medium"
-                style={{
-                  background: topConviction.direction === 'buy'
-                    ? 'linear-gradient(135deg, #064e3b 0%, #065f46 50%, #047857 100%)'
-                    : 'linear-gradient(135deg, #4c0519 0%, #6b0f2a 50%, #881337 100%)',
-                  color: topConviction.direction === 'buy' ? 'var(--accent-emerald)' : 'var(--accent-rose)',
-                }}
+                className="signal-badge inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-medium"
+                data-direction={topConviction.direction}
               >
                 {topConviction.direction === 'buy'
                   ? <ArrowUpRight className="w-3 h-3" />
@@ -379,20 +350,10 @@ export default function BriefingCard({
 
         {/* ── Right: System Pulse ────────────────────────────── */}
         <div
-          className="p-6 md:p-8"
-          style={{
-            opacity: visible ? 1 : 0,
-            transform: visible ? 'translateY(0)' : 'translateY(8px)',
-            transition: 'opacity 400ms cubic-bezier(0.16, 1, 0.3, 1), transform 400ms cubic-bezier(0.16, 1, 0.3, 1)',
-            transitionDelay: '160ms',
-          }}
+          className={`p-6 md:p-8 briefing-section ${visible ? 'is-visible' : ''}`}
+          style={{ transitionDelay: '160ms' }}
         >
-          <h3
-            className="text-[11px] font-medium uppercase tracking-widest mb-4"
-            style={{ color: 'var(--text-muted, #6b7a90)' }}
-          >
-            System Pulse
-          </h3>
+          <h3 className="text-label mb-4">System Pulse</h3>
 
           <div className="grid grid-cols-2 gap-4">
             <MicroGauge

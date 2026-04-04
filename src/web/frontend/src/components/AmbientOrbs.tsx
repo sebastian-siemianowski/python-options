@@ -14,6 +14,7 @@ export default function AmbientOrbs() {
         zIndex: 0,
         pointerEvents: 'none',
         overflow: 'hidden',
+        contain: 'strict',
       }}
     >
       {/* Primary violet orb -- top left drift */}
@@ -29,6 +30,7 @@ export default function AmbientOrbs() {
           top: '-10%',
           left: '-5%',
           animation: 'orb-float-1 25s ease-in-out infinite',
+          willChange: 'transform',
         }}
       />
       {/* Cyan orb -- bottom right drift */}
@@ -44,6 +46,7 @@ export default function AmbientOrbs() {
           bottom: '-10%',
           right: '-5%',
           animation: 'orb-float-2 30s ease-in-out infinite',
+          willChange: 'transform',
         }}
       />
       {/* Fuchsia orb -- center drift */}
@@ -59,6 +62,7 @@ export default function AmbientOrbs() {
           top: '40%',
           left: '30%',
           animation: 'orb-float-3 35s ease-in-out infinite',
+          willChange: 'transform',
         }}
       />
     </div>

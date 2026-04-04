@@ -16,23 +16,31 @@ import {
 } from 'recharts';
 
 /* ── Metric Card ──────────────────────────────────────────────── */
-function MetricCard({ label, value, target, unit = '' }: {
-  label: string; value: number | null; target: number; unit?: string;
+function MetricCard({ label, value, target, unit = '', index = 0 }: {
+  label: string; value: number | null; target: number; unit?: string; index?: number;
 }) {
   const pass = value != null && value >= target;
   const color = value == null ? '#7a8ba4' : pass ? 'var(--accent-emerald)' : 'var(--accent-rose)';
   return (
-    <div className="glass-card p-4 hover-lift stat-shine">
-      <p className="text-[10px] text-[var(--text-secondary)] uppercase tracking-wider font-medium">{label}</p>
-      <p className="text-lg font-bold mt-1 tabular-nums" style={{ color }}>
+    <div className="glass-card p-5 hover-lift stat-shine fade-up" style={{
+      animationDelay: `${index * 60}ms`,
+      background: pass
+        ? 'linear-gradient(135deg, rgba(62,232,165,0.04) 0%, transparent 50%)'
+        : value != null
+          ? 'linear-gradient(135deg, rgba(255,107,138,0.04) 0%, transparent 50%)'
+          : undefined,
+      borderLeft: `2px solid ${pass ? 'rgba(62,232,165,0.3)' : value != null ? 'rgba(255,107,138,0.3)' : 'rgba(139,92,246,0.15)'}`,
+    }}>
+      <p className="text-label">{label}</p>
+      <p className="text-stat-value mt-1 tabular-nums" style={{ color }}>
         {value != null ? `${(value * 100).toFixed(1)}${unit}` : '--'}
       </p>
-      <p className="text-[9px] text-[var(--text-secondary)] mt-0.5">
+      <p className="text-caption mt-0.5">
         Target: {(target * 100).toFixed(1)}{unit}
       </p>
       <div
         className="w-2 h-2 rounded-full mt-1"
-        style={{ backgroundColor: color }}
+        style={{ backgroundColor: color, boxShadow: `0 0 6px ${color}` }}
         aria-label={pass ? 'Passing' : 'Failing'}
       />
     </div>
@@ -57,14 +65,21 @@ function MetricChart({ title, data, targetValue, color = '#b49aff' }: {
               tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`}
             />
             <Tooltip
-              contentStyle={{ background: 'rgba(15,15,35,0.95)', border: '1px solid var(--violet-15)', borderRadius: 8, fontSize: 10, backdropFilter: 'blur(12px)' }}
+              contentStyle={{
+                background: 'rgba(15,15,35,0.95)',
+                border: '1px solid var(--violet-15)',
+                borderRadius: 12,
+                fontSize: 10,
+                backdropFilter: 'blur(12px)',
+                boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+              }}
               formatter={(v: number) => `${(v * 100).toFixed(2)}%`}
             />
             <ReferenceLine
               y={targetValue}
-              stroke="var(--accent-rose)"
-              strokeDasharray="6 3"
-              label={{ value: 'Target', position: 'right', fill: 'var(--accent-rose)', fontSize: 9 }}
+              stroke="var(--accent-amber)"
+              strokeDasharray="8 4"
+              label={{ value: 'Target', position: 'right', fill: 'var(--accent-amber)', fontSize: 9 }}
             />
             <Line
               type="monotone"
@@ -121,12 +136,12 @@ export default function ProfitabilityPage() {
 
       {/* Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6 fade-up">
-        <MetricCard label="Hit Rate 7D" value={curHit7} target={targets.hit_rate_7d || 0.55} unit="%" />
-        <MetricCard label="Hit Rate 21D" value={curHit21} target={targets.hit_rate_21d || 0.53} unit="%" />
-        <MetricCard label="Signal Rate" value={curSignal} target={targets.signal_rate || 0.15} unit="%" />
-        <MetricCard label="Sharpe 7D" value={curSharpe} target={targets.sharpe_7d || 0.50} unit="" />
-        <MetricCard label="CRPS" value={curCrps} target={targets.ece_max || 0.03} unit="%" />
-        <MetricCard label="ECE" value={curEce} target={targets.ece_max || 0.03} unit="%" />
+        <MetricCard label="Hit Rate 7D" value={curHit7} target={targets.hit_rate_7d || 0.55} unit="%" index={0} />
+        <MetricCard label="Hit Rate 21D" value={curHit21} target={targets.hit_rate_21d || 0.53} unit="%" index={1} />
+        <MetricCard label="Signal Rate" value={curSignal} target={targets.signal_rate || 0.15} unit="%" index={2} />
+        <MetricCard label="Sharpe 7D" value={curSharpe} target={targets.sharpe_7d || 0.50} unit="" index={3} />
+        <MetricCard label="CRPS" value={curCrps} target={targets.ece_max || 0.03} unit="%" index={4} />
+        <MetricCard label="ECE" value={curEce} target={targets.ece_max || 0.03} unit="%" index={5} />
       </div>
 
       {!hasData ? (

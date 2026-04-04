@@ -23,18 +23,6 @@ interface ModelRow {
   rank: number;
 }
 
-const MEDAL_GRADIENTS: Record<number, string> = {
-  1: 'linear-gradient(135deg, var(--accent-amber) 0%, #D97706 100%)',
-  2: 'linear-gradient(135deg, #94A3B8 0%, #64748B 100%)',
-  3: 'linear-gradient(135deg, #FB923C 0%, #C2410C 100%)',
-};
-
-const MEDAL_GLOW: Record<number, string> = {
-  1: 'var(--amber-12)',
-  2: 'rgba(148,163,184,0.08)',
-  3: 'rgba(251,146,60,0.10)',
-};
-
 export default function ModelLeaderboard({ modelsDistribution, pitPass, pitFail, total }: Props) {
   const navigate = useNavigate();
   const [expandedModel, setExpandedModel] = useState<string | null>(null);
@@ -64,13 +52,8 @@ export default function ModelLeaderboard({ modelsDistribution, pitPass, pitFail,
     : null;
 
   return (
-    <div className="glass-card hover-lift" style={{ padding: '24px' }}>
-      <h3
-        className="text-[11px] font-semibold uppercase tracking-wide mb-5"
-        style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}
-      >
-        Model Leaderboard
-      </h3>
+    <div className="glass-card hover-lift p-6">
+      <h3 className="premium-section-label mb-5">Model Leaderboard</h3>
 
       <div className="space-y-0">
         {models.map((model, i) => {
@@ -84,7 +67,7 @@ export default function ModelLeaderboard({ modelsDistribution, pitPass, pitFail,
           return (
             <div
               key={model.name}
-              className="transition-all cursor-pointer"
+              className="premium-row transition-all cursor-pointer"
               style={{
                 opacity: visible ? 1 : 0,
                 transform: visible ? 'translateX(0)' : 'translateX(-8px)',
@@ -93,39 +76,11 @@ export default function ModelLeaderboard({ modelsDistribution, pitPass, pitFail,
               onClick={() => setExpandedModel(isExpanded ? null : model.name)}
             >
               <div
-                className="flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-120"
-                style={{
-                  background: isExpanded
-                    ? 'var(--void-hover, #16133a)'
-                    : 'transparent',
-                  ...(isMedal && !isExpanded ? {
-                    background: `radial-gradient(circle at 0% 50%, ${MEDAL_GLOW[model.rank]} 0%, transparent 60%)`,
-                  } : {}),
-                }}
-                onMouseEnter={(e) => {
-                  if (!isExpanded) {
-                    (e.currentTarget as HTMLElement).style.background = 'var(--void-hover, #16133a)';
-                    (e.currentTarget as HTMLElement).style.boxShadow = '0 0 0 1px var(--violet-8), 0 4px 16px var(--violet-8)';
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  if (!isExpanded) {
-                    (e.currentTarget as HTMLElement).style.background = isMedal
-                      ? `radial-gradient(circle at 0% 50%, ${MEDAL_GLOW[model.rank]} 0%, transparent 60%)`
-                      : 'transparent';
-                    (e.currentTarget as HTMLElement).style.boxShadow = 'none';
-                  }
-                }}
+                className="flex items-center gap-3 px-3 py-2 rounded-lg"
               >
                 {/* Rank badge */}
                 {isMedal ? (
-                  <div
-                    className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 text-[11px] font-bold"
-                    style={{
-                      background: MEDAL_GRADIENTS[model.rank],
-                      color: model.rank === 2 ? '#1e293b' : '#000',
-                    }}
-                  >
+                  <div className={`rank-badge ${model.rank === 1 ? 'rank-gold' : model.rank === 2 ? 'rank-silver' : 'rank-bronze'}`}>
                     {model.rank}
                   </div>
                 ) : (
@@ -144,17 +99,12 @@ export default function ModelLeaderboard({ modelsDistribution, pitPass, pitFail,
                   {model.displayName}
                 </span>
 
-                {/* Count with gradient fill bar */}
+                {/* BMA weight bar (animated grow) */}
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  <div className="relative w-16 h-1.5 rounded-full overflow-hidden"
-                    style={{ background: 'var(--violet-6)' }}>
+                  <div className="bma-bar-track">
                     <div
-                      className="absolute left-0 top-0 h-full rounded-full"
-                      style={{
-                        width: `${barWidth}%`,
-                        background: 'linear-gradient(90deg, var(--violet-15) 0%, var(--violet-3) 100%)',
-                        transition: 'width 300ms ease',
-                      }}
+                      className="bma-bar-fill"
+                      style={{ width: visible ? `${barWidth}%` : '0%' }}
                     />
                   </div>
                   <span className="text-[10px] tabular-nums font-medium w-6 text-right"

@@ -82,14 +82,15 @@ function useWindowWidth(): number {
   return width;
 }
 
-/** Story 6.4: WebSocket connection status indicator. */
+/** WebSocket connection status indicator. */
 function WsStatusDot({ status }: { status: WSStatus }) {
-  const color = status === 'connected' ? 'var(--accent-emerald)' : status === 'connecting' ? 'var(--accent-amber)' : '#f87171';
-  const label = status === 'connected' ? 'Live' : status === 'connecting' ? 'Connecting' : 'Offline';
+  const dotClass = status === 'connected' ? 'ws-connected' : status === 'connecting' ? 'ws-connecting' : 'ws-disconnected';
+  const label = status === 'connected' ? 'Live' : status === 'connecting' ? 'Reconnecting' : 'Disconnected';
+  const color = status === 'connected' ? 'var(--accent-emerald)' : status === 'connecting' ? 'var(--accent-amber)' : 'var(--accent-rose)';
   return (
-    <span className="inline-flex items-center gap-1 ml-2 text-[10px]" title={`WebSocket: ${status}`}>
-      <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
-      <span style={{ color }} className="font-medium">{label}</span>
+    <span className="inline-flex items-center gap-1.5 ml-2" title={`WebSocket: ${status}`}>
+      <span className={dotClass} />
+      <span className="text-caption font-medium" style={{ color }}>{label}</span>
     </span>
   );
 }
@@ -433,21 +434,22 @@ function SignalsPageInner() {
 
         {/* Signal filter */}
         {view !== 'strong' && (
-          <div className="flex items-center gap-0.5 glass-card px-2.5 py-1.5">
+          <div className="flex items-center gap-2 glass-card px-2.5 py-1.5">
             <Filter className="w-3 h-3 text-[var(--text-secondary)] mr-1.5" />
             {([
-              { key: 'all' as SignalFilter, label: 'All', c: '#b49aff' },
-              { key: 'strong_buy' as SignalFilter, label: '\u25B2\u25B2 SB', c: 'var(--accent-emerald)' },
-              { key: 'buy' as SignalFilter, label: '\u25B2 Buy', c: '#6ff0c0' },
-              { key: 'hold' as SignalFilter, label: '\u2014 Hold', c: '#7a8ba4' },
-              { key: 'sell' as SignalFilter, label: '\u25BC Sell', c: '#f87171' },
-              { key: 'strong_sell' as SignalFilter, label: '\u25BC\u25BC SS', c: 'var(--accent-rose)' },
-            ]).map(({ key, label, c }) => (
+              { key: 'all' as SignalFilter, label: 'All' },
+              { key: 'strong_buy' as SignalFilter, label: 'SB' },
+              { key: 'buy' as SignalFilter, label: 'Buy' },
+              { key: 'hold' as SignalFilter, label: 'Hold' },
+              { key: 'sell' as SignalFilter, label: 'Sell' },
+              { key: 'strong_sell' as SignalFilter, label: 'SS' },
+            ]).map(({ key, label }) => (
               <button
                 key={key}
                 onClick={() => setFilter(key)}
-                className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all duration-200"
-                style={filter === key ? { color: c, background: `${c}15` } : { color: '#7a8ba4' }}
+                className="filter-pill"
+                data-active={filter === key}
+                data-filter={key}
               >
                 {label}
               </button>
@@ -455,8 +457,8 @@ function SignalsPageInner() {
           </div>
         )}
 
-        {/* Story 3.5: Smart Search with violet focus */}
-        <div className="flex items-center gap-2 glass-card px-3 py-2 group search-cosmic transition-all duration-200">
+        {/* Smart Search with premium focus elevation */}
+        <div className="flex items-center gap-2 glass-card px-3 py-2.5 group search-cosmic focus-ring transition-all duration-200" style={{ backdropFilter: 'blur(8px)' }}>
           <Search className="w-3.5 h-3.5 text-[var(--text-muted)] group-focus-within:text-[var(--accent-violet)] transition-colors" />
           <input
             ref={searchRef}
@@ -523,10 +525,10 @@ function SignalsPageInner() {
       {showTickerTape && changeLog.length > 0 && (
         <div className="h-[28px] overflow-hidden mb-2 glass-card flex items-center" style={{ background: 'var(--void-hover)' }}>
           <div className="ticker-tape-scroll flex items-center gap-6 whitespace-nowrap text-[11px] font-mono">
-            {changeLog.map((c, i) => {
+            {changeLog.slice(0, 5).map((c, i) => {
               const isUpgrade = ['STRONG BUY', 'BUY'].includes(c.to) && ['HOLD', 'SELL', 'STRONG SELL', 'EXIT'].includes(c.from);
               return (
-                <span key={`${c.asset}-${i}`} className="inline-flex items-center gap-1">
+                <span key={`${c.asset}-${i}`} className="signal-entry inline-flex items-center gap-1" style={{ animationDelay: `${i * 50}ms` }}>
                   <span className="text-[var(--accent-violet)]">{c.asset}</span>
                   <span className="text-[var(--text-muted)]">{c.from}</span>
                   <svg width="8" height="8" viewBox="0 0 8 8">
@@ -847,22 +849,24 @@ function StrongSignalsView({ strongBuy, strongSell }: { strongBuy: StrongSignalE
           <p className="px-5 py-8 text-xs text-center" style={{ color: 'var(--text-muted)' }}>No strong buy signals</p>
         ) : (
           <div>
-            {strongBuy.map((s, i) => (
-              <div key={i} className="px-5 py-3 flex items-center gap-3" style={{ borderBottom: '1px solid var(--violet-4)', transition: 'background 200ms cubic-bezier(0.2,0,0,1)' }}
-                onMouseEnter={e => (e.currentTarget.style.background = 'linear-gradient(90deg, var(--emerald-6) 0%, transparent 60%)')}
-                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                <div className="flex-1">
-                  <span className="text-sm font-medium" style={{ color: 'var(--text-luminous)' }}>{s.asset_label || '--'}</span>
-                  <span className="text-[10px] ml-2" style={{ color: 'var(--text-muted)' }}>{s.sector}</span>
+            {strongBuy.map((s, i) => {
+              const retPct = s.exp_ret != null ? s.exp_ret * 100 : null;
+              const isStandout = retPct != null && Math.abs(retPct) > 5;
+              return (
+                <div key={i} className="strong-signal-row" data-sentiment="buy">
+                  <div className="flex-1">
+                    <span className="text-sm" style={{ color: 'var(--text-luminous)', fontWeight: 600 }}>{s.asset_label || '--'}</span>
+                    <span className="text-[10px] ml-2" style={{ color: 'var(--text-muted)' }}>{s.sector}</span>
+                  </div>
+                  <span className="text-caption">{s.horizon || '--'}</span>
+                  <span className={isStandout ? 'text-stat-value' : 'text-xs font-medium'} style={{ color: 'var(--accent-emerald)' }}>
+                    {retPct != null ? `${retPct >= 0 ? '+' : ''}${retPct.toFixed(1)}%` : '--'}
+                  </span>
+                  <span className="text-caption">p={s.p_up != null ? s.p_up.toFixed(2) : '--'}</span>
+                  <MomentumBadge value={s.momentum} />
                 </div>
-                <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{s.horizon || '--'}</span>
-                <span className="text-xs font-medium" style={{ color: 'var(--accent-emerald)' }}>
-                  {s.exp_ret != null ? `${s.exp_ret >= 0 ? '+' : ''}${(s.exp_ret * 100).toFixed(1)}%` : '--'}
-                </span>
-                <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>p={s.p_up != null ? s.p_up.toFixed(2) : '--'}</span>
-                <MomentumBadge value={s.momentum} />
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -877,22 +881,24 @@ function StrongSignalsView({ strongBuy, strongSell }: { strongBuy: StrongSignalE
           <p className="px-5 py-8 text-xs text-center" style={{ color: 'var(--text-muted)' }}>No strong sell signals</p>
         ) : (
           <div>
-            {strongSell.map((s, i) => (
-              <div key={i} className="px-5 py-3 flex items-center gap-3" style={{ borderBottom: '1px solid var(--violet-4)', transition: 'background 200ms cubic-bezier(0.2,0,0,1)' }}
-                onMouseEnter={e => (e.currentTarget.style.background = 'linear-gradient(90deg, var(--rose-6) 0%, transparent 60%)')}
-                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                <div className="flex-1">
-                  <span className="text-sm font-medium" style={{ color: 'var(--text-luminous)' }}>{s.asset_label || '--'}</span>
-                  <span className="text-[10px] ml-2" style={{ color: 'var(--text-muted)' }}>{s.sector}</span>
+            {strongSell.map((s, i) => {
+              const retPct = s.exp_ret != null ? s.exp_ret * 100 : null;
+              const isStandout = retPct != null && Math.abs(retPct) > 5;
+              return (
+                <div key={i} className="strong-signal-row" data-sentiment="sell">
+                  <div className="flex-1">
+                    <span className="text-sm" style={{ color: 'var(--text-luminous)', fontWeight: 600 }}>{s.asset_label || '--'}</span>
+                    <span className="text-[10px] ml-2" style={{ color: 'var(--text-muted)' }}>{s.sector}</span>
+                  </div>
+                  <span className="text-caption">{s.horizon || '--'}</span>
+                  <span className={isStandout ? 'text-stat-value' : 'text-xs font-medium'} style={{ color: 'var(--accent-rose)' }}>
+                    {retPct != null ? `${retPct.toFixed(1)}%` : '--'}
+                  </span>
+                  <span className="text-caption">p={s.p_up != null ? s.p_up.toFixed(2) : '--'}</span>
+                  <MomentumBadge value={s.momentum} />
                 </div>
-                <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{s.horizon || '--'}</span>
-                <span className="text-xs font-medium" style={{ color: 'var(--accent-rose)' }}>
-                  {s.exp_ret != null ? `${(s.exp_ret * 100).toFixed(1)}%` : '--'}
-                </span>
-                <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>p={s.p_up != null ? s.p_up.toFixed(2) : '--'}</span>
-                <MomentumBadge value={s.momentum} />
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell,
+  PieChart, Pie, Cell, Legend,
 } from 'recharts';
 import { formatModelNameShort } from '../utils/modelNames';
 
@@ -103,18 +103,13 @@ export default function DiagnosticsPage() {
       )}
 
       {/* Tab nav */}
-      <div className="flex gap-1 mb-8 fade-up-delay-1" style={{ borderBottom: '1px solid var(--violet-6)' }}>
+      <div className="premium-tabs mb-8 fade-up-delay-1">
         {tabs.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             onClick={() => setTab(id)}
-            className="flex items-center gap-2 px-5 py-3 text-sm font-medium transition-all duration-200 -mb-[1px]"
-            style={{
-              borderBottom: tab === id ? '2px solid var(--accent-violet)' : '2px solid transparent',
-              color: tab === id ? '#b49aff' : 'var(--text-muted)',
-              background: tab === id ? 'var(--violet-4)' : undefined,
-              borderRadius: '12px 12px 0 0',
-            }}
+            className="premium-tab"
+            data-active={tab === id || undefined}
           >
             <Icon className="w-4 h-4" />
             {label}
@@ -123,11 +118,13 @@ export default function DiagnosticsPage() {
       </div>
 
       {/* Tab content */}
-      {tab === 'pit' && <PitTab assets={filteredAssets} search={search} setSearch={setSearch} filterPit={filterPit} setFilterPit={setFilterPit} expandedAsset={expandedAsset} setExpandedAsset={setExpandedAsset} />}
-      {tab === 'models' && modelsData && <ModelsTab data={modelsData} />}
-      {tab === 'matrix' && <MatrixTab data={matrixQ.data} isLoading={matrixQ.isLoading} />}
-      {tab === 'regimes' && regimeData && <RegimesTab data={regimeData} />}
-      {tab === 'failures' && <FailuresTab data={failData} />}
+      <div className="diag-tab-content" key={tab}>
+        {tab === 'pit' && <PitTab assets={filteredAssets} search={search} setSearch={setSearch} filterPit={filterPit} setFilterPit={setFilterPit} expandedAsset={expandedAsset} setExpandedAsset={setExpandedAsset} />}
+        {tab === 'models' && modelsData && <ModelsTab data={modelsData} />}
+        {tab === 'matrix' && <MatrixTab data={matrixQ.data} isLoading={matrixQ.isLoading} />}
+        {tab === 'regimes' && regimeData && <RegimesTab data={regimeData} />}
+        {tab === 'failures' && <FailuresTab data={failData} />}
+      </div>
     </>
   );
 }
@@ -156,24 +153,23 @@ function PitTab({
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search assets..."
-            className="w-full pl-9 pr-3 py-1.5 rounded-xl text-sm outline-none transition-all duration-200"
+            className="w-full pl-9 pr-3 py-2.5 rounded-xl text-sm outline-none focus-ring"
             style={{
               background: 'rgba(10,10,26,0.6)',
               border: '1px solid var(--violet-8)',
               color: 'var(--text-primary)',
+              backdropFilter: 'blur(8px)',
             }}
           />
         </div>
-        <div className="flex gap-1">
+        <div className="flex gap-2">
           {(['all', 'pass', 'fail'] as const).map(f => (
             <button
               key={f}
               onClick={() => setFilterPit(f)}
-              className="px-3 py-1.5 rounded-xl text-xs font-medium transition-all duration-200"
-              style={filterPit === f ? {
-                background: f === 'pass' ? 'var(--emerald-15)' : f === 'fail' ? 'var(--rose-15)' : 'var(--violet-15)',
-                color: f === 'pass' ? 'var(--accent-emerald)' : f === 'fail' ? 'var(--accent-rose)' : '#b49aff',
-              } : { color: '#7a8ba4' }}
+              className="filter-pill"
+              data-active={filterPit === f || undefined}
+              data-filter={f === 'pass' ? 'buy' : f === 'fail' ? 'sell' : undefined}
             >
               {f === 'all' ? 'All' : f === 'pass' ? 'Pass' : 'Fail'}
             </button>
@@ -184,7 +180,7 @@ function PitTab({
 
       {/* Table */}
       <div className="overflow-y-auto max-h-[600px]">
-        <table className="w-full text-xs">
+        <table className="premium-table">
           <thead className="premium-thead">
             <tr>
               <th className="w-6"></th>
@@ -332,11 +328,15 @@ function ModelsTab({ data }: { data: { models: Record<string, DiagModelStats>; t
           <h3 className="premium-section-label mb-4">Win Count (Best Model Selection)</h3>
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={chartData} layout="vertical">
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--violet-6)" />
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(139,92,246,0.06)" />
               <XAxis type="number" tick={{ fill: '#7a8ba4', fontSize: 10 }} />
               <YAxis type="category" dataKey="name" width={120} tick={{ fill: '#94a3b8', fontSize: 10 }} />
-              <Tooltip contentStyle={{ background: 'rgba(15,15,35,0.95)', border: '1px solid var(--violet-15)', borderRadius: 8, color: '#e2e8f0', backdropFilter: 'blur(12px)' }} />
-              <Bar dataKey="wins" fill="var(--accent-violet)" radius={[0, 4, 4, 0]} name="Wins" />
+              <Tooltip contentStyle={{ background: 'rgba(15,15,35,0.95)', border: '1px solid rgba(139,92,246,0.15)', borderRadius: 12, color: '#e2e8f0', backdropFilter: 'blur(12px)', boxShadow: '0 8px 32px rgba(0,0,0,0.4)' }} />
+              <Bar dataKey="wins" radius={[0, 4, 4, 0]} name="Wins">
+                {chartData.map((_, i) => (
+                  <Cell key={i} fill={i === 0 ? 'var(--accent-emerald)' : 'var(--accent-violet)'} />
+                ))}
+              </Bar>
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -344,11 +344,11 @@ function ModelsTab({ data }: { data: { models: Record<string, DiagModelStats>; t
           <h3 className="premium-section-label mb-4">Avg BMA Weight (%)</h3>
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={winRateData} layout="vertical">
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--violet-6)" />
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(139,92,246,0.06)" />
               <XAxis type="number" tick={{ fill: '#7a8ba4', fontSize: 10 }} />
               <YAxis type="category" dataKey="name" width={120} tick={{ fill: '#94a3b8', fontSize: 10 }} />
-              <Tooltip contentStyle={{ background: 'rgba(15,15,35,0.95)', border: '1px solid var(--violet-15)', borderRadius: 8, color: '#e2e8f0', backdropFilter: 'blur(12px)' }} />
-              <Bar dataKey="avgWeight" fill="#b49aff" radius={[0, 4, 4, 0]} name="Avg Weight %" />
+              <Tooltip contentStyle={{ background: 'rgba(15,15,35,0.95)', border: '1px solid rgba(139,92,246,0.15)', borderRadius: 12, color: '#e2e8f0', backdropFilter: 'blur(12px)', boxShadow: '0 8px 32px rgba(0,0,0,0.4)' }} />
+              <Bar dataKey="avgWeight" fill="rgba(180,154,255,0.7)" radius={[0, 4, 4, 0]} name="Avg Weight %" />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -357,34 +357,44 @@ function ModelsTab({ data }: { data: { models: Record<string, DiagModelStats>; t
       {/* Model table */}
       <div className="glass-card overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-xs">
+          <table className="premium-table">
             <thead className="premium-thead">
               <tr>
                 <th className="text-left">Model</th>
                 <th className="text-right">Wins</th>
                 <th className="text-right">Win Rate</th>
                 <th className="text-right">Appearances</th>
-                <th className="text-right">Avg Wt</th>
+                <th className="text-right">Avg Weight</th>
                 <th className="text-right">Max Wt</th>
                 <th className="text-right">Min Wt</th>
               </tr>
             </thead>
             <tbody>
-              {models.map((m) => (
-                <tr key={m.name} className="premium-row">
-                  <td className="font-medium" style={{ color: 'var(--text-luminous)' }}>{formatModelNameShort(m.name)}</td>
-                  <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{m.win_count}</td>
-                  <td className="text-right">
-                    <span style={{ color: m.win_rate > 0.1 ? 'var(--accent-emerald)' : 'var(--text-secondary)' }}>
-                      {(m.win_rate * 100).toFixed(1)}%
-                    </span>
-                  </td>
-                  <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{m.appearances}</td>
-                  <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{(m.avg_weight * 100).toFixed(1)}%</td>
-                  <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{(m.max_weight * 100).toFixed(1)}%</td>
-                  <td className="text-right" style={{ color: 'var(--text-muted)' }}>{(m.min_weight * 100).toFixed(1)}%</td>
-                </tr>
-              ))}
+              {models.map((m, i) => {
+                const isTopWins = i === 0;
+                return (
+                  <tr key={m.name} className="premium-row">
+                    <td className="font-medium" style={{ color: 'var(--text-luminous)' }}>{formatModelNameShort(m.name)}</td>
+                    <td className={`text-right ${isTopWins ? 'best-in-column' : ''}`} style={!isTopWins ? { color: 'var(--text-secondary)' } : undefined}>{m.win_count}</td>
+                    <td className="text-right">
+                      <span style={{ color: m.win_rate > 0.1 ? 'var(--accent-emerald)' : 'var(--text-secondary)' }}>
+                        {(m.win_rate * 100).toFixed(1)}%
+                      </span>
+                    </td>
+                    <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{m.appearances}</td>
+                    <td className="text-right">
+                      <div className="bma-bar-track">
+                        <div className="bma-bar-bg">
+                          <div className="bma-bar-fill" style={{ width: `${Math.min(m.avg_weight * 100 * 5, 100)}%` }} />
+                        </div>
+                        <span className="text-[10px]" style={{ color: 'var(--text-secondary)', minWidth: 36, textAlign: 'right' }}>{(m.avg_weight * 100).toFixed(1)}%</span>
+                      </div>
+                    </td>
+                    <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{(m.max_weight * 100).toFixed(1)}%</td>
+                    <td className="text-right" style={{ color: 'var(--text-muted)' }}>{(m.min_weight * 100).toFixed(1)}%</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -471,24 +481,22 @@ function MatrixTab({ data, isLoading }: { data?: DiagCrossAssetSummary; isLoadin
               value={matrixSearch}
               onChange={(e) => setMatrixSearch(e.target.value)}
               placeholder="Search assets..."
-              className="w-full pl-9 pr-3 py-1.5 rounded-xl text-sm outline-none transition-all duration-200"
+              className="w-full pl-9 pr-3 py-2.5 rounded-xl text-sm outline-none focus-ring"
               style={{
                 background: 'rgba(10,10,26,0.6)',
                 border: '1px solid var(--violet-8)',
                 color: 'var(--text-primary)',
+                backdropFilter: 'blur(8px)',
               }}
             />
           </div>
-          <div className="flex gap-1">
+          <div className="flex gap-2">
             {([['crps', 'CRPS'], ['pit_ks_p', 'PIT p'], ['weight', 'Weight']] as const).map(([k, label]) => (
               <button
                 key={k}
                 onClick={() => setMetric(k)}
-                className="px-3 py-1.5 rounded-xl text-xs font-medium transition-all duration-200"
-                style={metric === k ? {
-                  background: 'var(--violet-15)',
-                  color: '#b49aff',
-                } : { color: '#7a8ba4' }}
+                className="filter-pill"
+                data-active={metric === k || undefined}
               >
                 {label}
               </button>
@@ -571,7 +579,12 @@ function RegimesTab({ data }: { data: { regimes: Record<string, { count: number;
                 <Cell key={entry.name} fill={entry.color} />
               ))}
             </Pie>
-            <Tooltip contentStyle={{ background: 'rgba(15,15,35,0.95)', border: '1px solid var(--violet-15)', borderRadius: 8, color: '#e2e8f0', fontSize: 12, backdropFilter: 'blur(12px)' }} />
+            <Tooltip contentStyle={{ background: 'rgba(15,15,35,0.95)', border: '1px solid rgba(139,92,246,0.15)', borderRadius: 12, color: '#e2e8f0', fontSize: 12, backdropFilter: 'blur(12px)', boxShadow: '0 8px 32px rgba(0,0,0,0.4)' }} />
+            <Legend
+              formatter={(value: string) => <span style={{ color: 'var(--text-secondary)', fontSize: 10 }}>{value.replace(/_/g, ' ')}</span>}
+              iconType="circle"
+              iconSize={8}
+            />
           </PieChart>
         </ResponsiveContainer>
       </div>
@@ -634,11 +647,12 @@ function FailuresTab({ data }: { data?: { failures: Array<Record<string, unknown
 
   return (
     <div className="glass-card overflow-hidden">
-      <div className="p-4" style={{ borderBottom: '1px solid var(--violet-6)' }}>
-        <span className="text-sm font-medium" style={{ color: 'var(--accent-amber)' }}>{data.count} assets failing calibration</span>
+      <div className="p-4 flex items-center gap-3" style={{ borderBottom: '1px solid var(--violet-6)' }}>
+        <span className="status-pill status-fail">{data.count} failing</span>
+        <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>assets failing calibration</span>
       </div>
       <div className="overflow-y-auto max-h-[500px]">
-        <table className="w-full text-xs">
+        <table className="premium-table">
           <thead className="premium-thead">
             <tr>
               <th className="text-left">Symbol</th>
@@ -647,8 +661,8 @@ function FailuresTab({ data }: { data?: { failures: Array<Record<string, unknown
           </thead>
           <tbody>
             {data.failures.map((f, i) => (
-              <tr key={i} className="premium-row">
-                <td className="font-medium" style={{ color: 'var(--accent-rose)' }}>{String(f.symbol || f.asset || `Entry ${i + 1}`)}</td>
+              <tr key={i} className="premium-row severity-critical">
+                <td className="font-medium font-mono" style={{ color: 'var(--accent-rose)' }}>{String(f.symbol || f.asset || `Entry ${i + 1}`)}</td>
                 <td className="px-3 py-2">
                   <pre className="text-[10px] whitespace-pre-wrap max-w-lg p-3 rounded-xl font-mono"
                     style={{ background: 'rgba(10,10,26,0.6)', color: 'var(--text-secondary)', border: '1px solid var(--violet-6)' }}>{JSON.stringify(f, null, 1)}</pre>

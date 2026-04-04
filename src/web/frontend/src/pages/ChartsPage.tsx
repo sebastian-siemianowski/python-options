@@ -229,7 +229,7 @@ export default function ChartsPage() {
               </div>
 
               {/* Symbol list */}
-              <div className="glass-card overflow-y-auto max-h-[calc(100vh-260px)] scrollbar-thin">
+              <div className="glass-card overflow-y-auto max-h-[calc(100vh-260px)] symbol-sidebar">
                 {pickerView === 'all' && (
                   <SymbolList symbols={filtered.slice(0, 150)} selected={symbol} onSelect={selectSymbol}
                     strongBuy={strongBuySymbols} strongSell={strongSellSymbols} />
@@ -289,14 +289,14 @@ export default function ChartsPage() {
           {symbol ? (
             <ChartPanel symbol={symbol} strongBuy={strongBuySymbols} strongSell={strongSellSymbols} />
           ) : (
-            <div className="glass-card p-16 text-center">
-              <div className="text-[#2a2a4a] mb-4">
+            <div className="glass-card p-16 text-center" style={{ borderRadius: 16 }}>
+              <div className="mb-4" style={{ color: 'var(--text-muted)', opacity: 0.3 }}>
                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" className="mx-auto">
                   <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
                 </svg>
               </div>
-              <p className="text-sm text-[var(--text-secondary)]">Select a symbol to begin</p>
-              <p className="text-[10px] text-[#6b7a90] mt-1">
+              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>Select a symbol to view its chart</p>
+              <p className="text-caption mt-1">
                 Use the sidebar or press {navigator.platform.includes('Mac') ? '\u2318' : 'Ctrl+'}K to search
               </p>
             </div>
@@ -331,8 +331,11 @@ function SymbolList({
             key={s}
             onClick={() => onSelect(s)}
             className={`w-full text-left px-3 py-1.5 text-xs font-medium transition-all duration-150 flex items-center gap-1.5
-              ${isSelected ? 'bg-[var(--accent-violet)]/10' : 'hover:bg-[var(--accent-violet)]/5'}`}
-            style={{ color: isSelected ? (accent || '#b49aff') : '#94a3b8' }}
+              ${isSelected ? 'bg-[var(--accent-violet)]/10' : 'hover:bg-[var(--accent-violet)]/5 hover:translate-x-0.5'}`}
+            style={{
+              color: isSelected ? (accent || '#b49aff') : '#94a3b8',
+              borderLeft: isSelected ? `3px solid ${accent || 'var(--accent-violet)'}` : '3px solid transparent',
+            }}
           >
             <span className={`w-0.5 h-3 rounded-full transition-all duration-200 ${isSelected ? 'opacity-100' : 'opacity-0'}`}
               style={{ backgroundColor: accent || '#b49aff' }} />
@@ -373,7 +376,7 @@ function SectorSymbolList({
           <div key={sec.name}>
             <button
               onClick={() => toggleSector(sec.name)}
-              className="w-full flex items-center gap-1.5 px-2 py-1.5 hover:bg-[var(--accent-violet)]/5 transition-colors"
+              className="sector-header w-full flex items-center gap-1.5 hover:bg-[var(--accent-violet)]/5 transition-colors"
             >
               {expanded
                 ? <ChevronDown className="w-3 h-3 text-[var(--text-secondary)]" />

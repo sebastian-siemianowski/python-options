@@ -204,7 +204,7 @@ function SentimentStrip({ sector }: { sector: SectorGroup }) {
     { pct: (sector.strong_buy / total) * 100, c: 'var(--accent-emerald)' },
   ];
   return (
-    <div className="flex h-[5px] rounded-full overflow-hidden" style={{ width: 80, background: 'var(--void-active)' }}>
+    <div className="flex h-[12px] rounded-md overflow-hidden" style={{ width: 80, background: 'var(--void-active)', boxShadow: '0 2px 8px rgba(0,0,0,0.2), inset 0 1px 2px rgba(255,255,255,0.04)' }}>
       {segs.map((s, i) => s.pct > 0 ? (
         <div key={i} className="h-full" style={{ width: `${s.pct}%`, background: s.c }} />
       ) : null)}
@@ -240,13 +240,13 @@ function SummaryStrip({ sectors }: { sectors: SectorGroup[] }) {
   ];
 
   return (
-    <div className="flex items-center gap-1 flex-wrap">
-      {items.map(it => (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      {items.map((it, idx) => (
         <div key={it.label}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg"
-          style={{ background: 'var(--void-surface)' }}>
-          <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{it.label}</span>
-          <span className="text-[13px] font-bold tabular-nums" style={{ color: it.color }}>{it.value}</span>
+          className="glass-card hover-lift flex items-center gap-1.5 px-3 py-2 rounded-lg"
+          style={{ animationDelay: `${idx * 50}ms` }}>
+          <span className="text-label">{it.label}</span>
+          <span className="text-stat-value tabular-nums" style={{ color: it.color, fontSize: 13 }}>{it.value}</span>
         </div>
       ))}
     </div>
@@ -608,11 +608,12 @@ export default function HeatmapPage() {
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search assets or sectors..."
-            className="w-full pl-9 pr-8 py-2 rounded-xl text-[12px] outline-none transition-all"
+            className="w-full pl-9 pr-8 py-2.5 rounded-xl text-[12px] outline-none transition-all focus-ring"
             style={{
               background: 'var(--void-surface)',
               border: '1px solid var(--border-void)',
               color: 'var(--text-primary)',
+              backdropFilter: 'blur(8px)',
             }}
             onFocus={e => (e.target.style.borderColor = 'rgba(139,92,246,0.35)')}
             onBlur={e => (e.target.style.borderColor = 'var(--border-void)')}
@@ -635,12 +636,9 @@ export default function HeatmapPage() {
             <button
               key={opt.value}
               onClick={() => setFilter(opt.value)}
-              className="px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all"
-              style={{
-                background: filter === opt.value ? 'var(--violet-15)' : 'transparent',
-                color: filter === opt.value ? opt.color : 'var(--text-muted)',
-                border: `1px solid ${filter === opt.value ? 'var(--violet-25)' : 'transparent'}`,
-              }}
+              className="filter-pill"
+              data-active={filter === opt.value || undefined}
+              data-filter={opt.value}
             >
               {opt.label}
             </button>

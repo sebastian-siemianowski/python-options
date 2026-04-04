@@ -77,11 +77,11 @@ export default function ServicesPage() {
       </div>
 
       {/* Service cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-8 fade-up-delay-1">
-        <ApiCard data={data.api} />
-        <CacheCard data={data.signal_cache} />
-        <PriceDataCard data={data.price_data} />
-        <WorkersCard data={data.workers} />
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-8">
+        <div className="fade-up" style={{ animationDelay: '50ms' }}><ApiCard data={data.api} /></div>
+        <div className="fade-up" style={{ animationDelay: '100ms' }}><CacheCard data={data.signal_cache} /></div>
+        <div className="fade-up" style={{ animationDelay: '150ms' }}><PriceDataCard data={data.price_data} /></div>
+        <div className="fade-up" style={{ animationDelay: '200ms' }}><WorkersCard data={data.workers} /></div>
       </div>
 
       {/* Error log */}
@@ -108,8 +108,8 @@ function ApiCard({ data }: { data: ServicesHealth['api'] }) {
   return (
     <div className={`glass-card p-5 border-l-2 hover-lift ${statusBg(data.status)}`}>
       <div className="flex items-center gap-2.5 mb-4">
-        <div className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ background: 'var(--violet-10)' }}>
-          <Server className="w-4 h-4" style={{ color: '#b49aff' }} />
+        <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: 'var(--violet-10)' }}>
+          <Server className="w-4.5 h-4.5" style={{ color: '#b49aff' }} />
         </div>
         <h3 className="text-[13px] font-medium" style={{ color: 'var(--text-luminous)' }}>API Server</h3>
         <div className="ml-auto"><StatusIcon status={data.status} /></div>
@@ -199,8 +199,8 @@ function Metric({ icon, label, value, valueColor }: { icon?: React.ReactNode; la
     <div className="flex items-center gap-1.5">
       {icon && <span className="text-[var(--text-secondary)]">{icon}</span>}
       <div>
-        <p className="text-[10px] text-[var(--text-secondary)]">{label}</p>
-        <p className="text-[#e2e8f0] font-medium" style={valueColor ? { color: valueColor } : {}}>{value}</p>
+        <p className="text-label">{label}</p>
+        <p className="text-[#e2e8f0] font-medium tabular-nums" style={valueColor ? { color: valueColor } : {}}>{value}</p>
       </div>
     </div>
   );
@@ -223,7 +223,7 @@ function ErrorLog({ errors }: { errors: ServiceError[] }) {
       ) : (
         <div className="max-h-64 overflow-y-auto" style={{ borderTop: errors.length ? undefined : undefined }}>
           {errors.map((e, i) => (
-            <div key={i} className="px-4 py-2 flex items-start gap-3 text-xs" style={{ borderBottom: '1px solid var(--violet-4)' }}>
+            <div key={i} className="px-4 py-2 flex items-start gap-3 text-xs" style={{ borderBottom: '1px solid var(--violet-4)', borderLeft: '3px solid var(--accent-rose)' }}>
               <XCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" style={{ color: 'var(--accent-rose)' }} />
               <div className="flex-1 min-w-0">
                 <span className="font-medium text-[#e2e8f0]">[{e.source}]</span>{' '}
