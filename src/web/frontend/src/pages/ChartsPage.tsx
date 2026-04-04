@@ -11,6 +11,7 @@ import {
 } from 'lightweight-charts';
 import { ChevronDown, ChevronRight, Search, X } from 'lucide-react';
 import { formatHorizon } from '../utils/horizons';
+import BuySellZoneCharts from '../components/BuySellZoneCharts';
 
 /* ═══════════════════════════════════════════════════════════════════
    TYPES & CONFIG
@@ -677,6 +678,14 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
     enabled: !!symbol,
   });
 
+  /* Zone charts always need 365d of data regardless of current time range */
+  const zoneOhlcvQ = useQuery({
+    queryKey: ['ohlcv', symbol, 365],
+    queryFn: () => api.chartOhlcv(symbol, 365),
+    enabled: !!symbol,
+    staleTime: 120_000,
+  });
+
   /* ── Price chart ─────────────────────────────────────────── */
   useEffect(() => {
     if (!priceChartRef.current || !ohlcvQ.data?.data?.length) return;
@@ -1187,6 +1196,15 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
             })}
           </div>
         </div>
+      ) : null}
+
+      {/* ── Buy & Sell Zone Mini Charts ──────────────────────── */}
+      {zoneOhlcvQ.data?.data?.length && forecastQ.data?.forecasts?.length ? (
+        <BuySellZoneCharts
+          ohlcv={zoneOhlcvQ.data.data}
+          forecasts={forecastQ.data.forecasts}
+          symbol={symbol}
+        />
       ) : null}
     </div>
   );

@@ -14,6 +14,7 @@ import {
   Stethoscope,
   ChevronsLeft,
   ChevronsRight,
+  Grid3X3,
 } from 'lucide-react';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import CommandPalette from './CommandPalette';
@@ -142,6 +143,22 @@ export default function Layout() {
           `${ss.total_assets} assets tracked`,
           `${ss.strong_buy_signals + ss.strong_sell_signals} strong signals`,
           `${ss.failed} failed assets`,
+        ];
+      },
+    },
+    {
+      to: '/heatmap', label: 'Heatmap', icon: Grid3X3,
+      badgeFn: () => {
+        if (!ss) return null;
+        const ct = ss.strong_buy_signals + ss.strong_sell_signals;
+        if (ct === 0) return null;
+        return { text: String(ct), color: ss.strong_buy_signals >= ss.strong_sell_signals ? 'emerald' : 'rose' };
+      },
+      tooltipFn: () => {
+        if (!ss) return ['Loading...'];
+        return [
+          `${ss.total_assets} assets across all sectors`,
+          'Signal star-map with filtering',
         ];
       },
     },

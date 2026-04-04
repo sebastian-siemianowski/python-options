@@ -379,9 +379,9 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
                         <SectorSentimentBar sector={sector} />
                         <span
                           className="text-[10px] tabular-nums font-medium"
-                          style={{ color: avgMom > 0 ? '#34D399' : avgMom < 0 ? '#FB7185' : 'var(--text-muted, #475569)' }}
+                          style={{ color: avgMom > 5 ? '#34D399' : avgMom < -5 ? '#FB7185' : 'var(--text-muted, #475569)' }}
                         >
-                          {avgMom > 0 ? '+' : ''}{(avgMom * 100).toFixed(1)}%
+                          {avgMom > 0 ? '+' : ''}{avgMom.toFixed(1)}
                         </span>
                       </div>
                     </td>

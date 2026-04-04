@@ -13,6 +13,7 @@ import ArenaPage from './pages/ArenaPage';
 import ServicesPage from './pages/ServicesPage';
 import DiagnosticsPage from './pages/DiagnosticsPage';
 import ProfitabilityPage from './pages/ProfitabilityPage';
+import HeatmapPage from './pages/HeatmapPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -33,6 +34,7 @@ export default function App() {
           <Routes>
             <Route element={<Layout />}>
               <Route path="/" element={<OverviewPage />} />
+              <Route path="/heatmap" element={<HeatmapPage />} />
               <Route path="/signals" element={<SignalsPage />} />
               <Route path="/risk" element={<RiskPage />} />
               <Route path="/charts" element={<ChartsPage />} />
