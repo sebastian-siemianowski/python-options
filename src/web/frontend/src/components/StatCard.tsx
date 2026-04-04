@@ -9,12 +9,12 @@ interface Props {
 }
 
 const ACCENT: Record<string, { text: string; rgb: string }> = {
-  green:  { text: '#3ee8a5', rgb: '62,232,165' },
-  red:    { text: '#ff6b8a', rgb: '255,107,138' },
+  green:  { text: 'var(--accent-emerald)', rgb: '62,232,165' },
+  red:    { text: 'var(--accent-rose)', rgb: '255,107,138' },
   blue:   { text: '#b49aff', rgb: '167,139,250' },
-  amber:  { text: '#f5c542', rgb: '245,197,66' },
+  amber:  { text: 'var(--accent-amber)', rgb: '245,197,66' },
   purple: { text: '#c084fc', rgb: '192,132,252' },
-  cyan:   { text: '#38d9f5', rgb: '56,217,245' },
+  cyan:   { text: 'var(--accent-cyan)', rgb: '56,217,245' },
 };
 
 export default function StatCard({ title, value, subtitle, icon, color = 'blue' }: Props) {

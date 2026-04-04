@@ -73,9 +73,9 @@ export default function DiagnosticsPage() {
             disabled={pitQ.isFetching}
             className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm transition-all duration-200 disabled:opacity-50"
             style={{
-              background: 'rgba(139,92,246,0.08)',
+              background: 'var(--violet-8)',
               color: '#b49aff',
-              border: '1px solid rgba(139,92,246,0.12)',
+              border: '1px solid var(--violet-12)',
             }}
           >
             <RefreshCw className={`w-3.5 h-3.5 ${pitQ.isFetching ? 'animate-spin' : ''}`} />
@@ -103,16 +103,16 @@ export default function DiagnosticsPage() {
       )}
 
       {/* Tab nav */}
-      <div className="flex gap-1 mb-8 fade-up-delay-1" style={{ borderBottom: '1px solid rgba(139,92,246,0.06)' }}>
+      <div className="flex gap-1 mb-8 fade-up-delay-1" style={{ borderBottom: '1px solid var(--violet-6)' }}>
         {tabs.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             onClick={() => setTab(id)}
             className="flex items-center gap-2 px-5 py-3 text-sm font-medium transition-all duration-200 -mb-[1px]"
             style={{
-              borderBottom: tab === id ? '2px solid #8b5cf6' : '2px solid transparent',
+              borderBottom: tab === id ? '2px solid var(--accent-violet)' : '2px solid transparent',
               color: tab === id ? '#b49aff' : 'var(--text-muted)',
-              background: tab === id ? 'rgba(139,92,246,0.04)' : undefined,
+              background: tab === id ? 'var(--violet-4)' : undefined,
               borderRadius: '12px 12px 0 0',
             }}
           >
@@ -148,7 +148,7 @@ function PitTab({
   return (
     <div className="glass-card overflow-hidden">
       {/* Toolbar */}
-      <div className="p-3 flex items-center gap-3" style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
+      <div className="p-3 flex items-center gap-3" style={{ borderBottom: '1px solid var(--violet-8)' }}>
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: '#7a8ba4' }} />
           <input
@@ -159,7 +159,7 @@ function PitTab({
             className="w-full pl-9 pr-3 py-1.5 rounded-xl text-sm outline-none transition-all duration-200"
             style={{
               background: 'rgba(10,10,26,0.6)',
-              border: '1px solid rgba(139,92,246,0.08)',
+              border: '1px solid var(--violet-8)',
               color: 'var(--text-primary)',
             }}
           />
@@ -171,8 +171,8 @@ function PitTab({
               onClick={() => setFilterPit(f)}
               className="px-3 py-1.5 rounded-xl text-xs font-medium transition-all duration-200"
               style={filterPit === f ? {
-                background: f === 'pass' ? 'rgba(62,232,165,0.15)' : f === 'fail' ? 'rgba(255,107,138,0.15)' : 'rgba(139,92,246,0.15)',
-                color: f === 'pass' ? '#3ee8a5' : f === 'fail' ? '#ff6b8a' : '#b49aff',
+                background: f === 'pass' ? 'var(--emerald-15)' : f === 'fail' ? 'var(--rose-15)' : 'var(--violet-15)',
+                color: f === 'pass' ? 'var(--accent-emerald)' : f === 'fail' ? 'var(--accent-rose)' : '#b49aff',
               } : { color: '#7a8ba4' }}
             >
               {f === 'all' ? 'All' : f === 'pass' ? 'Pass' : 'Fail'}
@@ -272,28 +272,28 @@ function ModelMetricsTable({ models, bmaWeights }: { models: DiagAsset['models']
                 <td className="font-medium" style={{ color: 'var(--text-luminous)' }}>{formatModelNameShort(m.model)}</td>
                 <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{m.bic != null ? m.bic.toFixed(0) : '--'}</td>
                 <td className="text-right">
-                  <span style={{ color: m.crps != null && m.crps < 0.02 ? '#3ee8a5' : 'var(--text-secondary)' }}>
+                  <span style={{ color: m.crps != null && m.crps < 0.02 ? 'var(--accent-emerald)' : 'var(--text-secondary)' }}>
                     {m.crps != null ? m.crps.toFixed(4) : '--'}
                   </span>
                 </td>
                 <td className="text-right">
-                  <span style={{ color: m.hyvarinen != null && m.hyvarinen < 1000 ? '#3ee8a5' : m.hyvarinen != null && m.hyvarinen > 2000 ? '#ff6b8a' : 'var(--text-secondary)' }}>
+                  <span style={{ color: m.hyvarinen != null && m.hyvarinen < 1000 ? 'var(--accent-emerald)' : m.hyvarinen != null && m.hyvarinen > 2000 ? 'var(--accent-rose)' : 'var(--text-secondary)' }}>
                     {m.hyvarinen != null ? m.hyvarinen.toFixed(0) : '--'}
                   </span>
                 </td>
                 <td className="text-right">
-                  <span style={{ color: m.pit_ks_pvalue != null && m.pit_ks_pvalue >= 0.05 ? '#3ee8a5' : m.pit_ks_pvalue != null ? '#ff6b8a' : 'var(--text-muted)' }}>
+                  <span style={{ color: m.pit_ks_pvalue != null && m.pit_ks_pvalue >= 0.05 ? 'var(--accent-emerald)' : m.pit_ks_pvalue != null ? 'var(--accent-rose)' : 'var(--text-muted)' }}>
                     {m.pit_ks_pvalue != null ? m.pit_ks_pvalue.toFixed(3) : '--'}
                   </span>
                 </td>
                 <td className="text-right">
-                  <span style={{ color: m.ad_pvalue != null && m.ad_pvalue >= 0.05 ? '#3ee8a5' : m.ad_pvalue != null ? '#ff6b8a' : 'var(--text-muted)' }}>
+                  <span style={{ color: m.ad_pvalue != null && m.ad_pvalue >= 0.05 ? 'var(--accent-emerald)' : m.ad_pvalue != null ? 'var(--accent-rose)' : 'var(--text-muted)' }}>
                     {m.ad_pvalue != null ? m.ad_pvalue.toFixed(3) : '--'}
                   </span>
                 </td>
                 <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{m.histogram_mad != null ? m.histogram_mad.toFixed(4) : '--'}</td>
                 <td className="text-right">
-                  <span style={{ color: w > 0.2 ? '#3ee8a5' : w > 0.05 ? '#f5c542' : 'var(--text-muted)', fontWeight: w > 0.2 ? 700 : 400 }}>
+                  <span style={{ color: w > 0.2 ? 'var(--accent-emerald)' : w > 0.05 ? 'var(--accent-amber)' : 'var(--text-muted)', fontWeight: w > 0.2 ? 700 : 400 }}>
                     {(w * 100).toFixed(1)}%
                   </span>
                 </td>
@@ -332,11 +332,11 @@ function ModelsTab({ data }: { data: { models: Record<string, DiagModelStats>; t
           <h3 className="premium-section-label mb-4">Win Count (Best Model Selection)</h3>
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={chartData} layout="vertical">
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(139,92,246,0.06)" />
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--violet-6)" />
               <XAxis type="number" tick={{ fill: '#7a8ba4', fontSize: 10 }} />
               <YAxis type="category" dataKey="name" width={120} tick={{ fill: '#94a3b8', fontSize: 10 }} />
-              <Tooltip contentStyle={{ background: 'rgba(15,15,35,0.95)', border: '1px solid rgba(139,92,246,0.15)', borderRadius: 8, color: '#e2e8f0', backdropFilter: 'blur(12px)' }} />
-              <Bar dataKey="wins" fill="#8b5cf6" radius={[0, 4, 4, 0]} name="Wins" />
+              <Tooltip contentStyle={{ background: 'rgba(15,15,35,0.95)', border: '1px solid var(--violet-15)', borderRadius: 8, color: '#e2e8f0', backdropFilter: 'blur(12px)' }} />
+              <Bar dataKey="wins" fill="var(--accent-violet)" radius={[0, 4, 4, 0]} name="Wins" />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -344,10 +344,10 @@ function ModelsTab({ data }: { data: { models: Record<string, DiagModelStats>; t
           <h3 className="premium-section-label mb-4">Avg BMA Weight (%)</h3>
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={winRateData} layout="vertical">
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(139,92,246,0.06)" />
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--violet-6)" />
               <XAxis type="number" tick={{ fill: '#7a8ba4', fontSize: 10 }} />
               <YAxis type="category" dataKey="name" width={120} tick={{ fill: '#94a3b8', fontSize: 10 }} />
-              <Tooltip contentStyle={{ background: 'rgba(15,15,35,0.95)', border: '1px solid rgba(139,92,246,0.15)', borderRadius: 8, color: '#e2e8f0', backdropFilter: 'blur(12px)' }} />
+              <Tooltip contentStyle={{ background: 'rgba(15,15,35,0.95)', border: '1px solid var(--violet-15)', borderRadius: 8, color: '#e2e8f0', backdropFilter: 'blur(12px)' }} />
               <Bar dataKey="avgWeight" fill="#b49aff" radius={[0, 4, 4, 0]} name="Avg Weight %" />
             </BarChart>
           </ResponsiveContainer>
@@ -375,7 +375,7 @@ function ModelsTab({ data }: { data: { models: Record<string, DiagModelStats>; t
                   <td className="font-medium" style={{ color: 'var(--text-luminous)' }}>{formatModelNameShort(m.name)}</td>
                   <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{m.win_count}</td>
                   <td className="text-right">
-                    <span style={{ color: m.win_rate > 0.1 ? '#3ee8a5' : 'var(--text-secondary)' }}>
+                    <span style={{ color: m.win_rate > 0.1 ? 'var(--accent-emerald)' : 'var(--text-secondary)' }}>
                       {(m.win_rate * 100).toFixed(1)}%
                     </span>
                   </td>
@@ -400,7 +400,7 @@ function MatrixTab({ data, isLoading }: { data?: DiagCrossAssetSummary; isLoadin
   const [matrixSearch, setMatrixSearch] = useState('');
 
   if (isLoading) return <LoadingSpinner text="Loading cross-asset matrix..." />;
-  if (!data || data.rows.length === 0) return <div className="glass-card p-6 text-center text-[#7a8ba4]">No data available</div>;
+  if (!data || data.rows.length === 0) return <div className="glass-card p-6 text-center text-[var(--text-secondary)]">No data available</div>;
 
   const models = data.models;
   const filteredRows = matrixSearch
@@ -409,10 +409,10 @@ function MatrixTab({ data, isLoading }: { data?: DiagCrossAssetSummary; isLoadin
 
   const getCellColor = (val: number | null | undefined, _m: string): string => {
     if (val == null) return 'text-[#2a2a4a]';
-    if (metric === 'crps') return val < 0.015 ? 'text-[#3ee8a5]' : val < 0.025 ? 'text-[#94a3b8]' : 'text-[#f97316]';
-    if (metric === 'pit_ks_p') return val >= 0.05 ? 'text-[#3ee8a5]' : 'text-[#ff6b8a]';
-    if (metric === 'weight') return val > 0.2 ? 'text-[#3ee8a5] font-bold' : val > 0.05 ? 'text-[#f5c542]' : 'text-[#7a8ba4]';
-    return 'text-[#94a3b8]';
+    if (metric === 'crps') return val < 0.015 ? 'text-[var(--accent-emerald)]' : val < 0.025 ? 'text-[var(--text-secondary)]' : 'text-[var(--accent-orange)]';
+    if (metric === 'pit_ks_p') return val >= 0.05 ? 'text-[var(--accent-emerald)]' : 'text-[var(--accent-rose)]';
+    if (metric === 'weight') return val > 0.2 ? 'text-[var(--accent-emerald)] font-bold' : val > 0.05 ? 'text-[var(--accent-amber)]' : 'text-[var(--text-secondary)]';
+    return 'text-[var(--text-secondary)]';
   };
 
   const fmtVal = (val: number | null | undefined): string => {
@@ -431,7 +431,7 @@ function MatrixTab({ data, isLoading }: { data?: DiagCrossAssetSummary; isLoadin
         <div className="overflow-x-auto">
           <table className="w-full text-[11px]">
             <thead>
-              <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
+              <tr style={{ borderBottom: '1px solid var(--violet-8)' }}>
                 <th className="text-left px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>Model</th>
                 <th className="text-right px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>Avg CRPS</th>
                 <th className="text-right px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>Avg PIT p</th>
@@ -443,12 +443,12 @@ function MatrixTab({ data, isLoading }: { data?: DiagCrossAssetSummary; isLoadin
               {models.map(m => {
                 const avg = data.model_averages[m];
                 return (
-                  <tr key={m} style={{ borderBottom: '1px solid rgba(139,92,246,0.04)' }} className="transition-all duration-150">
+                  <tr key={m} style={{ borderBottom: '1px solid var(--violet-4)' }} className="transition-all duration-150">
                     <td className="px-2 py-1.5 font-medium" style={{ color: 'var(--text-luminous)' }}>{formatModelNameShort(m)}</td>
-                    <td className="px-2 py-1.5 text-right" style={{ color: avg?.avg_crps != null && avg.avg_crps < 0.02 ? '#3ee8a5' : 'var(--text-secondary)' }}>
+                    <td className="px-2 py-1.5 text-right" style={{ color: avg?.avg_crps != null && avg.avg_crps < 0.02 ? 'var(--accent-emerald)' : 'var(--text-secondary)' }}>
                       {avg?.avg_crps?.toFixed(5) ?? '—'}
                     </td>
-                    <td className="px-2 py-1.5 text-right" style={{ color: avg?.avg_pit_p != null && avg.avg_pit_p >= 0.05 ? '#3ee8a5' : 'var(--text-secondary)' }}>
+                    <td className="px-2 py-1.5 text-right" style={{ color: avg?.avg_pit_p != null && avg.avg_pit_p >= 0.05 ? 'var(--accent-emerald)' : 'var(--text-secondary)' }}>
                       {avg?.avg_pit_p?.toFixed(4) ?? '—'}
                     </td>
                     <td className="px-2 py-1.5 text-right" style={{ color: 'var(--text-secondary)' }}>{avg?.avg_bic?.toFixed(0) ?? '--'}</td>
@@ -463,7 +463,7 @@ function MatrixTab({ data, isLoading }: { data?: DiagCrossAssetSummary; isLoadin
 
       {/* Matrix controls */}
       <div className="glass-card overflow-hidden">
-        <div className="p-3 flex items-center gap-3" style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
+        <div className="p-3 flex items-center gap-3" style={{ borderBottom: '1px solid var(--violet-8)' }}>
           <div className="relative flex-1 max-w-xs">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: '#7a8ba4' }} />
             <input
@@ -474,7 +474,7 @@ function MatrixTab({ data, isLoading }: { data?: DiagCrossAssetSummary; isLoadin
               className="w-full pl-9 pr-3 py-1.5 rounded-xl text-sm outline-none transition-all duration-200"
               style={{
                 background: 'rgba(10,10,26,0.6)',
-                border: '1px solid rgba(139,92,246,0.08)',
+                border: '1px solid var(--violet-8)',
                 color: 'var(--text-primary)',
               }}
             />
@@ -486,7 +486,7 @@ function MatrixTab({ data, isLoading }: { data?: DiagCrossAssetSummary; isLoadin
                 onClick={() => setMetric(k)}
                 className="px-3 py-1.5 rounded-xl text-xs font-medium transition-all duration-200"
                 style={metric === k ? {
-                  background: 'rgba(139,92,246,0.15)',
+                  background: 'var(--violet-15)',
                   color: '#b49aff',
                 } : { color: '#7a8ba4' }}
               >
@@ -542,11 +542,11 @@ function MatrixTab({ data, isLoading }: { data?: DiagCrossAssetSummary; isLoadin
 /* ── Regime Distribution Tab ──────────────────────────────────────── */
 
 const REGIME_COLORS: Record<string, string> = {
-  LOW_VOL_TREND: '#3ee8a5',
-  HIGH_VOL_TREND: '#f5c542',
+  LOW_VOL_TREND: 'var(--accent-emerald)',
+  HIGH_VOL_TREND: 'var(--accent-amber)',
   LOW_VOL_RANGE: '#b49aff',
-  HIGH_VOL_RANGE: '#f97316',
-  CRISIS_JUMP: '#ff6b8a',
+  HIGH_VOL_RANGE: 'var(--accent-orange)',
+  CRISIS_JUMP: 'var(--accent-rose)',
   unknown: '#7a8ba4',
 };
 
@@ -571,7 +571,7 @@ function RegimesTab({ data }: { data: { regimes: Record<string, { count: number;
                 <Cell key={entry.name} fill={entry.color} />
               ))}
             </Pie>
-            <Tooltip contentStyle={{ background: 'rgba(15,15,35,0.95)', border: '1px solid rgba(139,92,246,0.15)', borderRadius: 8, color: '#e2e8f0', fontSize: 12, backdropFilter: 'blur(12px)' }} />
+            <Tooltip contentStyle={{ background: 'rgba(15,15,35,0.95)', border: '1px solid var(--violet-15)', borderRadius: 8, color: '#e2e8f0', fontSize: 12, backdropFilter: 'blur(12px)' }} />
           </PieChart>
         </ResponsiveContainer>
       </div>
@@ -583,7 +583,7 @@ function RegimesTab({ data }: { data: { regimes: Record<string, { count: number;
             <button
               onClick={() => setExpandedRegime(expandedRegime === name ? null : name)}
               className="w-full px-4 py-3 flex items-center justify-between transition-all duration-200"
-              style={{ background: expandedRegime === name ? 'rgba(139,92,246,0.04)' : undefined }}
+              style={{ background: expandedRegime === name ? 'var(--violet-4)' : undefined }}
             >
               <div className="flex items-center gap-3">
                 <span className="w-3 h-3 rounded-full" style={{ background: REGIME_COLORS[name] || '#7a8ba4' }} />
@@ -591,13 +591,13 @@ function RegimesTab({ data }: { data: { regimes: Record<string, { count: number;
               </div>
               <div className="flex items-center gap-4">
                 <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>{info.count} assets ({info.percentage}%)</span>
-                {expandedRegime === name ? <ChevronDown className="w-4 h-4 text-[#7a8ba4]" /> : <ChevronRight className="w-4 h-4 text-[#7a8ba4]" />}
+                {expandedRegime === name ? <ChevronDown className="w-4 h-4 text-[var(--text-secondary)]" /> : <ChevronRight className="w-4 h-4 text-[var(--text-secondary)]" />}
               </div>
             </button>
             {expandedRegime === name && (
               <div className="px-4 pb-3 flex flex-wrap gap-1.5">
                 {info.assets.map(sym => (
-                  <span key={sym} className="px-2 py-0.5 rounded text-[10px]" style={{ background: 'rgba(139,92,246,0.06)', color: 'var(--text-secondary)' }}>{sym}</span>
+                  <span key={sym} className="px-2 py-0.5 rounded text-[10px]" style={{ background: 'var(--violet-6)', color: 'var(--text-secondary)' }}>{sym}</span>
                 ))}
               </div>
             )}
@@ -615,7 +615,7 @@ function FailuresTab({ data }: { data?: { failures: Array<Record<string, unknown
   if (!data.file_exists) {
     return (
       <div className="glass-card p-6 text-center">
-        <AlertTriangle className="w-8 h-8 mx-auto mb-3" style={{ color: '#f5c542' }} />
+        <AlertTriangle className="w-8 h-8 mx-auto mb-3" style={{ color: 'var(--accent-amber)' }} />
         <p style={{ color: 'var(--text-secondary)' }}>No calibration_failures.json found.</p>
         <p className="text-xs mt-1" style={{ color: '#7a8ba4' }}>Run <code style={{ color: '#b49aff' }}>make tune</code> to generate calibration data.</p>
       </div>
@@ -625,7 +625,7 @@ function FailuresTab({ data }: { data?: { failures: Array<Record<string, unknown
   if (data.count === 0) {
     return (
       <div className="glass-card p-6 text-center">
-        <CheckCircle className="w-8 h-8 mx-auto mb-3" style={{ color: '#3ee8a5' }} />
+        <CheckCircle className="w-8 h-8 mx-auto mb-3" style={{ color: 'var(--accent-emerald)' }} />
         <p className="font-medium" style={{ color: 'var(--text-luminous)' }}>All assets passing calibration</p>
         <p className="text-xs mt-1" style={{ color: '#7a8ba4' }}>No calibration failures detected.</p>
       </div>
@@ -634,8 +634,8 @@ function FailuresTab({ data }: { data?: { failures: Array<Record<string, unknown
 
   return (
     <div className="glass-card overflow-hidden">
-      <div className="p-4" style={{ borderBottom: '1px solid rgba(139,92,246,0.06)' }}>
-        <span className="text-sm font-medium" style={{ color: '#f5c542' }}>{data.count} assets failing calibration</span>
+      <div className="p-4" style={{ borderBottom: '1px solid var(--violet-6)' }}>
+        <span className="text-sm font-medium" style={{ color: 'var(--accent-amber)' }}>{data.count} assets failing calibration</span>
       </div>
       <div className="overflow-y-auto max-h-[500px]">
         <table className="w-full text-xs">
@@ -648,10 +648,10 @@ function FailuresTab({ data }: { data?: { failures: Array<Record<string, unknown
           <tbody>
             {data.failures.map((f, i) => (
               <tr key={i} className="premium-row">
-                <td className="font-medium" style={{ color: '#ff6b8a' }}>{String(f.symbol || f.asset || `Entry ${i + 1}`)}</td>
+                <td className="font-medium" style={{ color: 'var(--accent-rose)' }}>{String(f.symbol || f.asset || `Entry ${i + 1}`)}</td>
                 <td className="px-3 py-2">
                   <pre className="text-[10px] whitespace-pre-wrap max-w-lg p-3 rounded-xl font-mono"
-                    style={{ background: 'rgba(10,10,26,0.6)', color: 'var(--text-secondary)', border: '1px solid rgba(139,92,246,0.06)' }}>{JSON.stringify(f, null, 1)}</pre>
+                    style={{ background: 'rgba(10,10,26,0.6)', color: 'var(--text-secondary)', border: '1px solid var(--violet-6)' }}>{JSON.stringify(f, null, 1)}</pre>
                 </td>
               </tr>
             ))}
@@ -666,18 +666,18 @@ function FailuresTab({ data }: { data?: { failures: Array<Record<string, unknown
 
 function GradeBadge({ grade }: { grade: string }) {
   const color =
-    grade === 'A' ? 'text-[#3ee8a5]' :
+    grade === 'A' ? 'text-[var(--accent-emerald)]' :
     grade === 'B' ? 'text-[#6ff0c0]' :
-    grade === 'C' ? 'text-[#f5c542]' :
-    grade === 'D' ? 'text-[#f97316]' :
-    grade === 'F' ? 'text-[#ff6b8a]' :
-    'text-[#7a8ba4]';
+    grade === 'C' ? 'text-[var(--accent-amber)]' :
+    grade === 'D' ? 'text-[var(--accent-orange)]' :
+    grade === 'F' ? 'text-[var(--accent-rose)]' :
+    'text-[var(--text-secondary)]';
 
   return <span className={`font-bold ${color}`}>{grade}</span>;
 }
 
 function RegimeBadge({ regime }: { regime: string | null }) {
-  if (!regime) return <span className="text-[#7a8ba4]">—</span>;
+  if (!regime) return <span className="text-[var(--text-secondary)]">—</span>;
   const color = REGIME_COLORS[regime] || '#7a8ba4';
   const short = regime.replace('_', ' ').replace('VOL', 'V').replace('TREND', 'T').replace('RANGE', 'R');
   return <span className="text-[10px] font-medium" style={{ color }}>{short}</span>;

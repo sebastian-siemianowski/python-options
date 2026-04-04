@@ -65,7 +65,7 @@ export default function MicroGauge({ value, label, caption, gradient, id }: Prop
           cy={size / 2}
           r={radius}
           fill="none"
-          stroke="rgba(139,92,246,0.08)"
+          stroke="var(--violet-8)"
           strokeWidth={stroke}
           strokeDasharray={`${arcLength} ${circumference}`}
           strokeDashoffset={0}

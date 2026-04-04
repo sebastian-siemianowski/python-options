@@ -118,7 +118,7 @@ function CosmicButton({ label, onClick, variant = 'primary' }: {
       <button
         onClick={onClick}
         className="h-10 px-5 rounded-xl text-sm font-medium transition-all duration-200
-          hover:bg-[rgba(139,92,246,0.08)]"
+          hover:bg-[var(--violet-8)]"
         style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-void)' }}
       >
         {label}
@@ -147,11 +147,17 @@ function EmptyStateShell({ illustration, heading, description, children }: {
 }) {
   return (
     <div className="flex flex-col items-center justify-center py-20 gap-5 fade-up" style={{ maxWidth: 400, margin: '0 auto' }}>
-      <div className="mb-2">{illustration}</div>
-      <h3 className="text-lg font-semibold text-center" style={{ color: 'var(--text-luminous)' }}>
+      <div className="empty-icon-badge mb-2">
+        {illustration}
+        <span className="empty-particle" />
+        <span className="empty-particle" />
+        <span className="empty-particle" />
+        <span className="empty-particle" />
+      </div>
+      <h3 className="text-section text-center" style={{ color: 'var(--text-luminous)' }}>
         {heading}
       </h3>
-      <p className="text-sm text-center leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+      <p className="text-caption text-center leading-relaxed">
         {description}
       </p>
       {children && <div className="flex items-center gap-3 mt-2">{children}</div>}
@@ -200,11 +206,11 @@ export function ChartsEmpty() {
           <span
             key={t}
             className="px-3 py-1 rounded-full text-xs font-medium cursor-pointer transition-all duration-200
-              hover:bg-[rgba(139,92,246,0.15)]"
+              hover:bg-[var(--violet-15)]"
             style={{
-              background: 'rgba(139,92,246,0.06)',
+              background: 'var(--violet-6)',
               color: '#C4B5FD',
-              border: '1px solid rgba(139,92,246,0.12)',
+              border: '1px solid var(--violet-12)',
             }}
           >
             {t}

@@ -31,11 +31,11 @@ type SignalFilter = 'all' | 'strong_buy' | 'buy' | 'hold' | 'sell' | 'strong_sel
 
 const FILTER_OPTIONS: { value: SignalFilter; label: string; color: string }[] = [
   { value: 'all', label: 'All Signals', color: 'var(--text-secondary)' },
-  { value: 'strong_buy', label: 'Strong Buy', color: '#3ee8a5' },
+  { value: 'strong_buy', label: 'Strong Buy', color: 'var(--accent-emerald)' },
   { value: 'buy', label: 'Buy', color: 'rgba(62,232,165,0.7)' },
   { value: 'hold', label: 'Hold', color: 'var(--text-muted)' },
   { value: 'sell', label: 'Sell', color: 'rgba(255,107,138,0.7)' },
-  { value: 'strong_sell', label: 'Strong Sell', color: '#ff6b8a' },
+  { value: 'strong_sell', label: 'Strong Sell', color: 'var(--accent-rose)' },
 ];
 
 /** Extract ticker from "Company Name (TICKER)" */
@@ -76,14 +76,14 @@ function ExpandedAssetRow({
           className="mx-2 my-1.5 rounded-xl overflow-hidden"
           style={{
             background: 'linear-gradient(160deg, rgba(13,5,30,0.95) 0%, rgba(10,18,42,0.95) 100%)',
-            border: '1px solid rgba(139,92,246,0.15)',
-            boxShadow: '0 8px 40px rgba(0,0,0,0.3), inset 0 1px 0 rgba(139,92,246,0.06)',
+            border: '1px solid var(--violet-15)',
+            boxShadow: '0 8px 40px rgba(0,0,0,0.3), inset 0 1px 0 var(--violet-6)',
           }}
         >
           {/* Header bar */}
           <div
             className="flex items-center justify-between px-5 py-2.5"
-            style={{ borderBottom: '1px solid rgba(139,92,246,0.10)' }}
+            style={{ borderBottom: '1px solid var(--violet-10)' }}
           >
             <div className="flex items-center gap-2.5">
               <span className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
@@ -95,7 +95,7 @@ function ExpandedAssetRow({
               <button
                 onClick={(e) => { e.stopPropagation(); navigate(`/charts/${ticker}`); }}
                 className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-medium transition-colors"
-                style={{ background: 'rgba(139,92,246,0.10)', color: 'var(--text-violet)' }}
+                style={{ background: 'var(--violet-10)', color: 'var(--text-violet)' }}
               >
                 Full Chart <ExternalLink className="w-3 h-3" />
               </button>
@@ -121,18 +121,18 @@ function ExpandedAssetRow({
                 const lbl = (sig.label || 'HOLD').toUpperCase().replace(/[\s-]/g, '_');
                 const isBuy = lbl.includes('BUY');
                 const isSell = lbl.includes('SELL');
-                const dotColor = isBuy ? '#3ee8a5' : isSell ? '#ff6b8a' : 'var(--text-muted)';
+                const dotColor = isBuy ? 'var(--accent-emerald)' : isSell ? 'var(--accent-rose)' : 'var(--text-muted)';
                 return (
                   <div
                     key={h}
                     className="rounded-lg p-2 text-center transition-all"
-                    style={{ background: 'rgba(139,92,246,0.04)', border: '1px solid rgba(139,92,246,0.08)' }}
+                    style={{ background: 'var(--violet-4)', border: '1px solid var(--violet-8)' }}
                   >
                     <p className="text-[9px] font-semibold uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>
                       {formatHorizon(h)}
                     </p>
                     <p className="text-[14px] font-bold tabular-nums leading-none"
-                      style={{ color: isPos ? '#3ee8a5' : '#ff6b8a' }}>
+                      style={{ color: isPos ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}>
                       {isPos ? '+' : ''}{ret.toFixed(1)}%
                     </p>
                     <div className="mt-1 flex items-center justify-center gap-1">
@@ -197,11 +197,11 @@ function signalMatchesFilter(row: SummaryRow, filter: SignalFilter): boolean {
 function SentimentStrip({ sector }: { sector: SectorGroup }) {
   const total = sector.asset_count || 1;
   const segs = [
-    { pct: (sector.strong_sell / total) * 100, c: '#ff6b8a' },
+    { pct: (sector.strong_sell / total) * 100, c: 'var(--accent-rose)' },
     { pct: (sector.sell / total) * 100, c: 'rgba(255,107,138,0.35)' },
-    { pct: (sector.hold / total) * 100, c: 'rgba(139,92,246,0.10)' },
+    { pct: (sector.hold / total) * 100, c: 'var(--violet-10)' },
     { pct: (sector.buy / total) * 100, c: 'rgba(62,232,165,0.35)' },
-    { pct: (sector.strong_buy / total) * 100, c: '#3ee8a5' },
+    { pct: (sector.strong_buy / total) * 100, c: 'var(--accent-emerald)' },
   ];
   return (
     <div className="flex h-[5px] rounded-full overflow-hidden" style={{ width: 80, background: 'var(--void-active)' }}>
@@ -232,11 +232,11 @@ function SummaryStrip({ sectors }: { sectors: SectorGroup[] }) {
   const items = [
     { label: 'Assets', value: stats.totalAssets, color: 'var(--text-primary)' },
     { label: 'Sectors', value: stats.sectors, color: 'var(--accent-violet)' },
-    { label: 'Strong Buy', value: stats.strongBuys, color: '#3ee8a5' },
+    { label: 'Strong Buy', value: stats.strongBuys, color: 'var(--accent-emerald)' },
     { label: 'Buy', value: stats.buys, color: 'rgba(62,232,165,0.7)' },
     { label: 'Hold', value: stats.holds, color: 'var(--text-muted)' },
     { label: 'Sell', value: stats.sells, color: 'rgba(255,107,138,0.7)' },
-    { label: 'Strong Sell', value: stats.strongSells, color: '#ff6b8a' },
+    { label: 'Strong Sell', value: stats.strongSells, color: 'var(--accent-rose)' },
   ];
 
   return (
@@ -262,11 +262,11 @@ interface TooltipInfo {
 
 function HeatTooltip({ info }: { info: TooltipInfo }) {
   const labelColors: Record<string, { bg: string; fg: string }> = {
-    STRONG_BUY: { bg: 'linear-gradient(135deg, #064e3b, #047857)', fg: '#3ee8a5' },
+    STRONG_BUY: { bg: 'linear-gradient(135deg, #064e3b, #047857)', fg: 'var(--accent-emerald)' },
     BUY: { bg: 'linear-gradient(135deg, #064e3b, #065f46)', fg: '#6EE7B7' },
     HOLD: { bg: 'linear-gradient(135deg, #1e1b4b, #312e81)', fg: '#A5B4FC' },
     SELL: { bg: 'linear-gradient(135deg, #4c0519, #881337)', fg: '#FDA4AF' },
-    STRONG_SELL: { bg: 'linear-gradient(135deg, #4c0519, #9f1239)', fg: '#ff6b8a' },
+    STRONG_SELL: { bg: 'linear-gradient(135deg, #4c0519, #9f1239)', fg: 'var(--accent-rose)' },
   };
   const labelKey = (info.label || 'HOLD').toUpperCase().replace(/[\s-]/g, '_');
   const lc = labelColors[labelKey] || labelColors.HOLD;
@@ -280,16 +280,16 @@ function HeatTooltip({ info }: { info: TooltipInfo }) {
         className="rounded-2xl px-5 py-4 min-w-[220px]"
         style={{
           background: 'linear-gradient(160deg, rgba(26,5,51,0.97) 0%, rgba(13,27,62,0.97) 40%, rgba(10,37,64,0.97) 100%)',
-          border: '1px solid rgba(139,92,246,0.30)',
+          border: '1px solid var(--violet-30)',
           backdropFilter: 'blur(24px)',
-          boxShadow: '0 12px 48px rgba(0,0,0,0.5), 0 0 80px rgba(139,92,246,0.08)',
+          boxShadow: '0 12px 48px rgba(0,0,0,0.5), 0 0 80px var(--violet-8)',
         }}
       >
         {/* Asset + Horizon */}
         <div className="text-[12px] font-semibold mb-2" style={{ color: '#e2e8f0' }}>
           {info.asset}
           <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-medium"
-            style={{ background: 'rgba(139,92,246,0.12)', color: 'var(--text-violet)' }}>
+            style={{ background: 'var(--violet-12)', color: 'var(--text-violet)' }}>
             {info.horizon}
           </span>
         </div>
@@ -300,8 +300,8 @@ function HeatTooltip({ info }: { info: TooltipInfo }) {
             className="text-[22px] font-black tabular-nums tracking-tight"
             style={{
               background: info.expRet >= 0
-                ? 'linear-gradient(135deg, #f8fafc 0%, #3ee8a5 100%)'
-                : 'linear-gradient(135deg, #f8fafc 0%, #ff6b8a 100%)',
+                ? 'linear-gradient(135deg, var(--text-luminous) 0%, var(--accent-emerald) 100%)'
+                : 'linear-gradient(135deg, var(--text-luminous) 0%, var(--accent-rose) 100%)',
               WebkitBackgroundClip: 'text',
               WebkitTextFillColor: 'transparent',
             }}
@@ -316,11 +316,11 @@ function HeatTooltip({ info }: { info: TooltipInfo }) {
           <div className="flex items-center gap-1.5">
             <svg width="20" height="20" viewBox="0 0 20 20">
               <circle cx="10" cy="10" r="8" fill="none"
-                stroke="rgba(139,92,246,0.12)" strokeWidth="2"
+                stroke="var(--violet-12)" strokeWidth="2"
                 strokeDasharray={`${Math.PI * 16 * 0.75} ${Math.PI * 16}`}
                 transform="rotate(135 10 10)" strokeLinecap="round" />
               <circle cx="10" cy="10" r="8" fill="none"
-                stroke={info.pUp >= 0.5 ? '#3ee8a5' : '#ff6b8a'}
+                stroke={info.pUp >= 0.5 ? 'var(--accent-emerald)' : 'var(--accent-rose)'}
                 strokeWidth="2"
                 strokeDasharray={`${Math.PI * 16 * 0.75} ${Math.PI * 16}`}
                 strokeDashoffset={Math.PI * 16 * 0.75 * (1 - info.pUp)}
@@ -329,7 +329,7 @@ function HeatTooltip({ info }: { info: TooltipInfo }) {
             <div>
               <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>P(up)</div>
               <div className="text-[12px] font-bold tabular-nums"
-                style={{ color: info.pUp >= 0.5 ? '#3ee8a5' : '#ff6b8a' }}>
+                style={{ color: info.pUp >= 0.5 ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}>
                 {(info.pUp * 100).toFixed(0)}%
               </div>
             </div>
@@ -349,7 +349,7 @@ function HeatTooltip({ info }: { info: TooltipInfo }) {
           <div>
             <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Mom</div>
             <div className="text-[12px] font-bold tabular-nums"
-              style={{ color: info.momentum > 0 ? '#3ee8a5' : info.momentum < 0 ? '#ff6b8a' : 'var(--text-muted)' }}>
+              style={{ color: info.momentum > 0 ? 'var(--accent-emerald)' : info.momentum < 0 ? 'var(--accent-rose)' : 'var(--text-muted)' }}>
               {info.momentum > 0 ? '+' : ''}{Math.round(info.momentum)}%
             </div>
           </div>
@@ -371,21 +371,21 @@ function HeatTooltip({ info }: { info: TooltipInfo }) {
 function ColorScaleLegend() {
   return (
     <div className="flex items-center gap-3">
-      <span className="text-[10px] font-medium tabular-nums" style={{ color: '#ff6b8a' }}>-10%</span>
+      <span className="text-[10px] font-medium tabular-nums" style={{ color: 'var(--accent-rose)' }}>-10%</span>
       <div className="relative" style={{ width: 160, height: 10 }}>
         <div className="absolute inset-0 rounded-full overflow-hidden flex"
           style={{ background: 'var(--void-surface)' }}>
           <div className="h-full w-1/2" style={{
-            background: 'linear-gradient(90deg, rgba(255,107,138,0.55) 0%, rgba(255,107,138,0.06) 85%, transparent 100%)',
+            background: 'linear-gradient(90deg, rgba(255,107,138,0.55) 0%, var(--rose-6) 85%, transparent 100%)',
           }} />
           <div className="h-full w-1/2" style={{
-            background: 'linear-gradient(90deg, transparent 0%, rgba(62,232,165,0.06) 15%, rgba(62,232,165,0.55) 100%)',
+            background: 'linear-gradient(90deg, transparent 0%, var(--emerald-6) 15%, rgba(62,232,165,0.55) 100%)',
           }} />
         </div>
         {/* Center tick */}
-        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-px h-full" style={{ background: 'rgba(139,92,246,0.3)' }} />
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-px h-full" style={{ background: 'var(--violet-30)' }} />
       </div>
-      <span className="text-[10px] font-medium tabular-nums" style={{ color: '#3ee8a5' }}>+10%</span>
+      <span className="text-[10px] font-medium tabular-nums" style={{ color: 'var(--accent-emerald)' }}>+10%</span>
     </div>
   );
 }
@@ -637,9 +637,9 @@ export default function HeatmapPage() {
               onClick={() => setFilter(opt.value)}
               className="px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all"
               style={{
-                background: filter === opt.value ? 'rgba(139,92,246,0.15)' : 'transparent',
+                background: filter === opt.value ? 'var(--violet-15)' : 'transparent',
                 color: filter === opt.value ? opt.color : 'var(--text-muted)',
-                border: `1px solid ${filter === opt.value ? 'rgba(139,92,246,0.25)' : 'transparent'}`,
+                border: `1px solid ${filter === opt.value ? 'var(--violet-25)' : 'transparent'}`,
               }}
             >
               {opt.label}
@@ -684,7 +684,7 @@ export default function HeatmapPage() {
             </span>
             <button onClick={() => { setSearch(''); setFilter('all'); }}
               className="text-[11px] px-3 py-1.5 rounded-lg transition-colors"
-              style={{ background: 'rgba(139,92,246,0.12)', color: 'var(--text-violet)' }}>
+              style={{ background: 'var(--violet-12)', color: 'var(--text-violet)' }}>
               Clear filters
             </button>
           </div>
@@ -700,7 +700,7 @@ export default function HeatmapPage() {
                       color: 'var(--text-muted)',
                       background: 'var(--void)',
                       position: 'sticky', left: 0, zIndex: 20,
-                      borderBottom: '1px solid rgba(139,92,246,0.10)',
+                      borderBottom: '1px solid var(--violet-10)',
                       width: 200,
                     }}>
                     Asset
@@ -710,7 +710,7 @@ export default function HeatmapPage() {
                       style={{
                         color: 'var(--text-muted)',
                         background: 'var(--void)',
-                        borderBottom: '1px solid rgba(139,92,246,0.10)',
+                        borderBottom: '1px solid var(--violet-10)',
                         minWidth: 56,
                       }}>
                       {formatHorizon(h)}
@@ -720,7 +720,7 @@ export default function HeatmapPage() {
                     style={{
                       color: 'var(--text-muted)',
                       background: 'var(--void)',
-                      borderBottom: '1px solid rgba(139,92,246,0.10)',
+                      borderBottom: '1px solid var(--violet-10)',
                       minWidth: 56,
                     }}>
                     Mom
@@ -741,14 +741,14 @@ export default function HeatmapPage() {
                       onClick={() => toggleSector(sector.name)}
                       style={{
                         background: sectorRowIdx === focusRow
-                          ? 'rgba(139,92,246,0.08)'
+                          ? 'var(--violet-8)'
                           : 'var(--void-hover)',
                       }}
                     >
                       <td
                         className="px-4 py-2.5 whitespace-nowrap"
                         colSpan={horizons.length + 2}
-                        style={{ borderBottom: '1px solid rgba(139,92,246,0.06)' }}
+                        style={{ borderBottom: '1px solid var(--violet-6)' }}
                       >
                         <div className="flex items-center gap-3">
                           {/* Chevron */}
@@ -767,7 +767,7 @@ export default function HeatmapPage() {
                           {/* Asset count */}
                           <span
                             className="px-1.5 py-0.5 rounded-md text-[9px] font-medium"
-                            style={{ background: 'rgba(139,92,246,0.10)', color: 'var(--text-secondary)' }}
+                            style={{ background: 'var(--violet-10)', color: 'var(--text-secondary)' }}
                           >
                             {sector.asset_count}
                           </span>
@@ -777,19 +777,19 @@ export default function HeatmapPage() {
 
                           {/* Buy / Sell counts */}
                           {sector.strong_buy > 0 && (
-                            <span className="flex items-center gap-0.5 text-[10px] font-medium" style={{ color: '#3ee8a5' }}>
+                            <span className="flex items-center gap-0.5 text-[10px] font-medium" style={{ color: 'var(--accent-emerald)' }}>
                               <TrendingUp className="w-3 h-3" />{sector.strong_buy + sector.buy}
                             </span>
                           )}
                           {sector.strong_sell > 0 && (
-                            <span className="flex items-center gap-0.5 text-[10px] font-medium" style={{ color: '#ff6b8a' }}>
+                            <span className="flex items-center gap-0.5 text-[10px] font-medium" style={{ color: 'var(--accent-rose)' }}>
                               <TrendingDown className="w-3 h-3" />{sector.strong_sell + sector.sell}
                             </span>
                           )}
 
                           {/* Average momentum */}
                           <span className="text-[10px] tabular-nums font-semibold ml-auto"
-                            style={{ color: avgMom > 5 ? '#3ee8a5' : avgMom < -5 ? '#ff6b8a' : 'var(--text-muted)' }}>
+                            style={{ color: avgMom > 5 ? 'var(--accent-emerald)' : avgMom < -5 ? 'var(--accent-rose)' : 'var(--text-muted)' }}>
                             {avgMom > 0 ? '+' : ''}{avgMom.toFixed(1)}
                           </span>
                         </div>
@@ -808,8 +808,8 @@ export default function HeatmapPage() {
                           <tr
                             className="transition-colors"
                             style={{
-                              borderBottom: '1px solid rgba(139,92,246,0.03)',
-                              background: isFocusedRow ? 'rgba(139,92,246,0.06)' : 'transparent',
+                              borderBottom: '1px solid var(--violet-3)',
+                              background: isFocusedRow ? 'var(--violet-6)' : 'transparent',
                             }}
                           >
                             {/* Asset name - sticky, click to expand */}
@@ -818,7 +818,7 @@ export default function HeatmapPage() {
                               style={{
                                 position: 'sticky', left: 0, zIndex: 10,
                                 background: expandedAsset === asset.asset_label
-                                  ? 'rgba(139,92,246,0.08)'
+                                  ? 'var(--violet-8)'
                                   : isFocusedRow ? 'rgba(3,0,20,0.95)' : 'var(--void)',
                               }}
                               onClick={() => handleAssetClick(asset.asset_label)}
@@ -868,15 +868,15 @@ export default function HeatmapPage() {
                                       justifyContent: 'center',
                                       border: `1px solid ${
                                         isFocused ? 'rgba(139,92,246,0.35)'
-                                          : isHovered ? 'rgba(139,92,246,0.20)'
-                                          : 'rgba(139,92,246,0.03)'
+                                          : isHovered ? 'var(--violet-20)'
+                                          : 'var(--violet-3)'
                                       }`,
                                       boxShadow: isFlashing
-                                        ? '0 0 20px rgba(139,92,246,0.5), inset 0 0 8px rgba(139,92,246,0.3)'
+                                        ? '0 0 20px rgba(139,92,246,0.5), inset 0 0 8px var(--violet-30)'
                                         : isHovered
-                                          ? '0 0 16px rgba(139,92,246,0.15)'
+                                          ? '0 0 16px var(--violet-15)'
                                           : isFocused
-                                            ? '0 0 8px rgba(139,92,246,0.12)'
+                                            ? '0 0 8px var(--violet-12)'
                                             : 'none',
                                       transform: isHovered ? 'scale(1.12)' : 'scale(1)',
                                     }}
@@ -885,7 +885,7 @@ export default function HeatmapPage() {
                                       className="text-[9px] tabular-nums font-medium"
                                       style={{
                                         color: sig?.exp_ret != null
-                                          ? (Math.abs(sig.exp_ret) > 0.02 ? '#f8fafc' : 'var(--text-secondary)')
+                                          ? (Math.abs(sig.exp_ret) > 0.02 ? 'var(--text-luminous)' : 'var(--text-secondary)')
                                           : 'var(--text-muted)',
                                         opacity: sig?.exp_ret != null && Math.abs(sig.exp_ret) < 0.005 ? 0.4 : 1,
                                       }}
@@ -902,8 +902,8 @@ export default function HeatmapPage() {
                               <span
                                 className="text-[10px] tabular-nums font-medium"
                                 style={{
-                                  color: mom > 30 ? '#3ee8a5' : mom > 0 ? 'rgba(62,232,165,0.7)'
-                                    : mom < -30 ? '#ff6b8a' : mom < 0 ? 'rgba(255,107,138,0.7)'
+                                  color: mom > 30 ? 'var(--accent-emerald)' : mom > 0 ? 'rgba(62,232,165,0.7)'
+                                    : mom < -30 ? 'var(--accent-rose)' : mom < 0 ? 'rgba(255,107,138,0.7)'
                                     : 'var(--text-muted)',
                                 }}
                               >
@@ -935,7 +935,7 @@ export default function HeatmapPage() {
         {/* Bottom status bar */}
         <div
           className="flex items-center justify-between px-5 py-2"
-          style={{ borderTop: '1px solid rgba(139,92,246,0.08)', background: 'var(--void)' }}
+          style={{ borderTop: '1px solid var(--violet-8)', background: 'var(--void)' }}
         >
           <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
             {filteredSectors.reduce((a, s) => a + s.assets.length, 0)} assets across {filteredSectors.length} sectors

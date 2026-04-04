@@ -43,9 +43,9 @@ export default function ServicesPage() {
             disabled={isFetching}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] transition-all duration-200 disabled:opacity-50"
             style={{
-              background: 'rgba(139,92,246,0.08)',
+              background: 'var(--violet-8)',
               color: '#b49aff',
-              border: '1px solid rgba(139,92,246,0.12)',
+              border: '1px solid var(--violet-12)',
             }}
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isFetching ? 'animate-spin' : ''}`} />
@@ -60,18 +60,18 @@ export default function ServicesPage() {
       <div className={`glass-card p-8 mb-8 fade-up ambient-glow ${allOk ? 'glow-green' : 'glow-red'}`}>
         <div className="relative flex items-center gap-5">
           <div className="w-14 h-14 rounded-2xl flex items-center justify-center"
-               style={{ background: `${allOk ? '#3ee8a5' : '#ff6b8a'}10` }}>
-            <HeartPulse className="w-8 h-8" style={{ color: allOk ? '#3ee8a5' : '#ff6b8a' }} />
+               style={{ background: `${allOk ? 'var(--accent-emerald)' : 'var(--accent-rose)'}10` }}>
+            <HeartPulse className="w-8 h-8" style={{ color: allOk ? 'var(--accent-emerald)' : 'var(--accent-rose)' }} />
           </div>
           <div>
-            <h2 className="text-2xl font-bold tracking-tight" style={{ color: allOk ? '#3ee8a5' : '#ff6b8a' }}>
+            <h2 className="text-2xl font-bold tracking-tight" style={{ color: allOk ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}>
               {allOk ? 'All Systems Operational' : 'Issues Detected'}
             </h2>
-            <p className="text-[12px] text-[#7a8ba4] mt-1">Last check: {lastRefresh} {'\u2022'} Auto-refresh every 10s</p>
+            <p className="text-[12px] text-[var(--text-secondary)] mt-1">Last check: {lastRefresh} {'\u2022'} Auto-refresh every 10s</p>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full pulse-dot" style={{ background: allOk ? '#3ee8a5' : '#ff6b8a' }} />
-            <span className="text-xs text-[#7a8ba4] font-medium">Live</span>
+            <span className="w-2.5 h-2.5 rounded-full pulse-dot" style={{ background: allOk ? 'var(--accent-emerald)' : 'var(--accent-rose)' }} />
+            <span className="text-xs text-[var(--text-secondary)] font-medium">Live</span>
           </div>
         </div>
       </div>
@@ -92,9 +92,9 @@ export default function ServicesPage() {
 
 /* ── Status helpers ──────────────────────────────────────────────── */
 function StatusIcon({ status }: { status: string }) {
-  if (status === 'ok' || status === 'fresh') return <CheckCircle className="w-5 h-5" style={{ color: '#3ee8a5' }} />;
-  if (status === 'stale' || status === 'warning') return <AlertTriangle className="w-5 h-5" style={{ color: '#f5c542' }} />;
-  return <XCircle className="w-5 h-5" style={{ color: '#ff6b8a' }} />;
+  if (status === 'ok' || status === 'fresh') return <CheckCircle className="w-5 h-5" style={{ color: 'var(--accent-emerald)' }} />;
+  if (status === 'stale' || status === 'warning') return <AlertTriangle className="w-5 h-5" style={{ color: 'var(--accent-amber)' }} />;
+  return <XCircle className="w-5 h-5" style={{ color: 'var(--accent-rose)' }} />;
 }
 
 function statusBg(status: string) {
@@ -108,7 +108,7 @@ function ApiCard({ data }: { data: ServicesHealth['api'] }) {
   return (
     <div className={`glass-card p-5 border-l-2 hover-lift ${statusBg(data.status)}`}>
       <div className="flex items-center gap-2.5 mb-4">
-        <div className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ background: 'rgba(139,92,246,0.1)' }}>
+        <div className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ background: 'var(--violet-10)' }}>
           <Server className="w-4 h-4" style={{ color: '#b49aff' }} />
         </div>
         <h3 className="text-[13px] font-medium" style={{ color: 'var(--text-luminous)' }}>API Server</h3>
@@ -148,14 +148,14 @@ function PriceDataCard({ data }: { data: ServicesHealth['price_data'] }) {
   return (
     <div className={`glass-card p-4 border-l-2 hover-lift ${statusBg(data.status)}`}>
       <div className="flex items-center gap-2 mb-3">
-        <HardDrive className="w-4 h-4" style={{ color: '#f5c542' }} />
+        <HardDrive className="w-4 h-4" style={{ color: 'var(--accent-amber)' }} />
         <h3 className="text-sm font-medium" style={{ color: 'var(--text-luminous)' }}>Price Data</h3>
         <StatusIcon status={data.status} />
       </div>
       <div className="grid grid-cols-2 gap-3 text-xs">
         <Metric label="Files" value={String(data.total_files)} />
         <Metric label="Stale" value={`${data.stale_files} files`}
-          valueColor={data.stale_files > 10 ? '#ff6b8a' : data.stale_files > 0 ? '#f5c542' : '#3ee8a5'} />
+          valueColor={data.stale_files > 10 ? 'var(--accent-rose)' : data.stale_files > 0 ? 'var(--accent-amber)' : 'var(--accent-emerald)'} />
         <Metric label="Freshest" value={data.freshest_hours ? `${data.freshest_hours.toFixed(1)}h` : 'N/A'} />
         <Metric label="Size" value={data.total_size_mb ? `${data.total_size_mb.toFixed(0)} MB` : 'N/A'} />
       </div>
@@ -168,25 +168,25 @@ function WorkersCard({ data }: { data: ServicesHealth['workers'] }) {
   return (
     <div className={`glass-card p-4 border-l-2 hover-lift ${statusBg(data.status)}`}>
       <div className="flex items-center gap-2 mb-3">
-        <Users className="w-4 h-4" style={{ color: '#38d9f5' }} />
+        <Users className="w-4 h-4" style={{ color: 'var(--accent-cyan)' }} />
         <h3 className="text-sm font-medium" style={{ color: 'var(--text-luminous)' }}>Background Workers</h3>
         <StatusIcon status={data.status} />
       </div>
       <div className="space-y-2 text-xs">
         <div className="flex items-center justify-between">
-          <span className="text-[#94a3b8]">Redis</span>
-          <span style={{ color: data.redis.status === 'ok' ? '#3ee8a5' : '#94a3b8' }}>
+          <span className="text-[var(--text-secondary)]">Redis</span>
+          <span style={{ color: data.redis.status === 'ok' ? 'var(--accent-emerald)' : '#94a3b8' }}>
             {data.redis.status === 'ok' ? (data.redis.used_memory_human || 'Connected') : (data.redis.message || 'Not running (optional)')}
           </span>
         </div>
         <div className="flex items-center justify-between">
-          <span className="text-[#94a3b8]">Celery</span>
-          <span style={{ color: data.celery.status === 'ok' ? '#3ee8a5' : '#94a3b8' }}>
+          <span className="text-[var(--text-secondary)]">Celery</span>
+          <span style={{ color: data.celery.status === 'ok' ? 'var(--accent-emerald)' : '#94a3b8' }}>
             {data.celery.status === 'ok' ? `${data.celery.workers} worker(s)` : (data.celery.message || 'Not running (optional)')}
           </span>
         </div>
         {data.celery.worker_names?.map((w) => (
-          <div key={w} className="pl-4 text-[10px] text-[#7a8ba4]">{w}</div>
+          <div key={w} className="pl-4 text-[10px] text-[var(--text-secondary)]">{w}</div>
         ))}
       </div>
     </div>
@@ -197,9 +197,9 @@ function WorkersCard({ data }: { data: ServicesHealth['workers'] }) {
 function Metric({ icon, label, value, valueColor }: { icon?: React.ReactNode; label: string; value: string; valueColor?: string }) {
   return (
     <div className="flex items-center gap-1.5">
-      {icon && <span className="text-[#7a8ba4]">{icon}</span>}
+      {icon && <span className="text-[var(--text-secondary)]">{icon}</span>}
       <div>
-        <p className="text-[10px] text-[#7a8ba4]">{label}</p>
+        <p className="text-[10px] text-[var(--text-secondary)]">{label}</p>
         <p className="text-[#e2e8f0] font-medium" style={valueColor ? { color: valueColor } : {}}>{value}</p>
       </div>
     </div>
@@ -210,26 +210,26 @@ function Metric({ icon, label, value, valueColor }: { icon?: React.ReactNode; la
 function ErrorLog({ errors }: { errors: ServiceError[] }) {
   return (
     <div className="glass-card overflow-hidden">
-      <div className="px-4 py-3 flex items-center gap-2" style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
-        <AlertTriangle className="w-4 h-4" style={{ color: '#f5c542' }} />
+      <div className="px-4 py-3 flex items-center gap-2" style={{ borderBottom: '1px solid var(--violet-8)' }}>
+        <AlertTriangle className="w-4 h-4" style={{ color: 'var(--accent-amber)' }} />
         <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Recent Errors</h3>
-        <span className="ml-auto text-xs text-[#7a8ba4]">{errors.length} entries</span>
+        <span className="ml-auto text-xs text-[var(--text-secondary)]">{errors.length} entries</span>
       </div>
       {errors.length === 0 ? (
         <div className="px-4 py-6 text-center">
-          <CheckCircle className="w-6 h-6 mx-auto mb-2" style={{ color: '#3ee8a5' }} />
-          <p className="text-xs text-[#7a8ba4]">No recent errors</p>
+          <CheckCircle className="w-6 h-6 mx-auto mb-2" style={{ color: 'var(--accent-emerald)' }} />
+          <p className="text-xs text-[var(--text-secondary)]">No recent errors</p>
         </div>
       ) : (
         <div className="max-h-64 overflow-y-auto" style={{ borderTop: errors.length ? undefined : undefined }}>
           {errors.map((e, i) => (
-            <div key={i} className="px-4 py-2 flex items-start gap-3 text-xs" style={{ borderBottom: '1px solid rgba(139,92,246,0.04)' }}>
-              <XCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" style={{ color: '#ff6b8a' }} />
+            <div key={i} className="px-4 py-2 flex items-start gap-3 text-xs" style={{ borderBottom: '1px solid var(--violet-4)' }}>
+              <XCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" style={{ color: 'var(--accent-rose)' }} />
               <div className="flex-1 min-w-0">
                 <span className="font-medium text-[#e2e8f0]">[{e.source}]</span>{' '}
-                <span className="text-[#94a3b8]">{e.message}</span>
+                <span className="text-[var(--text-secondary)]">{e.message}</span>
               </div>
-              <span className="text-[10px] text-[#7a8ba4] whitespace-nowrap">
+              <span className="text-[10px] text-[var(--text-secondary)] whitespace-nowrap">
                 {new Date(e.timestamp).toLocaleTimeString()}
               </span>
             </div>

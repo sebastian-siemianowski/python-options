@@ -32,7 +32,7 @@ function MiniArc({ value, color, size = 16 }: { value: number; color: string; si
   const d = `M ${startX} ${startY} A ${r} ${r} 0 ${largeArc} 1 ${endX} ${endY}`;
   return (
     <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-      <path d={d} fill="none" stroke="rgba(139,92,246,0.1)" strokeWidth="1.5" strokeLinecap="round" />
+      <path d={d} fill="none" stroke="var(--violet-10)" strokeWidth="1.5" strokeLinecap="round" />
       <path d={d} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round"
         strokeDasharray={`${filled} ${circumference}`}
       />
@@ -62,11 +62,11 @@ function EmptyState() {
 function SignalCard({ entry, accent }: { entry: StrongSignalEntry; accent: 'emerald' | 'rose' }) {
   const navigate = useNavigate();
   const isEmerald = accent === 'emerald';
-  const accentColor = isEmerald ? '#3ee8a5' : '#ff6b8a';
-  const accentGlow = isEmerald ? 'rgba(62,232,165,0.06)' : 'rgba(255,107,138,0.06)';
+  const accentColor = isEmerald ? 'var(--accent-emerald)' : 'var(--accent-rose)';
+  const accentGlow = isEmerald ? 'var(--emerald-6)' : 'var(--rose-6)';
   const gradientText = isEmerald
-    ? 'linear-gradient(135deg, #f8fafc 0%, #3ee8a5 100%)'
-    : 'linear-gradient(135deg, #f8fafc 0%, #ff6b8a 100%)';
+    ? 'linear-gradient(135deg, var(--text-luminous) 0%, var(--accent-emerald) 100%)'
+    : 'linear-gradient(135deg, var(--text-luminous) 0%, var(--accent-rose) 100%)';
 
   // Kelly rough estimate from p_up and exp_ret
   const kelly = Math.abs(entry.exp_ret) > 0 ? Math.min(Math.abs(entry.p_up - 0.5) * 2, 0.5) : 0;
@@ -150,7 +150,7 @@ function SignalCard({ entry, accent }: { entry: StrongSignalEntry; accent: 'emer
 
         {entry.momentum != null && (
           <span className="text-[9px] tabular-nums ml-auto"
-            style={{ color: entry.momentum > 0 ? '#3ee8a5' : entry.momentum < 0 ? '#ff6b8a' : 'var(--text-muted, #6b7a90)' }}>
+            style={{ color: entry.momentum > 0 ? 'var(--accent-emerald)' : entry.momentum < 0 ? 'var(--accent-rose)' : 'var(--text-muted, #6b7a90)' }}>
             {entry.momentum > 0 ? '+' : ''}{Math.round(entry.momentum)}% mom
           </span>
         )}
@@ -175,16 +175,16 @@ export default function ConvictionSpotlight({ strongBuy, strongSell }: Props) {
         {/* Emerald aurora glow */}
         <div className="absolute inset-0 pointer-events-none"
           style={{
-            background: 'radial-gradient(ellipse at 10% 10%, rgba(62,232,165,0.08) 0%, transparent 60%)',
+            background: 'radial-gradient(ellipse at 10% 10%, var(--emerald-8) 0%, transparent 60%)',
           }}
         />
         <div className="relative z-10 p-5">
           <div className="flex items-center gap-2 mb-4">
             <div className="w-6 h-6 rounded-lg flex items-center justify-center"
               style={{ background: 'rgba(62,232,165,0.1)' }}>
-              <TrendingUp className="w-3.5 h-3.5" style={{ color: '#3ee8a5' }} />
+              <TrendingUp className="w-3.5 h-3.5" style={{ color: 'var(--accent-emerald)' }} />
             </div>
-            <h3 className="text-[15px] font-semibold" style={{ color: '#3ee8a5' }}>
+            <h3 className="text-[15px] font-semibold" style={{ color: 'var(--accent-emerald)' }}>
               Strongest Buys
             </h3>
           </div>
@@ -210,16 +210,16 @@ export default function ConvictionSpotlight({ strongBuy, strongSell }: Props) {
         {/* Rose aurora glow */}
         <div className="absolute inset-0 pointer-events-none"
           style={{
-            background: 'radial-gradient(ellipse at 90% 10%, rgba(255,107,138,0.08) 0%, transparent 60%)',
+            background: 'radial-gradient(ellipse at 90% 10%, var(--rose-8) 0%, transparent 60%)',
           }}
         />
         <div className="relative z-10 p-5">
           <div className="flex items-center gap-2 mb-4">
             <div className="w-6 h-6 rounded-lg flex items-center justify-center"
               style={{ background: 'rgba(255,107,138,0.1)' }}>
-              <TrendingDown className="w-3.5 h-3.5" style={{ color: '#ff6b8a' }} />
+              <TrendingDown className="w-3.5 h-3.5" style={{ color: 'var(--accent-rose)' }} />
             </div>
-            <h3 className="text-[15px] font-semibold" style={{ color: '#ff6b8a' }}>
+            <h3 className="text-[15px] font-semibold" style={{ color: 'var(--accent-rose)' }}>
               Strongest Sells
             </h3>
           </div>

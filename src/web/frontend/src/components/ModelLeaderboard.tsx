@@ -24,13 +24,13 @@ interface ModelRow {
 }
 
 const MEDAL_GRADIENTS: Record<number, string> = {
-  1: 'linear-gradient(135deg, #f5c542 0%, #D97706 100%)',
+  1: 'linear-gradient(135deg, var(--accent-amber) 0%, #D97706 100%)',
   2: 'linear-gradient(135deg, #94A3B8 0%, #64748B 100%)',
   3: 'linear-gradient(135deg, #FB923C 0%, #C2410C 100%)',
 };
 
 const MEDAL_GLOW: Record<number, string> = {
-  1: 'rgba(245,197,66,0.12)',
+  1: 'var(--amber-12)',
   2: 'rgba(148,163,184,0.08)',
   3: 'rgba(251,146,60,0.10)',
 };
@@ -105,7 +105,7 @@ export default function ModelLeaderboard({ modelsDistribution, pitPass, pitFail,
                 onMouseEnter={(e) => {
                   if (!isExpanded) {
                     (e.currentTarget as HTMLElement).style.background = 'var(--void-hover, #16133a)';
-                    (e.currentTarget as HTMLElement).style.boxShadow = '0 0 0 1px rgba(139,92,246,0.08), 0 4px 16px rgba(139,92,246,0.08)';
+                    (e.currentTarget as HTMLElement).style.boxShadow = '0 0 0 1px var(--violet-8), 0 4px 16px var(--violet-8)';
                   }
                 }}
                 onMouseLeave={(e) => {
@@ -147,12 +147,12 @@ export default function ModelLeaderboard({ modelsDistribution, pitPass, pitFail,
                 {/* Count with gradient fill bar */}
                 <div className="flex items-center gap-2 flex-shrink-0">
                   <div className="relative w-16 h-1.5 rounded-full overflow-hidden"
-                    style={{ background: 'rgba(139,92,246,0.06)' }}>
+                    style={{ background: 'var(--violet-6)' }}>
                     <div
                       className="absolute left-0 top-0 h-full rounded-full"
                       style={{
                         width: `${barWidth}%`,
-                        background: 'linear-gradient(90deg, rgba(139,92,246,0.15) 0%, rgba(139,92,246,0.03) 100%)',
+                        background: 'linear-gradient(90deg, var(--violet-15) 0%, var(--violet-3) 100%)',
                         transition: 'width 300ms ease',
                       }}
                     />
@@ -175,15 +175,15 @@ export default function ModelLeaderboard({ modelsDistribution, pitPass, pitFail,
                     className="text-[9px] px-1.5 py-0.5 rounded flex-shrink-0"
                     style={{
                       background: overallPassRate >= 0.8
-                        ? 'rgba(62,232,165,0.12)'
+                        ? 'var(--emerald-12)'
                         : overallPassRate >= 0.6
-                          ? 'rgba(245,197,66,0.12)'
-                          : 'rgba(255,107,138,0.12)',
+                          ? 'var(--amber-12)'
+                          : 'var(--rose-12)',
                       color: overallPassRate >= 0.8
-                        ? '#3ee8a5'
+                        ? 'var(--accent-emerald)'
                         : overallPassRate >= 0.6
-                          ? '#f5c542'
-                          : '#ff6b8a',
+                          ? 'var(--accent-amber)'
+                          : 'var(--accent-rose)',
                     }}
                   >
                     {Math.round(overallPassRate * 100)}%

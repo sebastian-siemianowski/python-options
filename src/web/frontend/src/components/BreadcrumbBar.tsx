@@ -35,7 +35,7 @@ function freshnessBadge(ageSeconds: number | null | undefined): {
     return { label: 'Unknown', color: 'var(--text-muted)', glow: 'transparent', pulseSpeed: '0s' };
   }
   if (ageSeconds < 60) {
-    return { label: 'Live', color: 'var(--accent-emerald)', glow: 'rgba(62,232,165,0.3)', pulseSpeed: '2s' };
+    return { label: 'Live', color: 'var(--accent-emerald)', glow: 'var(--emerald-30)', pulseSpeed: '2s' };
   }
   if (ageSeconds < 300) {
     const m = Math.round(ageSeconds / 60);
@@ -46,7 +46,7 @@ function freshnessBadge(ageSeconds: number | null | undefined): {
     return { label: `${m}m ago`, color: 'var(--accent-amber)', glow: 'rgba(245,197,66,0.2)', pulseSpeed: '3s' };
   }
   const h = Math.round(ageSeconds / 3600);
-  return { label: `Stale: ${h}h`, color: 'var(--accent-rose)', glow: 'rgba(255,107,138,0.3)', pulseSpeed: '1.5s' };
+  return { label: `Stale: ${h}h`, color: 'var(--accent-rose)', glow: 'var(--rose-30)', pulseSpeed: '1.5s' };
 }
 
 /* ─── Component ─────────────────────────────────────────────────── */
@@ -131,7 +131,7 @@ export default function BreadcrumbBar() {
                   className="text-[12px] font-semibold"
                   style={{
                     color: isLast ? 'var(--text-luminous)' : 'var(--text-secondary)',
-                    textShadow: isLast ? '0 0 12px rgba(139,92,246,0.3)' : 'none',
+                    textShadow: isLast ? '0 0 12px var(--violet-30)' : 'none',
                   }}
                 >
                   {crumb.label}

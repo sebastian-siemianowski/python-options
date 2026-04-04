@@ -24,7 +24,7 @@ export default function AmbientOrbs() {
           width: '600px',
           height: '600px',
           borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(139,92,246,0.06) 0%, rgba(139,92,246,0.02) 40%, transparent 70%)',
+          background: 'radial-gradient(circle, var(--violet-6) 0%, var(--violet-2) 40%, transparent 70%)',
           filter: 'blur(80px)',
           top: '-10%',
           left: '-5%',

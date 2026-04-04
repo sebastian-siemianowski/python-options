@@ -118,7 +118,7 @@ export function CosmicErrorCard({
                   className="flex items-center gap-2 h-9 px-4 rounded-xl text-sm font-semibold text-white
                     transition-all duration-200 hover:shadow-lg hover:shadow-rose-500/20 hover:-translate-y-px
                     disabled:opacity-60 disabled:cursor-default"
-                  style={{ background: 'linear-gradient(135deg, #ff6b8a, #ff5577)' }}
+                  style={{ background: 'linear-gradient(135deg, var(--accent-rose), #ff5577)' }}
                 >
                   {retryState ? (
                     <>
@@ -137,7 +137,7 @@ export function CosmicErrorCard({
                 <button
                   onClick={onSecondary}
                   className="h-9 px-4 rounded-xl text-sm font-medium transition-all duration-200
-                    hover:bg-[rgba(139,92,246,0.08)]"
+                    hover:bg-[var(--violet-8)]"
                   style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-void)' }}
                 >
                   {secondaryLabel}
@@ -203,7 +203,7 @@ export function PartialErrorBanner({ message, onRetry }: { message?: string; onR
         <button
           onClick={onRetry}
           className="text-xs font-medium transition-colors duration-150 hover:underline"
-          style={{ color: '#ff6b8a' }}
+          style={{ color: 'var(--accent-rose)' }}
         >
           Retry
         </button>

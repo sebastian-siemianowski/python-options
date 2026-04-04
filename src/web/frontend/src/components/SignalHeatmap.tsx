@@ -50,11 +50,11 @@ function cellOpacity(sig: { position_strength?: number } | undefined): number {
 function SectorSentimentBar({ sector }: { sector: SectorGroup }) {
   const total = sector.asset_count || 1;
   const segments = [
-    { pct: (sector.strong_sell / total) * 100, color: '#ff6b8a' },
+    { pct: (sector.strong_sell / total) * 100, color: 'var(--accent-rose)' },
     { pct: (sector.sell / total) * 100, color: 'rgba(255,107,138,0.4)' },
     { pct: (sector.hold / total) * 100, color: '#1c1845' },
     { pct: (sector.buy / total) * 100, color: 'rgba(62,232,165,0.4)' },
-    { pct: (sector.strong_buy / total) * 100, color: '#3ee8a5' },
+    { pct: (sector.strong_buy / total) * 100, color: 'var(--accent-emerald)' },
   ];
   return (
     <div className="flex h-1 w-20 rounded-full overflow-hidden" style={{ background: 'var(--void-active, #1c1845)' }}>
@@ -191,7 +191,7 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
       style={{ outline: 'none' }}>
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-3"
-        style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
+        style={{ borderBottom: '1px solid var(--violet-8)' }}>
         <h3 className="text-sm font-medium" style={{ color: 'var(--text-primary, #e2e8f0)' }}>
           Signal Heatmap
         </h3>
@@ -202,10 +202,10 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
             <div className="w-[120px] h-2 rounded-full overflow-hidden flex"
               style={{ background: 'var(--void-surface, #0a0a23)' }}>
               <div className="h-full w-1/2" style={{
-                background: 'linear-gradient(90deg, rgba(255,107,138,0.5) 0%, rgba(255,107,138,0.08) 80%, transparent 100%)',
+                background: 'linear-gradient(90deg, var(--rose-50) 0%, var(--rose-8) 80%, transparent 100%)',
               }} />
               <div className="h-full w-1/2" style={{
-                background: 'linear-gradient(90deg, transparent 0%, rgba(62,232,165,0.08) 20%, rgba(62,232,165,0.5) 100%)',
+                background: 'linear-gradient(90deg, transparent 0%, var(--emerald-8) 20%, var(--emerald-50) 100%)',
               }} />
             </div>
             <span className="text-[9px] tabular-nums" style={{ color: 'var(--text-muted, #6b7a90)' }}>+10%</span>
@@ -230,9 +230,9 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
             className="rounded-xl px-4 py-3 min-w-[180px]"
             style={{
               background: 'linear-gradient(135deg, #1a0533 0%, #0d1b3e 40%, #0a2540 100%)',
-              border: '1px solid rgba(139,92,246,0.25)',
+              border: '1px solid var(--violet-25)',
               backdropFilter: 'blur(20px)',
-              boxShadow: '0 8px 32px rgba(139,92,246,0.12), 0 0 80px rgba(139,92,246,0.05)',
+              boxShadow: '0 8px 32px var(--violet-12), 0 0 80px var(--violet-5)',
             }}
           >
             <div className="text-xs font-medium mb-1" style={{ color: '#e2e8f0' }}>
@@ -242,11 +242,11 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
               <span
                 className="text-base font-bold tabular-nums"
                 style={{
-                  color: tooltipData.expRet >= 0 ? '#3ee8a5' : '#ff6b8a',
+                  color: tooltipData.expRet >= 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)',
                   ...(Math.abs(tooltipData.expRet) > 0.05 ? {
                     background: tooltipData.expRet > 0
-                      ? 'linear-gradient(135deg, #f8fafc 0%, #3ee8a5 100%)'
-                      : 'linear-gradient(135deg, #f8fafc 0%, #ff6b8a 100%)',
+                      ? 'linear-gradient(135deg, var(--text-luminous) 0%, var(--accent-emerald) 100%)'
+                      : 'linear-gradient(135deg, var(--text-luminous) 0%, var(--accent-rose) 100%)',
                     WebkitBackgroundClip: 'text',
                     WebkitTextFillColor: 'transparent',
                   } : {}),
@@ -259,12 +259,12 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
               <div className="flex items-center gap-1">
                 <svg width="16" height="16" viewBox="0 0 16 16">
                   <circle cx="8" cy="8" r="6" fill="none"
-                    stroke="rgba(139,92,246,0.15)" strokeWidth="1.5"
+                    stroke="var(--violet-15)" strokeWidth="1.5"
                     strokeDasharray={`${Math.PI * 12 * 0.75} ${Math.PI * 12}`}
                     transform="rotate(135 8 8)" strokeLinecap="round"
                   />
                   <circle cx="8" cy="8" r="6" fill="none"
-                    stroke={tooltipData.expRet >= 0 ? '#3ee8a5' : '#ff6b8a'}
+                    stroke={tooltipData.expRet >= 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)'}
                     strokeWidth="1.5"
                     strokeDasharray={`${Math.PI * 12 * 0.75} ${Math.PI * 12}`}
                     strokeDashoffset={Math.PI * 12 * 0.75 * (1 - tooltipData.pUp)}
@@ -300,7 +300,7 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
                     background: tooltipData.expRet >= 0
                       ? 'linear-gradient(135deg, #064e3b 0%, #047857 100%)'
                       : 'linear-gradient(135deg, #4c0519 0%, #881337 100%)',
-                    color: tooltipData.expRet >= 0 ? '#3ee8a5' : '#ff6b8a',
+                    color: tooltipData.expRet >= 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)',
                   }}
                 >
                   {tooltipData.label}
@@ -314,7 +314,7 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
       <div className="overflow-x-auto">
         <table className="w-full text-[10px]">
           <thead>
-            <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
+            <tr style={{ borderBottom: '1px solid var(--violet-8)' }}>
               <th className="text-left px-4 py-2 font-medium w-36"
                 style={{
                   color: 'var(--text-muted, #6b7a90)',
@@ -349,7 +349,7 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
                     className="cursor-pointer transition-colors"
                     style={{
                       background: 'var(--void-hover, #16133a)',
-                      borderBottom: '1px solid rgba(139,92,246,0.06)',
+                      borderBottom: '1px solid var(--violet-6)',
                     }}
                     onClick={() => toggleSector(sector.name)}
                   >
@@ -372,14 +372,14 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
                         </span>
                         <span
                           className="px-1.5 py-0.5 rounded text-[9px]"
-                          style={{ background: 'rgba(139,92,246,0.08)', color: 'var(--text-muted, #6b7a90)' }}
+                          style={{ background: 'var(--violet-8)', color: 'var(--text-muted, #6b7a90)' }}
                         >
                           {sector.asset_count}
                         </span>
                         <SectorSentimentBar sector={sector} />
                         <span
                           className="text-[10px] tabular-nums font-medium"
-                          style={{ color: avgMom > 5 ? '#3ee8a5' : avgMom < -5 ? '#ff6b8a' : 'var(--text-muted, #6b7a90)' }}
+                          style={{ color: avgMom > 5 ? 'var(--accent-emerald)' : avgMom < -5 ? 'var(--accent-rose)' : 'var(--text-muted, #6b7a90)' }}
                         >
                           {avgMom > 0 ? '+' : ''}{avgMom.toFixed(1)}
                         </span>
@@ -395,9 +395,9 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
                         key={asset.asset_label}
                         className="transition-all"
                         style={{
-                          borderBottom: '1px solid rgba(139,92,246,0.04)',
+                          borderBottom: '1px solid var(--violet-4)',
                           ...(aIdx === focusRow ? {
-                            boxShadow: '0 0 0 1px rgba(139,92,246,0.25), 0 0 12px rgba(139,92,246,0.08)',
+                            boxShadow: '0 0 0 1px var(--violet-25), 0 0 12px var(--violet-8)',
                           } : {}),
                         }}
                       >
@@ -437,14 +437,14 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
                                   display: 'flex',
                                   alignItems: 'center',
                                   justifyContent: 'center',
-                                  border: `1px solid ${isFocused ? 'rgba(139,92,246,0.3)' : 'rgba(139,92,246,0.04)'}`,
+                                  border: `1px solid ${isFocused ? 'var(--violet-30)' : 'var(--violet-4)'}`,
                                   borderRadius: '3px',
                                   boxShadow: isFlashing
-                                    ? '0 0 16px rgba(139,92,246,0.4)'
+                                    ? '0 0 16px var(--violet-40)'
                                     : isHovered
-                                      ? '0 0 16px rgba(139,92,246,0.2)'
+                                      ? '0 0 16px var(--violet-20)'
                                       : isFocused
-                                        ? '0 0 8px rgba(139,92,246,0.15)'
+                                        ? '0 0 8px var(--violet-15)'
                                         : 'none',
                                   transform: isHovered ? 'scale(1.08)' : 'scale(1)',
                                 }}
@@ -452,7 +452,7 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
                                 <span className="text-[9px] tabular-nums font-medium"
                                   style={{
                                     color: sig?.exp_ret != null
-                                      ? (Math.abs(sig.exp_ret) > 0.03 ? '#f8fafc' : 'var(--text-secondary, #94a3b8)')
+                                      ? (Math.abs(sig.exp_ret) > 0.03 ? 'var(--text-luminous)' : 'var(--text-secondary, #94a3b8)')
                                       : 'var(--text-muted, #6b7a90)',
                                   }}>
                                   {sig?.exp_ret != null ? `${(sig.exp_ret * 100).toFixed(1)}` : '\u2014'}

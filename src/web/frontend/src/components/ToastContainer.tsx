@@ -37,7 +37,7 @@ const VARIANTS: Record<ToastVariant, {
     borderGradient: 'linear-gradient(180deg, var(--accent-rose) 0%, #E11D48 100%)',
     icon: XCircle,
     iconColor: 'var(--accent-rose)',
-    glow: '0 0 20px rgba(255,107,138,0.08)',
+    glow: '0 0 20px var(--rose-8)',
   },
   progress: {
     borderGradient: 'linear-gradient(180deg, var(--accent-violet) 0%, var(--accent-cyan) 100%)',
@@ -117,7 +117,7 @@ function ToastCard({ toast, index }: { toast: Toast; index: number }) {
 
         {/* Progress bar */}
         {toast.variant === 'progress' && toast.progress != null && (
-          <div className="mt-2 h-[3px] rounded-full overflow-hidden" style={{ background: 'rgba(139,92,246,0.1)' }}>
+          <div className="mt-2 h-[3px] rounded-full overflow-hidden" style={{ background: 'var(--violet-10)' }}>
             {toast.progress >= 0 ? (
               <div
                 className="h-full rounded-full transition-all duration-300"
@@ -134,7 +134,7 @@ function ToastCard({ toast, index }: { toast: Toast; index: number }) {
 
         {/* Auto-dismiss timer bar */}
         {autoDismiss > 0 && toast.variant !== 'progress' && (
-          <div className="mt-2 h-[2px] rounded-full overflow-hidden" style={{ background: 'rgba(139,92,246,0.06)' }}>
+          <div className="mt-2 h-[2px] rounded-full overflow-hidden" style={{ background: 'var(--violet-6)' }}>
             <div
               className="h-full rounded-full"
               style={{
@@ -155,7 +155,7 @@ function ToastCard({ toast, index }: { toast: Toast; index: number }) {
       {/* Close button */}
       <button
         onClick={(e) => { e.stopPropagation(); handleDismiss(); }}
-        className="absolute top-2 right-2 p-1 rounded-md transition-colors hover:bg-[rgba(139,92,246,0.08)]"
+        className="absolute top-2 right-2 p-1 rounded-md transition-colors hover:bg-[var(--violet-8)]"
         style={{ color: 'var(--text-muted)' }}
       >
         <X className="w-3 h-3" />

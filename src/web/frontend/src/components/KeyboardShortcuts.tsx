@@ -135,7 +135,7 @@ export function KeyboardShortcutOverlay() {
           </h2>
           <button
             onClick={() => { setOpen(false); setSearch(''); }}
-            className="p-1.5 rounded-lg transition-colors duration-150 hover:bg-[rgba(139,92,246,0.08)]"
+            className="p-1.5 rounded-lg transition-colors duration-150 hover:bg-[var(--violet-8)]"
             style={{ color: 'var(--text-muted)' }}
           >
             <X size={16} />
@@ -152,7 +152,7 @@ export function KeyboardShortcutOverlay() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full h-9 pl-9 pr-3 text-sm rounded-lg outline-none transition-shadow duration-200
-              focus:ring-2 focus:ring-[rgba(139,92,246,0.3)]"
+              focus:ring-2 focus:ring-[var(--violet-30)]"
             style={{
               background: 'rgba(10,10,26,0.6)',
               border: '1px solid var(--border-void)',
@@ -172,7 +172,7 @@ export function KeyboardShortcutOverlay() {
                 {sec.shortcuts.map((s, i) => (
                   <div
                     key={i}
-                    className="flex items-center justify-between px-3 py-2 rounded-lg transition-colors duration-150 hover:bg-[rgba(139,92,246,0.04)]"
+                    className="flex items-center justify-between px-3 py-2 rounded-lg transition-colors duration-150 hover:bg-[var(--violet-4)]"
                   >
                     <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
                       {s.description}

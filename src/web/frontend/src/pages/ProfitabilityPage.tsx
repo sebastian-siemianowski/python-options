@@ -20,14 +20,14 @@ function MetricCard({ label, value, target, unit = '' }: {
   label: string; value: number | null; target: number; unit?: string;
 }) {
   const pass = value != null && value >= target;
-  const color = value == null ? '#7a8ba4' : pass ? '#3ee8a5' : '#ff6b8a';
+  const color = value == null ? '#7a8ba4' : pass ? 'var(--accent-emerald)' : 'var(--accent-rose)';
   return (
     <div className="glass-card p-4 hover-lift stat-shine">
-      <p className="text-[10px] text-[#7a8ba4] uppercase tracking-wider font-medium">{label}</p>
+      <p className="text-[10px] text-[var(--text-secondary)] uppercase tracking-wider font-medium">{label}</p>
       <p className="text-lg font-bold mt-1 tabular-nums" style={{ color }}>
         {value != null ? `${(value * 100).toFixed(1)}${unit}` : '--'}
       </p>
-      <p className="text-[9px] text-[#7a8ba4] mt-0.5">
+      <p className="text-[9px] text-[var(--text-secondary)] mt-0.5">
         Target: {(target * 100).toFixed(1)}{unit}
       </p>
       <div
@@ -46,25 +46,25 @@ function MetricChart({ title, data, targetValue, color = '#b49aff' }: {
 }) {
   return (
     <div className="glass-card p-4 hover-lift">
-      <h3 className="text-xs font-medium text-[#94a3b8] mb-3">{title}</h3>
+      <h3 className="text-xs font-medium text-[var(--text-secondary)] mb-3">{title}</h3>
       <div aria-label={`${title} chart`} role="img" style={{ width: '100%', height: 200 }}>
         <ResponsiveContainer width="100%" height={200}>
           <LineChart data={data} margin={{ top: 5, right: 10, bottom: 5, left: 10 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(139,92,246,0.06)" />
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--violet-6)" />
             <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#7a8ba4' }} />
             <YAxis
               tick={{ fontSize: 9, fill: '#7a8ba4' }}
               tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`}
             />
             <Tooltip
-              contentStyle={{ background: 'rgba(15,15,35,0.95)', border: '1px solid rgba(139,92,246,0.15)', borderRadius: 8, fontSize: 10, backdropFilter: 'blur(12px)' }}
+              contentStyle={{ background: 'rgba(15,15,35,0.95)', border: '1px solid var(--violet-15)', borderRadius: 8, fontSize: 10, backdropFilter: 'blur(12px)' }}
               formatter={(v: number) => `${(v * 100).toFixed(2)}%`}
             />
             <ReferenceLine
               y={targetValue}
-              stroke="#ff6b8a"
+              stroke="var(--accent-rose)"
               strokeDasharray="6 3"
-              label={{ value: 'Target', position: 'right', fill: '#ff6b8a', fontSize: 9 }}
+              label={{ value: 'Target', position: 'right', fill: 'var(--accent-rose)', fontSize: 9 }}
             />
             <Line
               type="monotone"
@@ -130,17 +130,17 @@ export default function ProfitabilityPage() {
       </div>
 
       {!hasData ? (
-        <div className="glass-card p-8 text-center text-[#7a8ba4] text-sm">
+        <div className="glass-card p-8 text-center text-[var(--text-secondary)] text-sm">
           No profitability history yet. Run <code style={{ color: '#b49aff' }}>make calibrate</code> to generate data.
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 fade-up-delay-1">
-          <MetricChart title="Hit Rate 7D" data={hitRate7d} targetValue={targets.hit_rate_7d || 0.55} color="#3ee8a5" />
+          <MetricChart title="Hit Rate 7D" data={hitRate7d} targetValue={targets.hit_rate_7d || 0.55} color="var(--accent-emerald)" />
           <MetricChart title="Hit Rate 21D" data={hitRate21d} targetValue={targets.hit_rate_21d || 0.53} color="#6ff0c0" />
           <MetricChart title="Signal Rate" data={signalRates} targetValue={targets.signal_rate || 0.15} color="#b49aff" />
-          <MetricChart title="Sharpe 7D" data={sharpe7d} targetValue={targets.sharpe_7d || 0.50} color="#f5c542" />
+          <MetricChart title="Sharpe 7D" data={sharpe7d} targetValue={targets.sharpe_7d || 0.50} color="var(--accent-amber)" />
           <MetricChart title="CRPS" data={crpsData} targetValue={0.02} color="#f87171" />
-          <MetricChart title="ECE" data={eceData} targetValue={targets.ece_max || 0.03} color="#8b5cf6" />
+          <MetricChart title="ECE" data={eceData} targetValue={targets.ece_max || 0.03} color="var(--accent-violet)" />
         </div>
       )}
     </>

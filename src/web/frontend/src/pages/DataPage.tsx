@@ -57,9 +57,9 @@ export default function DataPage() {
             disabled={refreshing}
             className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm transition-all duration-200 disabled:opacity-50"
             style={{
-              background: 'rgba(139,92,246,0.08)',
+              background: 'var(--violet-8)',
               color: '#b49aff',
-              border: '1px solid rgba(139,92,246,0.12)',
+              border: '1px solid var(--violet-12)',
             }}
           >
             <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
@@ -71,7 +71,7 @@ export default function DataPage() {
       </PageHeader>
 
       {refreshMsg && (
-        <div className="glass-card p-3 mb-4" style={{ borderLeft: '2px solid #8b5cf6' }}>
+        <div className="glass-card p-3 mb-4" style={{ borderLeft: '2px solid var(--accent-violet)' }}>
           <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>{refreshMsg}</p>
         </div>
       )}
@@ -96,7 +96,7 @@ export default function DataPage() {
             {Object.entries(dirs).map(([name, info]) => (
               <div key={name} className="flex items-center justify-between text-xs">
                 <span style={{ color: 'var(--text-luminous)' }}>{name}</span>
-                <span style={{ color: info.exists ? '#3ee8a5' : '#ff6b8a' }}>
+                <span style={{ color: info.exists ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}>
                   {info.exists ? `${info.file_count} files` : 'missing'}
                 </span>
               </div>
@@ -106,7 +106,7 @@ export default function DataPage() {
 
         {/* Price file list */}
         <div className="glass-card md:col-span-2 overflow-hidden">
-          <div className="px-4 py-3" style={{ borderBottom: '1px solid rgba(139,92,246,0.06)' }}>
+          <div className="px-4 py-3" style={{ borderBottom: '1px solid var(--violet-6)' }}>
             <input
               type="text"
               value={search}
@@ -115,7 +115,7 @@ export default function DataPage() {
               className="w-full px-3 py-2 rounded-xl text-sm outline-none transition-all duration-200"
               style={{
                 background: 'rgba(10,10,26,0.6)',
-                border: '1px solid rgba(139,92,246,0.08)',
+                border: '1px solid var(--violet-8)',
                 color: 'var(--text-primary)',
               }}
             />
@@ -145,9 +145,9 @@ export default function DataPage() {
 }
 
 function FileRow({ file }: { file: PriceFile }) {
-  const ageColor = file.age_hours < 24 ? '#3ee8a5'
-    : file.age_hours < 72 ? '#f5c542'
-    : '#ff6b8a';
+  const ageColor = file.age_hours < 24 ? 'var(--accent-emerald)'
+    : file.age_hours < 72 ? 'var(--accent-amber)'
+    : 'var(--accent-rose)';
 
   return (
     <tr className="premium-row">

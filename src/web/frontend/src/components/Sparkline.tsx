@@ -50,8 +50,8 @@ function SparklineInner({ ticker, width = 60, height = 28 }: SparklineProps) {
     const lastClose = closes[closes.length - 1];
     const aboveSma = lastClose >= sma20;
 
-    const emerald = '#3ee8a5';
-    const rose = '#ff6b8a';
+    const emerald = 'var(--accent-emerald)';
+    const rose = 'var(--accent-rose)';
     const lineColor = aboveSma ? emerald : rose;
 
     // Draw line

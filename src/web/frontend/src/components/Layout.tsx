@@ -22,6 +22,7 @@ import BreadcrumbBar from './BreadcrumbBar';
 import StatusStrip from './StatusStrip';
 import AmbientOrbs from './AmbientOrbs';
 import { KeyboardShortcutOverlay } from './KeyboardShortcuts';
+import { initTilt } from '../utils/tilt';
 
 /* ─── Types ─────────────────────────────────────────────────────── */
 interface NavItem {
@@ -40,12 +41,12 @@ function getSavedCollapsed(): boolean {
 
 /* ─── Badge color helpers ───────────────────────────────────────── */
 const badgeColors = {
-  emerald: 'bg-[rgba(62,232,165,0.12)] text-[#3ee8a5]',
-  rose: 'bg-[rgba(255,107,138,0.12)] text-[#ff6b8a]',
-  amber: 'bg-[rgba(245,197,66,0.12)] text-[#f5c542]',
-  violet: 'bg-[rgba(139,92,246,0.12)] text-[#C4B5FD]',
-  fuchsia: 'bg-[rgba(226,122,245,0.12)] text-[#e27af5]',
-  cyan: 'bg-[rgba(56,217,245,0.12)] text-[#38d9f5]',
+  emerald: 'bg-[var(--emerald-12)] text-[var(--accent-emerald)]',
+  rose: 'bg-[var(--rose-12)] text-[var(--accent-rose)]',
+  amber: 'bg-[var(--amber-12)] text-[var(--accent-amber)]',
+  violet: 'bg-[var(--violet-12)] text-[#C4B5FD]',
+  fuchsia: 'bg-[rgba(226,122,245,0.12)] text-[var(--accent-fuchsia)]',
+  cyan: 'bg-[rgba(56,217,245,0.12)] text-[var(--accent-cyan)]',
 };
 
 /* ─── Layout component ──────────────────────────────────────────── */
@@ -60,6 +61,12 @@ export default function Layout() {
   useEffect(() => {
     try { localStorage.setItem(COLLAPSE_KEY, collapsed ? '1' : '0'); } catch { /* noop */ }
   }, [collapsed]);
+
+  /* 3D tilt for hover-lift cards */
+  useEffect(() => {
+    const cleanup = initTilt();
+    return cleanup;
+  }, []);
 
   /* Cmd+B toggle, Cmd+K palette */
   useEffect(() => {
@@ -314,7 +321,7 @@ export default function Layout() {
             <div className="w-9 h-9 rounded-xl flex items-center justify-center"
                  style={{
                    background: 'linear-gradient(135deg, rgba(139,92,246,0.18) 0%, rgba(56,217,245,0.08) 100%)',
-                   boxShadow: '0 0 20px rgba(139,92,246,0.12)',
+                   boxShadow: '0 0 20px var(--violet-12)',
                  }}>
               <Activity className="w-4.5 h-4.5" style={{ color: 'var(--accent-violet-bright)' }} />
             </div>
@@ -325,8 +332,8 @@ export default function Layout() {
                   className="w-10 h-10 rounded-xl flex items-center justify-center"
                   style={{
                     background: 'linear-gradient(135deg, rgba(139,92,246,0.18) 0%, rgba(56,217,245,0.08) 100%)',
-                    boxShadow: '0 0 24px rgba(139,92,246,0.12)',
-                    border: '1px solid rgba(139,92,246,0.12)',
+                    boxShadow: '0 0 24px var(--violet-12)',
+                    border: '1px solid var(--violet-12)',
                   }}
                 >
                   <Activity className="w-5 h-5" style={{ color: 'var(--accent-violet-bright)' }} />
@@ -378,7 +385,7 @@ export default function Layout() {
                   } ${
                     isActive
                       ? 'nav-active-indicator nav-cosmic-active'
-                      : 'hover:bg-[rgba(139,92,246,0.05)]'
+                      : 'hover:bg-[var(--violet-5)]'
                   }`}
                   style={{
                     color: isActive ? 'var(--accent-violet-bright)' : 'var(--text-muted)',
@@ -403,7 +410,7 @@ export default function Layout() {
                           className="w-2 h-2 rounded-full ml-auto pulse-dot"
                           style={{
                             background: allServicesOk ? 'var(--accent-emerald)' : 'var(--accent-rose)',
-                            boxShadow: `0 0 8px ${allServicesOk ? 'rgba(62,232,165,0.5)' : 'rgba(255,107,138,0.5)'}`,
+                            boxShadow: `0 0 8px ${allServicesOk ? 'var(--emerald-50)' : 'var(--rose-50)'}`,
                           }}
                         />
                       ) : badge ? (

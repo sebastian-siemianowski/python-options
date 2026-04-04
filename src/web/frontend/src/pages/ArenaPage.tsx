@@ -19,10 +19,10 @@ const GATES = {
 };
 
 function gateColor(val: number | null | undefined, gate: keyof typeof GATES): string {
-  if (val == null) return 'text-[#7a8ba4]';
+  if (val == null) return 'text-[var(--text-secondary)]';
   const g = GATES[gate];
-  if ('cmp' in g && g.cmp === 'lt') return val < g.pass ? 'text-[#3ee8a5]' : 'text-[#ff6b8a]';
-  return val >= g.pass ? 'text-[#3ee8a5]' : 'text-[#ff6b8a]';
+  if ('cmp' in g && g.cmp === 'lt') return val < g.pass ? 'text-[var(--accent-emerald)]' : 'text-[var(--accent-rose)]';
+  return val >= g.pass ? 'text-[var(--accent-emerald)]' : 'text-[var(--accent-rose)]';
 }
 
 export default function ArenaPage() {
@@ -46,9 +46,9 @@ export default function ArenaPage() {
             disabled={safeQ.isFetching}
             className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm transition-all duration-200 disabled:opacity-50"
             style={{
-              background: 'rgba(139,92,246,0.08)',
+              background: 'var(--violet-8)',
               color: '#b49aff',
-              border: '1px solid rgba(139,92,246,0.12)',
+              border: '1px solid var(--violet-12)',
             }}
           >
             <RefreshCw className={`w-3.5 h-3.5 ${safeQ.isFetching ? 'animate-spin' : ''}`} />
@@ -98,9 +98,9 @@ export default function ArenaPage() {
                 key={s}
                 className="px-2.5 py-1 rounded-xl text-xs font-medium transition-colors cursor-default"
                 style={{
-                  background: 'rgba(139,92,246,0.06)',
+                  background: 'var(--violet-6)',
                   color: '#b49aff',
-                  border: '1px solid rgba(139,92,246,0.1)',
+                  border: '1px solid var(--violet-10)',
                 }}
               >
                 {s}
@@ -112,14 +112,14 @@ export default function ArenaPage() {
 
       {/* Safe storage models with scoring */}
       <div className="glass-card overflow-hidden fade-up-delay-1">
-        <div className="px-5 py-4 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(139,92,246,0.06)' }}>
+        <div className="px-5 py-4 flex items-center justify-between" style={{ borderBottom: '1px solid var(--violet-6)' }}>
           <h3 className="premium-section-label">Safe Storage Models</h3>
           <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
             {scoredModels.length} scored / {models.length} total
           </span>
         </div>
         {models.length === 0 ? (
-          <div className="p-6 text-center text-[#7a8ba4] text-sm">No models in safe storage</div>
+          <div className="p-6 text-center text-[var(--text-secondary)] text-sm">No models in safe storage</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
@@ -162,8 +162,8 @@ export default function ArenaPage() {
             { gate: 'BIC < -29k', desc: 'Bayesian complexity penalty' },
             { gate: 'CRPS < 0.020', desc: 'Calibration + sharpness' },
           ].map((g) => (
-            <div key={g.gate} className="rounded-xl p-2.5" style={{ background: 'rgba(10,10,26,0.6)', border: '1px solid rgba(139,92,246,0.06)' }}>
-              <p className="font-mono font-bold" style={{ color: '#f5c542' }}>{g.gate}</p>
+            <div key={g.gate} className="rounded-xl p-2.5" style={{ background: 'rgba(10,10,26,0.6)', border: '1px solid var(--violet-6)' }}>
+              <p className="font-mono font-bold" style={{ color: 'var(--accent-amber)' }}>{g.gate}</p>
               <p className="mt-0.5" style={{ color: '#7a8ba4' }}>{g.desc}</p>
             </div>
           ))}

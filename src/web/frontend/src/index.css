@@ -30,35 +30,83 @@
   --void-hover: #1a1740;
   --void-active: #221e4e;
 
-  /* Accents - More luminous, vibrant */
-  --accent-violet: #8b5cf6;
-  --accent-violet-soft: #7c3aed;
+  /* ================================================================
+     ACCENT PALETTE -- Semantic meaning
+     ================================================================ */
+  --accent-violet:        #8b5cf6;  /* Brand, interactive, focus */
+  --accent-violet-soft:   #7c3aed;
   --accent-violet-bright: #a78bfa;
-  --accent-violet-glow: rgba(139,92,246,0.45);
-  --accent-indigo: #6366f1;
-  --accent-cyan: #38d9f5;
-  --accent-emerald: #3ee8a5;
-  --accent-rose: #ff6b8a;
-  --accent-amber: #f5c542;
-  --accent-fuchsia: #e27af5;
+  --accent-violet-glow:   rgba(139,92,246,0.45);
+  --accent-indigo:        #6366f1;
+  --accent-cyan:          #38d9f5;  /* Info, secondary brand */
+  --accent-emerald:       #3ee8a5;  /* Pass, buy, positive, healthy */
+  --accent-rose:          #ff6b8a;  /* Fail, sell, negative, danger */
+  --accent-amber:         #f5c542;  /* Warning, caution, stale */
+  --accent-fuchsia:       #e27af5;  /* Experimental, rare accent */
+  --accent-orange:        #f97316;  /* Elevated, moderate risk */
 
-  /* Text - Cleaner contrast hierarchy */
-  --text-luminous: #f8fafc;
-  --text-primary: #edf0f7;
-  --text-secondary: #8e99b0;
-  --text-muted: #4a5568;
-  --text-violet: #c4b5fd;
+  /* ================================================================
+     TEXT HIERARCHY
+     ================================================================ */
+  --text-luminous:  #f8fafc;  /* Highest contrast headings */
+  --text-primary:   #edf0f7;  /* Body text */
+  --text-secondary: #8e99b0;  /* Subdued labels */
+  --text-muted:     #4a5568;  /* Dimmest text, decorative */
+  --text-violet:    #c4b5fd;  /* Accent text, links */
 
-  /* Borders - Richer, more refined */
-  --border-void: rgba(139,92,246,0.07);
-  --border-subtle: rgba(255,255,255,0.04);
-  --border-glow: rgba(139,92,246,0.28);
+  /* ================================================================
+     BORDERS
+     ================================================================ */
+  --border-void:     rgba(139,92,246,0.07);
+  --border-subtle:   rgba(255,255,255,0.04);
+  --border-glow:     rgba(139,92,246,0.28);
   --border-luminous: rgba(255,255,255,0.08);
 
-  /* Glass -- Multi-layer depth system */
-  --glass-surface: rgba(12,11,29,0.82);
-  --glass-elevated: rgba(18,16,42,0.88);
-  --glass-overlay: rgba(22,20,50,0.92);
+  /* ================================================================
+     GLASS SYSTEM -- Opacity-semantic tokens
+     ================================================================ */
+  --glass-surface:      rgba(12,11,29,0.82);
+  --glass-elevated:     rgba(18,16,42,0.88);
+  --glass-overlay:      rgba(22,20,50,0.92);
+  --glass-border:       rgba(139,92,246,0.08);
+  --glass-border-hover: rgba(139,92,246,0.15);
+  --glass-glow:         rgba(139,92,246,0.06);
+  --glass-highlight:    rgba(139,92,246,0.12);
+
+  /* Semantic violet opacities for inline use */
+  --violet-2:   rgba(139,92,246,0.02);
+  --violet-3:   rgba(139,92,246,0.03);
+  --violet-4:   rgba(139,92,246,0.04);
+  --violet-5:   rgba(139,92,246,0.05);
+  --violet-6:   rgba(139,92,246,0.06);
+  --violet-8:   rgba(139,92,246,0.08);
+  --violet-10:  rgba(139,92,246,0.10);
+  --violet-12:  rgba(139,92,246,0.12);
+  --violet-15:  rgba(139,92,246,0.15);
+  --violet-20:  rgba(139,92,246,0.20);
+  --violet-25:  rgba(139,92,246,0.25);
+  --violet-30:  rgba(139,92,246,0.30);
+  --violet-40:  rgba(139,92,246,0.40);
+
+  /* Semantic emerald opacities */
+  --emerald-6:  rgba(62,232,165,0.06);
+  --emerald-8:  rgba(62,232,165,0.08);
+  --emerald-12: rgba(62,232,165,0.12);
+  --emerald-15: rgba(62,232,165,0.15);
+  --emerald-30: rgba(62,232,165,0.30);
+  --emerald-50: rgba(62,232,165,0.50);
+
+  /* Semantic rose opacities */
+  --rose-6:  rgba(255,107,138,0.06);
+  --rose-8:  rgba(255,107,138,0.08);
+  --rose-12: rgba(255,107,138,0.12);
+  --rose-15: rgba(255,107,138,0.15);
+  --rose-30: rgba(255,107,138,0.30);
+  --rose-50: rgba(255,107,138,0.50);
+
+  /* Semantic amber opacities */
+  --amber-12: rgba(245,197,66,0.12);
+  --amber-15: rgba(245,197,66,0.15);
 
   /* Gradients - Premium multi-stop */
   --gradient-nebula: linear-gradient(135deg, #10082a 0%, #0d1b3e 40%, #0a2540 100%);
@@ -73,6 +121,66 @@
   --shadow-card-hover: 0 4px 24px rgba(139,92,246,0.12), 0 1px 4px rgba(0,0,0,0.3), 0 0 0 1px var(--border-glow);
   --shadow-elevated: 0 8px 40px rgba(0,0,0,0.4), 0 0 0 1px var(--border-void);
   --shadow-glow-violet: 0 0 40px rgba(139,92,246,0.15), 0 0 80px rgba(139,92,246,0.05);
+
+  /* ----------------------------------------------------------------
+     TYPOGRAPHIC SCALE (S1.1) -- 6-tier scale for all text
+     ---------------------------------------------------------------- */
+  --font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+  /* Font Size Scale */
+  --font-2xs: 10px;
+  --font-xs:  11px;
+  --font-sm:  12px;
+  --font-base: 14px;
+  --font-lg:  16px;
+  --font-xl:  20px;
+  --font-2xl: 28px;
+  --font-3xl: 32px;
+
+  /* Letter Spacing */
+  --tracking-tight:   -0.03em;
+  --tracking-normal:   0em;
+  --tracking-wide:     0.06em;
+  --tracking-wider:    0.10em;
+  --tracking-widest:   0.14em;
+
+  /* Font Weights */
+  --weight-normal:    400;
+  --weight-medium:    500;
+  --weight-semibold:  600;
+  --weight-bold:      700;
+  --weight-extrabold: 800;
+
+  /* ----------------------------------------------------------------
+     SPACING SCALE (S1.2) -- 4px base grid rhythm
+     ---------------------------------------------------------------- */
+  --space-0:  0px;
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-7:  28px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* -- Motion: Spring Curves (S1.11) -- */
+  --spring-bounce:  cubic-bezier(0.16, 1, 0.3, 1);
+  --spring-snappy:  cubic-bezier(0.34, 1.56, 0.64, 1);
+  --spring-gentle:  cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out-expo:  cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out:    cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* -- Motion: Duration Tokens (S1.11) -- */
+  --duration-instant: 80ms;
+  --duration-fast:    150ms;
+  --duration-normal:  250ms;
+  --duration-slow:    400ms;
+  --duration-reveal:  600ms;
+  --duration-epic:    1000ms;
 }
 
 html {
@@ -86,10 +194,58 @@ body {
   margin: 0;
   background-color: var(--void);
   color: var(--text-primary);
-  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: var(--font-family);
+  font-size: var(--font-base);
   letter-spacing: -0.011em;
   line-height: 1.6;
   font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ================================================================
+   TYPOGRAPHIC UTILITY CLASSES (S1.1)
+   Compose tokens into reusable text styles across all components
+   ================================================================ */
+.text-heading {
+  font-size: var(--font-3xl);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-tight);
+  line-height: 1.2;
+  color: var(--text-luminous);
+}
+.text-stat-value {
+  font-size: var(--font-2xl);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-tight);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.text-section {
+  font-size: var(--font-lg);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-normal);
+  line-height: 1.3;
+}
+.text-body {
+  font-size: var(--font-base);
+  font-weight: var(--weight-normal);
+  letter-spacing: var(--tracking-normal);
+  line-height: 1.6;
+}
+.text-caption {
+  font-size: var(--font-xs);
+  font-weight: var(--weight-medium);
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+.text-label {
+  font-size: var(--font-2xs);
+  font-weight: var(--weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-widest);
+  color: var(--text-muted);
+  line-height: 1.2;
 }
 
 /* ================================================================
@@ -157,32 +313,46 @@ body {
   background-size: 256px 256px;
 }
 
-/* -- Scrollbar -- Premium thin scrollbar */
-::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
+/* ================================================================
+   SCROLLBAR (S1.9) -- Branded, auto-hide, size-tiered
+   ================================================================ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(139,92,246,0.12) transparent;
 }
-::-webkit-scrollbar-track {
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
   background: transparent;
+  border-radius: 100px;
+  transition: background 200ms;
 }
-::-webkit-scrollbar-thumb {
-  background: rgba(139, 92, 246, 0.10);
-  border-radius: 10px;
+*:hover::-webkit-scrollbar-thumb {
+  background: rgba(139,92,246,0.12);
 }
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(139, 92, 246, 0.22);
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(139,92,246,0.25);
 }
+*::-webkit-scrollbar-corner { background: transparent; }
+/* Main content area -- wider scrollbar */
+.main-scroll::-webkit-scrollbar { width: 8px; }
+/* Inner panels -- narrower scrollbar */
+.inner-scroll::-webkit-scrollbar { width: 4px; }
 
 /* ================================================================
    GLASS MORPHISM -- True frosted glass with 3D depth
    ================================================================ */
 .glass-card {
-  background: linear-gradient(
-    160deg,
-    rgba(15, 14, 36, 0.92) 0%,
-    rgba(12, 18, 45, 0.82) 40%,
-    rgba(10, 22, 48, 0.75) 100%
-  );
+  background:
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E"),
+    linear-gradient(
+      160deg,
+      rgba(15, 14, 36, 0.92) 0%,
+      rgba(12, 18, 45, 0.82) 40%,
+      rgba(10, 22, 48, 0.75) 100%
+    );
+  background-size: 200px 200px, 100% 100%;
+  background-blend-mode: overlay, normal;
   backdrop-filter: blur(40px) saturate(1.6);
   -webkit-backdrop-filter: blur(40px) saturate(1.6);
   border: 1px solid rgba(255,255,255,0.05);
@@ -191,7 +361,8 @@ body {
     0 0 0 1px rgba(139,92,246,0.04),
     0 1px 2px rgba(0,0,0,0.4),
     0 4px 16px rgba(0,0,0,0.2),
-    inset 0 1px 0 rgba(255,255,255,0.04);
+    inset 0 1px 0 0 rgba(255,255,255,0.04),
+    inset 0 -1px 0 0 rgba(0,0,0,0.1);
   transition: border-color 0.4s cubic-bezier(0.2,0,0,1),
               box-shadow 0.4s cubic-bezier(0.2,0,0,1),
               transform 0.4s cubic-bezier(0.2,0,0,1);
@@ -233,7 +404,8 @@ body {
     0 0 0 1px rgba(139,92,246,0.10),
     0 4px 24px rgba(139,92,246,0.08),
     0 8px 40px rgba(0,0,0,0.25),
-    inset 0 1px 0 rgba(255,255,255,0.06);
+    inset 0 1px 0 0 rgba(255,255,255,0.08),
+    inset 0 -1px 0 0 rgba(0,0,0,0.1);
   transform: translateY(-2px);
 }
 
@@ -344,7 +516,7 @@ body {
 
 .scrollbar-thin::-webkit-scrollbar { width: 4px; }
 .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
-.scrollbar-thin::-webkit-scrollbar-thumb { background: rgba(42, 42, 74, 0.4); border-radius: 10px; }
+.scrollbar-thin::-webkit-scrollbar-thumb { background: rgba(139,92,246,0.12); border-radius: 100px; }
 
 /* ================================================================
    SORTABLE TABLE HEADERS
@@ -376,19 +548,47 @@ body {
 }
 
 /* ================================================================
-   HOVER & INTERACTIONS -- Spring-loaded physical feedback
+   HOVER & INTERACTIONS -- Premium 3D tilt + glass luminance
    ================================================================ */
 .hover-lift {
-  transition: transform 0.5s cubic-bezier(0.2, 0, 0, 1), box-shadow 0.5s cubic-bezier(0.2, 0, 0, 1);
+  transition: transform 300ms cubic-bezier(0.16,1,0.3,1),
+              box-shadow 300ms cubic-bezier(0.16,1,0.3,1),
+              border-color 300ms cubic-bezier(0.16,1,0.3,1);
+  transform-style: preserve-3d;
+  perspective: 800px;
   will-change: transform;
+  position: relative;
 }
 .hover-lift:hover {
-  transform: translateY(-4px) scale(1.005);
+  transform: translateY(-3px) rotateX(var(--tilt-x, 1deg)) rotateY(var(--tilt-y, -0.5deg));
   box-shadow:
-    0 20px 60px rgba(0, 0, 0, 0.3),
-    0 0 0 1px rgba(139, 92, 246, 0.10),
-    0 0 80px rgba(139, 92, 246, 0.04);
+    var(--shadow-card-hover),
+    0 20px 40px rgba(0,0,0,0.15);
+  border-color: rgba(139,92,246,0.18);
 }
+/* Border luminance -- moving gradient that follows cursor */
+.hover-lift::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    var(--light-angle, 135deg),
+    rgba(139,92,246,0.15),
+    transparent 40%,
+    transparent 60%,
+    rgba(62,232,165,0.08)
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 300ms;
+  z-index: 1;
+}
+.hover-lift:hover::before { opacity: 1; }
 
 /* Table row - refined glow */
 .row-glow {
@@ -477,25 +677,49 @@ body {
 }
 
 .focus-ring:focus-visible {
-  outline: 2px solid rgba(139, 92, 246, 0.5);
-  outline-offset: 2px;
-  border-radius: 8px;
+  outline: none;
+  box-shadow: 0 0 0 2px var(--void-surface), 0 0 0 4px var(--accent-violet);
+  border-color: var(--accent-violet);
 }
 
-/* Scrollbar visibility on hover */
-.overflow-y-auto::-webkit-scrollbar-thumb,
-.overflow-x-auto::-webkit-scrollbar-thumb {
-  background: transparent;
-}
-.overflow-y-auto:hover::-webkit-scrollbar-thumb,
-.overflow-x-auto:hover::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.1);
-}
+/* Scrollbar visibility on hover -- covered by global * rules (S1.9) */
 
-/* Button press - spring feel */
+/* Press spring -- physical compression */
+.press-spring:active {
+  transform: scale(0.97);
+  transition: transform 80ms cubic-bezier(0.3, 0, 0.8, 0.15);
+}
 button:active:not(:disabled) {
   transform: scale(0.97);
   transition-duration: 0.08s;
+}
+
+/* Disabled state -- muted, non-interactive */
+.state-disabled {
+  opacity: 0.4;
+  pointer-events: none;
+  filter: grayscale(0.3);
+}
+
+/* Glass-morphic input -- premium form fields */
+.glass-input {
+  background: var(--violet-3);
+  border: 1px solid var(--violet-10);
+  border-radius: 10px;
+  backdrop-filter: blur(8px);
+  color: var(--text-primary);
+  padding: 10px 14px;
+  font-size: var(--font-base);
+  transition: all 200ms cubic-bezier(0.16,1,0.3,1);
+}
+.glass-input:focus {
+  border-color: var(--violet-30);
+  box-shadow: 0 0 0 3px var(--violet-8), 0 0 20px var(--violet-6);
+  background: var(--violet-5);
+  outline: none;
+}
+.glass-input::placeholder {
+  color: var(--text-muted);
 }
 
 /* Selection - premium violet */
@@ -528,17 +752,108 @@ button:active:not(:disabled) {
   background: linear-gradient(90deg, transparent 5%, rgba(139, 92, 246, 0.12) 30%, rgba(255, 255, 255, 0.06) 50%, rgba(139, 92, 246, 0.12) 70%, transparent 95%);
 }
 
-/* Skeleton loading - Premium shimmer */
-@keyframes skeleton-pulse {
-  0% { opacity: 0.5; }
-  50% { opacity: 0.2; }
-  100% { opacity: 0.5; }
+/* ================================================================
+   SKELETON LOADING (S1.5) -- Premium traveling shimmer
+   ================================================================ */
+@keyframes skeleton-shimmer {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
 }
-.skeleton {
-  background: linear-gradient(90deg, rgba(139,92,246,0.03) 0%, rgba(139,92,246,0.06) 50%, rgba(139,92,246,0.03) 100%);
+.skeleton,
+.skeleton-pulse {
+  background: linear-gradient(
+    110deg,
+    rgba(139,92,246,0.03) 30%,
+    rgba(139,92,246,0.08) 50%,
+    rgba(139,92,246,0.03) 70%
+  );
   background-size: 200% 100%;
-  animation: skeleton-pulse 1.8s ease-in-out infinite;
+  animation: skeleton-shimmer 1.8s ease-in-out infinite;
   border-radius: 8px;
+}
+/* Shape variants */
+.skeleton-text {
+  height: 12px;
+  width: 70%;
+  border-radius: 100px;
+}
+.skeleton-stat {
+  height: 28px;
+  width: 30%;
+  border-radius: 8px;
+}
+.skeleton-row {
+  height: 44px;
+  width: 100%;
+  border-radius: 8px;
+}
+.skeleton-card {
+  height: 200px;
+  width: 100%;
+  border-radius: 16px;
+}
+/* Crossfade: skeleton fades out, content fades in */
+.skeleton-crossfade-enter {
+  animation: fade-up 0.2s cubic-bezier(0.16,1,0.3,1) both;
+}
+.skeleton-crossfade-exit {
+  animation: skeleton-fade-out 0.2s ease both;
+}
+@keyframes skeleton-fade-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+/* ================================================================
+   EMPTY STATE (S1.6) -- Premium empty state styling
+   ================================================================ */
+.empty-icon-badge {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: var(--violet-4);
+  border: 1px solid var(--violet-6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+/* Floating particles around empty state icon */
+@keyframes particle-float {
+  0%   { transform: translateY(0) scale(1); opacity: 0; }
+  20%  { opacity: 0.15; }
+  80%  { opacity: 0.15; }
+  100% { transform: translateY(-18px) scale(0.6); opacity: 0; }
+}
+.empty-particle {
+  position: absolute;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--accent-violet);
+  animation: particle-float 3s ease-in-out infinite;
+  pointer-events: none;
+}
+.empty-particle:nth-child(1) { left: 8px;  top: 10px; animation-delay: 0s;    }
+.empty-particle:nth-child(2) { right: 6px; top: 14px; animation-delay: 0.8s;  }
+.empty-particle:nth-child(3) { left: 12px; bottom: 8px; animation-delay: 1.6s; }
+.empty-particle:nth-child(4) { right: 10px;bottom: 12px;animation-delay: 2.4s; }
+
+/* ================================================================
+   ERROR STATE (S1.7) -- Rose-tinted glass card for errors
+   ================================================================ */
+.error-card {
+  background: linear-gradient(135deg, rgba(255,107,138,0.04) 0%, rgba(10,10,26,0.95) 100%);
+  border: 1px solid var(--rose-12);
+  box-shadow: 0 0 24px var(--rose-6), var(--shadow-card);
+  border-radius: 16px;
+}
+.error-icon-pulse {
+  animation: error-pulse-glow 3s ease-in-out infinite;
+  border-radius: 50%;
+  display: inline-flex;
+  padding: 10px;
+  background: var(--rose-8);
 }
 
 /* ================================================================

@@ -139,14 +139,14 @@ export default function OverviewPage() {
         <div className="glass-card hover-lift" style={{ padding: '20px 24px' }}>
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl flex items-center justify-center"
-                 style={{ background: `${healthOk === false ? '#ff6b8a' : '#3ee8a5'}10` }}>
-              <HeartPulse className="w-5 h-5" style={{ color: healthOk === undefined ? 'var(--text-muted)' : healthOk ? '#3ee8a5' : '#ff6b8a' }} />
+                 style={{ background: `${healthOk === false ? 'var(--accent-rose)' : 'var(--accent-emerald)'}10` }}>
+              <HeartPulse className="w-5 h-5" style={{ color: healthOk === undefined ? 'var(--text-muted)' : healthOk ? 'var(--accent-emerald)' : 'var(--accent-rose)' }} />
             </div>
             <div>
               <p className="text-lg font-bold tabular-nums" style={{ color: 'var(--text-luminous)' }}>{healthOk === undefined ? '...' : healthOk ? 'OK' : 'Issue'}</p>
               <p className="text-[10px] tracking-wide" style={{ color: 'var(--text-muted)' }}>System Health</p>
             </div>
-            <span className="w-2 h-2 rounded-full ml-auto pulse-dot" style={{ background: healthOk === false ? '#ff6b8a' : '#3ee8a5' }} />
+            <span className="w-2 h-2 rounded-full ml-auto pulse-dot" style={{ background: healthOk === false ? 'var(--accent-rose)' : 'var(--accent-emerald)' }} />
           </div>
         </div>
       </div>
@@ -219,7 +219,7 @@ export default function OverviewPage() {
                     </div>
                     <div className="h-1.5 rounded-full bg-white/[0.03] overflow-hidden">
                       <div
-                        className="h-full rounded-full bg-gradient-to-r from-[#3ee8a5] to-[#6ff0c0] bar-fill"
+                        className="h-full rounded-full bg-gradient-to-r from-[var(--accent-emerald)] to-[var(--accent-emerald)] bar-fill"
                         style={{ '--bar-width': `${pct}%`, width: `${pct}%` } as React.CSSProperties}
                       />
                     </div>

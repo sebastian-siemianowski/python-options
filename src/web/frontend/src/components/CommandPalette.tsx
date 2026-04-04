@@ -256,9 +256,9 @@ export default function CommandPalette({ open, onClose }: { open: boolean; onClo
 
   const badgeStyle = (variant: string) => {
     switch (variant) {
-      case 'bull': return 'bg-[rgba(62,232,165,0.12)] text-[#3ee8a5]';
-      case 'bear': return 'bg-[rgba(255,107,138,0.12)] text-[#ff6b8a]';
-      default: return 'bg-[rgba(139,92,246,0.08)] text-[#C4B5FD]';
+      case 'bull': return 'bg-[var(--emerald-12)] text-[var(--accent-emerald)]';
+      case 'bear': return 'bg-[var(--rose-12)] text-[var(--accent-rose)]';
+      default: return 'bg-[var(--violet-8)] text-[#C4B5FD]';
     }
   };
 
@@ -278,7 +278,7 @@ export default function CommandPalette({ open, onClose }: { open: boolean; onClo
         style={{
           background: 'linear-gradient(160deg, rgba(45,27,105,0.35) 0%, rgba(10,10,35,0.9) 50%, rgba(12,20,69,0.5) 100%)',
           borderColor: 'var(--border-glow)',
-          boxShadow: '0 0 0 1px var(--border-glow), 0 24px 80px rgba(139,92,246,0.15), 0 0 120px rgba(139,92,246,0.06)',
+          boxShadow: '0 0 0 1px var(--border-glow), 0 24px 80px var(--violet-15), 0 0 120px var(--violet-6)',
           animation: 'palette-in 300ms cubic-bezier(0.2,0,0,1)',
         }}
       >

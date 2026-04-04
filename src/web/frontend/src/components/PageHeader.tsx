@@ -14,7 +14,7 @@ export default function PageHeader({ title, children, action }: Props) {
             style={{
               color: 'var(--text-luminous)',
               letterSpacing: '-0.03em',
-              textShadow: '0 0 80px rgba(139,92,246,0.15)',
+              textShadow: '0 0 80px var(--violet-15)',
             }}
           >
             {title}

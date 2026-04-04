@@ -17,13 +17,13 @@ export function SignalStrengthBar({ label, pUp, kelly }: { label: string; pUp?: 
   let gradient: string;
   let glowColor: string;
   if (isBuy) {
-    gradient = 'linear-gradient(90deg, rgba(62,232,165,0.3) 0%, var(--accent-emerald) 100%)';
-    glowColor = 'rgba(62,232,165,0.30)';
+    gradient = 'linear-gradient(90deg, var(--emerald-30) 0%, var(--accent-emerald) 100%)';
+    glowColor = 'var(--emerald-30)';
   } else if (isSell) {
-    gradient = 'linear-gradient(90deg, rgba(255,107,138,0.3) 0%, var(--accent-rose) 100%)';
-    glowColor = 'rgba(255,107,138,0.30)';
+    gradient = 'linear-gradient(90deg, var(--rose-30) 0%, var(--accent-rose) 100%)';
+    glowColor = 'var(--rose-30)';
   } else {
-    gradient = 'linear-gradient(90deg, rgba(139,92,246,0.2) 0%, rgba(139,92,246,0.45) 100%)';
+    gradient = 'linear-gradient(90deg, var(--violet-20) 0%, rgba(139,92,246,0.45) 100%)';
     glowColor = 'rgba(139,92,246,0.18)';
   }
 
@@ -89,8 +89,8 @@ export function MomentumBadge({ value }: { value: number }) {
     : `rgba(255,107,138,${bgAlpha})`;
   const glow = isStrong
     ? isPositive
-      ? '0 0 10px rgba(62,232,165,0.15)'
-      : '0 0 10px rgba(255,107,138,0.15)'
+      ? '0 0 10px var(--emerald-15)'
+      : '0 0 10px var(--rose-15)'
     : 'none';
 
   return (
@@ -174,8 +174,8 @@ export function HorizonCell({ expRet, pUp }: { expRet: number | null | undefined
   const fontWeight = isStrong ? 600 : 400;
   const textShadow = isStrong
     ? isUp
-      ? '0 0 6px rgba(62,232,165,0.3)'
-      : '0 0 6px rgba(255,107,138,0.3)'
+      ? '0 0 6px var(--emerald-30)'
+      : '0 0 6px var(--rose-30)'
     : 'none';
 
   return (

@@ -60,7 +60,7 @@ export function ExportButton({ filename, columns, data, filteredCount, totalCoun
       <button
         onClick={() => setOpen(!open)}
         className="flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs font-medium transition-all duration-200
-          hover:bg-[rgba(139,92,246,0.08)]"
+          hover:bg-[var(--violet-8)]"
         style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-void)' }}
         aria-label="Export data"
       >
@@ -96,19 +96,19 @@ export function ExportButton({ filename, columns, data, filteredCount, totalCoun
                   onClick={() => doExport(f.key)}
                   disabled={state === 'loading'}
                   className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all duration-200
-                    hover:bg-[rgba(139,92,246,0.06)] disabled:opacity-50"
+                    hover:bg-[var(--violet-6)] disabled:opacity-50"
                   style={{ border: '1px solid var(--border-void)' }}
                 >
                   <div
                     className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0"
-                    style={{ background: 'rgba(139,92,246,0.08)' }}
+                    style={{ background: 'var(--violet-8)' }}
                   >
                     {isActive ? (
-                      <Loader2 size={14} className="animate-spin" style={{ color: '#8b5cf6' }} />
+                      <Loader2 size={14} className="animate-spin" style={{ color: 'var(--accent-violet)' }} />
                     ) : isSuccess ? (
-                      <Check size={14} style={{ color: '#3ee8a5' }} />
+                      <Check size={14} style={{ color: 'var(--accent-emerald)' }} />
                     ) : isError ? (
-                      <X size={14} style={{ color: '#ff6b8a' }} />
+                      <X size={14} style={{ color: 'var(--accent-rose)' }} />
                     ) : (
                       <Icon size={14} style={{ color: '#b49aff' }} />
                     )}

@@ -98,9 +98,9 @@ export default function TuningPage() {
               disabled={listQ.isFetching}
               className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm transition disabled:opacity-50"
               style={{
-                background: 'rgba(139,92,246,0.08)',
+                background: 'var(--violet-8)',
                 color: '#b49aff',
-                border: '1px solid rgba(139,92,246,0.12)',
+                border: '1px solid var(--violet-12)',
               }}
             >
               <RefreshCw className={`w-3.5 h-3.5 ${listQ.isFetching ? 'animate-spin' : ''}`} />
@@ -114,22 +114,22 @@ export default function TuningPage() {
 
       {/* ── Mission Control Panel (Story 6.1) ─────────────────────── */}
       <div className="glass-card p-6 mb-6 fade-up" style={{
-        background: 'linear-gradient(135deg, rgba(139,92,246,0.04) 0%, rgba(99,102,241,0.02) 50%, rgba(139,92,246,0.04) 100%)',
+        background: 'linear-gradient(135deg, var(--violet-4) 0%, rgba(99,102,241,0.02) 50%, var(--violet-4) 100%)',
         backdropFilter: 'blur(32px)',
       }}>
         <div className="flex items-center gap-4 flex-wrap">
           {/* Mode selector - segmented pills */}
-          <div className="flex gap-1 p-0.5 rounded-2xl" style={{ background: 'rgba(139,92,246,0.04)' }}>
+          <div className="flex gap-1 p-0.5 rounded-2xl" style={{ background: 'var(--violet-4)' }}>
             {modeLabels.map(({ id, label }) => (
               <button key={id}
                 onClick={() => setRetuneMode(id)}
                 disabled={retuneStatus === 'running'}
                 className="px-4 py-2 rounded-2xl text-[13px] font-medium transition-all duration-200 disabled:opacity-50"
                 style={retuneMode === id ? {
-                  background: 'rgba(139,92,246,0.20)',
+                  background: 'var(--violet-20)',
                   color: '#b49aff',
-                  border: '1px solid rgba(139,92,246,0.2)',
-                  boxShadow: '0 0 8px rgba(139,92,246,0.1)',
+                  border: '1px solid var(--violet-20)',
+                  boxShadow: '0 0 8px var(--violet-10)',
                 } : {
                   background: 'transparent',
                   color: '#94a3b8',
@@ -146,9 +146,9 @@ export default function TuningPage() {
             <button onClick={handleStopRetune}
               className="flex items-center gap-2 px-6 py-3 rounded-3xl text-sm font-semibold text-white transition-all duration-200"
               style={{
-                background: 'linear-gradient(135deg, #ff6b8a 0%, #e11d48 100%)',
+                background: 'linear-gradient(135deg, var(--accent-rose) 0%, #e11d48 100%)',
                 minWidth: 160, height: 48,
-                boxShadow: '0 0 0 4px rgba(255,107,138,0.15), 0 4px 20px rgba(255,107,138,0.2)',
+                boxShadow: '0 0 0 4px var(--rose-15), 0 4px 20px rgba(255,107,138,0.2)',
                 animation: 'pulse 1.5s ease-in-out infinite',
               }}
             >
@@ -158,9 +158,9 @@ export default function TuningPage() {
             <button onClick={handleStartRetune}
               className="flex items-center gap-2 px-6 py-3 rounded-3xl text-sm font-semibold text-white transition-all duration-200 hover:scale-[1.02]"
               style={{
-                background: 'linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%)',
+                background: 'linear-gradient(135deg, var(--accent-violet) 0%, var(--accent-indigo) 100%)',
                 minWidth: 160, height: 48,
-                boxShadow: '0 4px 20px rgba(139,92,246,0.25)',
+                boxShadow: '0 4px 20px var(--violet-25)',
               }}
             >
               <Play className="w-4 h-4" /> Start Retune
@@ -176,9 +176,9 @@ export default function TuningPage() {
               onClick={() => setShowPanel(!showRetunePanel)}
               className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm transition-all duration-200"
               style={{
-                background: showRetunePanel ? 'rgba(139,92,246,0.15)' : 'rgba(139,92,246,0.06)',
+                background: showRetunePanel ? 'var(--violet-15)' : 'var(--violet-6)',
                 color: showRetunePanel ? '#b49aff' : '#94a3b8',
-                border: `1px solid ${showRetunePanel ? 'rgba(139,92,246,0.25)' : 'rgba(139,92,246,0.08)'}`,
+                border: `1px solid ${showRetunePanel ? 'var(--violet-25)' : 'var(--violet-8)'}`,
               }}
             >
               <Terminal className="w-3.5 h-3.5" />
@@ -213,7 +213,7 @@ export default function TuningPage() {
 
         {/* ── Asset Health Grid / Table (Story 6.3) ───────────────── */}
         <div className="glass-card md:col-span-2 overflow-hidden">
-          <div className="px-3 py-2.5 flex items-center gap-2" style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
+          <div className="px-3 py-2.5 flex items-center gap-2" style={{ borderBottom: '1px solid var(--violet-8)' }}>
             <input
               type="text"
               value={search}
@@ -222,7 +222,7 @@ export default function TuningPage() {
               className="flex-1 px-3 py-1.5 rounded-lg text-sm outline-none transition-all duration-200"
               style={{
                 background: 'rgba(10,10,26,0.6)',
-                border: '1px solid rgba(139,92,246,0.08)',
+                border: '1px solid var(--violet-8)',
                 color: 'var(--text-primary)',
               }}
             />
@@ -231,9 +231,9 @@ export default function TuningPage() {
               onClick={() => setShowFailuresOnly(!showFailuresOnly)}
               className="px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all duration-200"
               style={{
-                background: showFailuresOnly ? 'rgba(255,107,138,0.15)' : 'transparent',
-                color: showFailuresOnly ? '#ff6b8a' : '#7a8ba4',
-                border: `1px solid ${showFailuresOnly ? 'rgba(255,107,138,0.2)' : 'rgba(139,92,246,0.06)'}`,
+                background: showFailuresOnly ? 'var(--rose-15)' : 'transparent',
+                color: showFailuresOnly ? 'var(--accent-rose)' : '#7a8ba4',
+                border: `1px solid ${showFailuresOnly ? 'rgba(255,107,138,0.2)' : 'var(--violet-6)'}`,
               }}
             >
               {showFailuresOnly ? 'Failures' : 'All'}
@@ -245,7 +245,7 @@ export default function TuningPage() {
                   onClick={() => setViewMode(m)}
                   className="px-2 py-1 rounded text-[11px] font-medium transition-all duration-150"
                   style={{
-                    background: viewMode === m ? 'rgba(139,92,246,0.12)' : 'transparent',
+                    background: viewMode === m ? 'var(--violet-12)' : 'transparent',
                     color: viewMode === m ? '#b49aff' : '#7a8ba4',
                   }}
                 >
@@ -257,14 +257,14 @@ export default function TuningPage() {
 
           {/* Summary bar (Story 6.3 AC-4) */}
           {stats && (
-            <div className="px-3 py-1.5 flex items-center gap-2 text-[10px]" style={{ background: 'rgba(139,92,246,0.02)' }}>
-              <div className="flex-1 h-1.5 rounded-full overflow-hidden flex" style={{ background: 'rgba(139,92,246,0.04)' }}>
-                <div style={{ flex: stats.pit_pass, background: 'linear-gradient(90deg, #3ee8a5, #6ff0c0)' }} />
-                <div style={{ flex: stats.pit_fail, background: 'linear-gradient(90deg, #ff6b8a, #ff5577)' }} />
+            <div className="px-3 py-1.5 flex items-center gap-2 text-[10px]" style={{ background: 'var(--violet-2)' }}>
+              <div className="flex-1 h-1.5 rounded-full overflow-hidden flex" style={{ background: 'var(--violet-4)' }}>
+                <div style={{ flex: stats.pit_pass, background: 'linear-gradient(90deg, var(--accent-emerald), #6ff0c0)' }} />
+                <div style={{ flex: stats.pit_fail, background: 'linear-gradient(90deg, var(--accent-rose), #ff5577)' }} />
                 <div style={{ flex: stats.pit_unknown, background: 'rgba(100,116,139,0.3)' }} />
               </div>
-              <span style={{ color: '#3ee8a5' }}>{stats.pit_pass} pass</span>
-              <span style={{ color: '#ff6b8a' }}>{stats.pit_fail} fail</span>
+              <span style={{ color: 'var(--accent-emerald)' }}>{stats.pit_pass} pass</span>
+              <span style={{ color: 'var(--accent-rose)' }}>{stats.pit_fail} fail</span>
               <span style={{ color: '#7a8ba4' }}>{stats.pit_unknown} unk</span>
             </div>
           )}
@@ -285,18 +285,18 @@ export default function TuningPage() {
                       style={{
                         width: 20, height: 20, borderRadius: 4,
                         fontSize: 7, fontWeight: 600, lineHeight: '20px', textAlign: 'center',
-                        color: isPassing ? '#3ee8a5' : isFailing ? '#ff6b8a' : '#7a8ba4',
+                        color: isPassing ? 'var(--accent-emerald)' : isFailing ? 'var(--accent-rose)' : '#7a8ba4',
                         background: isPassing
-                          ? 'rgba(62,232,165,0.15)'
+                          ? 'var(--emerald-15)'
                           : isFailing
                           ? 'rgba(255,107,138,0.2)'
                           : 'rgba(100,116,139,0.08)',
                         boxShadow: isSelected
-                          ? '0 0 0 2px #8b5cf6, 0 0 8px rgba(139,92,246,0.3)'
+                          ? '0 0 0 2px var(--accent-violet), 0 0 8px var(--violet-30)'
                           : isPassing
-                          ? '0 0 4px rgba(62,232,165,0.3)'
+                          ? '0 0 4px var(--emerald-30)'
                           : isFailing
-                          ? '0 0 6px rgba(255,107,138,0.3)'
+                          ? '0 0 6px var(--rose-30)'
                           : 'none',
                         opacity: showFailuresOnly && !isFailing ? 0.15 : 1,
                         transform: isSelected ? 'scale(1.2)' : undefined,
@@ -314,7 +314,7 @@ export default function TuningPage() {
             <div className="overflow-y-auto max-h-[400px]">
               <table className="w-full text-xs">
                 <thead className="sticky top-0" style={{ background: 'rgba(26,26,46,0.95)' }}>
-                  <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
+                  <tr style={{ borderBottom: '1px solid var(--violet-8)' }}>
                     <th className="text-left px-3 py-2" style={{ color: 'var(--text-muted)' }}>Symbol</th>
                     <th className="text-left px-3 py-2" style={{ color: 'var(--text-muted)' }}>Best Model</th>
                     <th className="text-center px-3 py-2" style={{ color: 'var(--text-muted)' }}>Models</th>
@@ -328,8 +328,8 @@ export default function TuningPage() {
                       onClick={() => setSelectedSymbol(a.symbol)}
                       className="cursor-pointer transition-colors duration-150"
                       style={{
-                        borderBottom: '1px solid rgba(139,92,246,0.04)',
-                        background: selectedSymbol === a.symbol ? 'rgba(139,92,246,0.06)' : undefined,
+                        borderBottom: '1px solid var(--violet-4)',
+                        background: selectedSymbol === a.symbol ? 'var(--violet-6)' : undefined,
                       }}
                     >
                       <td className="px-3 py-2 font-medium" style={{ color: 'var(--text-luminous)' }}>{a.symbol}</td>
@@ -361,9 +361,9 @@ export default function TuningPage() {
 function StatusBadge({ status }: { status: RetuneStatus }) {
   const config = {
     idle: { label: 'Idle', bg: 'rgba(100,116,139,0.12)', color: '#94a3b8' },
-    running: { label: 'Running', bg: 'rgba(245,197,66,0.12)', color: '#f5c542' },
-    completed: { label: 'Completed', bg: 'rgba(62,232,165,0.12)', color: '#3ee8a5' },
-    failed: { label: 'Failed', bg: 'rgba(255,107,138,0.12)', color: '#ff6b8a' },
+    running: { label: 'Running', bg: 'var(--amber-12)', color: 'var(--accent-amber)' },
+    completed: { label: 'Completed', bg: 'var(--emerald-12)', color: 'var(--accent-emerald)' },
+    failed: { label: 'Failed', bg: 'var(--rose-12)', color: 'var(--accent-rose)' },
   }[status] ?? { label: status, bg: 'rgba(100,116,139,0.12)', color: '#94a3b8' };
 
   return (
@@ -408,11 +408,11 @@ function RetunePanel({
     if (autoScroll) logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs, autoScroll, logEndRef]);
 
-  const statusColor = status === 'running' ? '#b49aff' : status === 'completed' ? '#3ee8a5' : status === 'failed' ? '#ff6b8a' : '#7a8ba4';
+  const statusColor = status === 'running' ? '#b49aff' : status === 'completed' ? 'var(--accent-emerald)' : status === 'failed' ? 'var(--accent-rose)' : '#7a8ba4';
 
   return (
     <div className="glass-card mb-6 overflow-hidden">
-      <div className="px-4 py-2.5 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
+      <div className="px-4 py-2.5 flex items-center justify-between" style={{ borderBottom: '1px solid var(--violet-8)' }}>
         <div className="flex items-center gap-3">
           <Terminal className="w-4 h-4" style={{ color: statusColor }} />
           <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Retune Output</span>
@@ -423,8 +423,8 @@ function RetunePanel({
               {currentAsset && <span className="font-semibold" style={{ color: '#b49aff' }}>{currentAsset}</span>}
             </div>
           )}
-          {status === 'completed' && <span className="text-xs" style={{ color: '#3ee8a5' }}>Done ({progressCount})</span>}
-          {status === 'failed' && <span className="text-xs" style={{ color: '#ff6b8a' }}>Failed</span>}
+          {status === 'completed' && <span className="text-xs" style={{ color: 'var(--accent-emerald)' }}>Done ({progressCount})</span>}
+          {status === 'failed' && <span className="text-xs" style={{ color: 'var(--accent-rose)' }}>Failed</span>}
         </div>
         <div className="flex items-center gap-2">
           <button onClick={handleCopyLog} className="p-1 rounded transition" title="Copy log"
@@ -438,10 +438,10 @@ function RetunePanel({
       {/* Progress bar */}
       {status === 'running' && (
         <div className="px-4 py-1.5">
-          <div className="h-1 rounded-full overflow-hidden" style={{ background: 'rgba(139,92,246,0.06)' }}>
+          <div className="h-1 rounded-full overflow-hidden" style={{ background: 'var(--violet-6)' }}>
             <div className="h-full rounded-full transition-all duration-500" style={{
               width: `${Math.min((progressCount / 147) * 100, 100)}%`,
-              background: 'linear-gradient(90deg, #8b5cf6, #38d9f5)',
+              background: 'linear-gradient(90deg, var(--accent-violet), var(--accent-cyan))',
             }} />
           </div>
         </div>
@@ -460,7 +460,7 @@ function RetunePanel({
           <button
             onClick={() => { setAutoScroll(true); logEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }}
             className="sticky bottom-2 left-full ml-auto px-3 py-1 rounded-full text-[10px] font-medium flex items-center gap-1 transition"
-            style={{ background: 'rgba(139,92,246,0.15)', color: '#b49aff', border: '1px solid rgba(139,92,246,0.2)' }}
+            style={{ background: 'var(--violet-15)', color: '#b49aff', border: '1px solid var(--violet-20)' }}
           >
             <ArrowDown className="w-3 h-3" /> Resume
           </button>
@@ -472,12 +472,12 @@ function RetunePanel({
 
 function logColor(type: string): string {
   switch (type) {
-    case 'progress': return 'text-[#3ee8a5]';
-    case 'phase': return 'text-[#38d9f5] font-medium';
-    case 'error': return 'text-[#ff6b8a] font-bold';
-    case 'completed': return 'text-[#3ee8a5] font-bold';
-    case 'failed': return 'text-[#ff6b8a] font-bold';
-    default: return 'text-[#7a8ba4]';
+    case 'progress': return 'text-[var(--accent-emerald)]';
+    case 'phase': return 'text-[var(--accent-cyan)] font-medium';
+    case 'error': return 'text-[var(--accent-rose)] font-bold';
+    case 'completed': return 'text-[var(--accent-emerald)] font-bold';
+    case 'failed': return 'text-[var(--accent-rose)] font-bold';
+    default: return 'text-[var(--text-secondary)]';
   }
 }
 
@@ -516,7 +516,7 @@ const ModelDistributionChart = memo(function ModelDistributionChart({ data }: {
             <button key={m} onClick={() => setMode(m)}
               className="px-2 py-0.5 rounded text-[10px] font-medium transition-all duration-150"
               style={{
-                background: mode === m ? 'rgba(139,92,246,0.12)' : 'transparent',
+                background: mode === m ? 'var(--violet-12)' : 'transparent',
                 color: mode === m ? '#b49aff' : '#7a8ba4',
               }}>
               {m === 'treemap' ? 'Map' : 'Bar'}
@@ -544,9 +544,9 @@ const ModelDistributionChart = memo(function ModelDistributionChart({ data }: {
                 style={{
                   width: w, height: h,
                   background: bg,
-                  border: '1px solid rgba(139,92,246,0.1)',
+                  border: '1px solid var(--violet-10)',
                   opacity: isDimmed ? 0.4 : 1,
-                  boxShadow: isHovered ? '0 0 12px rgba(139,92,246,0.25)' : undefined,
+                  boxShadow: isHovered ? '0 0 12px var(--violet-25)' : undefined,
                   transform: isHovered ? 'scale(1.03)' : undefined,
                   animationDelay: `${i * 50}ms`,
                 }}
@@ -568,19 +568,19 @@ const ModelDistributionChart = memo(function ModelDistributionChart({ data }: {
       ) : (
         <ResponsiveContainer width="100%" height={300}>
           <BarChart data={data} layout="vertical">
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(139,92,246,0.06)" />
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--violet-6)" />
             <XAxis type="number" tick={{ fill: '#7a8ba4', fontSize: 11 }} />
             <YAxis type="category" dataKey="name" width={100} tick={{ fill: '#94a3b8', fontSize: 10 }} />
             <Tooltip
               contentStyle={{
                 background: 'rgba(15,15,35,0.95)',
-                border: '1px solid rgba(139,92,246,0.15)',
+                border: '1px solid var(--violet-15)',
                 borderRadius: 8,
                 color: '#e2e8f0',
                 backdropFilter: 'blur(12px)',
               }}
             />
-            <Bar dataKey="count" fill="#8b5cf6" radius={[0, 4, 4, 0]} />
+            <Bar dataKey="count" fill="var(--accent-violet)" radius={[0, 4, 4, 0]} />
           </BarChart>
         </ResponsiveContainer>
       )}
@@ -603,7 +603,7 @@ function DetailPanel({ symbol, data, onViewDiagnostics }: { symbol: string; data
 
   return (
     <div className="glass-card p-5 mt-6 fade-up" style={{
-      background: 'linear-gradient(135deg, rgba(139,92,246,0.03), rgba(99,102,241,0.02))',
+      background: 'linear-gradient(135deg, var(--violet-3), rgba(99,102,241,0.02))',
     }}>
       {/* Header */}
       <div className="flex items-center gap-3 mb-4">
@@ -615,15 +615,15 @@ function DetailPanel({ symbol, data, onViewDiagnostics }: { symbol: string; data
         </h3>
         {regime && (
           <span className="px-2 py-0.5 rounded-full text-[10px] font-medium"
-            style={{ background: 'rgba(139,92,246,0.12)', color: '#b49aff' }}>
+            style={{ background: 'var(--violet-12)', color: '#b49aff' }}>
             {regime}
           </span>
         )}
         {pitPass != null && (
           <span className="px-2 py-0.5 rounded-full text-[10px] font-medium"
             style={{
-              background: pitPass ? 'rgba(62,232,165,0.12)' : 'rgba(255,107,138,0.12)',
-              color: pitPass ? '#3ee8a5' : '#ff6b8a',
+              background: pitPass ? 'var(--emerald-12)' : 'var(--rose-12)',
+              color: pitPass ? 'var(--accent-emerald)' : 'var(--accent-rose)',
             }}>
             PIT {pitPass ? 'Pass' : 'Fail'}
           </span>
@@ -642,8 +642,8 @@ function DetailPanel({ symbol, data, onViewDiagnostics }: { symbol: string; data
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-all duration-200 hover:scale-[1.02]"
             style={{
               color: '#b49aff',
-              background: 'rgba(139,92,246,0.08)',
-              border: '1px solid rgba(139,92,246,0.12)',
+              background: 'var(--violet-8)',
+              border: '1px solid var(--violet-12)',
             }}
           >
             View in Diagnostics <ArrowRight className="w-3 h-3" />
@@ -656,7 +656,7 @@ function DetailPanel({ symbol, data, onViewDiagnostics }: { symbol: string; data
         <div className="overflow-x-auto mb-4">
           <table className="w-full text-xs">
             <thead>
-              <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
+              <tr style={{ borderBottom: '1px solid var(--violet-8)' }}>
                 <th className="text-left px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>Model</th>
                 <th className="text-right px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>BIC</th>
                 <th className="text-right px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>CRPS</th>
@@ -670,9 +670,9 @@ function DetailPanel({ symbol, data, onViewDiagnostics }: { symbol: string; data
                 const isWinner = m.name === best;
                 return (
                   <tr key={i} style={{
-                    borderBottom: '1px solid rgba(139,92,246,0.04)',
-                    background: isWinner ? 'rgba(62,232,165,0.06)' : undefined,
-                    borderLeft: isWinner ? '2px solid #3ee8a5' : '2px solid transparent',
+                    borderBottom: '1px solid var(--violet-4)',
+                    background: isWinner ? 'var(--emerald-6)' : undefined,
+                    borderLeft: isWinner ? '2px solid var(--accent-emerald)' : '2px solid transparent',
                   }}>
                     <td className="px-2 py-1.5 font-medium" style={{ color: 'var(--text-primary)' }}>
                       {formatModelName(m.name)}
@@ -681,19 +681,19 @@ function DetailPanel({ symbol, data, onViewDiagnostics }: { symbol: string; data
                       {m.bic?.toFixed(0) ?? '--'}
                     </td>
                     <td className="px-2 py-1.5 text-right font-mono" style={{
-                      color: m.crps != null ? (m.crps < 0.02 ? '#3ee8a5' : m.crps < 0.03 ? '#f5c542' : '#ff6b8a') : 'var(--text-muted)',
+                      color: m.crps != null ? (m.crps < 0.02 ? 'var(--accent-emerald)' : m.crps < 0.03 ? 'var(--accent-amber)' : 'var(--accent-rose)') : 'var(--text-muted)',
                       fontVariantNumeric: 'tabular-nums',
                     }}>
                       {m.crps?.toFixed(4) ?? '--'}
                     </td>
                     <td className="px-2 py-1.5 text-right font-mono" style={{
-                      color: m.hyv != null ? (m.hyv < 500 ? '#3ee8a5' : m.hyv < 1000 ? '#f5c542' : '#ff6b8a') : 'var(--text-muted)',
+                      color: m.hyv != null ? (m.hyv < 500 ? 'var(--accent-emerald)' : m.hyv < 1000 ? 'var(--accent-amber)' : 'var(--accent-rose)') : 'var(--text-muted)',
                       fontVariantNumeric: 'tabular-nums',
                     }}>
                       {m.hyv?.toFixed(0) ?? '--'}
                     </td>
                     <td className="px-2 py-1.5 text-right font-mono" style={{
-                      color: m.pit_p != null ? (m.pit_p >= 0.05 ? '#3ee8a5' : '#ff6b8a') : 'var(--text-muted)',
+                      color: m.pit_p != null ? (m.pit_p >= 0.05 ? 'var(--accent-emerald)' : 'var(--accent-rose)') : 'var(--text-muted)',
                       fontVariantNumeric: 'tabular-nums',
                     }}>
                       {m.pit_p?.toFixed(3) ?? '--'}
@@ -702,7 +702,7 @@ function DetailPanel({ symbol, data, onViewDiagnostics }: { symbol: string; data
                       <div className="flex items-center justify-end gap-1">
                         <div className="h-1 rounded-full" style={{
                           width: `${Math.min((m.bma_weight ?? 0) * 100, 80)}px`,
-                          background: 'linear-gradient(90deg, #8b5cf6, #b49aff)',
+                          background: 'linear-gradient(90deg, var(--accent-violet), var(--text-violet))',
                         }} />
                         <span className="font-mono text-[10px]" style={{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
                           {m.bma_weight != null ? `${(m.bma_weight * 100).toFixed(1)}%` : '--'}
@@ -720,7 +720,7 @@ function DetailPanel({ symbol, data, onViewDiagnostics }: { symbol: string; data
         <div>
           <h4 className="text-xs font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>Raw Parameters</h4>
           <pre className="text-xs overflow-x-auto max-h-[300px] whitespace-pre-wrap p-3 rounded-xl font-mono"
-            style={{ background: 'rgba(10,10,26,0.6)', color: 'var(--text-secondary)', border: '1px solid rgba(139,92,246,0.06)' }}>
+            style={{ background: 'rgba(10,10,26,0.6)', color: 'var(--text-secondary)', border: '1px solid var(--violet-6)' }}>
             {JSON.stringify(data, null, 2)}
           </pre>
         </div>
@@ -730,7 +730,7 @@ function DetailPanel({ symbol, data, onViewDiagnostics }: { symbol: string; data
       {kalman && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
           {Object.entries(kalman).slice(0, 8).map(([key, val]) => (
-            <div key={key} className="p-2 rounded-lg" style={{ background: 'rgba(139,92,246,0.04)' }}>
+            <div key={key} className="p-2 rounded-lg" style={{ background: 'var(--violet-4)' }}>
               <div className="text-[9px] uppercase tracking-wider mb-0.5" style={{ color: 'var(--text-muted)' }}>{key}</div>
               <div className="text-sm font-mono font-medium" style={{ color: 'var(--text-luminous)', fontVariantNumeric: 'tabular-nums' }}>
                 {typeof val === 'number' ? val.toFixed(6) : String(val)}
@@ -749,8 +749,8 @@ function DetailPanel({ symbol, data, onViewDiagnostics }: { symbol: string; data
 
 function PitBadge({ asset }: { asset: TuneAsset }) {
   if (asset.ad_pass === true)
-    return <span className="inline-block w-2 h-2 rounded-full" style={{ background: '#3ee8a5', boxShadow: '0 0 4px rgba(62,232,165,0.4)' }} />;
+    return <span className="inline-block w-2 h-2 rounded-full" style={{ background: 'var(--accent-emerald)', boxShadow: '0 0 4px rgba(62,232,165,0.4)' }} />;
   if (asset.ad_pass === false)
-    return <span className="inline-block w-2 h-2 rounded-full" style={{ background: '#ff6b8a', boxShadow: '0 0 4px rgba(255,107,138,0.4)' }} />;
+    return <span className="inline-block w-2 h-2 rounded-full" style={{ background: 'var(--accent-rose)', boxShadow: '0 0 4px rgba(255,107,138,0.4)' }} />;
   return <span className="inline-block w-2 h-2 rounded-full" style={{ background: '#7a8ba4' }} />;
 }
