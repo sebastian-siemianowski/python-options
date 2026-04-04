@@ -89,7 +89,7 @@ export default function DiagnosticsPage() {
 
       {/* Stats bar */}
       {pitData && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6 fade-up">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-5 mb-8 fade-up">
           <StatCard title="Total Assets" value={pitData.total} icon={<Stethoscope className="w-5 h-5" />} color="blue" />
           <StatCard title="PIT Pass" value={pitData.passing} icon={<CheckCircle className="w-5 h-5" />} color="green" />
           <StatCard title="PIT Fail" value={pitData.failing} icon={<XCircle className="w-5 h-5" />} color="red" />
@@ -103,15 +103,17 @@ export default function DiagnosticsPage() {
       )}
 
       {/* Tab nav */}
-      <div className="flex gap-1 mb-6 fade-up-delay-1" style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
+      <div className="flex gap-1 mb-8 fade-up-delay-1" style={{ borderBottom: '1px solid rgba(139,92,246,0.06)' }}>
         {tabs.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             onClick={() => setTab(id)}
-            className="flex items-center gap-2 px-4 py-2.5 text-sm transition-all duration-200 -mb-[1px]"
+            className="flex items-center gap-2 px-5 py-3 text-sm font-medium transition-all duration-200 -mb-[1px]"
             style={{
               borderBottom: tab === id ? '2px solid #8b5cf6' : '2px solid transparent',
-              color: tab === id ? '#b49aff' : '#7a8ba4',
+              color: tab === id ? '#b49aff' : 'var(--text-muted)',
+              background: tab === id ? 'rgba(139,92,246,0.04)' : undefined,
+              borderRadius: '12px 12px 0 0',
             }}
           >
             <Icon className="w-4 h-4" />
@@ -183,16 +185,16 @@ function PitTab({
       {/* Table */}
       <div className="overflow-y-auto max-h-[600px]">
         <table className="w-full text-xs">
-          <thead className="sticky top-0 z-10" style={{ background: 'linear-gradient(135deg, rgba(26,5,51,0.97), rgba(13,27,62,0.97))', backdropFilter: 'blur(12px)' }}>
-            <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
-              <th className="w-6 px-2"></th>
-              <th className="text-left px-3 py-2" style={{ color: 'var(--text-muted)' }}>Symbol</th>
-              <th className="text-left px-3 py-2" style={{ color: 'var(--text-muted)' }}>Best Model</th>
-              <th className="text-center px-3 py-2" style={{ color: 'var(--text-muted)' }}>PIT</th>
-              <th className="text-center px-3 py-2" style={{ color: 'var(--text-muted)' }}>AD Stat</th>
-              <th className="text-center px-3 py-2" style={{ color: 'var(--text-muted)' }}>Grade</th>
-              <th className="text-center px-3 py-2" style={{ color: 'var(--text-muted)' }}>Models</th>
-              <th className="text-center px-3 py-2" style={{ color: 'var(--text-muted)' }}>Regime</th>
+          <thead className="premium-thead">
+            <tr>
+              <th className="w-6"></th>
+              <th className="text-left">Symbol</th>
+              <th className="text-left">Best Model</th>
+              <th className="text-center">PIT</th>
+              <th className="text-center">AD Stat</th>
+              <th className="text-center">Grade</th>
+              <th className="text-center">Models</th>
+              <th className="text-center">Regime</th>
             </tr>
           </thead>
           <tbody>
@@ -207,31 +209,30 @@ function PitTab({
 }
 
 function AssetRow({ asset, expanded, onToggle }: { asset: DiagAsset; expanded: boolean; onToggle: () => void }) {
-  const pitColor = asset.ad_pass === true ? 'text-[#3ee8a5]' : asset.ad_pass === false ? 'text-[#ff6b8a]' : 'text-[#7a8ba4]';
   const pitIcon = asset.ad_pass === true ? 'P' : asset.ad_pass === false ? 'F' : '--';
 
   return (
     <>
       <tr
         onClick={onToggle}
-        className={`cursor-pointer transition-all duration-150 ${expanded ? '' : ''}`}
-        style={{
-          borderBottom: '1px solid rgba(139,92,246,0.04)',
-          background: expanded ? 'rgba(139,92,246,0.06)' : undefined,
-        }}
+        className={`premium-row premium-row-interactive ${expanded ? 'premium-row-expanded' : ''}`}
       >
-        <td className="px-2" style={{ color: '#7a8ba4' }}>
+        <td style={{ color: 'var(--text-muted)', width: 28 }}>
           {expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
         </td>
-        <td className="px-3 py-2 font-medium" style={{ color: 'var(--text-luminous)' }}>{asset.symbol}</td>
-        <td className="px-3 py-2" style={{ color: 'var(--text-secondary)' }}>{formatModelNameShort(asset.best_model)}</td>
-        <td className={`px-3 py-2 text-center font-bold ${pitColor}`}>{pitIcon}</td>
-        <td className="px-3 py-2 text-center" style={{ color: 'var(--text-secondary)' }}>{asset.ad_stat?.toFixed(3) ?? '--'}</td>
-        <td className="px-3 py-2 text-center">
+        <td className="font-medium" style={{ color: 'var(--text-luminous)' }}>{asset.symbol}</td>
+        <td style={{ color: 'var(--text-secondary)' }}>{formatModelNameShort(asset.best_model)}</td>
+        <td className="text-center">
+          <span className={asset.ad_pass === true ? 'status-pill status-pass' : asset.ad_pass === false ? 'status-pill status-fail' : ''}>
+            {pitIcon}
+          </span>
+        </td>
+        <td className="text-center" style={{ color: 'var(--text-secondary)' }}>{asset.ad_stat?.toFixed(3) ?? '--'}</td>
+        <td className="text-center">
           <GradeBadge grade={asset.pit_grade} />
         </td>
-        <td className="px-3 py-2 text-center" style={{ color: 'var(--text-secondary)' }}>{asset.num_models}</td>
-        <td className="px-3 py-2 text-center">
+        <td className="text-center" style={{ color: 'var(--text-secondary)' }}>{asset.num_models}</td>
+        <td className="text-center">
           <RegimeBadge regime={asset.regime} />
         </td>
       </tr>
@@ -248,55 +249,55 @@ function AssetRow({ asset, expanded, onToggle }: { asset: DiagAsset; expanded: b
 
 function ModelMetricsTable({ models, bmaWeights }: { models: DiagAsset['models']; bmaWeights: Record<string, number> }) {
   return (
-    <div className="overflow-x-auto">
+    <div className="overflow-x-auto" style={{ borderRadius: '12px', background: 'rgba(10,10,26,0.3)' }}>
       <table className="w-full text-[11px]">
-        <thead>
-          <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
-            <th className="text-left px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>Model</th>
-            <th className="text-right px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>BIC</th>
-            <th className="text-right px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>CRPS</th>
-            <th className="text-right px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>Hyv</th>
-            <th className="text-right px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>PIT p</th>
-            <th className="text-right px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>AD p</th>
-            <th className="text-right px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>MAD</th>
-            <th className="text-right px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>Weight</th>
-            <th className="text-right px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>v</th>
+        <thead className="premium-thead">
+          <tr>
+            <th className="text-left">Model</th>
+            <th className="text-right">BIC</th>
+            <th className="text-right">CRPS</th>
+            <th className="text-right">Hyv</th>
+            <th className="text-right">PIT p</th>
+            <th className="text-right">AD p</th>
+            <th className="text-right">MAD</th>
+            <th className="text-right">Weight</th>
+            <th className="text-right">v</th>
           </tr>
         </thead>
         <tbody>
           {models.map((m) => {
             const w = bmaWeights[m.model] ?? m.weight;
             return (
-              <tr key={m.model} style={{ borderBottom: '1px solid rgba(139,92,246,0.04)' }} className="transition-all duration-150">
-                <td className="px-2 py-1.5 font-medium" style={{ color: 'var(--text-secondary)' }}>{formatModelNameShort(m.model)}</td>
-                <td className="px-2 py-1.5 text-right" style={{ color: 'var(--text-secondary)' }}>{m.bic != null ? m.bic.toFixed(0) : '--'}</td>
-                <td className="px-2 py-1.5 text-right">
+              <tr key={m.model} className="premium-row">
+                <td className="font-medium" style={{ color: 'var(--text-luminous)' }}>{formatModelNameShort(m.model)}</td>
+                <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{m.bic != null ? m.bic.toFixed(0) : '--'}</td>
+                <td className="text-right">
                   <span style={{ color: m.crps != null && m.crps < 0.02 ? '#3ee8a5' : 'var(--text-secondary)' }}>
                     {m.crps != null ? m.crps.toFixed(4) : '--'}
                   </span>
                 </td>
-                <td className="px-2 py-1.5 text-right">
+                <td className="text-right">
                   <span style={{ color: m.hyvarinen != null && m.hyvarinen < 1000 ? '#3ee8a5' : m.hyvarinen != null && m.hyvarinen > 2000 ? '#ff6b8a' : 'var(--text-secondary)' }}>
                     {m.hyvarinen != null ? m.hyvarinen.toFixed(0) : '--'}
                   </span>
                 </td>
-                <td className="px-2 py-1.5 text-right">
-                  <span style={{ color: m.pit_ks_pvalue != null && m.pit_ks_pvalue >= 0.05 ? '#3ee8a5' : m.pit_ks_pvalue != null ? '#ff6b8a' : '#7a8ba4' }}>
+                <td className="text-right">
+                  <span style={{ color: m.pit_ks_pvalue != null && m.pit_ks_pvalue >= 0.05 ? '#3ee8a5' : m.pit_ks_pvalue != null ? '#ff6b8a' : 'var(--text-muted)' }}>
                     {m.pit_ks_pvalue != null ? m.pit_ks_pvalue.toFixed(3) : '--'}
                   </span>
                 </td>
-                <td className="px-2 py-1.5 text-right">
-                  <span style={{ color: m.ad_pvalue != null && m.ad_pvalue >= 0.05 ? '#3ee8a5' : m.ad_pvalue != null ? '#ff6b8a' : '#7a8ba4' }}>
+                <td className="text-right">
+                  <span style={{ color: m.ad_pvalue != null && m.ad_pvalue >= 0.05 ? '#3ee8a5' : m.ad_pvalue != null ? '#ff6b8a' : 'var(--text-muted)' }}>
                     {m.ad_pvalue != null ? m.ad_pvalue.toFixed(3) : '--'}
                   </span>
                 </td>
-                <td className="px-2 py-1.5 text-right" style={{ color: 'var(--text-secondary)' }}>{m.histogram_mad != null ? m.histogram_mad.toFixed(4) : '--'}</td>
-                <td className="px-2 py-1.5 text-right">
-                  <span style={{ color: w > 0.2 ? '#3ee8a5' : w > 0.05 ? '#f5c542' : '#7a8ba4', fontWeight: w > 0.2 ? 700 : 400 }}>
+                <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{m.histogram_mad != null ? m.histogram_mad.toFixed(4) : '--'}</td>
+                <td className="text-right">
+                  <span style={{ color: w > 0.2 ? '#3ee8a5' : w > 0.05 ? '#f5c542' : 'var(--text-muted)', fontWeight: w > 0.2 ? 700 : 400 }}>
                     {(w * 100).toFixed(1)}%
                   </span>
                 </td>
-                <td className="px-2 py-1.5 text-right" style={{ color: 'var(--text-secondary)' }}>{m.nu != null ? m.nu.toFixed(1) : '--'}</td>
+                <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{m.nu != null ? m.nu.toFixed(1) : '--'}</td>
               </tr>
             );
           })}
@@ -327,8 +328,8 @@ function ModelsTab({ data }: { data: { models: Record<string, DiagModelStats>; t
     <div className="space-y-6">
       {/* Charts */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="glass-card p-5">
-          <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Win Count (Best Model Selection)</h3>
+        <div className="glass-card hover-lift" style={{ padding: '24px' }}>
+          <h3 className="premium-section-label mb-4">Win Count (Best Model Selection)</h3>
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={chartData} layout="vertical">
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(139,92,246,0.06)" />
@@ -339,8 +340,8 @@ function ModelsTab({ data }: { data: { models: Record<string, DiagModelStats>; t
             </BarChart>
           </ResponsiveContainer>
         </div>
-        <div className="glass-card p-5">
-          <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Avg BMA Weight (%)</h3>
+        <div className="glass-card hover-lift" style={{ padding: '24px' }}>
+          <h3 className="premium-section-label mb-4">Avg BMA Weight (%)</h3>
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={winRateData} layout="vertical">
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(139,92,246,0.06)" />
@@ -357,31 +358,31 @@ function ModelsTab({ data }: { data: { models: Record<string, DiagModelStats>; t
       <div className="glass-card overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
-            <thead style={{ background: 'linear-gradient(135deg, rgba(26,5,51,0.97), rgba(13,27,62,0.97))' }}>
-              <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
-                <th className="text-left px-3 py-2" style={{ color: 'var(--text-muted)' }}>Model</th>
-                <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Wins</th>
-                <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Win Rate</th>
-                <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Appearances</th>
-                <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Avg Wt</th>
-                <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Max Wt</th>
-                <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Min Wt</th>
+            <thead className="premium-thead">
+              <tr>
+                <th className="text-left">Model</th>
+                <th className="text-right">Wins</th>
+                <th className="text-right">Win Rate</th>
+                <th className="text-right">Appearances</th>
+                <th className="text-right">Avg Wt</th>
+                <th className="text-right">Max Wt</th>
+                <th className="text-right">Min Wt</th>
               </tr>
             </thead>
             <tbody>
               {models.map((m) => (
-                <tr key={m.name} style={{ borderBottom: '1px solid rgba(139,92,246,0.04)' }} className="transition-all duration-150">
-                  <td className="px-3 py-2 font-medium" style={{ color: 'var(--text-luminous)' }}>{formatModelNameShort(m.name)}</td>
-                  <td className="px-3 py-2 text-right" style={{ color: 'var(--text-secondary)' }}>{m.win_count}</td>
-                  <td className="px-3 py-2 text-right">
+                <tr key={m.name} className="premium-row">
+                  <td className="font-medium" style={{ color: 'var(--text-luminous)' }}>{formatModelNameShort(m.name)}</td>
+                  <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{m.win_count}</td>
+                  <td className="text-right">
                     <span style={{ color: m.win_rate > 0.1 ? '#3ee8a5' : 'var(--text-secondary)' }}>
                       {(m.win_rate * 100).toFixed(1)}%
                     </span>
                   </td>
-                  <td className="px-3 py-2 text-right" style={{ color: 'var(--text-secondary)' }}>{m.appearances}</td>
-                  <td className="px-3 py-2 text-right" style={{ color: 'var(--text-secondary)' }}>{(m.avg_weight * 100).toFixed(1)}%</td>
-                  <td className="px-3 py-2 text-right" style={{ color: 'var(--text-secondary)' }}>{(m.max_weight * 100).toFixed(1)}%</td>
-                  <td className="px-3 py-2 text-right" style={{ color: '#7a8ba4' }}>{(m.min_weight * 100).toFixed(1)}%</td>
+                  <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{m.appearances}</td>
+                  <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{(m.avg_weight * 100).toFixed(1)}%</td>
+                  <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{(m.max_weight * 100).toFixed(1)}%</td>
+                  <td className="text-right" style={{ color: 'var(--text-muted)' }}>{(m.min_weight * 100).toFixed(1)}%</td>
                 </tr>
               ))}
             </tbody>
@@ -499,12 +500,12 @@ function MatrixTab({ data, isLoading }: { data?: DiagCrossAssetSummary; isLoadin
         {/* Matrix table */}
         <div className="overflow-x-auto overflow-y-auto max-h-[600px]">
           <table className="text-[10px] border-collapse">
-            <thead className="sticky top-0 z-10" style={{ background: 'linear-gradient(135deg, rgba(26,5,51,0.97), rgba(13,27,62,0.97))', backdropFilter: 'blur(12px)' }}>
-              <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
-                <th className="text-left px-2 py-1.5 sticky left-0 z-20 min-w-[70px]" style={{ background: 'rgba(26,5,51,0.97)', color: 'var(--text-muted)' }}>Asset</th>
-                <th className="text-center px-1 py-1.5 min-w-[20px]" style={{ color: 'var(--text-muted)' }}>PIT</th>
+            <thead className="premium-thead">
+              <tr>
+                <th className="text-left sticky left-0 z-20 min-w-[70px]" style={{ background: 'rgba(26,5,51,0.97)' }}>Asset</th>
+                <th className="text-center min-w-[20px]">PIT</th>
                 {models.map(m => (
-                  <th key={m} className="text-center px-1 py-1.5 whitespace-nowrap min-w-[50px]" style={{ color: 'var(--text-muted)' }}>
+                  <th key={m} className="text-center whitespace-nowrap min-w-[50px]">
                     {formatModelNameShort(m)}
                   </th>
                 ))}
@@ -512,10 +513,10 @@ function MatrixTab({ data, isLoading }: { data?: DiagCrossAssetSummary; isLoadin
             </thead>
             <tbody>
               {filteredRows.slice(0, 300).map(row => (
-                <tr key={row.symbol} style={{ borderBottom: '1px solid rgba(139,92,246,0.02)' }} className="transition-all duration-150">
-                  <td className="px-2 py-1 font-medium sticky left-0" style={{ color: 'var(--text-luminous)', background: 'rgba(10,10,26,0.95)' }}>{row.symbol}</td>
-                  <td className="px-1 py-1 text-center">
-                    <span style={{ color: row.ad_pass === true ? '#3ee8a5' : row.ad_pass === false ? '#ff6b8a' : '#7a8ba4' }}>
+                <tr key={row.symbol} className="premium-row">
+                  <td className="font-medium sticky left-0" style={{ color: 'var(--text-luminous)', background: 'rgba(10,10,26,0.95)' }}>{row.symbol}</td>
+                  <td className="text-center">
+                    <span className={row.ad_pass === true ? 'status-pill status-pass' : row.ad_pass === false ? 'status-pill status-fail' : ''}>
                       {row.ad_pass === true ? 'P' : row.ad_pass === false ? 'F' : '--'}
                     </span>
                   </td>
@@ -561,8 +562,8 @@ function RegimesTab({ data }: { data: { regimes: Record<string, { count: number;
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
       {/* Pie */}
-      <div className="glass-card p-5">
-        <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Regime Distribution</h3>
+      <div className="glass-card" style={{ padding: '24px' }}>
+        <h3 className="premium-section-label mb-4">Regime Distribution</h3>
         <ResponsiveContainer width="100%" height={250}>
           <PieChart>
             <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={90} label={({ name, percent }: { name?: string; percent?: number }) => `${(name ?? '').replace(/_/g, ' ')} ${((percent ?? 0) * 100).toFixed(0)}%`}>
@@ -633,21 +634,21 @@ function FailuresTab({ data }: { data?: { failures: Array<Record<string, unknown
 
   return (
     <div className="glass-card overflow-hidden">
-      <div className="p-3" style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
-        <span className="text-sm" style={{ color: '#f5c542' }}>{data.count} assets failing calibration</span>
+      <div className="p-4" style={{ borderBottom: '1px solid rgba(139,92,246,0.06)' }}>
+        <span className="text-sm font-medium" style={{ color: '#f5c542' }}>{data.count} assets failing calibration</span>
       </div>
       <div className="overflow-y-auto max-h-[500px]">
         <table className="w-full text-xs">
-          <thead className="sticky top-0" style={{ background: 'linear-gradient(135deg, rgba(26,5,51,0.97), rgba(13,27,62,0.97))' }}>
-            <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
-              <th className="text-left px-3 py-2" style={{ color: 'var(--text-muted)' }}>Symbol</th>
-              <th className="text-left px-3 py-2" style={{ color: 'var(--text-muted)' }}>Details</th>
+          <thead className="premium-thead">
+            <tr>
+              <th className="text-left">Symbol</th>
+              <th className="text-left">Details</th>
             </tr>
           </thead>
           <tbody>
             {data.failures.map((f, i) => (
-              <tr key={i} style={{ borderBottom: '1px solid rgba(139,92,246,0.04)' }} className="transition-all duration-150">
-                <td className="px-3 py-2 font-medium" style={{ color: '#ff6b8a' }}>{String(f.symbol || f.asset || `Entry ${i + 1}`)}</td>
+              <tr key={i} className="premium-row">
+                <td className="font-medium" style={{ color: '#ff6b8a' }}>{String(f.symbol || f.asset || `Entry ${i + 1}`)}</td>
                 <td className="px-3 py-2">
                   <pre className="text-[10px] whitespace-pre-wrap max-w-lg p-3 rounded-xl font-mono"
                     style={{ background: 'rgba(10,10,26,0.6)', color: 'var(--text-secondary)', border: '1px solid rgba(139,92,246,0.06)' }}>{JSON.stringify(f, null, 1)}</pre>

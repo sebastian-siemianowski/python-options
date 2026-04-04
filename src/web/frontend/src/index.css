@@ -925,11 +925,13 @@ button:active:not(:disabled) {
 }
 
 /* ================================================================
-   STORY 3.1: PREMIUM SIGNAL TABLE
+   STORY 3.1: PREMIUM SIGNAL & DATA TABLES
+   Reusable classes for ALL table-based pages.
    ================================================================ */
 
 /* AC-6: Sticky header with premium glass blur */
-.cosmic-table-header th {
+.cosmic-table-header th,
+.premium-thead th {
   position: sticky;
   top: 0;
   z-index: 10;
@@ -941,32 +943,120 @@ button:active:not(:disabled) {
   text-transform: uppercase;
   letter-spacing: 0.10em;
   font-weight: 600;
-  padding-top: 14px;
-  padding-bottom: 14px;
+  padding: 14px 12px;
   transition: box-shadow 200ms ease;
   border-bottom: 1px solid rgba(139,92,246,0.06);
 }
-.cosmic-table-header.scrolled th {
+.cosmic-table-header.scrolled th,
+.premium-thead.scrolled th {
   box-shadow: 0 6px 24px rgba(0,0,0,0.5), 0 1px 0 rgba(139,92,246,0.06);
 }
 
 /* AC-7: Row hover with refined violet radial glow */
-.cosmic-row {
+.cosmic-row,
+.premium-row {
   transition: background 200ms cubic-bezier(0.2,0,0,1), transform 200ms cubic-bezier(0.2,0,0,1), box-shadow 200ms cubic-bezier(0.2,0,0,1);
   cursor: default;
+  border-bottom: 1px solid rgba(139,92,246,0.04);
 }
-.cosmic-row:hover {
+.cosmic-row:hover,
+.premium-row:hover {
   background: linear-gradient(90deg, rgba(139,92,246,0.06) 0%, transparent 50%), var(--void-hover);
   transform: translateY(-0.5px);
   box-shadow: 0 2px 16px rgba(139,92,246,0.04);
 }
 
 /* Alternating row backgrounds */
-.cosmic-row:nth-child(even) {
+.cosmic-row:nth-child(even),
+.premium-row:nth-child(even) {
   background: rgba(12,11,29,0.5);
 }
-.cosmic-row:nth-child(even):hover {
+.cosmic-row:nth-child(even):hover,
+.premium-row:nth-child(even):hover {
   background: linear-gradient(90deg, rgba(139,92,246,0.08) 0%, transparent 50%), var(--void-hover);
+}
+
+/* Premium row cell defaults */
+.premium-row td {
+  padding: 10px 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Clickable row variant */
+.premium-row-interactive {
+  cursor: pointer;
+}
+.premium-row-interactive:hover {
+  background: linear-gradient(90deg, rgba(139,92,246,0.08) 0%, transparent 60%), var(--void-hover);
+}
+
+/* Expanded row highlight */
+.premium-row-expanded {
+  background: rgba(139,92,246,0.06) !important;
+  border-left: 2px solid var(--accent-violet);
+}
+
+/* Premium section header within cards */
+.premium-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-muted);
+}
+
+/* Metric value with pass/fail coloring */
+.metric-pass { color: #3ee8a5; }
+.metric-fail { color: #ff6b8a; }
+.metric-warn { color: #f5c542; }
+.metric-muted { color: var(--text-secondary); }
+
+/* Medal rank badges for leaderboards */
+.rank-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.rank-gold {
+  background: linear-gradient(135deg, rgba(245,197,66,0.15) 0%, rgba(234,179,8,0.08) 100%);
+  color: #f5c542;
+  box-shadow: 0 0 12px rgba(245,197,66,0.12);
+}
+.rank-silver {
+  background: linear-gradient(135deg, rgba(148,163,184,0.12) 0%, rgba(148,163,184,0.06) 100%);
+  color: #94a3b8;
+}
+.rank-bronze {
+  background: linear-gradient(135deg, rgba(217,119,6,0.12) 0%, rgba(180,83,9,0.06) 100%);
+  color: #d97706;
+}
+.rank-default {
+  background: rgba(139,92,246,0.06);
+  color: var(--text-muted);
+}
+
+/* Status pill badge */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+  border-radius: 100px;
+  font-size: 10px;
+  font-weight: 600;
+}
+.status-pass {
+  background: rgba(62,232,165,0.12);
+  color: #3ee8a5;
+}
+.status-fail {
+  background: rgba(255,107,138,0.12);
+  color: #ff6b8a;
 }
 
 /* Story 3.4: Aurora sweep animation */

@@ -802,7 +802,7 @@ function SectorPanels({
               <div className="border-t border-[var(--border-void)]" style={{ animation: 'slide-down 250ms cubic-bezier(0.2,0,0,1) both' }}>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
-                    <thead>
+                    <thead className="premium-thead">
                       <tr className="border-b border-[#2a2a4a]/50">
                         <th className="text-left px-4 py-2 text-[10px] text-[var(--text-violet)] font-medium uppercase tracking-[0.06em]">Asset</th>
                         <th className="text-center px-2 py-2 text-[10px] text-[var(--text-violet)] font-medium w-[60px]">30D</th>
@@ -822,7 +822,7 @@ function SectorPanels({
                   </table>
                 </div>
                 {assets.length === 0 && (
-                  <p className="px-4 py-3 text-xs text-[#7a8ba4]">No assets match current filter</p>
+                  <p className="px-4 py-3 text-xs" style={{ color: 'var(--text-muted)' }}>No assets match current filter</p>
                 )}
               </div>
             )}
@@ -838,26 +838,28 @@ function StrongSignalsView({ strongBuy, strongSell }: { strongBuy: StrongSignalE
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
       <div className="glass-card overflow-hidden">
-        <div className="px-4 py-3 flex items-center gap-2" style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
+        <div className="px-5 py-3.5 flex items-center gap-2" style={{ borderBottom: '1px solid rgba(139,92,246,0.06)' }}>
           <TrendingUp className="w-4 h-4" style={{ color: '#3ee8a5' }} />
-          <h3 className="text-sm font-medium" style={{ color: '#3ee8a5' }}>Strong Buy Signals</h3>
-          <span className="ml-auto text-xs text-[#7a8ba4]">{strongBuy.length} assets</span>
+          <h3 className="premium-section-label" style={{ color: '#3ee8a5' }}>Strong Buy Signals</h3>
+          <span className="ml-auto text-xs" style={{ color: 'var(--text-muted)' }}>{strongBuy.length} assets</span>
         </div>
         {strongBuy.length === 0 ? (
-          <p className="px-4 py-6 text-xs text-[#7a8ba4] text-center">No strong buy signals</p>
+          <p className="px-5 py-8 text-xs text-center" style={{ color: 'var(--text-muted)' }}>No strong buy signals</p>
         ) : (
           <div>
             {strongBuy.map((s, i) => (
-              <div key={i} className="px-4 py-2.5 flex items-center gap-3 transition-all duration-150" style={{ borderBottom: '1px solid rgba(139,92,246,0.04)' }}>
+              <div key={i} className="px-5 py-3 flex items-center gap-3" style={{ borderBottom: '1px solid rgba(139,92,246,0.04)', transition: 'background 200ms cubic-bezier(0.2,0,0,1)' }}
+                onMouseEnter={e => (e.currentTarget.style.background = 'linear-gradient(90deg, rgba(62,232,165,0.06) 0%, transparent 60%)')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
                 <div className="flex-1">
-                  <span className="text-sm font-medium text-[#e2e8f0]">{s.asset_label || '—'}</span>
-                  <span className="text-[10px] text-[#7a8ba4] ml-2">{s.sector}</span>
+                  <span className="text-sm font-medium" style={{ color: 'var(--text-luminous)' }}>{s.asset_label || '--'}</span>
+                  <span className="text-[10px] ml-2" style={{ color: 'var(--text-muted)' }}>{s.sector}</span>
                 </div>
-                <span className="text-[10px] text-[#7a8ba4]">{s.horizon || '—'}</span>
+                <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{s.horizon || '--'}</span>
                 <span className="text-xs font-medium" style={{ color: '#3ee8a5' }}>
-                  {s.exp_ret != null ? `${s.exp_ret >= 0 ? '+' : ''}${(s.exp_ret * 100).toFixed(1)}%` : '—'}
+                  {s.exp_ret != null ? `${s.exp_ret >= 0 ? '+' : ''}${(s.exp_ret * 100).toFixed(1)}%` : '--'}
                 </span>
-                <span className="text-[10px] text-[#7a8ba4]">p={s.p_up != null ? s.p_up.toFixed(2) : '—'}</span>
+                <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>p={s.p_up != null ? s.p_up.toFixed(2) : '--'}</span>
                 <MomentumBadge value={s.momentum} />
               </div>
             ))}
@@ -866,26 +868,28 @@ function StrongSignalsView({ strongBuy, strongSell }: { strongBuy: StrongSignalE
       </div>
 
       <div className="glass-card overflow-hidden">
-        <div className="px-4 py-3 flex items-center gap-2" style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
+        <div className="px-5 py-3.5 flex items-center gap-2" style={{ borderBottom: '1px solid rgba(139,92,246,0.06)' }}>
           <TrendingDown className="w-4 h-4" style={{ color: '#ff6b8a' }} />
-          <h3 className="text-sm font-medium" style={{ color: '#ff6b8a' }}>Strong Sell Signals</h3>
-          <span className="ml-auto text-xs text-[#7a8ba4]">{strongSell.length} assets</span>
+          <h3 className="premium-section-label" style={{ color: '#ff6b8a' }}>Strong Sell Signals</h3>
+          <span className="ml-auto text-xs" style={{ color: 'var(--text-muted)' }}>{strongSell.length} assets</span>
         </div>
         {strongSell.length === 0 ? (
-          <p className="px-4 py-6 text-xs text-[#7a8ba4] text-center">No strong sell signals</p>
+          <p className="px-5 py-8 text-xs text-center" style={{ color: 'var(--text-muted)' }}>No strong sell signals</p>
         ) : (
           <div>
             {strongSell.map((s, i) => (
-              <div key={i} className="px-4 py-2.5 flex items-center gap-3 transition-all duration-150" style={{ borderBottom: '1px solid rgba(139,92,246,0.04)' }}>
+              <div key={i} className="px-5 py-3 flex items-center gap-3" style={{ borderBottom: '1px solid rgba(139,92,246,0.04)', transition: 'background 200ms cubic-bezier(0.2,0,0,1)' }}
+                onMouseEnter={e => (e.currentTarget.style.background = 'linear-gradient(90deg, rgba(255,107,138,0.06) 0%, transparent 60%)')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
                 <div className="flex-1">
-                  <span className="text-sm font-medium text-[#e2e8f0]">{s.asset_label || '—'}</span>
-                  <span className="text-[10px] text-[#7a8ba4] ml-2">{s.sector}</span>
+                  <span className="text-sm font-medium" style={{ color: 'var(--text-luminous)' }}>{s.asset_label || '--'}</span>
+                  <span className="text-[10px] ml-2" style={{ color: 'var(--text-muted)' }}>{s.sector}</span>
                 </div>
-                <span className="text-[10px] text-[#7a8ba4]">{s.horizon || '—'}</span>
+                <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{s.horizon || '--'}</span>
                 <span className="text-xs font-medium" style={{ color: '#ff6b8a' }}>
-                  {s.exp_ret != null ? `${(s.exp_ret * 100).toFixed(1)}%` : '—'}
+                  {s.exp_ret != null ? `${(s.exp_ret * 100).toFixed(1)}%` : '--'}
                 </span>
-                <span className="text-[10px] text-[#7a8ba4]">p={s.p_up != null ? s.p_up.toFixed(2) : '—'}</span>
+                <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>p={s.p_up != null ? s.p_up.toFixed(2) : '--'}</span>
                 <MomentumBadge value={s.momentum} />
               </div>
             ))}

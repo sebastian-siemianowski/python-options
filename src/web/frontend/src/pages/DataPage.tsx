@@ -78,7 +78,7 @@ export default function DataPage() {
 
       {/* Stats */}
       {status && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6 fade-up">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-5 mb-8 fade-up">
           <StatCard title="Total Files" value={status.total_files} icon={<Database className="w-5 h-5" />} color="blue" />
           <StatCard title="Fresh" value={status.fresh_files} subtitle="< 24h old" icon={<Clock className="w-5 h-5" />} color="green" />
           <StatCard title="Stale" value={status.stale_files} subtitle="> 24h old" icon={<AlertTriangle className="w-5 h-5" />} color={status.stale_files > 10 ? 'red' : 'amber'} />
@@ -86,11 +86,11 @@ export default function DataPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 fade-up-delay-1">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 fade-up-delay-1">
         {/* Directories */}
-        <div className="glass-card p-4 hover-lift">
-          <h3 className="text-sm font-medium mb-3 flex items-center gap-2" style={{ color: 'var(--text-secondary)' }}>
-            <FolderOpen className="w-4 h-4" /> Data Directories
+        <div className="glass-card hover-lift" style={{ padding: '20px' }}>
+          <h3 className="premium-section-label mb-4 flex items-center gap-2">
+            <FolderOpen className="w-4 h-4" style={{ color: 'var(--accent-violet)' }} /> Data Directories
           </h3>
           <div className="space-y-2">
             {Object.entries(dirs).map(([name, info]) => (
@@ -106,13 +106,13 @@ export default function DataPage() {
 
         {/* Price file list */}
         <div className="glass-card md:col-span-2 overflow-hidden">
-          <div className="p-3" style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
+          <div className="px-4 py-3" style={{ borderBottom: '1px solid rgba(139,92,246,0.06)' }}>
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search symbols..."
-              className="w-full px-3 py-1.5 rounded-xl text-sm outline-none transition-all duration-200"
+              className="w-full px-3 py-2 rounded-xl text-sm outline-none transition-all duration-200"
               style={{
                 background: 'rgba(10,10,26,0.6)',
                 border: '1px solid rgba(139,92,246,0.08)',
@@ -122,13 +122,13 @@ export default function DataPage() {
           </div>
           <div className="overflow-y-auto max-h-[500px]">
             <table className="w-full text-xs">
-              <thead className="sticky top-0 z-10" style={{ background: 'linear-gradient(135deg, rgba(26,5,51,0.97), rgba(13,27,62,0.97))', backdropFilter: 'blur(12px)' }}>
-                <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
-                  <th className="text-left px-3 py-2" style={{ color: 'var(--text-muted)' }}>Symbol</th>
-                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Rows</th>
-                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Size</th>
-                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Age</th>
-                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Updated</th>
+              <thead className="premium-thead">
+                <tr>
+                  <th className="text-left">Symbol</th>
+                  <th className="text-right">Rows</th>
+                  <th className="text-right">Size</th>
+                  <th className="text-right">Age</th>
+                  <th className="text-right">Updated</th>
                 </tr>
               </thead>
               <tbody>
@@ -150,14 +150,14 @@ function FileRow({ file }: { file: PriceFile }) {
     : '#ff6b8a';
 
   return (
-    <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.04)' }} className="transition-all duration-150">
-      <td className="px-3 py-2 font-medium" style={{ color: 'var(--text-luminous)' }}>{file.symbol}</td>
-      <td className="px-3 py-2 text-right" style={{ color: 'var(--text-secondary)' }}>{file.rows.toLocaleString()}</td>
-      <td className="px-3 py-2 text-right" style={{ color: 'var(--text-secondary)' }}>{file.size_kb} KB</td>
-      <td className="px-3 py-2 text-right" style={{ color: ageColor }}>
+    <tr className="premium-row">
+      <td className="font-medium" style={{ color: 'var(--text-luminous)' }}>{file.symbol}</td>
+      <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{file.rows.toLocaleString()}</td>
+      <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{file.size_kb} KB</td>
+      <td className="text-right font-medium" style={{ color: ageColor }}>
         {file.age_hours < 1 ? '<1h' : `${Math.round(file.age_hours)}h`}
       </td>
-      <td className="px-3 py-2 text-right" style={{ color: '#7a8ba4' }}>
+      <td className="text-right" style={{ color: 'var(--text-muted)' }}>
         {new Date(file.last_modified).toLocaleDateString()}
       </td>
     </tr>

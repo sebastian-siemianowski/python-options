@@ -61,7 +61,7 @@ export default function ArenaPage() {
 
       {/* Stats */}
       {status && (
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6 fade-up">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-5 mb-8 fade-up">
           <StatCard
             title="Safe Storage"
             value={status.safe_storage_count}
@@ -88,9 +88,9 @@ export default function ArenaPage() {
 
       {/* Benchmark symbols */}
       {status && (
-        <div className="glass-card p-4 mb-6 hover-lift">
-          <h3 className="text-sm font-medium mb-3 flex items-center gap-2" style={{ color: 'var(--text-secondary)' }}>
-            <Swords className="w-4 h-4" /> Benchmark Universe
+        <div className="glass-card mb-8 hover-lift" style={{ padding: '20px' }}>
+          <h3 className="premium-section-label mb-4 flex items-center gap-2">
+            <Swords className="w-4 h-4" style={{ color: 'var(--accent-violet)' }} /> Benchmark Universe
           </h3>
           <div className="flex flex-wrap gap-2">
             {status.benchmark_symbols.map((s) => (
@@ -112,9 +112,9 @@ export default function ArenaPage() {
 
       {/* Safe storage models with scoring */}
       <div className="glass-card overflow-hidden fade-up-delay-1">
-        <div className="px-4 py-3 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
-          <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Safe Storage Models</h3>
-          <span className="text-xs text-[#7a8ba4]">
+        <div className="px-5 py-4 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(139,92,246,0.06)' }}>
+          <h3 className="premium-section-label">Safe Storage Models</h3>
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
             {scoredModels.length} scored / {models.length} total
           </span>
         </div>
@@ -123,19 +123,19 @@ export default function ArenaPage() {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
-              <thead style={{ background: 'linear-gradient(135deg, rgba(26,5,51,0.97), rgba(13,27,62,0.97))' }}>
-                <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
-                  <th className="text-left px-3 py-2" style={{ color: 'var(--text-muted)' }}>#</th>
-                  <th className="text-left px-3 py-2" style={{ color: 'var(--text-muted)' }}>Model Name</th>
-                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Final</th>
-                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>BIC</th>
-                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>CRPS</th>
-                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Hyv</th>
-                  <th className="text-center px-3 py-2" style={{ color: 'var(--text-muted)' }}>PIT</th>
-                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>CSS</th>
-                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>FEC</th>
-                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Time</th>
-                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Size</th>
+              <thead className="premium-thead">
+                <tr>
+                  <th className="text-left">#</th>
+                  <th className="text-left">Model Name</th>
+                  <th className="text-right">Final</th>
+                  <th className="text-right">BIC</th>
+                  <th className="text-right">CRPS</th>
+                  <th className="text-right">Hyv</th>
+                  <th className="text-center">PIT</th>
+                  <th className="text-right">CSS</th>
+                  <th className="text-right">FEC</th>
+                  <th className="text-right">Time</th>
+                  <th className="text-right">Size</th>
                 </tr>
               </thead>
               <tbody>
@@ -149,8 +149,8 @@ export default function ArenaPage() {
       </div>
 
       {/* Hard gates reference */}
-      <div className="glass-card p-5 mt-6 hover-lift">
-        <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Hard Gates (Promotion Criteria)</h3>
+      <div className="glass-card mt-8 hover-lift" style={{ padding: '24px' }}>
+        <h3 className="premium-section-label mb-4">Hard Gates (Promotion Criteria)</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
           {[
             { gate: 'CSS >= 0.65', desc: 'Calibration stability under stress' },
@@ -176,50 +176,52 @@ export default function ArenaPage() {
 /* ── Model Row ───────────────────────────────────────────────────── */
 
 function ModelRow({ model: m, rank }: { model: SafeStorageModel; rank: number }) {
+  const rankCls = rank === 1 ? 'rank-badge rank-gold' : rank === 2 ? 'rank-badge rank-silver' : rank === 3 ? 'rank-badge rank-bronze' : 'rank-badge rank-default';
+
   if (!m.has_scores) {
     return (
-      <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.04)' }} className="transition-all duration-150">
-        <td className="px-3 py-2.5" style={{ color: '#7a8ba4' }}>{rank}</td>
-        <td className="px-3 py-2.5 font-medium" style={{ color: 'var(--text-luminous)' }}>{formatName(m.name)}</td>
-        <td colSpan={8} className="px-3 py-2.5 italic" style={{ color: '#7a8ba4' }}>No scoring data</td>
-        <td className="px-3 py-2.5 text-right" style={{ color: '#7a8ba4' }}>{m.size_kb} KB</td>
+      <tr className="premium-row">
+        <td><span className={rankCls}>{rank}</span></td>
+        <td className="font-medium" style={{ color: 'var(--text-luminous)' }}>{formatName(m.name)}</td>
+        <td colSpan={8} className="italic" style={{ color: 'var(--text-muted)' }}>No scoring data</td>
+        <td className="text-right" style={{ color: 'var(--text-muted)' }}>{m.size_kb} KB</td>
       </tr>
     );
   }
 
   return (
-    <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.04)' }} className="transition-all duration-150">
-      <td className="px-3 py-2.5" style={{ color: '#7a8ba4' }}>{rank}</td>
-      <td className="px-3 py-2.5">
+    <tr className="premium-row">
+      <td><span className={rankCls}>{rank}</span></td>
+      <td>
         <span className="font-medium" style={{ color: 'var(--text-luminous)' }}>{formatName(m.name)}</span>
       </td>
-      <td className={`px-3 py-2.5 text-right font-bold ${gateColor(m.final, 'final')}`}>
+      <td className={`text-right font-bold ${gateColor(m.final, 'final')}`}>
         {m.final?.toFixed(1) ?? '--'}
       </td>
-      <td className={`px-3 py-2.5 text-right ${gateColor(m.bic, 'bic')}`}>
+      <td className={`text-right ${gateColor(m.bic, 'bic')}`}>
         {m.bic != null ? `${(m.bic / 1000).toFixed(1)}k` : '--'}
       </td>
-      <td className={`px-3 py-2.5 text-right ${gateColor(m.crps, 'crps')}`}>
+      <td className={`text-right ${gateColor(m.crps, 'crps')}`}>
         {m.crps?.toFixed(4) ?? '--'}
       </td>
-      <td className={`px-3 py-2.5 text-right ${gateColor(m.hyv, 'hyv')}`}>
+      <td className={`text-right ${gateColor(m.hyv, 'hyv')}`}>
         {m.hyv?.toFixed(0) ?? '--'}
       </td>
-      <td className="px-3 py-2.5 text-center">
-        <span style={{ color: m.pit === 'PASS' ? '#3ee8a5' : '#ff6b8a', fontWeight: m.pit === 'PASS' ? 700 : 400 }}>
+      <td className="text-center">
+        <span className={m.pit === 'PASS' ? 'status-pill status-pass' : 'status-pill status-fail'}>
           {m.pit ?? '--'}
         </span>
       </td>
-      <td className={`px-3 py-2.5 text-right ${gateColor(m.css, 'css')}`}>
+      <td className={`text-right ${gateColor(m.css, 'css')}`}>
         {m.css?.toFixed(2) ?? '--'}
       </td>
-      <td className={`px-3 py-2.5 text-right ${gateColor(m.fec, 'fec')}`}>
+      <td className={`text-right ${gateColor(m.fec, 'fec')}`}>
         {m.fec?.toFixed(2) ?? '--'}
       </td>
-      <td className="px-3 py-2.5 text-right" style={{ color: 'var(--text-secondary)' }}>
+      <td className="text-right" style={{ color: 'var(--text-secondary)' }}>
         {m.time_ms != null ? `${(m.time_ms / 1000).toFixed(1)}s` : '--'}
       </td>
-      <td className="px-3 py-2.5 text-right" style={{ color: '#7a8ba4' }}>{m.size_kb} KB</td>
+      <td className="text-right" style={{ color: 'var(--text-muted)' }}>{m.size_kb} KB</td>
     </tr>
   );
 }
