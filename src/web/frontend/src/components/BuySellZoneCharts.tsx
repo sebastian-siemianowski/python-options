@@ -45,10 +45,10 @@ interface ChartDataPoint {
 // horizonDays = trading-day value matching API (21,63,126,252)
 // calendarDays = calendar-day count for projection display
 const ZONE_CONFIGS = [
-  { label: '1M',  calendarDays: 30,  horizonDays: 21,  projectionSteps: 8 },
-  { label: '3M',  calendarDays: 90,  horizonDays: 63,  projectionSteps: 12 },
-  { label: '6M',  calendarDays: 180, horizonDays: 126, projectionSteps: 14 },
-  { label: '12M', calendarDays: 365, horizonDays: 252, projectionSteps: 16 },
+  { label: '1M',  calendarDays: 30,  horizonDays: 21 },
+  { label: '3M',  calendarDays: 90,  horizonDays: 63 },
+  { label: '6M',  calendarDays: 180, horizonDays: 126 },
+  { label: '12M', calendarDays: 365, horizonDays: 252 },
 ] as const;
 
 /* ── Signal Colors ──────────────────────────────────────────────── */
@@ -77,12 +77,58 @@ function getSignalStyle(label: string): SignalStyle {
 }
 
 
-/* ── Compute chart data ─────────────────────────────────────────── */
+/* ── Seeded PRNG (Mulberry32) ── deterministic across re-renders ── */
+function mulberry32(seed: number) {
+  return () => {
+    let t = (seed += 0x6D2B79F5);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Box-Muller: uniform → standard normal */
+function boxMuller(rng: () => number): number {
+  let u = 0, v = 0;
+  while (u === 0) u = rng();
+  while (v === 0) v = rng();
+  return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+}
+
+/** Hash a string to a seed integer */
+function hashSeed(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  }
+  return h >>> 0;
+}
+
+/* ── Compute chart data with GBM simulation ─────────────────────── */
+/**
+ * Generates a realistic-looking forward projection using Geometric Brownian
+ * Motion (GBM) conditioned on the model's expected return and realized vol.
+ *
+ * The median path is a *single simulated GBM trajectory* with:
+ *   dS = mu*S*dt + sigma*S*dW
+ *
+ * - mu  = annualized drift implied by forecast expected return
+ * - sigma = realized daily vol from history
+ * - dW  = seeded Gaussian increments (deterministic per symbol+horizon)
+ *
+ * The CI envelope widens as sqrt(t) per standard diffusion theory and is
+ * centered on the *deterministic drift path* (not the simulated path) so
+ * the band correctly represents the model's statistical uncertainty.
+ *
+ * Projection granularity is daily (not 8-16 coarse steps) to produce
+ * the natural oscillations the user expects. For 12M we subsample
+ * every 2 days to keep point count reasonable (~180 points).
+ */
 function buildChartData(
   ohlcv: OHLCVBar[],
   forecast: Forecast | undefined,
   calendarDays: number,
-  projSteps: number,
+  symbol: string,
 ) {
   const sliced = ohlcv.slice(-calendarDays);
   if (sliced.length === 0)
@@ -94,20 +140,29 @@ function buildChartData(
   const expRet = forecast ? forecast.expected_return_pct / 100 : 0;
   const targetPrice = lastPrice * (1 + expRet);
 
-  // CI width from realized vol
-  const rets = sliced.slice(1).map((d, i) => Math.log(d.close / sliced[i].close));
-  const dailyVol = rets.length > 5
-    ? Math.sqrt(rets.reduce((s, r) => s + r * r, 0) / rets.length)
+  // Realized vol from log-returns
+  const logRets = sliced.slice(1).map((d, i) => Math.log(d.close / sliced[i].close));
+  const dailyVol = logRets.length > 5
+    ? Math.sqrt(logRets.reduce((s, r) => s + r * r, 0) / logRets.length)
     : 0.02;
+
+  // Annualized drift implied by the forecast (mu in continuous time)
+  // expRet = e^(mu*T) - 1 → mu = ln(1+expRet) / T_years
+  const T_years = calendarDays / 365;
+  const mu = Math.log(1 + expRet) / Math.max(T_years, 1 / 365);
+  const sigmaAnn = dailyVol * Math.sqrt(252);
+
+  // CI width: 1-sigma diffusion envelope at terminal
   const ciWidth = lastPrice * dailyVol * Math.sqrt(calendarDays) * 0.8;
   const ciHigh = targetPrice + ciWidth;
   const ciLow = Math.max(0, targetPrice - ciWidth);
 
+  // Historical points
   const pts: ChartDataPoint[] = sliced.map(d => ({
     date: d.time, close: d.close, median: null, ciBase: null, ciBand: null,
   }));
 
-  // Bridge point
+  // Bridge
   if (pts.length > 0) {
     const last = pts[pts.length - 1];
     last.median = last.close;
@@ -115,17 +170,61 @@ function buildChartData(
     last.ciBand = 0;
   }
 
-  // Forward projection
-  for (let i = 1; i <= projSteps; i++) {
-    const frac = i / projSteps;
-    const dFwd = Math.round(calendarDays * frac);
-    const dt = new Date(lastDate);
-    dt.setDate(dt.getDate() + dFwd);
-    const med = lastPrice + (targetPrice - lastPrice) * frac;
-    const ci = ciWidth * Math.sqrt(frac);
-    const lo = Math.max(0, med - ci);
-    const hi = med + ci;
-    pts.push({ date: dt.toISOString().split('T')[0], close: null, median: med, ciBase: lo, ciBand: hi - lo });
+  // ── GBM Simulation ──
+  // Deterministic seed from symbol + horizon for stable renders
+  const rng = mulberry32(hashSeed(`${symbol}-${calendarDays}`));
+
+  // Step size (days). Subsample longer horizons to keep ~90-120 points.
+  const step = calendarDays <= 90 ? 1 : calendarDays <= 180 ? 2 : 3;
+  const dt = step / 365; // fraction of year per step
+
+  let simPrice = lastPrice;
+
+  for (let day = step; day <= calendarDays; day += step) {
+    const frac = day / calendarDays;
+    const dt_step = dt;
+
+    // GBM increment: S_{t+1} = S_t * exp((mu - 0.5*sigma^2)*dt + sigma*sqrt(dt)*Z)
+    const Z = boxMuller(rng);
+    const drift = (mu - 0.5 * sigmaAnn * sigmaAnn) * dt_step;
+    const diffusion = sigmaAnn * Math.sqrt(dt_step) * Z;
+    simPrice = simPrice * Math.exp(drift + diffusion);
+
+    // Apply soft mean-reversion toward deterministic path to prevent extreme wandering
+    // This is an OU bridge: pull simulated path gently toward the expected path
+    const deterministicPrice = lastPrice * Math.exp(mu * (day / 365));
+    const reversionStrength = 0.03; // subtle pull
+    simPrice = simPrice + (deterministicPrice - simPrice) * reversionStrength;
+
+    // Ensure positive
+    simPrice = Math.max(simPrice, lastPrice * 0.01);
+
+    // Deterministic CI envelope centered on drift path
+    const ciAtStep = ciWidth * Math.sqrt(frac);
+    const envCenter = lastPrice + (targetPrice - lastPrice) * frac;
+    const lo = Math.max(0, envCenter - ciAtStep);
+    const hi = envCenter + ciAtStep;
+
+    const projDate = new Date(lastDate);
+    projDate.setDate(projDate.getDate() + day);
+
+    pts.push({
+      date: projDate.toISOString().split('T')[0],
+      close: null,
+      median: simPrice,
+      ciBase: lo,
+      ciBand: hi - lo,
+    });
+  }
+
+  // Nudge final simulated point to land near target (within 1 vol unit)
+  // so the projection "arrives" at the forecast, not at a random walk endpoint.
+  if (pts.length > 0) {
+    const lastPt = pts[pts.length - 1];
+    if (lastPt.median != null) {
+      // Blend 70% toward target at terminal to anchor the endpoint
+      lastPt.median = lastPt.median * 0.3 + targetPrice * 0.7;
+    }
   }
 
   return { data: pts, lastPrice, targetPrice, ciLow, ciHigh };
@@ -167,17 +266,18 @@ function ZoneTooltip({ active, payload, st }: any) {
 
 /* ── Single Zone Chart ───────────────────────────────────────────── */
 function ZoneChart({
-  config, ohlcv, forecast, hovered, onHover,
+  config, ohlcv, forecast, hovered, onHover, symbol,
 }: {
   config: typeof ZONE_CONFIGS[number];
   ohlcv: OHLCVBar[];
   forecast: Forecast | undefined;
   hovered: boolean;
   onHover: (h: boolean) => void;
+  symbol: string;
 }) {
   const { data, lastPrice, targetPrice, ciLow, ciHigh } = useMemo(
-    () => buildChartData(ohlcv, forecast, config.calendarDays, config.projectionSteps),
-    [ohlcv, forecast, config],
+    () => buildChartData(ohlcv, forecast, config.calendarDays, symbol),
+    [ohlcv, forecast, config, symbol],
   );
 
   if (data.length === 0 || lastPrice === 0) return null;
@@ -428,6 +528,7 @@ export default function BuySellZoneCharts({ ohlcv, forecasts, symbol, compact }:
               forecast={forecastMap.get(config.horizonDays)}
               hovered={hoveredIdx === idx}
               onHover={(h) => setHoveredIdx(h ? idx : null)}
+              symbol={symbol}
             />
           </div>
         ))}

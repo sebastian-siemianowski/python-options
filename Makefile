@@ -830,6 +830,12 @@ web: .venv/.deps_installed
 		echo "⚠  Web dependencies not installed. Installing..."; \
 		$(MAKE) web-install; \
 	fi
+	@echo "Killing any existing web services..."
+	@-pkill -f "uvicorn web.backend.main:app" 2>/dev/null || true
+	@-pkill -f "vite.*src/web/frontend" 2>/dev/null || true
+	@-pkill -f "node.*src/web/frontend" 2>/dev/null || true
+	@-pkill -f "celery.*web.backend" 2>/dev/null || true
+	@sleep 1
 	@echo "╔══════════════════════════════════════════════════════╗"
 	@echo "║         Signal Engine — Web Dashboard               ║"
 	@echo "╚══════════════════════════════════════════════════════╝"
