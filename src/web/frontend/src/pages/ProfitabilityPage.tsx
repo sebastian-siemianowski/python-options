@@ -9,6 +9,7 @@ import { api } from '../api';
 import type { ProfitabilityMetrics } from '../api';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
+import { CosmicErrorCard } from '../components/CosmicErrorState';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ReferenceLine, ResponsiveContainer,
@@ -19,7 +20,7 @@ function MetricCard({ label, value, target, unit = '' }: {
   label: string; value: number | null; target: number; unit?: string;
 }) {
   const pass = value != null && value >= target;
-  const color = value == null ? '#64748b' : pass ? '#00E676' : '#FF1744';
+  const color = value == null ? '#64748b' : pass ? '#34d399' : '#fb7185';
   return (
     <div className="glass-card p-4 hover-lift stat-shine">
       <p className="text-[10px] text-[#64748b] uppercase tracking-wider font-medium">{label}</p>
@@ -39,7 +40,7 @@ function MetricCard({ label, value, target, unit = '' }: {
 }
 
 /* ── Chart wrapper for each metric ─────────────────────────── */
-function MetricChart({ title, data, targetValue, color = '#42A5F5' }: {
+function MetricChart({ title, data, targetValue, color = '#a78bfa' }: {
   title: string; data: { date: string; value: number }[];
   targetValue: number; color?: string;
 }) {
@@ -49,21 +50,21 @@ function MetricChart({ title, data, targetValue, color = '#42A5F5' }: {
       <div aria-label={`${title} chart`} role="img" style={{ width: '100%', height: 200 }}>
         <ResponsiveContainer width="100%" height={200}>
           <LineChart data={data} margin={{ top: 5, right: 10, bottom: 5, left: 10 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#1a1a2e" />
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(139,92,246,0.06)" />
             <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#64748b' }} />
             <YAxis
               tick={{ fontSize: 9, fill: '#64748b' }}
               tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`}
             />
             <Tooltip
-              contentStyle={{ background: '#0f0f23', border: '1px solid #2a2a4a', fontSize: 10 }}
+              contentStyle={{ background: 'rgba(15,15,35,0.95)', border: '1px solid rgba(139,92,246,0.15)', borderRadius: 8, fontSize: 10, backdropFilter: 'blur(12px)' }}
               formatter={(v: number) => `${(v * 100).toFixed(2)}%`}
             />
             <ReferenceLine
               y={targetValue}
-              stroke="#FF1744"
+              stroke="#fb7185"
               strokeDasharray="6 3"
-              label={{ value: 'Target', position: 'right', fill: '#FF1744', fontSize: 9 }}
+              label={{ value: 'Target', position: 'right', fill: '#fb7185', fontSize: 9 }}
             />
             <Line
               type="monotone"
@@ -89,7 +90,7 @@ export default function ProfitabilityPage() {
   });
 
   if (isLoading) return <LoadingSpinner text="Loading profitability metrics..." />;
-  if (error || !data) return <div className="text-[#FF1744]">Failed to load metrics</div>;
+  if (error || !data) return <CosmicErrorCard title="Unable to load profitability metrics" error={error as Error} onRetry={() => window.location.reload()} />;
 
   const m = data as ProfitabilityMetrics;
   const ts = m.timestamps || [];
@@ -130,16 +131,16 @@ export default function ProfitabilityPage() {
 
       {!hasData ? (
         <div className="glass-card p-8 text-center text-[#64748b] text-sm">
-          No profitability history yet. Run <code className="text-[#42A5F5]">make calibrate</code> to generate data.
+          No profitability history yet. Run <code style={{ color: '#a78bfa' }}>make calibrate</code> to generate data.
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 fade-up-delay-1">
-          <MetricChart title="Hit Rate 7D" data={hitRate7d} targetValue={targets.hit_rate_7d || 0.55} color="#00E676" />
-          <MetricChart title="Hit Rate 21D" data={hitRate21d} targetValue={targets.hit_rate_21d || 0.53} color="#66BB6A" />
-          <MetricChart title="Signal Rate" data={signalRates} targetValue={targets.signal_rate || 0.15} color="#42A5F5" />
-          <MetricChart title="Sharpe 7D" data={sharpe7d} targetValue={targets.sharpe_7d || 0.50} color="#FFB300" />
-          <MetricChart title="CRPS" data={crpsData} targetValue={0.02} color="#EF5350" />
-          <MetricChart title="ECE" data={eceData} targetValue={targets.ece_max || 0.03} color="#AB47BC" />
+          <MetricChart title="Hit Rate 7D" data={hitRate7d} targetValue={targets.hit_rate_7d || 0.55} color="#34d399" />
+          <MetricChart title="Hit Rate 21D" data={hitRate21d} targetValue={targets.hit_rate_21d || 0.53} color="#6ee7b7" />
+          <MetricChart title="Signal Rate" data={signalRates} targetValue={targets.signal_rate || 0.15} color="#a78bfa" />
+          <MetricChart title="Sharpe 7D" data={sharpe7d} targetValue={targets.sharpe_7d || 0.50} color="#f59e0b" />
+          <MetricChart title="CRPS" data={crpsData} targetValue={0.02} color="#f87171" />
+          <MetricChart title="ECE" data={eceData} targetValue={targets.ece_max || 0.03} color="#8b5cf6" />
         </div>
       )}
     </>

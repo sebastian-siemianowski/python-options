@@ -19,6 +19,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import CommandPalette from './CommandPalette';
 import BreadcrumbBar from './BreadcrumbBar';
 import StatusStrip from './StatusStrip';
+import { KeyboardShortcutOverlay } from './KeyboardShortcuts';
 
 /* ─── Types ─────────────────────────────────────────────────────── */
 interface NavItem {
@@ -284,6 +285,7 @@ export default function Layout() {
       <aside
         className="cosmic-sidebar flex-shrink-0 flex flex-col overflow-hidden relative z-10"
         style={{ width: sidebarWidth }}
+        aria-label="Main navigation"
       >
         {/* Logo */}
         <div className={`px-4 py-5 ${collapsed ? 'flex items-center justify-center' : ''}`}>
@@ -325,7 +327,7 @@ export default function Layout() {
         <div className="divider-fade mx-4" />
 
         {/* Navigation */}
-        <nav className="flex-1 py-3 px-2 space-y-0.5 overflow-y-auto">
+        <nav className="flex-1 py-3 px-2 space-y-0.5 overflow-y-auto" aria-label="Pages">
           {navItems.map((item) => {
             const badge = item.badgeFn?.();
             const isActive = item.to === '/'
@@ -420,6 +422,9 @@ export default function Layout() {
       {/* Command Palette (Cmd+K) */}
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
 
+      {/* Keyboard Shortcut Overlay (?) */}
+      <KeyboardShortcutOverlay />
+
       {/* Tooltip portal (rendered outside sidebar to avoid clipping) */}
       {tooltip && (
         <SidebarTooltip
@@ -430,7 +435,7 @@ export default function Layout() {
       )}
 
       {/* Main content */}
-      <main className="flex-1 overflow-auto" style={{ background: 'var(--void-surface)' }}>
+      <main className="flex-1 overflow-auto" style={{ background: 'var(--void-surface)' }} role="main" aria-label="Page content">
         <div className="p-8 max-w-[1600px] mx-auto">
           <BreadcrumbBar />
           <Outlet />

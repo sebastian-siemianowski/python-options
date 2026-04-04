@@ -17,7 +17,9 @@ import ProfitabilityPage from './pages/ProfitabilityPage';
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 30_000,
+      staleTime: 2 * 60_000,     // 2 minutes - stale-while-revalidate
+      gcTime: 10 * 60_000,       // 10 minutes garbage collection
+      refetchOnWindowFocus: true, // Background refresh on tab return
       retry: 1,
     },
   },

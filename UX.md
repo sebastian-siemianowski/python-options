@@ -593,7 +593,7 @@ transparent;` -- gradient text that makes the ticker shimmer like a star.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: The top of the Overview page displays a **Briefing Card** spanning
+- [x] AC-1: The top of the Overview page displays a **Briefing Card** spanning
   full width (cosmic glass, elevation 2, `--gradient-aurora` background) with
   three columns divided by fading violet separator lines:
   - **Left**: "Since Last Visit" -- count of signal changes with directional
@@ -613,25 +613,25 @@ transparent;` -- gradient text that makes the ticker shimmer like a star.
     - Asset Coverage: 40px SVG circle, violet fill
     Each gauge has a center label in `mono` typography and a label below in
     `caption` typography.
-- [ ] AC-2: The briefing card background uses `--gradient-aurora` with a
+- [x] AC-2: The briefing card background uses `--gradient-aurora` with a
   `--gradient-cosmic-glow` overlay that shifts based on overall market sentiment:
   - Majority bullish: glow shifts toward emerald tint
     `radial-gradient(ellipse at 50% 50%, rgba(52,211,153,0.06) 0%, transparent 70%)`
   - Majority bearish: glow shifts toward rose tint
     `radial-gradient(ellipse at 50% 50%, rgba(251,113,133,0.06) 0%, transparent 70%)`
   - Balanced: neutral violet glow (default `--gradient-cosmic-glow`)
-- [ ] AC-3: Each micro-gauge is a 40px SVG circle with a colored arc stroke (3px).
+- [x] AC-3: Each micro-gauge is a 40px SVG circle with a colored arc stroke (3px).
   The arc animates from 0 to target value over 800ms on page load using `spring`
   motion, creating a satisfying mechanical snap at the end. The arc uses
   gradient stroke via SVG `<linearGradient>` definition.
-- [ ] AC-4: The "Since Last Visit" section shows "Welcome back" on first visit
+- [x] AC-4: The "Since Last Visit" section shows "Welcome back" on first visit
   (no `localStorage` timestamp) with a gentle wave icon. Shows "All caught up"
   with an emerald checkmark if nothing changed. Both states use `--text-violet`
   typography with subtle aurora glow.
-- [ ] AC-5: The entire briefing card animates in with `fade-up` (translate-y: 12px -> 0,
+- [x] AC-5: The entire briefing card animates in with `fade-up` (translate-y: 12px -> 0,
   opacity: 0 -> 1) at page load, 400ms with `expressive` easing. The three columns
   stagger by 80ms each (left first, center second, right third).
-- [ ] AC-6: The morning briefing hero is so information-rich yet so visually
+- [x] AC-6: The morning briefing hero is so information-rich yet so visually
   stunning -- the aurora gradient, the shimmer text, the micro-gauges spinning
   to their values -- that users would absolutely fall in love with starting
   their day here and drool over how much intelligence radiates from this one
@@ -658,7 +658,7 @@ makes distribution shifts visually obvious.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: Replace the current donut chart with a **flowing gradient bar**
+- [x] AC-1: Replace the current donut chart with a **flowing gradient bar**
   spanning the full card width (cosmic glass card, elevation 1). Five segments
   render as a continuous gradient strip:
   - Strong Sell: `--gradient-signal-bear` (100% opacity)
@@ -670,24 +670,24 @@ makes distribution shifts visually obvious.
   hard color stops, creating a flowing organic feel. Each segment width is
   proportional to its count. The bar has `border-radius: 8px` and a height
   of 12px.
-- [ ] AC-2: Below the bar, a **sparkline row** shows how the distribution has
+- [x] AC-2: Below the bar, a **sparkline row** shows how the distribution has
   shifted over the last 7 days. Each day renders as a thin (2px) version of
   the same gradient bar, stacked vertically with 2px gap. This creates a
   "geological stratum" effect showing distribution drift over time. Historical
   snapshot data persists in `localStorage` (saved once per day on first visit).
-- [ ] AC-3: Hovering any segment of the bar highlights it with a violet-tinted
+- [x] AC-3: Hovering any segment of the bar highlights it with a violet-tinted
   glow (`box-shadow: 0 0 12px rgba(139,92,246,0.15)`) and shows a cosmic
   glass tooltip (elevation 3): count, percentage, and list of top 3 tickers
   in that category as clickable badges.
-- [ ] AC-4: Below the visualization, a single-line sentence summarizes the shift:
+- [x] AC-4: Below the visualization, a single-line sentence summarizes the shift:
   "Distribution shifted +4% bullish over 7 days" in `body` typography with
   the directional word ("bullish"/"bearish") colored in context. Stable
   distributions show "Stable this week" in `--text-muted`.
-- [ ] AC-5: The gradient bar segments animate in from center-out on page load:
+- [x] AC-5: The gradient bar segments animate in from center-out on page load:
   Hold segment appears first, then Buy/Sell grow outward, then Strong Buy/Sell
   reach their positions. 400ms total with `expressive` motion. The effect is
   like a gradient rainbow expanding from the center.
-- [ ] AC-6: Clicking any segment filters the Signal Heatmap below to show only
+- [x] AC-6: Clicking any segment filters the Signal Heatmap below to show only
   assets in that signal category. The clicked segment pulses once with violet
   glow to confirm the interaction.
 
@@ -711,14 +711,14 @@ nearby cells, guiding the eye through the constellation.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: The heatmap renders a matrix of **asset rows x horizon columns** with
+- [x] AC-1: The heatmap renders a matrix of **asset rows x horizon columns** with
   cells colored using a perceptually uniform diverging colormap centered on void:
   - Bearish: rose-to-void gradient (`--accent-rose` at opacity mapped to magnitude)
   - Neutral: `--void-surface` (nearly invisible against the card background)
   - Bullish: emerald-to-void gradient (`--accent-emerald` at opacity mapped to magnitude)
   Cell size: 32px x 24px with 1px gap. Corner radius: 3px. Each cell has a
   1px border of `--border-void` that transitions to `--border-glow` on hover.
-- [ ] AC-2: Sectors are collapsible groups. Each sector header row uses a glass
+- [x] AC-2: Sectors are collapsible groups. Each sector header row uses a glass
   surface (`--void-hover` background) showing:
   - Sector name in `heading-3` typography, `--text-violet` color
   - Asset count in `caption` badge
@@ -726,7 +726,7 @@ nearby cells, guiding the eye through the constellation.
     as Story 2.2 but miniaturized
   - Average momentum (emerald/rose colored number)
   - Expand/collapse chevron with 200ms rotation animation
-- [ ] AC-3: Hovering a cell creates a **radial glow effect** around the hovered
+- [x] AC-3: Hovering a cell creates a **radial glow effect** around the hovered
   cell (`box-shadow: 0 0 16px rgba(139,92,246,0.2)`) and shows a cosmic glass
   tooltip (elevation 3, `--gradient-nebula` background) containing:
   - Ticker + Horizon label in `heading-3` typography
@@ -735,19 +735,19 @@ nearby cells, guiding the eye through the constellation.
   - Kelly fraction with a tiny gradient bar
   - Signal label with colored badge (`--gradient-signal-*`)
   - A 30-day mini sparkline (40px wide) showing price trend
-- [ ] AC-4: Clicking a cell navigates to `/charts/{SYMBOL}`. The cell flashes
+- [x] AC-4: Clicking a cell navigates to `/charts/{SYMBOL}`. The cell flashes
   with violet glow (200ms) before navigation as haptic-style feedback.
-- [ ] AC-5: Keyboard navigation: `j/k` moves between rows, `h/l` moves between
+- [x] AC-5: Keyboard navigation: `j/k` moves between rows, `h/l` moves between
   columns, `Enter` clicks the cell, `Esc` deselects. The focused cell has a
   `--border-glow` ring (2px) with violet outer glow.
-- [ ] AC-6: A **color scale legend** appears in the top-right of the heatmap
+- [x] AC-6: A **color scale legend** appears in the top-right of the heatmap
   as a thin gradient strip (120px wide, 8px tall) from rose through void to
   emerald, with labeled ticks at -10%, 0%, +10%.
-- [ ] AC-7: Sector groups remember collapsed/expanded state in `localStorage`.
+- [x] AC-7: Sector groups remember collapsed/expanded state in `localStorage`.
 - [ ] AC-8: The heatmap renders smoothly with 150+ assets via virtualized rows.
   Only visible rows are in the DOM; scrolling lazy-loads additional rows.
   Scrolling is buttery at 60fps -- no jank, no white flashes.
-- [ ] AC-9: The heatmap experience -- the star-map aesthetic, the glowing cells,
+- [x] AC-9: The heatmap experience -- the star-map aesthetic, the glowing cells,
   the rich tooltips, the sector intelligence -- is so fluid and satisfying
   that users would absolutely fall in love with scanning their entire portfolio
   and drool over the instant visual pattern recognition. Apple engineers would
@@ -773,9 +773,9 @@ with the `--gradient-nebula` background.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: Replace the current horizontal bar chart with a **leaderboard table**
+- [x] AC-1: Replace the current horizontal bar chart with a **leaderboard table**
   (cosmic glass card, elevation 1) showing top 10 models, ranked by BMA
-  selection frequency:
+  selection frequency with gradient badges for top 3:
   - Rank number (1-10): top 3 use gradient badge circles (28px diameter):
     #1: `linear-gradient(135deg, #F59E0B 0%, #D97706 100%)` (gold)
     #2: `linear-gradient(135deg, #94A3B8 0%, #64748B 100%)` (silver)
@@ -787,15 +787,15 @@ with the `--gradient-nebula` background.
     width proportional to count vs maximum
   - Average BMA weight as percentage in `mono` typography
   - Average PIT pass rate as colored badge: emerald >= 80%, amber >= 60%, rose < 60%
-- [ ] AC-2: Each row uses `--void-surface` background with `--void-hover` on hover.
+- [x] AC-2: Each row uses `--void-surface` background with `--void-hover` on hover.
   Hover also triggers elevation 2 glow. Transition: 120ms with `micro` easing.
-- [ ] AC-3: Clicking a model row expands it (smooth height transition, 250ms) to
+- [x] AC-3: Clicking a model row expands it (smooth height transition, 250ms) to
   show: list of assets using this model as small `--accent-violet` ticker badges,
   and average BIC/CRPS/Hyvarinen scores in `mono` type with semantic coloring.
-- [ ] AC-4: A "View All Models" link at the bottom navigates to
+- [x] AC-4: A "View All Models" link at the bottom navigates to
   Diagnostics > Model Comparison. The link uses `--accent-violet` color with
   an arrow icon, and a gradient underline on hover.
-- [ ] AC-5: The leaderboard animates in row-by-row with 50ms stagger using
+- [x] AC-5: The leaderboard animates in row-by-row with 50ms stagger using
   `standard` motion: each row fades in + slides from left (8px), creating a
   satisfying cascade effect that builds anticipation as the rankings unfold.
 
@@ -819,7 +819,7 @@ beautiful emerald-rose gradient blending point.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: A "Conviction Spotlight" section appears after the stat cards,
+- [x] AC-1: A "Conviction Spotlight" section appears after the stat cards,
   showing two side-by-side panels (cosmic glass cards, elevation 1) with
   16px gap between them:
   - **Strongest Buys** (left): emerald accent. Background: `--gradient-nebula`
@@ -828,7 +828,7 @@ beautiful emerald-rose gradient blending point.
   - **Strongest Sells** (right): rose accent. Background: `--gradient-nebula`
     with a rose glow overlay: `radial-gradient(ellipse at 90% 10%,
     rgba(251,113,133,0.08) 0%, transparent 60%)`
-- [ ] AC-2: Each panel shows up to 5 assets as **rich mini-cards** (no visible
+- [x] AC-2: Each panel shows up to 5 assets as **rich mini-cards** (no visible
   border, `--void-hover` background on hover):
   - Ticker (large, `heading-3` size, gradient text matching the panel's accent)
   - Sector badge (pill, `--void-active` background, `caption` typography)
@@ -837,18 +837,18 @@ beautiful emerald-rose gradient blending point.
   - Probability as a micro arc gauge (16px, matching accent color)
   - Kelly fraction with a thin gradient bar (40px wide, 3px tall)
   - Signal age ("2h ago", "today") in `--text-muted`, `caption` typography
-- [ ] AC-3: Each asset card is clickable (navigates to `/charts/{SYMBOL}`).
+- [x] AC-3: Each asset card is clickable (navigates to `/charts/{SYMBOL}`).
   On hover, the card lifts 1px (`transform: translateY(-1px)`) and gains
   the panel's accent glow: `box-shadow: 0 0 20px rgba(accent, 0.06)`.
-- [ ] AC-4: The panel headers use `heading-2` typography with an SVG icon:
+- [x] AC-4: The panel headers use `heading-2` typography with an SVG icon:
   "Strongest Buys" with an upward arrow icon in `--accent-emerald`,
   "Strongest Sells" with a downward arrow icon in `--accent-rose`.
-- [ ] AC-5: If no high-conviction signals exist, the panel shows an elegant
+- [x] AC-5: If no high-conviction signals exist, the panel shows an elegant
   empty state: a balanced scales SVG icon (40px, `--text-muted`, line art)
   with "No strong signals today" in `--text-secondary` and "Markets in
   equilibrium" in `--text-muted`. The icon has a subtle floating animation
   (2px up/down, 3s cycle).
-- [ ] AC-6: The conviction spotlight -- with its dual nebula glows, the emerald
+- [x] AC-6: The conviction spotlight -- with its dual nebula glows, the emerald
   and rose auroras meeting in the void between panels, the rich asset cards
   with gradient text and micro-gauges -- must be so visually striking and
   actionable that users would absolutely fall in love with the zero-click
@@ -894,7 +894,7 @@ naturally.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: Each asset row in the All Assets table includes a **60px-wide sparkline**
+- [x] AC-1: Each asset row in the All Assets table includes a **60px-wide sparkline**
   column showing the 30-day price movement. The sparkline is a 1.5px line rendered
   on a transparent background:
   - Above 20-day SMA: emerald line with a subtle emerald glow
@@ -902,7 +902,7 @@ naturally.
   - Below 20-day SMA: rose line with a subtle rose glow
     (`filter: drop-shadow(0 0 2px rgba(251,113,133,0.4))`)
   The sparkline appears as a luminous thread in the void.
-- [ ] AC-2: The signal column displays a **gradient strength bar** (40px wide, 6px
+- [x] AC-2: The signal column displays a **gradient strength bar** (40px wide, 6px
   tall, border-radius: 3px) next to the signal text label. The bar sits on a
   `--void-active` track. Fill uses:
   - Buy signals: `linear-gradient(90deg, rgba(52,211,153,0.3) 0%, var(--accent-emerald) 100%)`
@@ -910,7 +910,7 @@ naturally.
   - Hold: `linear-gradient(90deg, rgba(139,92,246,0.2) 0%, rgba(139,92,246,0.4) 100%)`
   Fill percentage represents composite confidence (p_up + Kelly). The filled
   portion has a subtle glow matching its color.
-- [ ] AC-3: Momentum score displays as a **colored numeric badge** with a background
+- [x] AC-3: Momentum score displays as a **colored numeric badge** with a background
   that uses gradient opacity proportional to magnitude:
   - Positive momentum: text in `--accent-emerald`, background
     `rgba(52,211,153, momentum * 0.15)`, border-radius 6px
@@ -918,30 +918,30 @@ naturally.
     `rgba(251,113,133, abs(momentum) * 0.15)`
   Strong momentum values (abs > 0.7) get a subtle outer glow matching their
   color: `box-shadow: 0 0 8px rgba(color, 0.12)`.
-- [ ] AC-4: Crash risk score displays as a **heat indicator**: four small rectangle
+- [x] AC-4: Crash risk score displays as a **heat indicator**: four small rectangle
   segments (6px wide, 12px tall each, 2px gap, border-radius 2px). Segments
   fill from left to right based on risk level. Colors transition through a
   gradient: segment 1 = `--accent-emerald`, segment 2 = `--accent-amber`,
   segment 3 = `#F97316` (orange), segment 4 = `--accent-rose`. Filled segments
   glow; empty segments use `--void-active` (nearly invisible).
-- [ ] AC-5: Horizon columns show expected return with a **directional micro-arrow**
+- [x] AC-5: Horizon columns show expected return with a **directional micro-arrow**
   (SVG, 8px, emerald up-arrow for positive, rose down-arrow for negative).
   Returns > +5% use `font-weight: 600` and `--accent-emerald` with subtle
   text-shadow glow. Returns < -5% use `font-weight: 600` and `--accent-rose`.
   Returns between -1% and +1% use `--text-muted`.
-- [ ] AC-6: The table header row is sticky on scroll with a `--gradient-nebula`
+- [x] AC-6: The table header row is sticky on scroll with a `--gradient-nebula`
   background and `backdrop-filter: blur(12px)`. A bottom shadow appears only when
   scrolled: `box-shadow: 0 4px 12px rgba(0,0,0,0.3)`, fading in over 150ms.
   Header text uses `caption` typography, `--text-violet` color, `text-transform:
   uppercase`, `letter-spacing: 0.06em`.
-- [ ] AC-7: Row hover state: the entire row gains `--void-hover` background with
+- [x] AC-7: Row hover state: the entire row gains `--void-hover` background with
   a violet radial glow from the left: `background: linear-gradient(90deg,
   rgba(139,92,246,0.06) 0%, transparent 40%), var(--void-hover)`. The row lifts
   1px (`transform: translateY(-0.5px)`) and gains elevation 2 glow. Transition:
   120ms with `micro` easing. The sparkline in the hovered row gains a tooltip
   (cosmic glass, elevation 3) showing: current price, 30-day change %, volume
   trend as colored arrow.
-- [ ] AC-8: The table is so information-dense yet so visually refined -- the
+- [x] AC-8: The table is so information-dense yet so visually refined -- the
   luminous sparklines, the gradient strength bars, the glowing momentum badges,
   the heat indicators, all against the cosmic void -- that users would absolutely
   fall in love with scanning 100+ assets and drool over how much decision-support
@@ -967,26 +967,26 @@ direction arrow uses a smooth 200ms rotation animation when toggled.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: Clicking a column header sets it as the **primary sort**. A directional
+- [x] AC-1: Clicking a column header sets it as the **primary sort**. A directional
   arrow SVG (10px, `--accent-violet`) appears next to the header text, pointing
   up for ascending, down for descending. The arrow fades in over 120ms.
-- [ ] AC-2: Holding `Shift` and clicking a second column adds it as a **secondary
+- [x] AC-2: Holding `Shift` and clicking a second column adds it as a **secondary
   sort**. A numbered badge (14px circle, `--accent-violet` background, white
   text in `caption` typography) appears on each active sort column header.
   Up to 3 sort levels supported.
-- [ ] AC-3: Active sort columns have their header text in `--accent-violet` with
+- [x] AC-3: Active sort columns have their header text in `--accent-violet` with
   a subtle text-shadow: `0 0 8px rgba(139,92,246,0.3)`. Inactive sort columns
   remain `--text-violet`. This creates a "light up" effect on sort activation.
-- [ ] AC-4: Clicking an already-sorted column toggles direction (asc/desc) with
+- [x] AC-4: Clicking an already-sorted column toggles direction (asc/desc) with
   the arrow rotating 180 degrees over 200ms. Clicking it a third time removes
   that sort level with a 120ms fade-out.
-- [ ] AC-5: A **sort indicator bar** appears above the table as a thin glass strip
+- [x] AC-5: A **sort indicator bar** appears above the table as a thin glass strip
   (28px tall, `--void-hover` background) showing the active sort chain in
   plain language: "Sorted by Signal (desc), then Momentum (desc)" in `caption`
   typography, `--text-secondary`. Each criterion has a small X button
   (`--text-muted`, rose on hover) for removal.
-- [ ] AC-6: Sort state persists in `localStorage` per view mode (all/sectors/ranked).
-- [ ] AC-7: `Shift+Click` sorting reorders rows with a subtle 200ms animation
+- [x] AC-6: Sort state persists in `localStorage` per view mode (all/sectors/ranked).
+- [x] AC-7: `Shift+Click` sorting reorders rows with a subtle 200ms animation
   where rows slide to their new positions using `transform: translateY()` transitions
   rather than DOM reorder, creating a smooth reshuffling effect that feels like
   cards being dealt into a new order.
@@ -1010,7 +1010,7 @@ the asset rows beneath like a constellation unfurling.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: Each sector panel header displays as a 48px-tall glass row
+- [x] AC-1: Each sector panel header displays as a 48px-tall glass row
   (`--void-hover` background) in a single row with generous spacing:
   - Sector name in `heading-3` typography, `--text-luminous`
   - Asset count badge: pill shaped, `--void-active` background, `caption` text
@@ -1023,20 +1023,20 @@ the asset rows beneath like a constellation unfurling.
   - Average expected return: `mono` typography, colored
   - Expand/collapse chevron (12px SVG, `--accent-violet`) with smooth 200ms
     rotation animation
-- [ ] AC-2: When a sector panel is collapsed, a **peek row** appears inside the
+- [x] AC-2: When a sector panel is collapsed, a **peek row** appears inside the
   header (right-aligned, before the chevron): the top performing asset as
   "Best: NVDA +8.2% (Strong Buy)" in `caption` typography. The ticker uses
   `--accent-violet`, the return uses `--accent-emerald`. This gives value
   even without expanding -- a zero-click insight embedded in the header.
-- [ ] AC-3: Sector panels sort by aggregate momentum by default. A dropdown
+- [x] AC-3: Sector panels sort by aggregate momentum by default. A dropdown
   (cosmic glass, elevation 3) in the section header allows sorting sectors by:
   Momentum, Expected Return, Signal Strength, Asset Count, or Alphabetical.
   The dropdown trigger is a subtle "Sort" label with a small chevron.
-- [ ] AC-4: The expand/collapse animation is a smooth height transition (250ms,
+- [x] AC-4: The expand/collapse animation is a smooth height transition (250ms,
   `standard` motion) with content rows fading in after the height settles
   (100ms stagger between rows). The effect is like a constellation of stars
   appearing one by one as the sector unfurls.
-- [ ] AC-5: Each sector panel has a subtle left border (2px) that is a gradient:
+- [x] AC-5: Each sector panel has a subtle left border (2px) that is a gradient:
   - Majority bullish sectors: `linear-gradient(180deg, var(--accent-emerald) 0%,
     rgba(52,211,153,0.3) 100%)`
   - Majority bearish: `linear-gradient(180deg, var(--accent-rose) 0%,
@@ -1045,7 +1045,7 @@ the asset rows beneath like a constellation unfurling.
     rgba(139,92,246,0.3) 100%)`
   This creates a colored light strip on the left edge that tells the sector
   story at the most peripheral glance.
-- [ ] AC-6: The sector panel design -- with its flowing sentiment bars, gradient
+- [x] AC-6: The sector panel design -- with its flowing sentiment bars, gradient
   left borders, peek rows, and constellation expand animation -- summarizes
   so much information in the collapsed state that users would absolutely fall
   in love with the zero-click sector overview and drool over the aggregate
@@ -1073,7 +1073,7 @@ uses a glass pill style with strikethrough on the old value.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: When a signal changes via WebSocket update, the affected row triggers
+- [x] AC-1: When a signal changes via WebSocket update, the affected row triggers
   an **aurora sweep** animation:
   - Upgrade (e.g., Hold -> Buy): an emerald gradient wave sweeps left-to-right
     across the row over 600ms:
@@ -1084,26 +1084,26 @@ uses a glass pill style with strikethrough on the old value.
   - Downgrade (e.g., Buy -> Hold): rose aurora sweep with same pattern but
     using `rgba(251,113,133,...)` values.
   - New entry: violet aurora sweep using `rgba(139,92,246,...)`.
-- [ ] AC-2: The changed cell shows a **transition badge** for 10 seconds: a small
+- [x] AC-2: The changed cell shows a **transition badge** for 10 seconds: a small
   glass pill (elevation 1, `--void-active` background) positioned above the
   new value showing "was Hold" or "was 4.2%" in `caption` typography,
   `--text-muted`, with the old value in strikethrough. The badge fades in
   (150ms) and fades out after 10 seconds (300ms). It has a tiny colored dot
   matching the change direction (emerald for improvement, rose for regression).
-- [ ] AC-3: A **change counter badge** appears in the page header: a violet pill
+- [x] AC-3: A **change counter badge** appears in the page header: a violet pill
   showing "3 changes" in `caption` typography. The badge pulses gently
   (opacity 70-100%, 2s cycle) to maintain awareness. Clicking it scrolls to
   the most recent change and highlights the row with a violet glow.
-- [ ] AC-4: An optional "Live Feed" toggle in the toolbar enables a **ticker tape**
+- [x] AC-4: An optional "Live Feed" toggle in the toolbar enables a **ticker tape**
   at the top of the signal table: a thin glass strip (28px tall) with
   horizontally scrolling change items: "NVDA: Hold -> Buy | TSLA: Sell -> Hold".
   Each item uses colored arrows (emerald up, rose down) and `mono` typography.
   The tape scrolls with constant velocity (60px/s) and pauses on hover.
-- [ ] AC-5: The aurora sweep uses CSS `@keyframes` that transitions the gradient
+- [x] AC-5: The aurora sweep uses CSS `@keyframes` that transitions the gradient
   `background-position`, not `background-color`, ensuring text remains
   readable during the animation. The glow is additive over the row's existing
   background.
-- [ ] AC-6: Animations are disabled when the browser tab is not visible
+- [x] AC-6: Animations are disabled when the browser tab is not visible
   (`document.hidden`). On tab return, any changes that occurred while hidden
   are shown as a batch: "4 signals changed while away" with a "Review" button.
 
@@ -1126,34 +1126,34 @@ spacecraft cockpit.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: The search input supports fuzzy matching: "nvd" matches "NVDA",
+- [x] AC-1: The search input supports fuzzy matching: "nvd" matches "NVDA",
   "apl" matches "AAPL", "cro" matches "CRWD" and "CRM". Fuzzy scoring ranks
   exact prefix matches highest, then substring matches, then character-skip
   matches. The algorithm is case-insensitive and handles both ticker symbols
   and company names.
-- [ ] AC-2: Search matches highlight with `--accent-violet` background at 20%
+- [x] AC-2: Search matches highlight with `--accent-violet` background at 20%
   opacity on the matching characters in result rows. The highlight uses
   `border-radius: 2px` and a subtle violet glow for individual characters:
   `box-shadow: 0 0 4px rgba(139,92,246,0.2)`.
-- [ ] AC-3: Search works simultaneously with signal filter and view mode.
+- [x] AC-3: Search works simultaneously with signal filter and view mode.
   Example: searching "gold" while filter is "Strong Buy" shows only
   gold-related assets with strong buy signals. Filters are composable --
   each narrows the others.
-- [ ] AC-4: The search input shows a live result count on the right side (inside
+- [x] AC-4: The search input shows a live result count on the right side (inside
   the input, before the clear button): "12 of 147" in `caption` typography,
   `--text-muted`, updating as the user types. The count uses `tabular-nums`
   for stable width.
-- [ ] AC-5: `Cmd+K` or `/` focuses the search input from anywhere on the page
+- [x] AC-5: `Cmd+K` or `/` focuses the search input from anywhere on the page
   with a brief violet flash of the input border (200ms). `Esc` clears the
   search and blurs the input. These shortcuts are shown as faded key-cap hint
   text inside the input when empty: a tiny "/" in a rounded square.
-- [ ] AC-6: The search is debounced at 100ms for responsiveness. During the
+- [x] AC-6: The search is debounced at 100ms for responsiveness. During the
   debounce wait, a subtle activity indicator (tiny violet dot pulsing at
   the right edge of the input) shows that processing is happening.
-- [ ] AC-7: An "X" clear button appears when the input has text, positioned
+- [x] AC-7: An "X" clear button appears when the input has text, positioned
   inside the input on the right side. The X uses `--text-muted` at rest,
   `--accent-rose` on hover, with a 120ms transition.
-- [ ] AC-8: The search input's focus state -- the violet glow ring, the
+- [x] AC-8: The search input's focus state -- the violet glow ring, the
   expanding animation, the live count, the keyboard shortcut hints -- creates
   such a refined interaction that users would absolutely fall in love with
   the search experience and drool over how even finding an asset feels like
@@ -1177,31 +1177,31 @@ table uses violet pill buttons that glow when active.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: The table detects available viewport width and displays the maximum
+- [x] AC-1: The table detects available viewport width and displays the maximum
   number of horizon columns that fit without scrolling:
   - >= 1600px: All horizons (1D, 3D, 7D, 30D, 90D, 180D, 365D)
   - >= 1280px: 5 horizons (7D, 30D, 90D, 180D, 365D)
   - >= 1024px: 3 horizons (7D, 30D, 365D)
   - < 1024px: 1 horizon (30D) with a "..." pill button (violet border, `caption`
     text) that expands into a floating glass card showing all horizons on click
-- [ ] AC-2: A **horizon selector** appears above the table as a row of pill
+- [x] AC-2: A **horizon selector** appears above the table as a row of pill
   toggles. Active pills have `--accent-violet` background at 15% opacity,
   `--accent-violet` text, and a 1px `--border-glow` border. Inactive pills
   have `--void-active` background and `--text-secondary` text. Selected
   horizons save to `localStorage`. This overrides the auto-fit behavior.
   Toggle transition: 120ms with `micro` easing.
-- [ ] AC-3: Each horizon column cell shows expected return as the primary
+- [x] AC-3: Each horizon column cell shows expected return as the primary
   number in `mono` typography (colored emerald/rose) and probability as a
   subtle sub-line (11px, `--text-muted`) below. The two-line layout uses
   `line-height: 1.2` for tight vertical rhythm.
-- [ ] AC-4: Hovering a horizon cell shows a cosmic glass tooltip (elevation 3,
+- [x] AC-4: Hovering a horizon cell shows a cosmic glass tooltip (elevation 3,
   `--gradient-nebula` background) with:
   - Expected return (large, `heading-3` size, gradient text for strong signals)
   - Probability with a mini arc gauge (16px, violet track, emerald/rose fill)
   - Kelly fraction with gradient bar (30px wide)
   - Upper/Lower uncertainty envelope in `mono` typography, `--text-muted`
   - Signal classification for that specific horizon as a colored badge
-- [ ] AC-5: The horizon density adaptation -- automatic column fitting,
+- [x] AC-5: The horizon density adaptation -- automatic column fitting,
   collapsible overflow, violet pill selectors, rich hover tooltips -- is so
   seamless that users would absolutely fall in love with always seeing the
   perfect amount of data and drool over never needing to horizontally scroll
@@ -1249,7 +1249,7 @@ threads of `rgba(139,92,246,0.04)`.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: When forecast data is loaded, a **probability nebula** renders on the
+- [x] AC-1: When forecast data is loaded, a **probability nebula** renders on the
   chart extending from the last price candle into the future:
   - Median forecast: solid line (2px, `--accent-violet`) with a subtle glow
     (`filter: drop-shadow(0 0 3px rgba(139,92,246,0.5))`)
@@ -1260,11 +1260,11 @@ threads of `rgba(139,92,246,0.04)`.
     the faintest violet mist, barely visible but giving the cone its nebula
     character. The outer edge has a thin (0.5px) dashed line in
     `rgba(139,92,246,0.15)`.
-- [ ] AC-2: The probability nebula extends to the farthest available forecast
+- [x] AC-2: The probability nebula extends to the farthest available forecast
   horizon (365 days) but only shows detail for visible horizons based on zoom.
   At long zoom-out, the nebula compresses. At zoom-in, it expands to show
   granular day-by-day confidence.
-- [ ] AC-3: Hovering a point within the forecast cone shows a cosmic glass tooltip:
+- [x] AC-3: Hovering a point within the forecast cone shows a cosmic glass tooltip:
   - Date in `caption` typography
   - Median expected price in `heading-3` with gradient text
   - 50% CI range (low-high) in `mono` typography, `--text-secondary`
@@ -1272,19 +1272,19 @@ threads of `rgba(139,92,246,0.04)`.
   - Probability of being above current price at that date: shown as a mini
     arc gauge (16px) with emerald fill
   - A thin dashed crosshair line extends from the hover point to both axes
-- [ ] AC-4: The forecast nebula animates in when first loaded: the shaded regions
+- [x] AC-4: The forecast nebula animates in when first loaded: the shaded regions
   grow from left (today) to right (future) over 800ms with `expressive` motion.
   The median line draws itself like a laser beam extending into the future.
   The confidence intervals bloom around it like gas expanding from a star.
-- [ ] AC-5: Forecast overlay can be toggled independently of technical overlays.
+- [x] AC-5: Forecast overlay can be toggled independently of technical overlays.
   Its toggle button uses a nebula icon (SVG, `--accent-violet`) and sits in
   the Forecast group of the chart toolbar.
-- [ ] AC-6: If the current price is outside the 90% CI at any past forecast point
+- [x] AC-6: If the current price is outside the 90% CI at any past forecast point
   (a "surprise"), that region on the chart gets a subtle colored tint:
   - Positive surprise (price above upper CI): faint emerald patch
   - Negative surprise (price below lower CI): faint rose patch
   This creates a visual "scar" on the chart showing where the model was wrong.
-- [ ] AC-7: The probability nebula overlay -- the glowing median line, the
+- [x] AC-7: The probability nebula overlay -- the glowing median line, the
   violet-tinged confidence regions blooming into the future, the surprise
   scars on past predictions -- gives the chart such a unique analytical edge
   that users would absolutely fall in love with seeing the future probability
@@ -1314,7 +1314,7 @@ divider lines.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: When a symbol is selected, a **detail sidebar** (320px wide, resizable
+- [x] AC-1: When a symbol is selected, a **detail sidebar** (320px wide, resizable
   via drag handle) slides in from the right, cosmic glass with elevation 3:
   - **Header**: Ticker in `heading-1` with gradient text (`--text-luminous` to
     `--accent-violet`), sector badge (violet pill), current price in `display`
@@ -1334,21 +1334,21 @@ divider lines.
     gradient bar, PIT status badge (emerald/rose)
   - **Risk Metrics**: Momentum (colored with arrow), Crash risk (heat bar),
     Regime classification (colored pill badge)
-- [ ] AC-2: The sidebar is collapsible via a handle (8px wide strip on the left
+- [x] AC-2: The sidebar is collapsible via a handle (8px wide strip on the left
   edge, `--void-hover` background, a small chevron icon). Collapsed state shows
   a thin 36px strip with: ticker in vertical text, signal badge as a colored
   dot, and the expand handle. Collapse preference persists in `localStorage`.
-- [ ] AC-3: Horizon rows are clickable. Clicking a horizon draws a horizontal
+- [x] AC-3: Horizon rows are clickable. Clicking a horizon draws a horizontal
   reference line on the chart at the expected price level for that horizon,
   using a dashed line in `--accent-violet` with a label pill showing the
   horizon name and expected price. Multiple horizons can be active simultaneously.
-- [ ] AC-4: The sidebar scrolls independently of the chart with a custom thin
+- [x] AC-4: The sidebar scrolls independently of the chart with a custom thin
   scrollbar (4px wide, `--accent-violet` thumb at 30% opacity, `--void` track).
-- [ ] AC-5: On screens narrower than 1280px, the sidebar starts collapsed and
+- [x] AC-5: On screens narrower than 1280px, the sidebar starts collapsed and
   opens as an overlay with a `rgba(3,0,20,0.6)` backdrop + blur behind it.
-- [ ] AC-6: The sidebar animates in from the right (translate-x: 100% -> 0) with
+- [x] AC-6: The sidebar animates in from the right (translate-x: 100% -> 0) with
   `standard` motion (250ms). Content sections stagger in by 60ms each.
-- [ ] AC-7: A "View All Signals" link at the bottom uses `--accent-violet`
+- [x] AC-7: A "View All Signals" link at the bottom uses `--accent-violet`
   with an arrow icon and gradient underline on hover.
 
 ---
@@ -1370,7 +1370,7 @@ cockpit controls.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: The chart toolbar (cosmic glass, elevation 1, `--gradient-nebula`
+- [x] AC-1: The chart toolbar (cosmic glass, elevation 1, `--gradient-nebula`
   background) displays overlay toggles in grouped segments separated by
   fading violet dividers (`linear-gradient(180deg, transparent 20%,
   rgba(139,92,246,0.12) 50%, transparent 80%)`):
@@ -1378,7 +1378,7 @@ cockpit controls.
   - **Volatility**: Bollinger Bands (cyan dot), RSI 14 (fuchsia dot)
   - **Forecast**: Median (violet dot), CI Bands (violet at 50%), Probability Cone
   - **Misc**: Price Line (white dot)
-- [ ] AC-2: Each toggle button (28px tall, border-radius 6px) shows:
+- [x] AC-2: Each toggle button (28px tall, border-radius 6px) shows:
   - A 6px colored dot on the left matching the overlay color on the chart
   - Label text in `caption` typography
   - Keyboard shortcut hint on the right in `--text-muted` (e.g., "B" for Bollinger)
@@ -1386,19 +1386,19 @@ cockpit controls.
     the dot gains a glow (`box-shadow: 0 0 6px rgba(color, 0.4)`)
   - Inactive state: transparent background, `--text-muted` text, dim dot
   - Transition: 120ms with `micro` easing
-- [ ] AC-3: Group labels appear as tiny section headers (`caption` typography,
+- [x] AC-3: Group labels appear as tiny section headers (`caption` typography,
   `--text-muted`, `text-transform: uppercase`, `letter-spacing: 0.08em`)
   above each group.
-- [ ] AC-4: A **"Presets"** dropdown (cosmic glass, elevation 3) allows saving
+- [x] AC-4: A **"Presets"** dropdown (cosmic glass, elevation 3) allows saving
   and loading overlay combinations:
   - "Technical": SMA 20 + SMA 50 + SMA 200 + Bollinger
   - "Forecast": Forecast Median + CI + Probability Cone
   - "Clean": Price only
   - Custom presets (max 5) saved in `localStorage`, each with a user-defined
     name and a color-coded icon showing which overlay types are included
-- [ ] AC-5: The toolbar adapts to width: on narrow screens, groups collapse into
+- [x] AC-5: The toolbar adapts to width: on narrow screens, groups collapse into
   a single glass dropdown menu with sections matching the group structure.
-- [ ] AC-6: Toggle transitions animate the overlay in/out on the chart (fade over
+- [x] AC-6: Toggle transitions animate the overlay in/out on the chart (fade over
   200ms) rather than appearing/disappearing instantly. SMA lines draw
   themselves left-to-right (300ms) when activated.
 
@@ -1421,7 +1421,7 @@ border -- a "breathing" effect that makes the list feel alive.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: In the All view, each asset in the sidebar list shows a **mini card**
+- [x] AC-1: In the All view, each asset in the sidebar list shows a **mini card**
   (cosmic glass, 64px tall, no visible border, `--void-surface` background):
   - Ticker in `heading-3` typography, `--text-luminous` + Sector in `caption`,
     `--text-muted`
@@ -1429,10 +1429,10 @@ border -- a "breathing" effect that makes the list feel alive.
     SB/B/H/S/SS
   - 30-day sparkline (48px wide, 20px tall): emerald/rose luminous thread
   - Daily change % in `mono` typography, colored (emerald/rose/gray)
-- [ ] AC-2: In the Sectors view, sector headers use `heading-3` typography in
+- [x] AC-2: In the Sectors view, sector headers use `heading-3` typography in
   `--text-violet` with count badge and mini sentiment bar (same pattern as
   Story 3.3). Expand/collapse with smooth height animation (200ms).
-- [ ] AC-3: In the Ranked views (Momentum, Edge, Return, etc.), each card
+- [x] AC-3: In the Ranked views (Momentum, Edge, Return, etc.), each card
   additionally shows:
   - The ranked metric prominently in `heading-2` size, fully colored
   - A horizontal gradient bar behind the metric (40px wide): fill uses
@@ -1440,18 +1440,18 @@ border -- a "breathing" effect that makes the list feel alive.
     width proportional to value (normalized against #1 = 100%)
   - Rank number (#1, #2, #3...) as gradient badges for top 3:
     #1: gold gradient, #2: silver, #3: bronze (same as Story 2.4)
-- [ ] AC-4: The symbol picker search uses the same fuzzy matching as Story 3.5.
+- [x] AC-4: The symbol picker search uses the same fuzzy matching as Story 3.5.
   The search input uses the same violet focus glow treatment.
-- [ ] AC-5: Clicking an asset transitions the chart with a brief crossfade
+- [x] AC-5: Clicking an asset transitions the chart with a brief crossfade
   (150ms fade-out old, 150ms fade-in new). During data fetch, the chart
   container shows a cosmic shimmer loading state (see Story 10.1).
-- [ ] AC-6: The currently selected asset card has:
+- [x] AC-6: The currently selected asset card has:
   - 4px left border: `linear-gradient(180deg, var(--accent-violet) 0%,
     var(--accent-indigo) 100%)`
   - Background: `--void-hover` with glow: `radial-gradient(ellipse at 0% 50%,
     rgba(139,92,246,0.08) 0%, transparent 60%)`
   Unselected cards hover with `--void-hover` background (120ms transition).
-- [ ] AC-7: The symbol picker is so content-rich -- sparklines, signal badges,
+- [x] AC-7: The symbol picker is so content-rich -- sparklines, signal badges,
   sentiment bars, gradient rank indicators -- that users would absolutely fall
   in love with browsing assets and drool over making informed chart selections
   without ever leaving the sidebar. Apple engineers would appreciate the
@@ -1476,13 +1476,13 @@ creating a spotlight effect that shows exactly which time range is selected.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: The time range selector displays as a row of pill buttons (28px tall,
+- [x] AC-1: The time range selector displays as a row of pill buttons (28px tall,
   border-radius: 14px): 1W, 1M, 3M, 6M, 1Y, 2Y, ALL.
   Active pill: `--accent-violet` background at 15% opacity, `--accent-violet`
   text, 1px `--border-glow` border.
   Inactive pill: transparent background, `--text-secondary` text.
   Transition: 120ms `micro` easing with scale 0.97 -> 1.0 on tap.
-- [ ] AC-2: Below the pill row, a **mini overview chart** (32px tall, full width)
+- [x] AC-2: Below the pill row, a **mini overview chart** (32px tall, full width)
   shows the complete price history as a thin luminous line (emerald/rose).
   A **draggable range selector** sits on top:
   - Selected range: highlighted with `rgba(139,92,246,0.1)` overlay
@@ -1491,14 +1491,14 @@ creating a spotlight effect that shows exactly which time range is selected.
   - Non-selected areas: darkened to `rgba(3,0,20,0.5)`
   Dragging the edges resizes the view. Dragging the center pans. All with
   smooth 60fps updates.
-- [ ] AC-3: Pinch-to-zoom on trackpad / scroll-wheel zoom is supported on the
+- [x] AC-3: Pinch-to-zoom on trackpad / scroll-wheel zoom is supported on the
   main chart. Zooming updates the range selector handles in real-time.
-- [ ] AC-4: The chart stores the last-used time range per symbol in `localStorage`.
+- [x] AC-4: The chart stores the last-used time range per symbol in `localStorage`.
   When returning to a previously viewed symbol, the chart restores that range
   with a smooth 300ms transition.
-- [ ] AC-5: Double-clicking the range selector overlay resets to "6M" default
+- [x] AC-5: Double-clicking the range selector overlay resets to "6M" default
   with a `spring` animation (300ms).
-- [ ] AC-6: Time range transitions animate smoothly: the chart x-axis rescales
+- [x] AC-6: Time range transitions animate smoothly: the chart x-axis rescales
   with 300ms `standard` easing rather than jumping.
 
 ---
@@ -1520,7 +1520,7 @@ map.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: A "Draw" mode toggle in the toolbar (pencil SVG icon, `--accent-violet`
+- [x] AC-1: A "Draw" mode toggle in the toolbar (pencil SVG icon, `--accent-violet`
   when active with glow) enables annotation tools:
   - **Horizontal Line**: Click a price level to place a horizontal line.
     Default: dashed, `--accent-violet` at 40% opacity. Color picker (5 presets:
@@ -1529,18 +1529,18 @@ map.
   - **Note**: `Shift+Click` a candle to place a note marker -- a small circle
     (8px) in `--accent-violet` with a glow. Text input appears as a cosmic
     glass popover anchored to that point. Max 140 characters. `mono` typography.
-- [ ] AC-2: Annotations persist in `localStorage` per symbol. Loading a chart
+- [x] AC-2: Annotations persist in `localStorage` per symbol. Loading a chart
   restores all saved annotations with a staggered fade-in (40ms per annotation).
-- [ ] AC-3: Annotations are editable: double-click to edit text/color (opens the
+- [x] AC-3: Annotations are editable: double-click to edit text/color (opens the
   same glass popover). Right-click opens a minimal context menu (cosmic glass,
   elevation 3) with "Edit" and "Delete" options.
-- [ ] AC-4: Each annotation shows a timestamp on hover ("Added 2 days ago") in
+- [x] AC-4: Each annotation shows a timestamp on hover ("Added 2 days ago") in
   `caption` typography, `--text-muted`, inside the expanded note bubble.
-- [ ] AC-5: An "Export Annotations" button saves all annotations for the current
+- [x] AC-5: An "Export Annotations" button saves all annotations for the current
   symbol as JSON. An "Import" button allows restoring from a JSON file.
-- [ ] AC-6: Maximum 20 annotations per symbol. When approaching the limit (18+),
+- [x] AC-6: Maximum 20 annotations per symbol. When approaching the limit (18+),
   a subtle count shows in the toolbar: "18/20" in `--text-muted`.
-- [ ] AC-7: Annotations are on a separate interaction layer (`pointer-events: none`
+- [x] AC-7: Annotations are on a separate interaction layer (`pointer-events: none`
   on the annotation container, with `pointer-events: auto` only on interactive
   elements). They never interfere with chart hover, zoom, or pan.
 
@@ -1583,7 +1583,7 @@ against the void.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: Replace the current progress bar with a **cosmic speedometer gauge**
+- [x] AC-1: Replace the current progress bar with a **cosmic speedometer gauge**
   (200px diameter) rendered as an SVG arc:
   - 270-degree arc from bottom-left to bottom-right
   - Arc track (unfilled): 6px stroke, `rgba(139,92,246,0.08)` -- nearly invisible
@@ -1600,27 +1600,27 @@ against the void.
   - Center text: temperature value in `display` typography (40px) with gradient
     text matching the regime: `background: linear-gradient(135deg, currentColor 0%,
     lighter-variant 100%)`. Status label below in `heading-3`, `--text-secondary`.
-- [ ] AC-2: Below the gauge, a **7-day sparkline** (160px wide, 32px tall) shows
+- [x] AC-2: Below the gauge, a **7-day sparkline** (160px wide, 32px tall) shows
   temperature history as a luminous thread:
   - Line color: gradient matching the gauge arc colors, applied per data point
   - Glow: `filter: drop-shadow(0 0 2px rgba(139,92,246,0.4))`
   - Fill below the line: very faint gradient matching the line color at 5% opacity
   Historical data persists in `localStorage` (one snapshot per hour, max 168
   points = 7 days).
-- [ ] AC-3: **Regime transition markers** appear on the sparkline as small
+- [x] AC-3: **Regime transition markers** appear on the sparkline as small
   vertical lines (1px dashed, `--accent-violet`) with tiny colored dots at the
   top showing the old and new regime colors. Hovering shows: transition time,
   old regime name -> new regime name, in a cosmic glass tooltip.
-- [ ] AC-4: A trend arrow icon (SVG, 12px) next to the gauge indicates direction:
+- [x] AC-4: A trend arrow icon (SVG, 12px) next to the gauge indicates direction:
   - Rising risk (increasing over last 3 points): rose arrow pointing up with
     rose glow
   - Falling risk: emerald arrow pointing down with emerald glow
   - Stable: horizontal dash in `--text-muted`
-- [ ] AC-5: The gauge needle animates from 0 to current value on page load over
+- [x] AC-5: The gauge needle animates from 0 to current value on page load over
   800ms with `spring` motion -- the needle accelerates, overshoots slightly,
   and settles at the target value with a satisfying mechanical snap. The arc
   fill draws simultaneously, growing from 0 degrees.
-- [ ] AC-6: The temperature gauge -- the glowing arc, the mechanical spring
+- [x] AC-6: The temperature gauge -- the glowing arc, the mechanical spring
   needle, the regime-colored halo, the heartbeat sparkline below -- creates
   such a visceral, instinctive understanding of risk state that users would
   absolutely fall in love with feeling the market's risk temperature in
@@ -1650,7 +1650,7 @@ divider lines.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: When a symbol is selected, a **detail sidebar** (320px wide, resizable
+- [x] AC-1: When a symbol is selected, a **detail sidebar** (320px wide, resizable
   via drag handle) slides in from the right, cosmic glass with elevation 3:
   - **Header**: Ticker in `heading-1` with gradient text (`--text-luminous` to
     `--accent-violet`), sector badge (violet pill), current price in `display`
@@ -1670,21 +1670,21 @@ divider lines.
     gradient bar, PIT status badge (emerald/rose)
   - **Risk Metrics**: Momentum (colored with arrow), Crash risk (heat bar),
     Regime classification (colored pill badge)
-- [ ] AC-2: The sidebar is collapsible via a handle (8px wide strip on the left
+- [x] AC-2: The sidebar is collapsible via a handle (8px wide strip on the left
   edge, `--void-hover` background, a small chevron icon). Collapsed state shows
   a thin 36px strip with: ticker in vertical text, signal badge as a colored
   dot, and the expand handle. Collapse preference persists in `localStorage`.
-- [ ] AC-3: Horizon rows are clickable. Clicking a horizon draws a horizontal
+- [x] AC-3: Horizon rows are clickable. Clicking a horizon draws a horizontal
   reference line on the chart at the expected price level for that horizon,
   using a dashed line in `--accent-violet` with a label pill showing the
   horizon name and expected price. Multiple horizons can be active simultaneously.
-- [ ] AC-4: The sidebar scrolls independently of the chart with a custom thin
+- [x] AC-4: The sidebar scrolls independently of the chart with a custom thin
   scrollbar (4px wide, `--accent-violet` thumb at 30% opacity, `--void` track).
-- [ ] AC-5: On screens narrower than 1280px, the sidebar starts collapsed and
+- [x] AC-5: On screens narrower than 1280px, the sidebar starts collapsed and
   opens as an overlay with a `rgba(3,0,20,0.6)` backdrop + blur behind it.
-- [ ] AC-6: The sidebar animates in from the right (translate-x: 100% -> 0) with
+- [x] AC-6: The sidebar animates in from the right (translate-x: 100% -> 0) with
   `standard` motion (250ms). Content sections stagger in by 60ms each.
-- [ ] AC-7: A "View All Signals" link at the bottom uses `--accent-violet`
+- [x] AC-7: A "View All Signals" link at the bottom uses `--accent-violet`
   with an arrow icon and gradient underline on hover.
 
 ---
@@ -1706,7 +1706,7 @@ cockpit controls.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: The chart toolbar (cosmic glass, elevation 1, `--gradient-nebula`
+- [x] AC-1: The chart toolbar (cosmic glass, elevation 1, `--gradient-nebula`
   background) displays overlay toggles in grouped segments separated by
   fading violet dividers (`linear-gradient(180deg, transparent 20%,
   rgba(139,92,246,0.12) 50%, transparent 80%)`):
@@ -1714,7 +1714,7 @@ cockpit controls.
   - **Volatility**: Bollinger Bands (cyan dot), RSI 14 (fuchsia dot)
   - **Forecast**: Median (violet dot), CI Bands (violet at 50%), Probability Cone
   - **Misc**: Price Line (white dot)
-- [ ] AC-2: Each toggle button (28px tall, border-radius 6px) shows:
+- [x] AC-2: Each toggle button (28px tall, border-radius 6px) shows:
   - A 6px colored dot on the left matching the overlay color on the chart
   - Label text in `caption` typography
   - Keyboard shortcut hint on the right in `--text-muted` (e.g., "B" for Bollinger)
@@ -1722,19 +1722,19 @@ cockpit controls.
     the dot gains a glow (`box-shadow: 0 0 6px rgba(color, 0.4)`)
   - Inactive state: transparent background, `--text-muted` text, dim dot
   - Transition: 120ms with `micro` easing
-- [ ] AC-3: Group labels appear as tiny section headers (`caption` typography,
+- [x] AC-3: Group labels appear as tiny section headers (`caption` typography,
   `--text-muted`, `text-transform: uppercase`, `letter-spacing: 0.08em`)
   above each group.
-- [ ] AC-4: A **"Presets"** dropdown (cosmic glass, elevation 3) allows saving
+- [x] AC-4: A **"Presets"** dropdown (cosmic glass, elevation 3) allows saving
   and loading overlay combinations:
   - "Technical": SMA 20 + SMA 50 + SMA 200 + Bollinger
   - "Forecast": Forecast Median + CI + Probability Cone
   - "Clean": Price only
   - Custom presets (max 5) saved in `localStorage`, each with a user-defined
     name and a color-coded icon showing which overlay types are included
-- [ ] AC-5: The toolbar adapts to width: on narrow screens, groups collapse into
+- [x] AC-5: The toolbar adapts to width: on narrow screens, groups collapse into
   a single glass dropdown menu with sections matching the group structure.
-- [ ] AC-6: Toggle transitions animate the overlay in/out on the chart (fade over
+- [x] AC-6: Toggle transitions animate the overlay in/out on the chart (fade over
   200ms) rather than appearing/disappearing instantly. SMA lines draw
   themselves left-to-right (300ms) when activated.
 
@@ -1757,7 +1757,7 @@ border -- a "breathing" effect that makes the list feel alive.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: In the All view, each asset in the sidebar list shows a **mini card**
+- [x] AC-1: In the All view, each asset in the sidebar list shows a **mini card**
   (cosmic glass, 64px tall, no visible border, `--void-surface` background):
   - Ticker in `heading-3` typography, `--text-luminous` + Sector in `caption`,
     `--text-muted`
@@ -1765,10 +1765,10 @@ border -- a "breathing" effect that makes the list feel alive.
     SB/B/H/S/SS
   - 30-day sparkline (48px wide, 20px tall): emerald/rose luminous thread
   - Daily change % in `mono` typography, colored (emerald/rose/gray)
-- [ ] AC-2: In the Sectors view, sector headers use `heading-3` typography in
+- [x] AC-2: In the Sectors view, sector headers use `heading-3` typography in
   `--text-violet` with count badge and mini sentiment bar (same pattern as
   Story 3.3). Expand/collapse with smooth height animation (200ms).
-- [ ] AC-3: In the Ranked views (Momentum, Edge, Return, etc.), each card
+- [x] AC-3: In the Ranked views (Momentum, Edge, Return, etc.), each card
   additionally shows:
   - The ranked metric prominently in `heading-2` size, fully colored
   - A horizontal gradient bar behind the metric (40px wide): fill uses
@@ -1776,18 +1776,18 @@ border -- a "breathing" effect that makes the list feel alive.
     width proportional to value (normalized against #1 = 100%)
   - Rank number (#1, #2, #3...) as gradient badges for top 3:
     #1: gold gradient, #2: silver, #3: bronze (same as Story 2.4)
-- [ ] AC-4: The symbol picker search uses the same fuzzy matching as Story 3.5.
+- [x] AC-4: The symbol picker search uses the same fuzzy matching as Story 3.5.
   The search input uses the same violet focus glow treatment.
-- [ ] AC-5: Clicking an asset transitions the chart with a brief crossfade
+- [x] AC-5: Clicking an asset transitions the chart with a brief crossfade
   (150ms fade-out old, 150ms fade-in new). During data fetch, the chart
   container shows a cosmic shimmer loading state (see Story 10.1).
-- [ ] AC-6: The currently selected asset card has:
+- [x] AC-6: The currently selected asset card has:
   - 4px left border: `linear-gradient(180deg, var(--accent-violet) 0%,
     var(--accent-indigo) 100%)`
   - Background: `--void-hover` with glow: `radial-gradient(ellipse at 0% 50%,
     rgba(139,92,246,0.08) 0%, transparent 60%)`
   Unselected cards hover with `--void-hover` background (120ms transition).
-- [ ] AC-7: The symbol picker is so content-rich -- sparklines, signal badges,
+- [x] AC-7: The symbol picker is so content-rich -- sparklines, signal badges,
   sentiment bars, gradient rank indicators -- that users would absolutely fall
   in love with browsing assets and drool over making informed chart selections
   without ever leaving the sidebar. Apple engineers would appreciate the
@@ -1812,13 +1812,13 @@ creating a spotlight effect that shows exactly which time range is selected.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: The time range selector displays as a row of pill buttons (28px tall,
+- [x] AC-1: The time range selector displays as a row of pill buttons (28px tall,
   border-radius: 14px): 1W, 1M, 3M, 6M, 1Y, 2Y, ALL.
   Active pill: `--accent-violet` background at 15% opacity, `--accent-violet`
   text, 1px `--border-glow` border.
   Inactive pill: transparent background, `--text-secondary` text.
   Transition: 120ms `micro` easing with scale 0.97 -> 1.0 on tap.
-- [ ] AC-2: Below the pill row, a **mini overview chart** (32px tall, full width)
+- [x] AC-2: Below the pill row, a **mini overview chart** (32px tall, full width)
   shows the complete price history as a thin luminous line (emerald/rose).
   A **draggable range selector** sits on top:
   - Selected range: highlighted with `rgba(139,92,246,0.1)` overlay
@@ -1827,14 +1827,14 @@ creating a spotlight effect that shows exactly which time range is selected.
   - Non-selected areas: darkened to `rgba(3,0,20,0.5)`
   Dragging the edges resizes the view. Dragging the center pans. All with
   smooth 60fps updates.
-- [ ] AC-3: Pinch-to-zoom on trackpad / scroll-wheel zoom is supported on the
+- [x] AC-3: Pinch-to-zoom on trackpad / scroll-wheel zoom is supported on the
   main chart. Zooming updates the range selector handles in real-time.
-- [ ] AC-4: The chart stores the last-used time range per symbol in `localStorage`.
+- [x] AC-4: The chart stores the last-used time range per symbol in `localStorage`.
   When returning to a previously viewed symbol, the chart restores that range
   with a smooth 300ms transition.
-- [ ] AC-5: Double-clicking the range selector overlay resets to "6M" default
+- [x] AC-5: Double-clicking the range selector overlay resets to "6M" default
   with a `spring` animation (300ms).
-- [ ] AC-6: Time range transitions animate smoothly: the chart x-axis rescales
+- [x] AC-6: Time range transitions animate smoothly: the chart x-axis rescales
   with 300ms `standard` easing rather than jumping.
 
 ---
@@ -1856,7 +1856,7 @@ map.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: A "Draw" mode toggle in the toolbar (pencil SVG icon, `--accent-violet`
+- [x] AC-1: A "Draw" mode toggle in the toolbar (pencil SVG icon, `--accent-violet`
   when active with glow) enables annotation tools:
   - **Horizontal Line**: Click a price level to place a horizontal line.
     Default: dashed, `--accent-violet` at 40% opacity. Color picker (5 presets:
@@ -1865,18 +1865,18 @@ map.
   - **Note**: `Shift+Click` a candle to place a note marker -- a small circle
     (8px) in `--accent-violet` with a glow. Text input appears as a cosmic
     glass popover anchored to that point. Max 140 characters. `mono` typography.
-- [ ] AC-2: Annotations persist in `localStorage` per symbol. Loading a chart
+- [x] AC-2: Annotations persist in `localStorage` per symbol. Loading a chart
   restores all saved annotations with a staggered fade-in (40ms per annotation).
-- [ ] AC-3: Annotations are editable: double-click to edit text/color (opens the
+- [x] AC-3: Annotations are editable: double-click to edit text/color (opens the
   same glass popover). Right-click opens a minimal context menu (cosmic glass,
   elevation 3) with "Edit" and "Delete" options.
-- [ ] AC-4: Each annotation shows a timestamp on hover ("Added 2 days ago") in
+- [x] AC-4: Each annotation shows a timestamp on hover ("Added 2 days ago") in
   `caption` typography, `--text-muted`, inside the expanded note bubble.
-- [ ] AC-5: An "Export Annotations" button saves all annotations for the current
+- [x] AC-5: An "Export Annotations" button saves all annotations for the current
   symbol as JSON. An "Import" button allows restoring from a JSON file.
-- [ ] AC-6: Maximum 20 annotations per symbol. When approaching the limit (18+),
+- [x] AC-6: Maximum 20 annotations per symbol. When approaching the limit (18+),
   a subtle count shows in the toolbar: "18/20" in `--text-muted`.
-- [ ] AC-7: Annotations are on a separate interaction layer (`pointer-events: none`
+- [x] AC-7: Annotations are on a separate interaction layer (`pointer-events: none`
   on the annotation container, with `pointer-events: auto` only on interactive
   elements). They never interfere with chart hover, zoom, or pan.
 
@@ -1919,7 +1919,7 @@ against the void.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: Replace the current progress bar with a **cosmic speedometer gauge**
+- [x] AC-1: Replace the current progress bar with a **cosmic speedometer gauge**
   (200px diameter) rendered as an SVG arc:
   - 270-degree arc from bottom-left to bottom-right
   - Arc track (unfilled): 6px stroke, `rgba(139,92,246,0.08)` -- nearly invisible
@@ -1936,27 +1936,27 @@ against the void.
   - Center text: temperature value in `display` typography (40px) with gradient
     text matching the regime: `background: linear-gradient(135deg, currentColor 0%,
     lighter-variant 100%)`. Status label below in `heading-3`, `--text-secondary`.
-- [ ] AC-2: Below the gauge, a **7-day sparkline** (160px wide, 32px tall) shows
+- [x] AC-2: Below the gauge, a **7-day sparkline** (160px wide, 32px tall) shows
   temperature history as a luminous thread:
   - Line color: gradient matching the gauge arc colors, applied per data point
   - Glow: `filter: drop-shadow(0 0 2px rgba(139,92,246,0.4))`
   - Fill below the line: very faint gradient matching the line color at 5% opacity
   Historical data persists in `localStorage` (one snapshot per hour, max 168
   points = 7 days).
-- [ ] AC-3: **Regime transition markers** appear on the sparkline as small
+- [x] AC-3: **Regime transition markers** appear on the sparkline as small
   vertical lines (1px dashed, `--accent-violet`) with tiny colored dots at the
   top showing the old and new regime colors. Hovering shows: transition time,
   old regime name -> new regime name, in a cosmic glass tooltip.
-- [ ] AC-4: A trend arrow icon (SVG, 12px) next to the gauge indicates direction:
+- [x] AC-4: A trend arrow icon (SVG, 12px) next to the gauge indicates direction:
   - Rising risk (increasing over last 3 points): rose arrow pointing up with
     rose glow
   - Falling risk: emerald arrow pointing down with emerald glow
   - Stable: horizontal dash in `--text-muted`
-- [ ] AC-5: The gauge needle animates from 0 to current value on page load over
+- [x] AC-5: The gauge needle animates from 0 to current value on page load over
   800ms with `spring` motion -- the needle accelerates, overshoots slightly,
   and settles at the target value with a satisfying mechanical snap. The arc
   fill draws simultaneously, growing from 0 degrees.
-- [ ] AC-6: The temperature gauge -- the glowing arc, the mechanical spring
+- [x] AC-6: The temperature gauge -- the glowing arc, the mechanical spring
   needle, the regime-colored halo, the heartbeat sparkline below -- creates
   such a visceral, instinctive understanding of risk state that users would
   absolutely fall in love with feeling the market's risk temperature in
@@ -1986,7 +1986,7 @@ overall stress increases.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: The Cross-Asset Stress tab displays a **4-node constellation diagram**
+- [x] AC-1: The Cross-Asset Stress tab displays a **4-node constellation diagram**
   showing stress between: FX Carry, Equities, Duration, Commodities.
   - Nodes: 56px circles with `--gradient-nebula` fill and a colored border
     ring (3px) whose color shifts from `--accent-violet` (low stress) through
@@ -1998,7 +1998,7 @@ overall stress increases.
     `--text-muted` at 20% opacity.
   - Node labels: asset class name in `caption` typography below each node.
     Stress score inside the node in `heading-3` with colored text.
-- [ ] AC-2: Each stress category has an **expandable detail card** (cosmic glass,
+- [x] AC-2: Each stress category has an **expandable detail card** (cosmic glass,
   elevation 1) below the constellation containing:
   - Category stress score: `heading-1` size, gradient text matching stress color
   - Individual indicator table with semantic coloring per row:
@@ -2006,21 +2006,21 @@ overall stress increases.
   - A **contribution bar**: a stacked horizontal gradient bar (120px wide, 6px
     tall) showing each indicator's percentage contribution. Segments use
     different violet/indigo tones for visual distinction.
-- [ ] AC-3: The constellation lines feature **animated particles** -- tiny dots
+- [x] AC-3: The constellation lines feature **animated particles** -- tiny dots
   (2px, matching line color) that flow along the connection paths. Flow speed
   increases with correlation strength. Flow direction: from the source of
   stress to the receiver. This creates a "stress flowing through the system"
   visual metaphor. Particles use `--accent-rose` glow when correlation is
   stress-amplifying.
-- [ ] AC-4: Category cards arrange in a responsive grid: 2x2 on desktop,
+- [x] AC-4: Category cards arrange in a responsive grid: 2x2 on desktop,
   single column on narrow screens. Cards use `--gradient-nebula` background.
-- [ ] AC-5: Each indicator row has a colored status pip (8px circle) that
+- [x] AC-5: Each indicator row has a colored status pip (8px circle) that
   pulses at different rates:
   - Green: no pulse (calm)
   - Amber: slow pulse (2s cycle)
   - Rose: fast pulse (1s cycle)
   Hovering the pip shows exact threshold value in a cosmic glass tooltip.
-- [ ] AC-6: The stress constellation -- the glowing nodes, the animated particle
+- [x] AC-6: The stress constellation -- the glowing nodes, the animated particle
   flows showing contagion paths, the pulsing status pips -- makes portfolio
   risk propagation so visually intuitive that users would absolutely fall
   in love with systemic risk visualization and drool over seeing stress
@@ -2048,7 +2048,7 @@ matching heights create a unified instrument panel.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: Each metal displays as a **cosmic glass card** (elevation 1,
+- [x] AC-1: Each metal displays as a **cosmic glass card** (elevation 1,
   `--gradient-nebula` background) containing:
   - Metal name in `heading-2` + a symbolic SVG icon (24px, `--text-violet`,
     line art: bar for gold, disc for silver, wire for copper, etc.)
@@ -2064,21 +2064,21 @@ matching heights create a unified instrument panel.
     directional arrow (8px SVG, colored)
   - Stress score: 4-segment heat bar (same pattern as Story 3.1 AC-4)
   - Confidence: mini arc gauge (20px), violet track, emerald/rose fill
-- [ ] AC-2: Cards arrange in a 2x2 grid (CSS grid `auto-rows: 1fr`) with 16px
+- [x] AC-2: Cards arrange in a 2x2 grid (CSS grid `auto-rows: 1fr`) with 16px
   gap. All cards have identical height. On narrow screens, stack to 1 column.
-- [ ] AC-3: Hovering a forecast cell in the spectrum strip scales it to 1.15x
+- [x] AC-3: Hovering a forecast cell in the spectrum strip scales it to 1.15x
   (150ms `spring` animation) and shows a cosmic glass tooltip with: exact
   forecast %, confidence interval, and a natural language sentence:
   "Gold expected +2.3% over 30 days (68% CI: -0.5% to +5.1%)" in `body`
   typography with the return value colored.
-- [ ] AC-4: A **comparison mode** toggle (violet pill button) switches to a single
+- [x] AC-4: A **comparison mode** toggle (violet pill button) switches to a single
   table: rows = metals, columns = horizons. Cells use the same color mapping
   as the spectrum strips. This enables direct cross-metal comparison in a
   heat-colored matrix against `--void` background.
-- [ ] AC-5: Each metal card's left border (3px) is a vertical gradient reflecting
+- [x] AC-5: Each metal card's left border (3px) is a vertical gradient reflecting
   the dominant forecast direction: `linear-gradient(180deg, emerald, emerald)`
   if majority positive, rose if majority negative, violet if mixed.
-- [ ] AC-6: Metal cards animate in with 100ms stagger cascade on tab load,
+- [x] AC-6: Metal cards animate in with 100ms stagger cascade on tab load,
   each sliding up 8px and fading in using `standard` motion.
 
 ---
@@ -2101,7 +2101,7 @@ that shifts from violet (low correlation) to rose (dangerous clustering).
 
 ### Acceptance Criteria
 
-- [ ] AC-1: A **dual arc breadth gauge** displays as two opposing 180-degree SVG
+- [x] AC-1: A **dual arc breadth gauge** displays as two opposing 180-degree SVG
   arcs (100px diameter each) facing each other with 24px gap:
   - Left arc (emerald): size proportional to UP asset count. Fill: gradient
     from `--accent-emerald` to `rgba(52,211,153,0.5)`. Behind: emerald glow
@@ -2111,7 +2111,7 @@ that shifts from violet (low correlation) to rose (dangerous clustering).
   - Center: ratio text "87 / 60" in `heading-1` typography, `--text-luminous`,
     vertically centered between the arcs
   - Below each arc: percentage label ("59%", "41%") in `caption`, colored
-- [ ] AC-2: A **correlation stress card** (cosmic glass, elevation 1) shows:
+- [x] AC-2: A **correlation stress card** (cosmic glass, elevation 1) shows:
   - Correlation stress score in `display` typography with gradient text:
     - Low: violet gradient
     - Elevated: amber gradient
@@ -2120,20 +2120,20 @@ that shifts from violet (low correlation) to rose (dangerous clustering).
     "Dangerous correlation clustering detected" (rose text with slow pulse
     animation -- opacity 80-100% on 2s cycle, creating urgency)
   - Average cross-correlation number in `mono`, `--text-secondary`
-- [ ] AC-3: Universe instruments display as **flowing glass pill cards** in a
+- [x] AC-3: Universe instruments display as **flowing glass pill cards** in a
   responsive grid (auto-fit, minmax 140px). Each pill (cosmic glass, 48px tall):
   - Instrument name in `heading-3`, `--text-luminous`
   - Price with tiny directional arrow (emerald/rose)
   - Daily change as colored number
   - Three colored dots (6px each, emerald/void/rose) representing 7D/30D/90D
     forecast direction -- a micro forecast fingerprint
-- [ ] AC-4: VIX specifically gets elevated treatment: when VIX > 25, its card
+- [x] AC-4: VIX specifically gets elevated treatment: when VIX > 25, its card
   gains a rose border that pulses (1s cycle), elevation 2 constant glow, and
   elevated z-index. When VIX > 35, the entire card background shifts to
   `--gradient-signal-bear` with a rose ambient glow.
-- [ ] AC-5: Clicking any universe instrument card navigates to `/charts/{symbol}`.
+- [x] AC-5: Clicking any universe instrument card navigates to `/charts/{symbol}`.
   Cards have `--void-hover` on hover with violet glow transition (120ms).
-- [ ] AC-6: The breadth arcs and correlation indicators create such an immediate
+- [x] AC-6: The breadth arcs and correlation indicators create such an immediate
   visceral sense of market health that users would absolutely fall in love
   with the cosmic yin-yang metaphor and drool over knowing the market's
   structural shape in one glance.
@@ -2157,7 +2157,7 @@ that sets it apart as the marquee insight.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: Currency pairs display as **cosmic glass cards** (same height via CSS
+- [x] AC-1: Currency pairs display as **cosmic glass cards** (same height via CSS
   grid `auto-rows: 1fr`) in a responsive grid, each showing:
   - Pair name (e.g., "USD/JPY") in `heading-3`, `--text-luminous`
   - Current rate in `heading-2`, `--text-primary` + daily change (colored badge)
@@ -2166,14 +2166,14 @@ that sets it apart as the marquee insight.
   - Risk score (4-segment heat bar)
   - Forecast spectrum strip (same visual pattern as metals Story 5.3) -- 5
     cells showing 7D through 365D forecast direction and magnitude
-- [ ] AC-2: A **currency heatmap** mode (violet pill toggle) shows all pairs in a
+- [x] AC-2: A **currency heatmap** mode (violet pill toggle) shows all pairs in a
   single matrix on `--void` background:
   - Rows: currency pairs (sticky row headers)
   - Columns: Momentum | Risk | 7D | 30D | 90D | 180D | 365D
   - Cell color: diverging colormap emerald-void-rose with opacity proportional
     to magnitude. Cell border: 1px `--border-void`.
   - Column headers: `caption` typography, `--text-violet`, uppercase
-- [ ] AC-3: The JPY section gets a special **"Yen Strength View"** callout card
+- [x] AC-3: The JPY section gets a special **"Yen Strength View"** callout card
   at the top of the currencies tab: full-width cosmic glass with
   `linear-gradient(135deg, #0c1445 0%, #1a0533 50%, #110f2e 100%)` background
   and a cyan accent glow `radial-gradient(ellipse at 20% 50%,
@@ -2182,9 +2182,9 @@ that sets it apart as the marquee insight.
   directional forecast as a spectrum strip, and a natural language recommendation:
   "Yen is strengthening against the dollar. Consider reducing USD/JPY longs."
   in `body` typography using `--text-cyan` for emphasis.
-- [ ] AC-4: Currency cards click-through to Charts page. Click feedback: 120ms
+- [x] AC-4: Currency cards click-through to Charts page. Click feedback: 120ms
   violet glow flash before navigation.
-- [ ] AC-5: Forecast confidence is indicated by cell opacity in the spectrum strip:
+- [x] AC-5: Forecast confidence is indicated by cell opacity in the spectrum strip:
   high confidence = full opacity, low confidence = semi-transparent. This
   creates a visual "sharpness" metric -- sharp colors mean confident forecasts.
 
@@ -2207,7 +2207,7 @@ competitive narrative.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: Sector ETFs display as **ranked cosmic glass cards** in a single
+- [x] AC-1: Sector ETFs display as **ranked cosmic glass cards** in a single
   column, sorted by performance:
   - Rank #1-#3 get gradient medal badges (gold/silver/bronze, same as 2.4)
   - Each card (56px tall) shows:
@@ -2219,7 +2219,7 @@ competitive narrative.
       buy/hold/sell segments
     - Risk contribution: tiny stacked bar (40px, 3px tall) showing this sector's
       contribution to overall portfolio risk using violet gradient fill
-- [ ] AC-2: A **relative strength chart** (200px tall) renders above the sector
+- [x] AC-2: A **relative strength chart** (200px tall) renders above the sector
   list on `--void` canvas:
   - All sector ETFs overlaid as luminous lines (1.5px), each with its own
     color from a curated cosmic palette: XLK = violet, XLV = cyan, XLI = amber,
@@ -2230,12 +2230,12 @@ competitive narrative.
     that date with their normalized values, sorted by performance
   - The legend at top-right shows colored dots with sector names. Clicking a
     legend item toggles that line on/off with fade animation.
-- [ ] AC-3: Hovering a sector card in the list highlights its corresponding line
+- [x] AC-3: Hovering a sector card in the list highlights its corresponding line
   in the chart above (full opacity + thicker stroke: 3px, with brighter glow).
   All other lines dim to 30% opacity. This creates a focus-reveal effect.
-- [ ] AC-4: The sector list supports reordering by: Performance (default),
+- [x] AC-4: The sector list supports reordering by: Performance (default),
   Momentum, Risk, Alphabetical via a glass dropdown with violet accents.
-- [ ] AC-5: Clicking a sector card expands it (250ms smooth height transition)
+- [x] AC-5: Clicking a sector card expands it (250ms smooth height transition)
   to show all individual assets within that sector with their signal status
   as a mini table (same style as the main Signal table but condensed).
 
@@ -2269,7 +2269,7 @@ terminal with a dark log viewer that feels like peering into the engine.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: The retune control area displays as a **mission control card**
+- [x] AC-1: The retune control area displays as a **mission control card**
   (full width, elevation 2, `--gradient-aurora` background, heavier glass blur
   `blur(32px)`):
   - Mode selector: segmented pill buttons (not a dropdown). Each pill (36px tall,
@@ -2286,7 +2286,7 @@ terminal with a dark log viewer that feels like peering into the engine.
   - Status badge: colored glass pill (emerald "Idle" / amber "Running" / emerald
     "Completed" / rose "Failed")
   - Elapsed time counter in `mono` typography, `--text-secondary`
-- [ ] AC-2: When running, a **progress dashboard** expands below the controls
+- [x] AC-2: When running, a **progress dashboard** expands below the controls
   (smooth height transition, 300ms, content fading in over 200ms):
   - Progress bar: thin (4px) gradient strip:
     `linear-gradient(90deg, var(--accent-violet) 0%, var(--accent-cyan) 100%)`
@@ -2303,14 +2303,14 @@ terminal with a dark log viewer that feels like peering into the engine.
     - Cyan: phase transitions ("=== Phase 2: Kalman Filter ===")
     - Rose bold: errors ("ERROR: IONQ convergence failed")
     - `--text-muted`: verbose/debug lines
-- [ ] AC-3: Log auto-scrolls to bottom. When user scrolls up, a floating button
+- [x] AC-3: Log auto-scrolls to bottom. When user scrolls up, a floating button
   "Resume auto-scroll" appears at the bottom-right of the log (cosmic glass
   pill, `--accent-violet` text). A "Copy log" button in the log header copies
   full text to clipboard with a success flash.
-- [ ] AC-4: On completion, a summary card replaces the progress bar (300ms
+- [x] AC-4: On completion, a summary card replaces the progress bar (300ms
   crossfade): total duration, assets processed, pass/fail count as colored
   numbers, PIT improvement shown as delta with directional color.
-- [ ] AC-5: The retune control panel -- the mission control aesthetic, the
+- [x] AC-5: The retune control panel -- the mission control aesthetic, the
   igniting start button, the industrial log terminal, the live progress with
   asset-level detail -- gives such confident command over the engine room
   that users would absolutely fall in love with the operational control and
@@ -2335,7 +2335,7 @@ brightens it and dims others, creating a spotlight effect.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: The model distribution renders as a **treemap** (cosmic glass card,
+- [x] AC-1: The model distribution renders as a **treemap** (cosmic glass card,
   `--void` internal background for maximum contrast):
   - Each rectangle: rounded corners (6px), 1px border `--border-void`
   - Rectangle area proportional to selection count
@@ -2354,9 +2354,9 @@ brightens it and dims others, creating a spotlight effect.
 - [ ] AC-3: Clicking a treemap cell filters the asset table below to show only
   assets using that model. The clicked cell pulses violet glow (200ms) as
   confirmation.
-- [ ] AC-4: A toggle (violet pill) switches between Treemap and traditional
+- [x] AC-4: A toggle (violet pill) switches between Treemap and traditional
   Horizontal Bar chart for users who prefer linear ranking.
-- [ ] AC-5: The treemap cells animate in with a coordinated cascade (50ms
+- [x] AC-5: The treemap cells animate in with a coordinated cascade (50ms
   stagger) from largest to smallest, each scaling from 0.9 to 1.0 with
   `expressive` motion -- like a mosaic assembling itself.
 
@@ -2379,7 +2379,7 @@ problem areas are red dwarfs that demand attention.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: A **health star map** displays all tuned assets as small squares
+- [x] AC-1: A **health star map** displays all tuned assets as small squares
   (20px x 20px, border-radius: 4px) in a flowing grid, colored by PIT status:
   - Emerald: PIT pass -- `--accent-emerald` at 70% opacity with glow:
     `box-shadow: 0 0 4px rgba(52,211,153,0.3)`
@@ -2388,19 +2388,19 @@ problem areas are red dwarfs that demand attention.
   - Gray: Unknown -- `--text-muted` at 30% opacity, no glow
   Stars (tiles) are grouped by sector with sector names above each group in
   `caption` typography, `--text-violet`, uppercase.
-- [ ] AC-2: Hovering a star shows a cosmic glass tooltip (elevation 3): ticker,
+- [x] AC-2: Hovering a star shows a cosmic glass tooltip (elevation 3): ticker,
   best model name, PIT status badge, BMA weight (gradient bar), last tuned
   timestamp in `--text-muted`.
-- [ ] AC-3: Clicking a star selects it (ring: 2px `--accent-violet` with glow,
+- [x] AC-3: Clicking a star selects it (ring: 2px `--accent-violet` with glow,
   scale 1.2x, 120ms `micro` animation), loading the detail panel below.
-- [ ] AC-4: A **summary bar** above the grid (28px tall, `--void-hover` background):
+- [x] AC-4: A **summary bar** above the grid (28px tall, `--void-hover` background):
   pass/fail/unknown counts with a stacked gradient bar. Pass segment: emerald
   gradient, Fail: rose gradient, Unknown: void-muted. Percentage labels on
   each segment.
-- [ ] AC-5: A "Show only failures" toggle (rose-accented pill) dims all passing
+- [x] AC-5: A "Show only failures" toggle (rose-accented pill) dims all passing
   assets to 10% opacity and zeros their glow, making rose failures pop like
   supernovae against the void. The toggle has a small rose dot indicator.
-- [ ] AC-6: Failed asset stars pulse continuously (opacity oscillation 50-100%
+- [x] AC-6: Failed asset stars pulse continuously (opacity oscillation 50-100%
   over 2s cycle, `ease-in-out`), creating an "attention needed" beacon effect.
 - [ ] AC-7: The health star map -- emerald and rose stars clustered in sector
   constellations, failing assets pulsing like red dwarfs demanding attention,
@@ -2428,7 +2428,7 @@ instrument panel -- every number is precise, labeled, and contextualized.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: Selecting an asset opens a **detail panel** (cosmic glass, elevation 3,
+- [x] AC-1: Selecting an asset opens a **detail panel** (cosmic glass, elevation 3,
   `--gradient-nebula` background, 400px wide or full-width bottom panel):
   - **Header**: Ticker in `heading-1` with gradient text + Sector badge (violet
     pill) + PIT status badge (emerald/rose, large: 24px tall)
@@ -2450,17 +2450,17 @@ instrument panel -- every number is precise, labeled, and contextualized.
     matching the 5 regime types), volatility state text.
   - **Calibration History** (if available): 5 dots on a horizontal line
     (timeline), each emerald or rose, showing PIT status over last 5 retunes
-- [ ] AC-2: Numeric formatting uses semantic color with subtle background:
+- [x] AC-2: Numeric formatting uses semantic color with subtle background:
   numbers that are "good" have a faint emerald background pill,
   "bad" numbers have a faint rose background pill. This creates an instant
   visual health assessment across the entire table without reading values.
-- [ ] AC-3: "View in Diagnostics" link: `--accent-violet` with arrow, navigates
+- [x] AC-3: "View in Diagnostics" link: `--accent-violet` with arrow, navigates
   to Diagnostics page with the asset pre-selected.
 - [ ] AC-4: A "Compare" button (violet ghost button) allows selecting a second
   asset. When two are selected, the panel splits vertically (50/50) showing
   both side-by-side with differences highlighted (background pulse on values
   that differ by more than 20%).
-- [ ] AC-5: The panel animates in with slide-from-right (250ms, `standard` motion).
+- [x] AC-5: The panel animates in with slide-from-right (250ms, `standard` motion).
   Sections stagger in: 60ms delay each. The entire panel feels like a cockpit
   instrument unfolding to reveal deeper data.
 
@@ -2757,7 +2757,7 @@ red = trouble.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: A **freshness grid** displays all cached symbols as small squares
+- [x] AC-1: A **freshness grid** displays all cached symbols as small squares
   (16px x 16px, border-radius: 3px, 2px gap) in a flowing grid:
   - Fresh (< 24h): `--accent-emerald` at 50% opacity
   - Aging (24-72h): `--accent-amber` at 50% opacity
@@ -2766,7 +2766,7 @@ red = trouble.
   Grid is sorted by staleness (most stale first). Hovering a square shows
   cosmic glass tooltip: symbol, last refreshed time (relative), row count,
   data range (earliest to latest date).
-- [ ] AC-2: A **summary bar** (same as Story 6.3): stacked gradient bar showing
+- [x] AC-2: A **summary bar** (same as Story 6.3): stacked gradient bar showing
   fresh/aging/stale/missing proportions with count labels.
 - [ ] AC-3: A "Refresh Stale" button (rose-accented ghost button) triggers a
   data refresh for all stale symbols. Progress shows as a thin gradient
@@ -2797,7 +2797,7 @@ hospital monitoring station aesthetic.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: Each service displays as a **cosmic glass tile** (cosmic glass,
+- [x] AC-1: Each service displays as a **cosmic glass tile** (cosmic glass,
   elevation 1, 160px x 120px):
   - Service name in `heading-3`, `--text-luminous`
   - Status badge: colored glass pill (emerald "Healthy" / amber "Degraded" /
@@ -2810,16 +2810,16 @@ hospital monitoring station aesthetic.
     Line glow: `filter: drop-shadow(0 0 2px rgba(color, 0.4))`
   - Response time: last value in `mono`, colored
   - Uptime: "99.8%" in `caption`, `--text-secondary`
-- [ ] AC-2: Services monitored: Backend API, Yahoo Finance API, Cache Layer,
+- [x] AC-2: Services monitored: Backend API, Yahoo Finance API, Cache Layer,
   WebSocket Connection. Each tile auto-refreshes every 30 seconds via the
   existing health endpoint.
-- [ ] AC-3: When a service status changes (e.g., healthy -> degraded), the tile's
+- [x] AC-3: When a service status changes (e.g., healthy -> degraded), the tile's
   border flashes the status color (200ms) and a cosmic toast notification
   fires (Story 1.4) with the service name and new status.
-- [ ] AC-4: Clicking a service tile expands it inline (250ms height animation)
+- [x] AC-4: Clicking a service tile expands it inline (250ms height animation)
   to show: last 10 health check results as a mini table (timestamp, status,
   response time), all in `mono` typography with colored rows.
-- [ ] AC-5: Tiles arrange in a responsive row (flex-wrap). Dead services get
+- [x] AC-5: Tiles arrange in a responsive row (flex-wrap). Dead services get
   elevated z-index and rose glow, ensuring they visually dominate.
 
 ---
@@ -2892,7 +2892,7 @@ creating a natural visual hierarchy from champion to contender to also-ran.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: The Arena leaderboard displays models in a **ranked card list**:
+- [x] AC-1: The Arena leaderboard displays models in a **ranked card list**:
   - **Champion card** (#1): elevated (elevation 3), 80px tall, full width.
     Background: `linear-gradient(135deg, rgba(139,92,246,0.08) 0%,
     rgba(168,85,247,0.04) 50%, rgba(99,102,241,0.06) 100%)` -- subtle cosmic
@@ -2904,7 +2904,7 @@ creating a natural visual hierarchy from champion to contender to also-ran.
   - **Also-ran cards** (#6+): elevation 0, 56px tall, subtly dimmed
     (`opacity: 0.85`). No medal. Score in `heading-3`, `--text-secondary`.
   - All cards: cosmic glass background, 1px `--border-void` border
-- [ ] AC-2: Each leaderboard card shows:
+- [x] AC-2: Each leaderboard card shows:
   - Final score (large, colored: violet if beats standard, rose if below)
   - Score delta vs. best standard: "+10.7" in emerald or "-3.2" in rose,
     with arrow icon
@@ -2916,7 +2916,7 @@ creating a natural visual hierarchy from champion to contender to also-ran.
     Hyv < 1000: same
     PIT >= 75%: same
     vs STD >= 3: same
-- [ ] AC-3: Models are tagged as "Experimental" (violet pill) or "Standard"
+- [x] AC-3: Models are tagged as "Experimental" (violet pill) or "Standard"
   (gray pill). A toggle (violet pill button) filters between: All, Experimental
   Only, Standard Only.
 - [ ] AC-4: Clicking a leaderboard card expands it (250ms, smooth height) to show
@@ -3052,7 +3052,7 @@ from a distant nebula slowly illuminating the interface as it materializes.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: Every data-driven section has a matching **skeleton variant** that
+- [x] AC-1: Every data-driven section has a matching **skeleton variant** that
   renders on first load and data refetches (when `isLoading && !data`):
   - Dashboard: 2x2 card grid with skeleton cards matching exact card heights
   - Signal Table: skeleton rows (10) matching column widths, row heights
@@ -3061,7 +3061,7 @@ from a distant nebula slowly illuminating the interface as it materializes.
   - Tuning: skeleton treemap + skeleton health grid
   - Diagnostics: skeleton chart + skeleton summary table
   Skeletons use `--void-surface` background (border-radius matching real cards).
-- [ ] AC-2: The **cosmic shimmer**: a diagonal highlight band sweeps across all
+- [x] AC-2: The **cosmic shimmer**: a diagonal highlight band sweeps across all
   skeleton elements simultaneously (coordinated, not per-element):
   ```css
   background: linear-gradient(
@@ -3076,12 +3076,12 @@ from a distant nebula slowly illuminating the interface as it materializes.
   animation: cosmic-shimmer 2s ease-in-out infinite;
   ```
   `@keyframes cosmic-shimmer { from { background-position: 200% 0 } to { background-position: -200% 0 } }`
-- [ ] AC-3: Skeleton to content transition: skeletons fade out while content fades
+- [x] AC-3: Skeleton to content transition: skeletons fade out while content fades
   in with a 200ms crossfade. Content sections stagger in by 40ms each. No
   layout shift: skeleton dimensions match content dimensions exactly.
-- [ ] AC-4: Text skeletons use widths that approximate real content: headings are
+- [x] AC-4: Text skeletons use widths that approximate real content: headings are
   60% width, body text lines alternate 80% and 70%, numbers are 40px fixed.
-- [ ] AC-5: Skeleton screens are so beautiful -- the coordinated cosmic shimmer
+- [x] AC-5: Skeleton screens are so beautiful -- the coordinated cosmic shimmer
   sweep, the exact layout matching, the staggered materialization -- that users
   would prefer watching the loading animation to its completion and drool over
   the way the interface appears to materialize from the cosmic void.
@@ -3105,7 +3105,7 @@ page almost more beautiful than the loaded page.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: Each page has a **custom empty state** (centered, max-width 400px):
+- [x] AC-1: Each page has a **custom empty state** (centered, max-width 400px):
   - **Dashboard**: cosmic circle SVG (concentric violet rings) + "No signals
     yet. Run your first tune to see the universe come alive." + "Start Tune"
     violet gradient button.
@@ -3119,15 +3119,15 @@ page almost more beautiful than the loaded page.
     available. Signals must be generated first." + "Generate Signals" button.
   - **Arena**: cosmic trophy SVG (empty pedestal with star sparkles) + "No arena
     results yet. Run an arena competition." + "Start Arena" button.
-- [ ] AC-2: All illustrations use the cosmic palette: `--accent-violet`,
+- [x] AC-2: All illustrations use the cosmic palette: `--accent-violet`,
   `--accent-indigo` strokes and fills at 20-40% opacity. Lines are 1-2px.
   Total SVG size: 80px x 80px. SVGs animate subtly on loop (gentle float:
   translate-y 0 to -4px over 3s, ease-in-out, infinite).
-- [ ] AC-3: Message text: `heading-3` typography for the main line, `body`
+- [x] AC-3: Message text: `heading-3` typography for the main line, `body`
   typography for the description, `--text-secondary`. Center-aligned.
-- [ ] AC-4: The action button uses the same gradient styling as primary buttons
+- [x] AC-4: The action button uses the same gradient styling as primary buttons
   throughout the app (violet-to-indigo gradient, white text, 40px tall).
-- [ ] AC-5: Empty states transition to loaded content with a coordinated sequence:
+- [x] AC-5: Empty states transition to loaded content with a coordinated sequence:
   the illustration scales down and fades (200ms), then content sections
   stagger in from below (40ms offset each).
 
@@ -3150,7 +3150,7 @@ here's what you can do" rather than "FAILURE."
 
 ### Acceptance Criteria
 
-- [ ] AC-1: API errors display as an **error card** (cosmic glass, elevation 1,
+- [x] AC-1: API errors display as an **error card** (cosmic glass, elevation 1,
   with a subtle rose radial glow: `radial-gradient(ellipse at 50% 50%,
   rgba(251,113,133,0.04) 0%, transparent 60%)`):
   - Warning icon: SVG circle with line (24px, `--accent-rose`)
@@ -3163,18 +3163,18 @@ here's what you can do" rather than "FAILURE."
   - Technical detail (collapsible): `mono`, `caption`, `--text-muted`. Shows
     HTTP status, endpoint, timestamp. Hidden by default, expandable via
     "Show details" link.
-- [ ] AC-2: Retry triggers a refetch with exponential backoff visual: the retry
+- [x] AC-2: Retry triggers a refetch with exponential backoff visual: the retry
   button shows a spinning indicator (8px rose circle) and "Retrying in 3s..."
   countdown text. Successive retries: 1s, 3s, 8s. After 3 retries, button
   changes to "Manual retry only" and stops auto-retrying.
-- [ ] AC-3: Network errors (no connection) show a distinct state with a
+- [x] AC-3: Network errors (no connection) show a distinct state with a
   disconnected icon and message: "No connection to the server. Check that the
   backend is running." with the `make web-backend` hint in `mono` text.
-- [ ] AC-4: Partial errors (some API calls succeed, others fail) render the
+- [x] AC-4: Partial errors (some API calls succeed, others fail) render the
   successful data normally and show a thin error banner (40px tall, rose
   left border) at the top of the section: "Some data unavailable" with a
   retry link for just the failed requests.
-- [ ] AC-5: All error states include a gentle pulse animation on the glow
+- [x] AC-5: All error states include a gentle pulse animation on the glow
   (rose glow opacity oscillating 2-4%, 3s cycle) -- just enough to draw
   attention without being alarming.
 
@@ -3232,7 +3232,7 @@ dog-fooding moment for the shortcut system.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: Pressing `?` (when no input is focused) opens a **shortcut overlay**
+- [x] AC-1: Pressing `?` (when no input is focused) opens a **shortcut overlay**
   (full-screen, `rgba(3,0,20,0.8)` backdrop with `blur(8px)`, cosmic glass
   card centered, max-width 680px, max-height 80vh, scrollable):
   - Title: "Keyboard Shortcuts" in `heading-1`, `--text-luminous`
@@ -3244,14 +3244,14 @@ dog-fooding moment for the shortcut system.
     `min-width: 24px`, center-aligned, slight inner shadow for depth).
     Multi-key combos show badges separated by "+" in `--text-muted`.
   - Close: `Esc` key or click outside. Close button top-right as "X" icon.
-- [ ] AC-2: The overlay animates in: backdrop fades (200ms), then card scales
+- [x] AC-2: The overlay animates in: backdrop fades (200ms), then card scales
   from 0.95 to 1.0 + fades (200ms, `standard` motion). Animate out: reverse.
-- [ ] AC-3: A search input at the top (violet focus glow) filters shortcuts
+- [x] AC-3: A search input at the top (violet focus glow) filters shortcuts
   in real-time (same fuzzy matching as Story 3.5). Non-matching shortcuts
   dim to 20% opacity.
-- [ ] AC-4: Shortcut sections are collapsible (smooth height transition 200ms).
+- [x] AC-4: Shortcut sections are collapsible (smooth height transition 200ms).
   Default: all expanded. Section headers in `heading-3`, `--text-violet`.
-- [ ] AC-5: The cheat sheet is accessible from the Command Palette (Story 1.2)
+- [x] AC-5: The cheat sheet is accessible from the Command Palette (Story 1.2)
   by typing "shortcuts" or "keys".
 
 ---
@@ -3272,23 +3272,23 @@ a cascade effect that makes the page feel like it's unfurling from the void.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: The following elements animate on scroll-into-view using
+- [x] AC-1: The following elements animate on scroll-into-view using
   `IntersectionObserver` (threshold 0.1):
   - Dashboard cards: fade + slide up 12px, `standard` motion (250ms)
   - Signal table sections (when using sector groups): each sector group
     fades in as it enters viewport
   - Risk dashboard tabs: cards within each tab animate when the tab scrolls
   - Diagnostics charts: charts animate their data entrance when visible
-- [ ] AC-2: Animation triggers only once per element (add `data-animated="true"`
+- [x] AC-2: Animation triggers only once per element (add `data-animated="true"`
   after animation). Re-entering the viewport does not re-trigger.
-- [ ] AC-3: Elements above the fold (visible on page load) do NOT use scroll
+- [x] AC-3: Elements above the fold (visible on page load) do NOT use scroll
   animation -- they render immediately. Only below-fold content uses this.
-- [ ] AC-4: If the user has `prefers-reduced-motion: reduce`, scroll animations
+- [x] AC-4: If the user has `prefers-reduced-motion: reduce`, scroll animations
   are disabled. Elements appear immediately without motion.
-- [ ] AC-5: Stagger timing: when multiple elements enter the viewport
+- [x] AC-5: Stagger timing: when multiple elements enter the viewport
   simultaneously (e.g., a grid of cards), they stagger by 40ms each,
   creating a cascade rather than a simultaneous pop.
-- [ ] AC-6: The scroll materialization must be so perfectly timed -- subtle enough
+- [x] AC-6: The scroll materialization must be so perfectly timed -- subtle enough
   to not be gimmicky, consistently applied to feel systematic -- that users
   would fall in love with the sense that the page is alive and responding to
   their attention, and Apple engineers would study the intersection observer
@@ -3314,23 +3314,23 @@ a cascade effect that makes the page feel like it's unfurling from the void.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: All text on the three background tiers meets WCAG AA:
+- [x] AC-1: All text on the three background tiers meets WCAG AA:
   - `--text-luminous` on `--void` (#030014): ratio >= 7:1 (AAA)
   - `--text-primary` on `--void-surface`: ratio >= 4.5:1 (AA)
   - `--text-secondary` on `--void-surface`: ratio >= 4.5:1 (AA)
   - `--text-muted` on `--void-surface`: ratio >= 3:1 (AA for large text only,
     only used in `caption` / `mono` which are decorative supplementary text)
-- [ ] AC-2: All colored data elements (emerald, rose, amber, cyan, violet text)
+- [x] AC-2: All colored data elements (emerald, rose, amber, cyan, violet text)
   meet 4.5:1 against their background. Verify with a contrast checker for
   each token value against `--void`, `--void-surface`, and `--void-hover`.
-- [ ] AC-3: Interactive elements (buttons, links, toggles) have a visible focus
+- [x] AC-3: Interactive elements (buttons, links, toggles) have a visible focus
   indicator: 2px ring in `--accent-violet` with glow (`box-shadow: 0 0 0 2px
   rgba(139,92,246,0.5)`), visible on `:focus-visible` (not `:focus` to avoid
   click-triggered rings).
-- [ ] AC-4: Gradient text must have a solid color fallback for screen readers
+- [x] AC-4: Gradient text must have a solid color fallback for screen readers
   and forced-colors mode: `@media (forced-colors: active) { .gradient-text
   { background: none; -webkit-text-fill-color: unset; color: CanvasText; } }`
-- [ ] AC-5: No information is conveyed by color alone. All colored indicators
+- [x] AC-5: No information is conveyed by color alone. All colored indicators
   also have: shape differences (circle vs. triangle), text labels, or
   pattern/icon alternatives. Specifically:
   - Signal badges: color + text (SB/B/H/S/SS)
@@ -3347,23 +3347,23 @@ a cascade effect that makes the page feel like it's unfurling from the void.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: The app uses proper landmark roles:
+- [x] AC-1: The app uses proper landmark roles:
   - `<nav>` for sidebar with `aria-label="Main navigation"`
   - `<main>` for page content
   - `<header>` for the breadcrumb bar
   - `role="complementary"` for detail sidebars
   - `role="search"` for search inputs
-- [ ] AC-2: All charts include `aria-label` describing the chart type and data:
+- [x] AC-2: All charts include `aria-label` describing the chart type and data:
   "Temperature gauge showing risk level 0.82 out of 2.0, status elevated."
   Dynamic data values update via `aria-live="polite"` region.
-- [ ] AC-3: Tables use `<th scope="col">` and `<th scope="row">` correctly.
+- [x] AC-3: Tables use `<th scope="col">` and `<th scope="row">` correctly.
   Sort state announced: `aria-sort="ascending"` / `"descending"`.
-- [ ] AC-4: The toast notification container is an `aria-live="assertive"`
+- [x] AC-4: The toast notification container is an `aria-live="assertive"`
   region so screen readers announce new toasts immediately.
-- [ ] AC-5: Modal overlays (command palette, keyboard shortcuts, popovers) use
+- [x] AC-5: Modal overlays (command palette, keyboard shortcuts, popovers) use
   `aria-modal="true"`, `role="dialog"`, and trap focus within the modal.
   `Esc` closes and returns focus to the trigger element.
-- [ ] AC-6: All SVG icons have `aria-hidden="true"` when decorative, or a
+- [x] AC-6: All SVG icons have `aria-hidden="true"` when decorative, or a
   descriptive `<title>` element when conveying information.
 
 ---
@@ -3376,19 +3376,19 @@ a cascade effect that makes the page feel like it's unfurling from the void.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: When `prefers-reduced-motion: reduce` is active:
+- [x] AC-1: When `prefers-reduced-motion: reduce` is active:
   - All CSS transitions reduce to 0ms (instant state changes)
   - The cosmic shimmer animation stops (static placeholder)
   - Spring animations use instant transitions
   - Scroll-triggered animations are disabled (elements visible immediately)
   - Particle effects and animated gradients are disabled
   - Pulsing indicators stop (static color only)
-- [ ] AC-2: The needle spring animation on the temperature gauge falls back to
+- [x] AC-2: The needle spring animation on the temperature gauge falls back to
   an instant appearance at the final value (no overshoot).
-- [ ] AC-3: Page transitions (route changes) are instant with no crossfade.
-- [ ] AC-4: Interactive feedback (hover states, focus rings) still works but
+- [x] AC-3: Page transitions (route changes) are instant with no crossfade.
+- [x] AC-4: Interactive feedback (hover states, focus rings) still works but
   transitions are instant (0ms duration, not removed entirely).
-- [ ] AC-5: A manual toggle in the settings (if/when a settings panel exists)
+- [x] AC-5: A manual toggle in the settings (if/when a settings panel exists)
   allows force-reducing motion regardless of OS setting.
 
 ---
@@ -3401,7 +3401,7 @@ a cascade effect that makes the page feel like it's unfurling from the void.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: Breakpoint system:
+- [x] AC-1: Breakpoint system:
   - **Mobile** (<768px): single column, sidebar collapses to bottom nav,
     charts full-width, tables horizontally scrollable
   - **Tablet** (768-1024px): two-column where appropriate, sidebar as overlay
@@ -3409,16 +3409,16 @@ a cascade effect that makes the page feel like it's unfurling from the void.
     detail panels
   - **Ultra-wide** (>1440px): max-content-width 1440px centered, cosmic void
     background extends to screen edges
-- [ ] AC-2: The signal table at mobile breakpoint: columns collapse to show
+- [x] AC-2: The signal table at mobile breakpoint: columns collapse to show
   only: Symbol, Signal Badge, Best Horizon Return. A "Show all columns"
   toggle expands to horizontal scroll mode.
-- [ ] AC-3: Dashboard at mobile: cards stack in a single column. The hero card
+- [x] AC-3: Dashboard at mobile: cards stack in a single column. The hero card
   remains full-width. The heatmap (Story 2.3) rotates to a vertical list
   with horizontal scrolling for sectors.
-- [ ] AC-4: Charts at mobile: full-screen mode removes all chrome (sidebar,
+- [x] AC-4: Charts at mobile: full-screen mode removes all chrome (sidebar,
   toolbar) for maximum chart space. A floating "Exit" button (cosmic glass
   pill, top-right) returns to normal mode.
-- [ ] AC-5: All cosmic glass cards maintain their visual treatment (gradient
+- [x] AC-5: All cosmic glass cards maintain their visual treatment (gradient
   background, border, elevation) at every breakpoint. No degradation of
   the cosmic aesthetic on smaller screens.
 
@@ -3432,21 +3432,21 @@ a cascade effect that makes the page feel like it's unfurling from the void.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: A `@media print` stylesheet converts the cosmic theme:
+- [x] AC-1: A `@media print` stylesheet converts the cosmic theme:
   - Backgrounds: white with light gray card backgrounds (inkjet-friendly)
   - Text: black/dark gray
   - Gradients: replaced with solid colors from the high-contrast end
   - Cosmic glow effects: removed (box-shadows set to `none`)
   - Charts and gauges: preserved with white canvas backgrounds
   - Layout: single column, sidebar hidden, full-width content
-- [ ] AC-2: The Dashboard print includes: hero summary, signal distribution
+- [x] AC-2: The Dashboard print includes: hero summary, signal distribution
   bar (simplified), top 5 conviction assets table. Fits on one A4 page.
-- [ ] AC-3: The Signals print includes the full table (up to 50 rows per page)
+- [x] AC-3: The Signals print includes the full table (up to 50 rows per page)
   with column widths optimized for A4 landscape.
-- [ ] AC-4: Each page has a "Print View" button (hidden in print, visible on
+- [x] AC-4: Each page has a "Print View" button (hidden in print, visible on
   screen as a ghost button with SVG printer icon). Clicking it opens the
   print dialog via `window.print()`.
-- [ ] AC-5: Page header in print: "Quant Signal Engine" + date + page name.
+- [x] AC-5: Page header in print: "Quant Signal Engine" + date + page name.
   Page footer: "Generated at [timestamp]" in small gray text.
 
 ---
@@ -3469,23 +3469,23 @@ return visits while still refreshing in the background,
 
 ### Acceptance Criteria
 
-- [ ] AC-1: TanStack React Query configuration:
+- [x] AC-1: TanStack React Query configuration:
   - `staleTime: 2 * 60 * 1000` (2 minutes -- data is fresh for 2 min)
   - `gcTime: 10 * 60 * 1000` (10 minutes -- cache retained for 10 min)
   - `refetchOnWindowFocus: true` (refresh when tab regains focus)
   - `retry: 2` with exponential backoff
-- [ ] AC-2: Page navigation between tabs shows cached data immediately (< 16ms
+- [x] AC-2: Page navigation between tabs shows cached data immediately (< 16ms
   render) while background refetch occurs. A subtle refresh indicator (thin
   violet line at the top of the content area, 2px, animating left-to-right)
   shows when a background refresh is in progress. It fades out (200ms) when
   the refetch completes.
-- [ ] AC-3: Cache keys include all relevant parameters: endpoint + symbol +
+- [x] AC-3: Cache keys include all relevant parameters: endpoint + symbol +
   filters + sort configuration, so different views of the same data are
   cached independently.
-- [ ] AC-4: The signals endpoint (heaviest response) is prefetched on hover
+- [x] AC-4: The signals endpoint (heaviest response) is prefetched on hover
   of the Signals nav item (200ms hover delay before prefetch fires). This
   ensures the Signals page loads instantly when clicked.
-- [ ] AC-5: Manual refresh button (SVG refresh icon, `--accent-violet` ghost
+- [x] AC-5: Manual refresh button (SVG refresh icon, `--accent-violet` ghost
   button) in the page header forces invalidation of all queries for the
   current page. Icon rotates 360deg during refetch (300ms, `standard` easing).
 
@@ -3533,31 +3533,31 @@ two clicks to export.
 
 ### Acceptance Criteria
 
-- [ ] AC-1: An "Export" button (SVG download icon, `--accent-violet` ghost button)
+- [x] AC-1: An "Export" button (SVG download icon, `--accent-violet` ghost button)
   in the Signals toolbar opens a **cosmic glass popover** (elevation 3, 280px):
   - **CSV**: table icon + "All visible columns, filtered/sorted as displayed"
   - **JSON**: `{ }` icon + "Full signal data with model metadata"
   - **Clipboard**: copy icon + "Tab-delimited for pasting into spreadsheets"
   Format tiles: 56px tall, full width, cosmic glass hover (`--void-hover`).
   Active (hovered): violet left border (2px) + `--accent-violet` text.
-- [ ] AC-2: CSV export:
+- [x] AC-2: CSV export:
   - Respects current sort order and filters
   - Numeric formatting: 4 decimal places for probabilities, 2 for returns/Kelly,
     0 for BIC
   - Header row: human-readable column names (not API field names)
   - Filename: `signals_{YYYY-MM-DD}_{HH-mm}.csv`
-- [ ] AC-3: JSON export:
+- [x] AC-3: JSON export:
   - Full signal data including model metadata, regime, momentum
   - Pretty-printed (2-space indent)
   - Filename: `signals_{YYYY-MM-DD}_{HH-mm}.json`
-- [ ] AC-4: Clipboard export: copies tab-delimited data (same as CSV but tabs
+- [x] AC-4: Clipboard export: copies tab-delimited data (same as CSV but tabs
   instead of commas). Shows brief emerald toast: "Copied 147 rows to clipboard"
   with a duration of 2 seconds.
-- [ ] AC-5: During export generation, the export button shows a spinning indicator
+- [x] AC-5: During export generation, the export button shows a spinning indicator
   (8px, `--accent-violet`). On success: brief emerald checkmark flash (300ms).
   On failure (unlikely but possible for very large exports): rose flash with
   retry option.
-- [ ] AC-6: Export feature tracks the current filter/sort state so the exported
+- [x] AC-6: Export feature tracks the current filter/sort state so the exported
   data matches exactly what the user sees on screen.
 
 ---

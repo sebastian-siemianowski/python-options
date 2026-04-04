@@ -47,14 +47,14 @@ const TIME_RANGES: { key: TimeRange; label: string; days: number }[] = [
 ];
 
 const OVERLAY_DEFS: { key: OverlayKey; label: string; color: string; group: string; shortcut: string }[] = [
-  { key: 'sma20',          label: 'SMA 20',          color: '#FFB300', group: 'Moving Averages', shortcut: '1' },
-  { key: 'sma50',          label: 'SMA 50',          color: '#42A5F5', group: 'Moving Averages', shortcut: '2' },
-  { key: 'sma200',         label: 'SMA 200',         color: '#AB47BC', group: 'Moving Averages', shortcut: '3' },
-  { key: 'bb',             label: 'Bollinger',        color: 'rgba(66,165,245,0.6)', group: 'Volatility', shortcut: '4' },
-  { key: 'rsi',            label: 'RSI (14)',         color: '#42A5F5', group: 'Volatility', shortcut: '5' },
-  { key: 'forecastMedian', label: 'Forecast',         color: '#2196F3', group: 'Forecast', shortcut: '6' },
-  { key: 'ciUpper',        label: 'CI Upper',         color: '#26A69A', group: 'Forecast', shortcut: '7' },
-  { key: 'ciLower',        label: 'CI Lower',         color: '#EF5350', group: 'Forecast', shortcut: '8' },
+  { key: 'sma20',          label: 'SMA 20',          color: '#f59e0b', group: 'Moving Averages', shortcut: '1' },
+  { key: 'sma50',          label: 'SMA 50',          color: '#818cf8', group: 'Moving Averages', shortcut: '2' },
+  { key: 'sma200',         label: 'SMA 200',         color: '#c084fc', group: 'Moving Averages', shortcut: '3' },
+  { key: 'bb',             label: 'Bollinger',        color: 'rgba(139,92,246,0.6)', group: 'Volatility', shortcut: '4' },
+  { key: 'rsi',            label: 'RSI (14)',         color: '#818cf8', group: 'Volatility', shortcut: '5' },
+  { key: 'forecastMedian', label: 'Forecast',         color: '#a78bfa', group: 'Forecast', shortcut: '6' },
+  { key: 'ciUpper',        label: 'CI Upper',         color: '#34d399', group: 'Forecast', shortcut: '7' },
+  { key: 'ciLower',        label: 'CI Lower',         color: '#fb7185', group: 'Forecast', shortcut: '8' },
   { key: 'priceLine',      label: 'Price Line',       color: '#e2e8f0', group: 'Overlays', shortcut: 'p' },
 ];
 
@@ -158,7 +158,7 @@ export default function ChartsPage() {
           {sidebarCollapsed ? (
             <button
               onClick={() => setSidebarCollapsed(false)}
-              className="w-10 h-10 flex items-center justify-center glass-card text-[#64748b] hover:text-[#42A5F5] transition-colors"
+              className="w-10 h-10 flex items-center justify-center glass-card text-[#64748b] hover:text-[#a78bfa] transition-colors"
               title="Expand sidebar"
             >
               <ChevronRight className="w-4 h-4" />
@@ -166,8 +166,8 @@ export default function ChartsPage() {
           ) : (
             <div className="pr-3">
               {/* Search */}
-              <div className="flex items-center gap-1.5 glass-card px-2.5 py-1.5 mb-2 group focus-within:ring-1 focus-within:ring-[#42A5F5]/30 transition-all">
-                <Search className="w-3 h-3 text-[#64748b] group-focus-within:text-[#42A5F5] transition-colors" />
+              <div className="flex items-center gap-1.5 glass-card px-2.5 py-1.5 mb-2 group focus-within:ring-1 focus-within:ring-[#8b5cf6]/30 transition-all">
+                <Search className="w-3 h-3 text-[#64748b] group-focus-within:text-[#a78bfa] transition-colors" />
                 <input
                   ref={searchRef}
                   type="text"
@@ -199,9 +199,9 @@ export default function ChartsPage() {
                 {([
                   { key: 'sector' as PickerView, label: 'Sectors', accent: undefined },
                   { key: 'all' as PickerView, label: 'All', accent: undefined },
-                  { key: 'strong_buy' as PickerView, label: 'Buy', accent: '#00E676' },
-                  { key: 'strong_sell' as PickerView, label: 'Sell', accent: '#FF1744' },
-                  { key: 'filter' as PickerView, label: 'Top', accent: '#FFB300' },
+                  { key: 'strong_buy' as PickerView, label: 'Buy', accent: '#34d399' },
+                  { key: 'strong_sell' as PickerView, label: 'Sell', accent: '#fb7185' },
+                  { key: 'filter' as PickerView, label: 'Top', accent: '#f59e0b' },
                 ]).map(({ key, label, accent }) => (
                   <button
                     key={key}
@@ -212,8 +212,8 @@ export default function ChartsPage() {
                         : 'text-[#64748b] hover:text-[#94a3b8]'
                     }`}
                     style={pickerView === key ? {
-                      background: accent ? `${accent}20` : 'rgba(66,165,245,0.15)',
-                      color: accent || '#42A5F5',
+                      background: accent ? `${accent}20` : 'rgba(139,92,246,0.15)',
+                      color: accent || '#a78bfa',
                     } : {}}
                   >
                     {label}
@@ -243,7 +243,7 @@ export default function ChartsPage() {
                 {pickerView === 'strong_buy' && (
                   <SymbolList
                     symbols={strongBuySymbols.filter(s => !search || s.toLowerCase().includes(search.toLowerCase()))}
-                    selected={symbol} onSelect={selectSymbol} emptyText="No strong buy signals" accent="#00E676"
+                    selected={symbol} onSelect={selectSymbol} emptyText="No strong buy signals" accent="#34d399"
                     strongBuy={strongBuySymbols} strongSell={strongSellSymbols}
                   />
                 )}
@@ -258,7 +258,7 @@ export default function ChartsPage() {
                   ) : (
                     <SymbolList
                       symbols={strongSellSymbols.filter(s => !search || s.toLowerCase().includes(search.toLowerCase()))}
-                      selected={symbol} onSelect={selectSymbol} emptyText="No matching symbols" accent="#FF1744"
+                      selected={symbol} onSelect={selectSymbol} emptyText="No matching symbols" accent="#fb7185"
                       strongBuy={strongBuySymbols} strongSell={strongSellSymbols}
                     />
                   )
@@ -330,14 +330,14 @@ function SymbolList({
             key={s}
             onClick={() => onSelect(s)}
             className={`w-full text-left px-3 py-1.5 text-xs font-medium transition-all duration-150 flex items-center gap-1.5
-              ${isSelected ? 'bg-[#16213e]' : 'hover:bg-[#16213e]/40'}`}
-            style={{ color: isSelected ? (accent || '#42A5F5') : '#94a3b8' }}
+              ${isSelected ? 'bg-[#8b5cf6]/10' : 'hover:bg-[#8b5cf6]/5'}`}
+            style={{ color: isSelected ? (accent || '#a78bfa') : '#94a3b8' }}
           >
             <span className={`w-0.5 h-3 rounded-full transition-all duration-200 ${isSelected ? 'opacity-100' : 'opacity-0'}`}
-              style={{ backgroundColor: accent || '#42A5F5' }} />
+              style={{ backgroundColor: accent || '#a78bfa' }} />
             <span className="flex-1">{s}</span>
-            {isBuy && <span className="w-1.5 h-1.5 rounded-full bg-[#00E676]" title="Strong Buy" />}
-            {isSell && <span className="w-1.5 h-1.5 rounded-full bg-[#FF1744]" title="Strong Sell" />}
+            {isBuy && <span className="w-1.5 h-1.5 rounded-full bg-[#34d399]" title="Strong Buy" />}
+            {isSell && <span className="w-1.5 h-1.5 rounded-full bg-[#fb7185]" title="Strong Sell" />}
           </button>
         );
       })}
@@ -372,7 +372,7 @@ function SectorSymbolList({
           <div key={sec.name}>
             <button
               onClick={() => toggleSector(sec.name)}
-              className="w-full flex items-center gap-1.5 px-2 py-1.5 hover:bg-[#16213e]/30 transition-colors"
+              className="w-full flex items-center gap-1.5 px-2 py-1.5 hover:bg-[#8b5cf6]/5 transition-colors"
             >
               {expanded
                 ? <ChevronDown className="w-3 h-3 text-[#64748b]" />
@@ -381,8 +381,8 @@ function SectorSymbolList({
                 {sec.name}
               </span>
               <span className="flex items-center gap-1">
-                {buyCount > 0 && <span className="text-[8px] text-[#00E676]">{buyCount}</span>}
-                {sellCount > 0 && <span className="text-[8px] text-[#FF1744]">{sellCount}</span>}
+                {buyCount > 0 && <span className="text-[8px] text-[#34d399]">{buyCount}</span>}
+                {sellCount > 0 && <span className="text-[8px] text-[#fb7185]">{sellCount}</span>}
                 <span className="text-[9px] text-[#475569]">{syms.length}</span>
               </span>
             </button>
@@ -397,11 +397,11 @@ function SectorSymbolList({
                       key={s}
                       onClick={() => onSelect(s)}
                       className={`w-full text-left pl-7 pr-3 py-1 text-xs transition-all duration-150 flex items-center gap-1.5
-                        ${isSelected ? 'bg-[#16213e] text-[#42A5F5]' : 'text-[#7a8599] hover:text-[#94a3b8] hover:bg-[#16213e]/30'}`}
+                        ${isSelected ? 'bg-[#8b5cf6]/10 text-[#a78bfa]' : 'text-[#7a8599] hover:text-[#94a3b8] hover:bg-[#8b5cf6]/5'}`}
                     >
                       <span className="flex-1">{s}</span>
-                      {isBuy && <span className="w-1.5 h-1.5 rounded-full bg-[#00E676]" />}
-                      {isSell && <span className="w-1.5 h-1.5 rounded-full bg-[#FF1744]" />}
+                      {isBuy && <span className="w-1.5 h-1.5 rounded-full bg-[#34d399]" />}
+                      {isSell && <span className="w-1.5 h-1.5 rounded-full bg-[#fb7185]" />}
                     </button>
                   );
                 })}
@@ -419,13 +419,13 @@ function SectorSymbolList({
    ═══════════════════════════════════════════════════════════════════ */
 const FILTER_DEFS: { key: FilterMode; label: string; desc: string; color: string; icon: string;
   metric: (r: SummaryRow) => string; rawMetric: (r: SummaryRow) => number; format: 'pct' | 'num' | 'pct100'; }[] = [
-  { key: 'momentum', label: 'Momentum', desc: 'Strongest trend signal', color: '#00E676', icon: 'M',
+  { key: 'momentum', label: 'Momentum', desc: 'Strongest trend signal', color: '#34d399', icon: 'M',
     metric: (r) => { const v = r.momentum_score ?? 0; return (v >= 0 ? '+' : '') + v.toFixed(0); },
     rawMetric: (r) => r.momentum_score ?? 0, format: 'num' },
-  { key: 'edge', label: 'Edge', desc: 'Best signal edge (Kelly)', color: '#42A5F5', icon: 'E',
+  { key: 'edge', label: 'Edge', desc: 'Best signal edge (Kelly)', color: '#a78bfa', icon: 'E',
     metric: (r) => { const v = getMaxEdge(r); return (v >= 0 ? '+' : '') + (v * 100).toFixed(1) + '%'; },
     rawMetric: (r) => getMaxEdge(r), format: 'pct' },
-  { key: 'exp_return', label: 'Return', desc: 'Best expected return', color: '#FFB300', icon: 'R',
+  { key: 'exp_return', label: 'Return', desc: 'Best expected return', color: '#f59e0b', icon: 'R',
     metric: (r) => {
       const sigs = Object.values(r.horizon_signals || {});
       const best = sigs.length ? Math.max(...sigs.map(s => s.exp_ret ?? 0)) : 0;
@@ -445,13 +445,13 @@ const FILTER_DEFS: { key: FilterMode; label: string; desc: string; color: string
       const sigs = Object.values(r.horizon_signals || {});
       return sigs.length ? Math.max(...sigs.map(s => s.p_up ?? 0)) : 0;
     }, format: 'pct100' },
-  { key: 'low_risk', label: 'Safe', desc: 'Lowest crash risk', color: '#AB47BC', icon: 'S',
+  { key: 'low_risk', label: 'Safe', desc: 'Lowest crash risk', color: '#c084fc', icon: 'S',
     metric: (r) => (r.crash_risk_score ?? 0).toFixed(1),
     rawMetric: (r) => r.crash_risk_score ?? 0, format: 'num' },
-  { key: 'kelly', label: 'Kelly', desc: 'Best half-Kelly sizing', color: '#EF5350', icon: 'K',
+  { key: 'kelly', label: 'Kelly', desc: 'Best half-Kelly sizing', color: '#f87171', icon: 'K',
     metric: (r) => (getMaxHalfKelly(r) * 100).toFixed(1) + '%',
     rawMetric: (r) => getMaxHalfKelly(r), format: 'pct' },
-  { key: 'forecast_up', label: 'Upside', desc: 'Most forecast upside', color: '#00E676', icon: '\u2191',
+  { key: 'forecast_up', label: 'Upside', desc: 'Most forecast upside', color: '#34d399', icon: '\u2191',
     metric: (r) => {
       const sigs = Object.values(r.horizon_signals || {});
       const best = sigs.length ? Math.max(...sigs.map(s => s.exp_ret ?? 0)) : 0;
@@ -461,7 +461,7 @@ const FILTER_DEFS: { key: FilterMode; label: string; desc: string; color: string
       const sigs = Object.values(r.horizon_signals || {});
       return sigs.length ? Math.max(...sigs.map(s => s.exp_ret ?? 0)) : 0;
     }, format: 'pct' },
-  { key: 'forecast_down', label: 'Downside', desc: 'Most forecast downside', color: '#FF1744', icon: '\u2193',
+  { key: 'forecast_down', label: 'Downside', desc: 'Most forecast downside', color: '#fb7185', icon: '\u2193',
     metric: (r) => {
       const sigs = Object.values(r.horizon_signals || {});
       const worst = sigs.length ? Math.min(...sigs.map(s => s.exp_ret ?? 0)) : 0;
@@ -529,7 +529,7 @@ function RankedFilterList({
 
       {loading ? (
         <div className="px-3 py-8 text-center">
-          <div className="inline-block w-4 h-4 border-2 border-[#2a2a4a] border-t-[#42A5F5] rounded-full animate-spin mb-2" />
+          <div className="inline-block w-4 h-4 border-2 border-[#2a2a4a] border-t-[#8b5cf6] rounded-full animate-spin mb-2" />
           <p className="text-[10px] text-[#475569]">Loading signals...</p>
         </div>
       ) : filteredRows.length === 0 ? (
@@ -552,8 +552,8 @@ function RankedFilterList({
               onClick={() => onSelect(ticker)}
               className={`group relative w-full text-left px-2 py-1.5 text-xs transition-all duration-150 overflow-hidden
                 ${isSelected
-                  ? 'bg-[#16213e]'
-                  : 'hover:bg-[#16213e]/40'
+                  ? 'bg-[#8b5cf6]/10'
+                  : 'hover:bg-[#8b5cf6]/5'
                 }`}
             >
               {/* Metric bar background */}
@@ -581,10 +581,10 @@ function RankedFilterList({
                       {ticker}
                     </span>
                     {isBuy && (
-                      <span className="px-1 py-px rounded text-[7px] font-bold bg-[#00E676]/15 text-[#00E676]">BUY</span>
+                      <span className="px-1 py-px rounded text-[7px] font-bold bg-[#34d399]/15 text-[#34d399]">BUY</span>
                     )}
                     {isSell && (
-                      <span className="px-1 py-px rounded text-[7px] font-bold bg-[#FF1744]/15 text-[#FF1744]">SELL</span>
+                      <span className="px-1 py-px rounded text-[7px] font-bold bg-[#fb7185]/15 text-[#fb7185]">SELL</span>
                     )}
                   </div>
                   {companyName && (
@@ -691,14 +691,14 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
         fontSize: 11,
       },
       grid: {
-        vertLines: { color: 'rgba(42, 42, 74, 0.4)' },
-        horzLines: { color: 'rgba(42, 42, 74, 0.4)' },
+        vertLines: { color: 'rgba(139,92,246,0.04)' },
+        horzLines: { color: 'rgba(139,92,246,0.04)' },
       },
       width: container.clientWidth,
       height: 480,
       crosshair: {
-        vertLine: { color: 'rgba(66, 165, 245, 0.4)', width: 1, style: LineStyle.Dashed, labelBackgroundColor: '#1e293b' },
-        horzLine: { color: 'rgba(66, 165, 245, 0.4)', width: 1, style: LineStyle.Dashed, labelBackgroundColor: '#1e293b' },
+        vertLine: { color: 'rgba(139,92,246,0.4)', width: 1, style: LineStyle.Dashed, labelBackgroundColor: '#0a0a1a' },
+        horzLine: { color: 'rgba(139,92,246,0.4)', width: 1, style: LineStyle.Dashed, labelBackgroundColor: '#0a0a1a' },
       },
       rightPriceScale: {
         borderColor: 'rgba(42, 42, 74, 0.5)',
@@ -717,12 +717,12 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
     // Candlesticks
     const showPriceLine = overlays.priceLine;
     const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: '#00E676',
-      downColor: '#FF1744',
-      borderUpColor: '#00E676',
-      borderDownColor: '#FF1744',
-      wickUpColor: '#00C853',
-      wickDownColor: '#D50000',
+      upColor: '#34d399',
+      downColor: '#fb7185',
+      borderUpColor: '#34d399',
+      borderDownColor: '#fb7185',
+      wickUpColor: '#6ee7b7',
+      wickDownColor: '#fda4af',
       lastValueVisible: showPriceLine,
       priceLineVisible: showPriceLine,
     });
@@ -771,7 +771,7 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
           (candleSeries as any).setMarkers([{
             time: lastBar.time,
             position: isSB ? 'belowBar' : 'aboveBar',
-            color: isSB ? '#00E676' : '#FF1744',
+            color: isSB ? '#34d399' : '#fb7185',
             shape: isSB ? 'arrowUp' : 'arrowDown',
             text: isSB ? 'STRONG BUY' : 'STRONG SELL',
           }]);
@@ -784,19 +784,19 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
     if (indQ.data?.indicators) {
       const ind = indQ.data.indicators;
       if (showSMA20 && ind.sma20?.length)
-        chart.addSeries(LineSeries, { color: '#FFB300', lineWidth: 1, ...smaOpts }).setData(ind.sma20);
+        chart.addSeries(LineSeries, { color: '#f59e0b', lineWidth: 1, ...smaOpts }).setData(ind.sma20);
       if (showSMA50 && ind.sma50?.length)
-        chart.addSeries(LineSeries, { color: '#42A5F5', lineWidth: 1, ...smaOpts }).setData(ind.sma50);
+        chart.addSeries(LineSeries, { color: '#a78bfa', lineWidth: 1, ...smaOpts }).setData(ind.sma50);
       if (showSMA200 && ind.sma200?.length)
-        chart.addSeries(LineSeries, { color: '#AB47BC', lineWidth: 1, ...smaOpts }).setData(ind.sma200);
+        chart.addSeries(LineSeries, { color: '#c084fc', lineWidth: 1, ...smaOpts }).setData(ind.sma200);
     }
 
     // Bollinger Bands with dotted style
     if (indQ.data?.indicators?.bollinger && showBollinger) {
       const bb = indQ.data.indicators.bollinger;
       const bbOpts = { lineWidth: 1 as const, lineStyle: LineStyle.Dotted, ...smaOpts };
-      if (bb.upper?.length) chart.addSeries(LineSeries, { color: 'rgba(66,165,245,0.25)', ...bbOpts }).setData(bb.upper);
-      if (bb.lower?.length) chart.addSeries(LineSeries, { color: 'rgba(66,165,245,0.25)', ...bbOpts }).setData(bb.lower);
+      if (bb.upper?.length) chart.addSeries(LineSeries, { color: 'rgba(139,92,246,0.25)', ...bbOpts }).setData(bb.upper);
+      if (bb.lower?.length) chart.addSeries(LineSeries, { color: 'rgba(139,92,246,0.25)', ...bbOpts }).setData(bb.lower);
     }
 
     // Forecast overlay
@@ -825,19 +825,19 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
       const fcOpts = { priceScaleId: 'right' as const, ...smaOpts };
       if (showCIUpper) {
         chart.addSeries(AreaSeries, {
-          topColor: 'rgba(38, 166, 154, 0.20)', bottomColor: 'rgba(38, 166, 154, 0.0)',
-          lineColor: 'rgba(38, 166, 154, 0.35)', lineWidth: 1, ...fcOpts,
+          topColor: 'rgba(139,92,246,0.12)', bottomColor: 'rgba(139,92,246,0.02)',
+          lineColor: 'rgba(139,92,246,0.25)', lineWidth: 1, lineStyle: LineStyle.Dashed, ...fcOpts,
         }).setData(upperData);
       }
       if (showCILower) {
         chart.addSeries(AreaSeries, {
-          topColor: 'rgba(239, 83, 80, 0.0)', bottomColor: 'rgba(239, 83, 80, 0.20)',
-          lineColor: 'rgba(239, 83, 80, 0.35)', lineWidth: 1, ...fcOpts,
+          topColor: 'rgba(139,92,246,0.02)', bottomColor: 'rgba(139,92,246,0.12)',
+          lineColor: 'rgba(139,92,246,0.25)', lineWidth: 1, lineStyle: LineStyle.Dashed, ...fcOpts,
         }).setData(lowerData);
       }
       if (showForecastMedian) {
         chart.addSeries(LineSeries, {
-          color: '#2196F3', lineWidth: 2, lineStyle: LineStyle.Dashed, ...fcOpts,
+          color: '#a78bfa', lineWidth: 2, lineStyle: LineStyle.Dashed, ...fcOpts,
         }).setData(medianData);
       }
     }
@@ -873,15 +873,15 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
     });
     rsiChart.current = chart;
 
-    const rsiSeries = chart.addSeries(LineSeries, { color: '#42A5F5', lineWidth: 1.5, crosshairMarkerVisible: false });
+    const rsiSeries = chart.addSeries(LineSeries, { color: '#a78bfa', lineWidth: 1.5, crosshairMarkerVisible: false });
     rsiSeries.setData(indQ.data.indicators.rsi);
 
     const rsiData = indQ.data.indicators.rsi;
     if (rsiData.length >= 2) {
       const times = rsiData.map(d => d.time);
       const refOpts = { lineWidth: 1 as const, lineStyle: LineStyle.Dotted, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false };
-      chart.addSeries(LineSeries, { color: 'rgba(255,23,68,0.25)', ...refOpts }).setData(times.map(t => ({ time: t, value: 70 })));
-      chart.addSeries(LineSeries, { color: 'rgba(0,230,118,0.25)', ...refOpts }).setData(times.map(t => ({ time: t, value: 30 })));
+      chart.addSeries(LineSeries, { color: 'rgba(251,113,133,0.25)', ...refOpts }).setData(times.map(t => ({ time: t, value: 70 })));
+      chart.addSeries(LineSeries, { color: 'rgba(52,211,153,0.25)', ...refOpts }).setData(times.map(t => ({ time: t, value: 30 })));
       chart.addSeries(LineSeries, { color: 'rgba(100,116,139,0.15)', ...refOpts }).setData(times.map(t => ({ time: t, value: 50 })));
     }
 
@@ -912,7 +912,7 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
   if (ohlcvQ.error) {
     return (
       <div className="glass-card p-8 text-center">
-        <p className="text-[#FF1744] text-sm">Failed to load chart for {symbol}</p>
+        <p className="text-[#fb7185] text-sm">Failed to load chart for {symbol}</p>
         <p className="text-[10px] text-[#475569] mt-1">Check data availability or try another symbol</p>
       </div>
     );
@@ -943,24 +943,26 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
       <div className="flex items-start gap-4 mb-3">
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline gap-3 mb-1">
-            <h2 className="text-2xl font-bold text-[#f1f5f9] tracking-tight">{symbol}</h2>
+            <h2 className="text-2xl font-bold tracking-tight" style={{ color: 'var(--text-luminous)' }}>{symbol}</h2>
             {lastBar && (
               <>
-                <span className="text-xl font-semibold text-[#e2e8f0] tabular-nums">${lastBar.close.toFixed(2)}</span>
-                <span className={`text-sm font-semibold tabular-nums px-1.5 py-0.5 rounded ${
-                  change >= 0 ? 'text-[#00E676] bg-[#00E676]/8' : 'text-[#FF1744] bg-[#FF1744]/8'
-                }`}>
+                <span className="text-xl font-semibold text-[var(--text-primary)] tabular-nums">${lastBar.close.toFixed(2)}</span>
+                <span className="text-sm font-semibold tabular-nums px-1.5 py-0.5 rounded"
+                  style={{
+                    color: change >= 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)',
+                    background: change >= 0 ? 'rgba(52,211,153,0.08)' : 'rgba(251,113,133,0.08)',
+                  }}>
                   {change >= 0 ? '+' : ''}{change.toFixed(2)}%
                 </span>
               </>
             )}
             {isSB && (
-              <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-[#00E676]/15 text-[#00E676] ring-1 ring-[#00E676]/20">
+              <span className="px-2 py-0.5 rounded-md text-[10px] font-bold" style={{ background: 'rgba(52,211,153,0.15)', color: 'var(--accent-emerald)', border: '1px solid rgba(52,211,153,0.2)' }}>
                 STRONG BUY
               </span>
             )}
             {isSS && (
-              <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-[#FF1744]/15 text-[#FF1744] ring-1 ring-[#FF1744]/20">
+              <span className="px-2 py-0.5 rounded-md text-[10px] font-bold" style={{ background: 'rgba(251,113,133,0.15)', color: 'var(--accent-rose)', border: '1px solid rgba(251,113,133,0.2)' }}>
                 STRONG SELL
               </span>
             )}
@@ -969,21 +971,21 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
           {/* OHLCV data bar (live with crosshair) */}
           <div className="flex items-center gap-4 text-[10px] text-[#64748b] tabular-nums">
             <span>O <span className="text-[#94a3b8]">{(crosshairData?.o ?? open).toFixed(2)}</span></span>
-            <span>H <span className="text-[#00E676]/70">{(crosshairData?.h ?? high).toFixed(2)}</span></span>
-            <span>L <span className="text-[#FF1744]/70">{(crosshairData?.l ?? low).toFixed(2)}</span></span>
+            <span>H <span className="text-[#34d399]/70">{(crosshairData?.h ?? high).toFixed(2)}</span></span>
+            <span>L <span className="text-[#fb7185]/70">{(crosshairData?.l ?? low).toFixed(2)}</span></span>
             <span>C <span className="text-[#94a3b8]">{(crosshairData?.c ?? lastBar?.close ?? 0).toFixed(2)}</span></span>
             <span className="text-[#2a2a4a]">|</span>
             <span>Vol <span className="text-[#94a3b8]">{formatVolume(crosshairData?.v ?? volume)}</span></span>
             {rsiValue != null && (
               <>
                 <span className="text-[#2a2a4a]">|</span>
-                <span>RSI <span className={rsiValue > 70 ? 'text-[#FF1744]' : rsiValue < 30 ? 'text-[#00E676]' : 'text-[#94a3b8]'}>
+                <span>RSI <span className={rsiValue > 70 ? 'text-[#fb7185]' : rsiValue < 30 ? 'text-[#34d399]' : 'text-[#94a3b8]'}>
                   {rsiValue.toFixed(1)}
                 </span></span>
               </>
             )}
             <span className="text-[#2a2a4a]">|</span>
-            <span>Period <span className={periodReturn >= 0 ? 'text-[#00E676]/70' : 'text-[#FF1744]/70'}>
+            <span>Period <span className={periodReturn >= 0 ? 'text-[#34d399]/70' : 'text-[#fb7185]/70'}>
               {periodReturn >= 0 ? '+' : ''}{periodReturn.toFixed(1)}%
             </span></span>
             {crosshairData && (
@@ -998,16 +1000,16 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
         {/* ── Controls ──────────────────────────────────────── */}
         <div className="flex items-center gap-2 flex-shrink-0 pt-1">
           {/* Time range pills */}
-          <div className="flex bg-[#0f0f23]/80 rounded-lg p-0.5 ring-1 ring-[#2a2a4a]/50">
+          <div className="flex rounded-lg p-0.5" style={{ background: 'var(--void)', border: '1px solid var(--border-void)' }}>
             {TIME_RANGES.map(r => (
               <button
                 key={r.key}
                 onClick={() => setTimeRange(r.key)}
-                className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-all duration-200 ${
-                  timeRange === r.key
-                    ? 'bg-[#42A5F5]/15 text-[#42A5F5] shadow-sm'
-                    : 'text-[#475569] hover:text-[#94a3b8]'
-                }`}
+                className="px-2 py-1 rounded-md text-[10px] font-semibold transition-all duration-200"
+                style={timeRange === r.key
+                  ? { background: 'rgba(139,92,246,0.15)', color: 'var(--accent-violet)', boxShadow: '0 0 8px rgba(139,92,246,0.15)' }
+                  : { color: 'var(--text-muted)' }
+                }
               >
                 {r.label}
               </button>
@@ -1017,11 +1019,11 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
           {/* Layers button */}
           <button
             onClick={() => setPanelOpen(v => !v)}
-            className={`px-2.5 py-1.5 rounded-lg text-[10px] font-semibold transition-all duration-200 flex items-center gap-1.5 ring-1 ${
-              panelOpen
-                ? 'bg-[#42A5F5]/15 text-[#42A5F5] ring-[#42A5F5]/30'
-                : 'bg-[#0f0f23]/80 text-[#64748b] ring-[#2a2a4a]/50 hover:text-[#94a3b8]'
-            }`}
+            className="px-2.5 py-1.5 rounded-lg text-[10px] font-semibold transition-all duration-200 flex items-center gap-1.5"
+            style={panelOpen
+              ? { background: 'rgba(139,92,246,0.15)', color: 'var(--accent-violet)', border: '1px solid rgba(139,92,246,0.3)' }
+              : { background: 'var(--void)', color: 'var(--text-muted)', border: '1px solid var(--border-void)' }
+            }
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polygon points="12 2 2 7 12 12 22 7 12 2" />
@@ -1037,16 +1039,16 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
       <div className={`overflow-hidden transition-all duration-300 ease-out ${
         panelOpen ? 'max-h-[300px] opacity-100 mb-3' : 'max-h-0 opacity-0'
       }`}>
-        <div className="bg-[#0f0f23]/90 rounded-xl p-3 ring-1 ring-[#2a2a4a]/50 backdrop-blur-lg">
+        <div className="glass-card p-3 backdrop-blur-xl">
           <div className="flex items-center justify-between mb-2.5">
-            <span className="text-[10px] text-[#475569] uppercase tracking-wider font-semibold">Chart Layers</span>
+            <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-semibold">Chart Layers</span>
             <div className="flex gap-1.5">
               <button onClick={allOn} disabled={allActive}
-                className="px-2 py-0.5 rounded text-[9px] font-semibold transition-all bg-[#00E676]/8 text-[#00E676] hover:bg-[#00E676]/15 disabled:opacity-20 disabled:cursor-default">
+                className="px-2 py-0.5 rounded text-[9px] font-semibold transition-all bg-[#34d399]/8 text-[#34d399] hover:bg-[#34d399]/15 disabled:opacity-20 disabled:cursor-default">
                 All On
               </button>
               <button onClick={allOff} disabled={noneActive}
-                className="px-2 py-0.5 rounded text-[9px] font-semibold transition-all bg-[#FF1744]/8 text-[#FF1744] hover:bg-[#FF1744]/15 disabled:opacity-20 disabled:cursor-default">
+                className="px-2 py-0.5 rounded text-[9px] font-semibold transition-all bg-[#fb7185]/8 text-[#fb7185] hover:bg-[#fb7185]/15 disabled:opacity-20 disabled:cursor-default">
                 All Off
               </button>
             </div>
@@ -1062,7 +1064,7 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
                       key={d.key}
                       onClick={() => toggle(d.key)}
                       className={`flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] font-medium transition-all duration-200 group ${
-                        overlays[d.key] ? 'bg-[#16213e]/80' : 'bg-transparent hover:bg-[#16213e]/30'
+                        overlays[d.key] ? 'bg-[#8b5cf6]/10' : 'bg-transparent hover:bg-[#8b5cf6]/5'
                       }`}
                       style={{
                         color: overlays[d.key] ? d.color : '#475569',
@@ -1130,15 +1132,15 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
             <span className="text-[10px] text-[#64748b] font-semibold">RSI (14)</span>
             {rsiValue != null && (
               <span className={`text-[10px] font-bold tabular-nums ${
-                rsiValue > 70 ? 'text-[#FF1744]' : rsiValue < 30 ? 'text-[#00E676]' : 'text-[#64748b]'
+                rsiValue > 70 ? 'text-[#fb7185]' : rsiValue < 30 ? 'text-[#34d399]' : 'text-[#64748b]'
               }`}>
                 {rsiValue.toFixed(1)}
               </span>
             )}
             <div className="flex gap-3 ml-auto text-[8px] font-medium">
-              <span className="text-[#FF1744]/40">70 Overbought</span>
+              <span className="text-[#fb7185]/40">70 Overbought</span>
               <span className="text-[#64748b]/30">50</span>
-              <span className="text-[#00E676]/40">30 Oversold</span>
+              <span className="text-[#34d399]/40">30 Oversold</span>
             </div>
           </div>
           <div ref={rsiChartRef} />
@@ -1149,32 +1151,26 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
       {forecastQ.data?.forecasts?.length ? (
         <div className="mt-4">
           <div className="flex items-center gap-2 mb-2">
-            <h3 className="text-[11px] font-semibold text-[#64748b] uppercase tracking-wider">Forecast</h3>
-            <div className="flex-1 h-px bg-[#2a2a4a]/30" />
+            <h3 className="text-[11px] font-semibold text-[var(--text-muted)] uppercase tracking-wider">Forecast</h3>
+            <div className="flex-1 h-px" style={{ background: 'var(--border-void)' }} />
           </div>
           <div className="grid grid-cols-7 gap-1.5">
             {forecastQ.data.forecasts.map((f) => {
               const isPositive = f.expected_return_pct >= 0;
               const isBuy = f.signal_label === 'BUY' || f.signal_label === 'STRONG BUY';
               const isSell = f.signal_label === 'SELL' || f.signal_label === 'STRONG SELL';
-              const signalColor = isBuy ? '#00E676' : isSell ? '#FF1744' : '#475569';
-              const bgGrad = isBuy
-                ? 'from-[#00E676]/[0.04] to-transparent'
-                : isSell
-                  ? 'from-[#FF1744]/[0.04] to-transparent'
-                  : 'from-transparent to-transparent';
+              const signalColor = isBuy ? 'var(--accent-emerald)' : isSell ? 'var(--accent-rose)' : 'var(--text-muted)';
               return (
                 <div
                   key={f.horizon_days}
-                  className={`bg-gradient-to-b ${bgGrad} rounded-xl p-2.5 text-center ring-1 transition-all hover:ring-[#42A5F5]/20`}
-                  style={{ borderColor: `${signalColor}10`, border: `1px solid ${signalColor}10` }}
+                  className="glass-card p-2.5 text-center transition-all hover:ring-1"
+                  style={{ borderColor: 'var(--border-void)' }}
                 >
-                  <p className="text-[9px] text-[#475569] font-semibold uppercase tracking-wider mb-1.5">
+                  <p className="text-[9px] text-[var(--text-muted)] font-semibold uppercase tracking-wider mb-1.5">
                     {formatHorizon(f.horizon_days)}
                   </p>
-                  <p className={`text-base font-bold tabular-nums leading-none ${
-                    isPositive ? 'text-[#00E676]' : 'text-[#FF1744]'
-                  }`}>
+                  <p className="text-base font-bold tabular-nums leading-none"
+                    style={{ color: isPositive ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}>
                     {isPositive ? '+' : ''}{f.expected_return_pct.toFixed(1)}%
                   </p>
                   <div className="mt-1.5 flex items-center justify-center gap-1">
@@ -1183,7 +1179,7 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
                       {f.signal_label}
                     </span>
                   </div>
-                  <p className="text-[9px] text-[#475569] mt-0.5 tabular-nums">
+                  <p className="text-[9px] text-[var(--text-muted)] mt-0.5 tabular-nums">
                     {(f.probability_up * 100).toFixed(0)}% up
                   </p>
                 </div>

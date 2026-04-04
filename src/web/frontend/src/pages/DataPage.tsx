@@ -5,6 +5,7 @@ import type { PriceFile } from '../api';
 import PageHeader from '../components/PageHeader';
 import StatCard from '../components/StatCard';
 import LoadingSpinner from '../components/LoadingSpinner';
+import { CosmicErrorCard } from '../components/CosmicErrorState';
 import { Database, HardDrive, Clock, AlertTriangle, FolderOpen, RefreshCw } from 'lucide-react';
 
 export default function DataPage() {
@@ -36,6 +37,7 @@ export default function DataPage() {
   };
 
   if (statusQ.isLoading) return <LoadingSpinner text="Loading data status..." />;
+  if (statusQ.error) return <CosmicErrorCard title="Unable to load data status" error={statusQ.error as Error} onRetry={() => statusQ.refetch()} />;
 
   const status = statusQ.data;
   const files = pricesQ.data?.files || [];
@@ -53,7 +55,12 @@ export default function DataPage() {
           <button
             onClick={handleRefresh}
             disabled={refreshing}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#16213e] text-sm text-[#42A5F5] hover:bg-[#1a2744] border border-[#2a2a4a] transition disabled:opacity-50"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm transition-all duration-200 disabled:opacity-50"
+            style={{
+              background: 'rgba(139,92,246,0.08)',
+              color: '#a78bfa',
+              border: '1px solid rgba(139,92,246,0.12)',
+            }}
           >
             <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
             Refresh Data
@@ -64,8 +71,8 @@ export default function DataPage() {
       </PageHeader>
 
       {refreshMsg && (
-        <div className="glass-card p-3 mb-4 border-l-2 border-[#42A5F5]">
-          <p className="text-xs text-[#94a3b8]">{refreshMsg}</p>
+        <div className="glass-card p-3 mb-4" style={{ borderLeft: '2px solid #8b5cf6' }}>
+          <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>{refreshMsg}</p>
         </div>
       )}
 
@@ -82,14 +89,14 @@ export default function DataPage() {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 fade-up-delay-1">
         {/* Directories */}
         <div className="glass-card p-4 hover-lift">
-          <h3 className="text-sm font-medium text-[#94a3b8] mb-3 flex items-center gap-2">
+          <h3 className="text-sm font-medium mb-3 flex items-center gap-2" style={{ color: 'var(--text-secondary)' }}>
             <FolderOpen className="w-4 h-4" /> Data Directories
           </h3>
           <div className="space-y-2">
             {Object.entries(dirs).map(([name, info]) => (
               <div key={name} className="flex items-center justify-between text-xs">
-                <span className="text-[#e2e8f0]">{name}</span>
-                <span className={info.exists ? 'text-[#00E676]' : 'text-[#FF1744]'}>
+                <span style={{ color: 'var(--text-luminous)' }}>{name}</span>
+                <span style={{ color: info.exists ? '#34d399' : '#fb7185' }}>
                   {info.exists ? `${info.file_count} files` : 'missing'}
                 </span>
               </div>
@@ -99,24 +106,29 @@ export default function DataPage() {
 
         {/* Price file list */}
         <div className="glass-card md:col-span-2 overflow-hidden">
-          <div className="p-3 border-b border-[#2a2a4a]">
+          <div className="p-3" style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search symbols..."
-              className="w-full px-3 py-1.5 rounded-lg bg-[#0f0f23] border border-[#2a2a4a] text-sm text-[#e2e8f0] placeholder:text-[#64748b] outline-none focus:border-[#42A5F5]"
+              className="w-full px-3 py-1.5 rounded-xl text-sm outline-none transition-all duration-200"
+              style={{
+                background: 'rgba(10,10,26,0.6)',
+                border: '1px solid rgba(139,92,246,0.08)',
+                color: 'var(--text-primary)',
+              }}
             />
           </div>
           <div className="overflow-y-auto max-h-[500px]">
             <table className="w-full text-xs">
-              <thead className="sticky top-0 bg-[#1a1a2e]">
-                <tr className="border-b border-[#2a2a4a]">
-                  <th className="text-left px-3 py-2 text-[#64748b]">Symbol</th>
-                  <th className="text-right px-3 py-2 text-[#64748b]">Rows</th>
-                  <th className="text-right px-3 py-2 text-[#64748b]">Size</th>
-                  <th className="text-right px-3 py-2 text-[#64748b]">Age</th>
-                  <th className="text-right px-3 py-2 text-[#64748b]">Updated</th>
+              <thead className="sticky top-0 z-10" style={{ background: 'linear-gradient(135deg, rgba(26,5,51,0.97), rgba(13,27,62,0.97))', backdropFilter: 'blur(12px)' }}>
+                <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
+                  <th className="text-left px-3 py-2" style={{ color: 'var(--text-muted)' }}>Symbol</th>
+                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Rows</th>
+                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Size</th>
+                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Age</th>
+                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Updated</th>
                 </tr>
               </thead>
               <tbody>
@@ -133,19 +145,19 @@ export default function DataPage() {
 }
 
 function FileRow({ file }: { file: PriceFile }) {
-  const ageColor = file.age_hours < 24 ? 'text-[#00E676]'
-    : file.age_hours < 72 ? 'text-[#FFB300]'
-    : 'text-[#FF1744]';
+  const ageColor = file.age_hours < 24 ? '#34d399'
+    : file.age_hours < 72 ? '#f59e0b'
+    : '#fb7185';
 
   return (
-    <tr className="border-b border-[#2a2a4a]/50 row-glow transition">
-      <td className="px-3 py-2 font-medium text-[#e2e8f0]">{file.symbol}</td>
-      <td className="px-3 py-2 text-right text-[#94a3b8]">{file.rows.toLocaleString()}</td>
-      <td className="px-3 py-2 text-right text-[#94a3b8]">{file.size_kb} KB</td>
-      <td className={`px-3 py-2 text-right ${ageColor}`}>
+    <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.04)' }} className="transition-all duration-150">
+      <td className="px-3 py-2 font-medium" style={{ color: 'var(--text-luminous)' }}>{file.symbol}</td>
+      <td className="px-3 py-2 text-right" style={{ color: 'var(--text-secondary)' }}>{file.rows.toLocaleString()}</td>
+      <td className="px-3 py-2 text-right" style={{ color: 'var(--text-secondary)' }}>{file.size_kb} KB</td>
+      <td className="px-3 py-2 text-right" style={{ color: ageColor }}>
         {file.age_hours < 1 ? '<1h' : `${Math.round(file.age_hours)}h`}
       </td>
-      <td className="px-3 py-2 text-right text-[#64748b]">
+      <td className="px-3 py-2 text-right" style={{ color: '#64748b' }}>
         {new Date(file.last_modified).toLocaleDateString()}
       </td>
     </tr>

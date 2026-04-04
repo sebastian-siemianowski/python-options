@@ -28,5 +28,5 @@ export function formatPLN(value: number | null | undefined): string {
  */
 export function profitColor(value: number | null | undefined): string {
   if (value == null || Math.abs(value) < 1) return '#64748b';
-  return value > 0 ? '#66BB6A' : '#EF5350';
+  return value > 0 ? '#34d399' : '#fb7185';
 }

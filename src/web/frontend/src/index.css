@@ -12,7 +12,7 @@
   --color-accent-green: #34D399;
   --color-accent-red: #FB7185;
   --color-accent-amber: #FBBF24;
-  --color-accent-blue: #42A5F5;
+  --color-accent-blue: #a78bfa;
   --color-accent-purple: #8B5CF6;
   --color-accent-cyan: #22D3EE;
   --color-accent-fuchsia: #E879F9;
@@ -375,6 +375,98 @@ button:active:not(:disabled) {
   border-radius: 8px;
 }
 
+/* ================================================================
+   COSMIC SHIMMER (Story 10.1)
+   Coordinated diagonal sweep across all skeleton elements
+   ================================================================ */
+@keyframes cosmic-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+.cosmic-shimmer {
+  background: linear-gradient(
+    105deg,
+    transparent 40%,
+    rgba(139, 92, 246, 0.04) 45%,
+    rgba(139, 92, 246, 0.08) 50%,
+    rgba(139, 92, 246, 0.04) 55%,
+    transparent 60%
+  );
+  background-size: 200% 100%;
+  animation: cosmic-shimmer 2s ease-in-out infinite;
+}
+.skeleton-enter {
+  animation: fade-up 0.3s cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+/* ================================================================
+   COSMIC FLOAT (Story 10.2 - Empty State SVG illustrations)
+   ================================================================ */
+@keyframes cosmic-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+.cosmic-float {
+  animation: cosmic-float 3s ease-in-out infinite;
+}
+
+/* ================================================================
+   ERROR PULSE GLOW (Story 10.3)
+   Rose glow opacity oscillating 2-4%, 3s cycle
+   ================================================================ */
+@keyframes error-pulse-glow {
+  0%, 100% { box-shadow: 0 0 40px rgba(251, 113, 133, 0.02); }
+  50% { box-shadow: 0 0 40px rgba(251, 113, 133, 0.04); }
+}
+.error-pulse-glow {
+  animation: error-pulse-glow 3s ease-in-out infinite;
+}
+
+/* ================================================================
+   SCROLL-TRIGGERED ANIMATIONS (Story 10.6)
+   Elements below fold materialize on viewport entry
+   ================================================================ */
+.scroll-reveal {
+  opacity: 0;
+  transform: translateY(12px);
+  transition: opacity 250ms cubic-bezier(0.2, 0, 0, 1),
+              transform 250ms cubic-bezier(0.2, 0, 0, 1);
+}
+.scroll-reveal.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Reduced motion: instant appearance, no animations */
+@media (prefers-reduced-motion: reduce) {
+  .cosmic-shimmer,
+  .cosmic-float,
+  .error-pulse-glow,
+  .pulse-dot,
+  .stat-shine::after,
+  .fade-up,
+  .fade-up-delay-1,
+  .fade-up-delay-2,
+  .fade-up-delay-3,
+  .fade-up-delay-4,
+  .chart-fade-in,
+  .chart-sector-expand,
+  .skeleton-enter {
+    animation: none !important;
+  }
+  .scroll-reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+  .glass-card,
+  .hover-lift,
+  .row-glow,
+  button {
+    transition-duration: 0ms !important;
+  }
+}
+
 /* Progress bar fill animation */
 @keyframes fill-bar {
   from { width: 0%; }
@@ -623,4 +715,228 @@ button:active:not(:disabled) {
 @keyframes strip-content-in {
   from { opacity: 0; }
   to { opacity: 1; }
+}
+
+/* ================================================================
+   STORY 3.1: COSMIC SIGNAL TABLE
+   ================================================================ */
+
+/* AC-6: Sticky header with nebula gradient + glass blur */
+.cosmic-table-header th {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--gradient-nebula);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  font-size: 10px;
+  color: var(--text-violet);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 500;
+  transition: box-shadow 150ms ease;
+}
+.cosmic-table-header.scrolled th {
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+
+/* AC-7: Row hover with violet radial glow + lift */
+.cosmic-row {
+  transition: background 120ms cubic-bezier(0.2,0,0,1), transform 120ms cubic-bezier(0.2,0,0,1);
+  cursor: default;
+}
+.cosmic-row:hover {
+  background: linear-gradient(90deg, rgba(139,92,246,0.06) 0%, transparent 40%), var(--void-hover);
+  transform: translateY(-0.5px);
+}
+
+/* Alternating row backgrounds */
+.cosmic-row:nth-child(even) {
+  background: var(--void-surface);
+}
+.cosmic-row:nth-child(even):hover {
+  background: linear-gradient(90deg, rgba(139,92,246,0.06) 0%, transparent 40%), var(--void-hover);
+}
+
+/* Story 3.4: Aurora sweep animation */
+@keyframes aurora-sweep-emerald {
+  0% { background-position: 100% 0; }
+  50% { background-position: 0% 0; }
+  100% { background-position: -100% 0; }
+}
+@keyframes aurora-sweep-rose {
+  0% { background-position: 100% 0; }
+  50% { background-position: 0% 0; }
+  100% { background-position: -100% 0; }
+}
+.aurora-upgrade {
+  background-image: linear-gradient(90deg, transparent 0%, rgba(52,211,153,0.12) 40%, rgba(52,211,153,0.2) 50%, rgba(52,211,153,0.12) 60%, transparent 100%);
+  background-size: 200% 100%;
+  animation: aurora-sweep-emerald 600ms ease-out 2;
+}
+.aurora-downgrade {
+  background-image: linear-gradient(90deg, transparent 0%, rgba(251,113,133,0.12) 40%, rgba(251,113,133,0.2) 50%, rgba(251,113,133,0.12) 60%, transparent 100%);
+  background-size: 200% 100%;
+  animation: aurora-sweep-rose 600ms ease-out 2;
+}
+.aurora-new {
+  background-image: linear-gradient(90deg, transparent 0%, rgba(139,92,246,0.12) 40%, rgba(139,92,246,0.2) 50%, rgba(139,92,246,0.12) 60%, transparent 100%);
+  background-size: 200% 100%;
+  animation: aurora-sweep-emerald 600ms ease-out 2;
+}
+
+/* Residual glow after aurora sweep */
+.residual-glow-emerald {
+  box-shadow: inset 0 0 30px rgba(52,211,153,0.04);
+  transition: box-shadow 10s ease-out;
+}
+.residual-glow-rose {
+  box-shadow: inset 0 0 30px rgba(251,113,133,0.04);
+  transition: box-shadow 10s ease-out;
+}
+
+/* Story 3.2: Sort arrow rotation animation */
+.sort-arrow-rotate {
+  transition: transform 200ms cubic-bezier(0.2,0,0,1);
+}
+.sort-arrow-asc {
+  transform: rotate(180deg);
+}
+
+/* Story 3.5: Search focus glow ring */
+.search-cosmic {
+  transition: border-color 200ms ease, background 200ms ease, box-shadow 200ms ease;
+  border: 1px solid var(--border-void);
+}
+.search-cosmic:focus-within {
+  border-color: var(--accent-violet);
+  background: var(--void-active);
+  box-shadow: 0 0 0 3px rgba(139,92,246,0.15), 0 0 20px rgba(139,92,246,0.08);
+}
+
+/* Story 3.3: Sector panel left border gradient */
+.sector-border-bullish {
+  border-left: 2px solid transparent;
+  border-image: linear-gradient(180deg, var(--accent-emerald) 0%, rgba(52,211,153,0.3) 100%) 1;
+}
+.sector-border-bearish {
+  border-left: 2px solid transparent;
+  border-image: linear-gradient(180deg, var(--accent-rose) 0%, rgba(251,113,133,0.3) 100%) 1;
+}
+.sector-border-mixed {
+  border-left: 2px solid transparent;
+  border-image: linear-gradient(180deg, var(--accent-violet) 0%, rgba(139,92,246,0.3) 100%) 1;
+}
+
+/* Constellation reveal animation */
+@keyframes constellation-reveal {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.constellation-row {
+  animation: constellation-reveal 250ms cubic-bezier(0.2,0,0,1) both;
+}
+
+/* Story 3.4: Ticker tape */
+@keyframes ticker-scroll {
+  from { transform: translateX(100%); }
+  to { transform: translateX(-100%); }
+}
+.ticker-tape-scroll {
+  animation: ticker-scroll 30s linear infinite;
+}
+.ticker-tape-scroll:hover {
+  animation-play-state: paused;
+}
+
+/* Story 3.5: Character match highlight */
+.char-match {
+  background: rgba(139,92,246,0.2);
+  border-radius: 2px;
+  box-shadow: 0 0 4px rgba(139,92,246,0.2);
+}
+
+/* Transition badge */
+@keyframes badge-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes badge-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+.transition-badge-in {
+  animation: badge-fade-in 150ms ease-out;
+}
+.transition-badge-out {
+  animation: badge-fade-out 300ms ease-out forwards;
+}
+
+/* ================================================================
+   RESPONSIVE LAYOUT (Story 11.4)
+   4 breakpoints: mobile <768, tablet 768-1024, desktop 1024-1440, ultra-wide >1440
+   ================================================================ */
+@media (max-width: 767px) {
+  .glass-card { border-radius: 12px; }
+  .cosmic-sidebar { display: none; }
+  main { padding: 16px !important; }
+  main > div { padding: 16px !important; max-width: 100% !important; }
+}
+
+@media (min-width: 768px) and (max-width: 1023px) {
+  main > div { padding: 24px !important; }
+}
+
+@media (min-width: 1441px) {
+  main > div { max-width: 1800px !important; }
+}
+
+/* ================================================================
+   PRINT STYLESHEET (Story 11.5)
+   White backgrounds, no glows, no sidebar, clean A4 output
+   ================================================================ */
+@media print {
+  * {
+    color: #000 !important;
+    background: #fff !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+  body {
+    font-size: 12pt;
+    line-height: 1.4;
+  }
+  .cosmic-sidebar,
+  .status-strip,
+  nav,
+  button,
+  .fade-up,
+  .cosmic-shimmer,
+  .cosmic-float {
+    display: none !important;
+  }
+  main {
+    overflow: visible !important;
+  }
+  .glass-card {
+    border: 1px solid #ddd !important;
+    border-radius: 4px !important;
+    page-break-inside: avoid;
+  }
+  .glass-card::before {
+    display: none !important;
+  }
+  a { text-decoration: underline; }
+  @page {
+    margin: 1.5cm;
+  }
+  /* Print header/footer with timestamp */
+  @top-center {
+    content: "Signal Engine Report";
+  }
+  @bottom-right {
+    content: "Printed " attr(data-print-date);
+  }
 }

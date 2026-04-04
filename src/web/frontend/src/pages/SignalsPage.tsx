@@ -5,8 +5,14 @@ import { api } from '../api';
 import type { SummaryRow, SectorGroup, StrongSignalEntry, HighConvictionSignal, SignalSummaryData } from '../api';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
+import { SignalTableSkeleton } from '../components/CosmicSkeleton';
+import { CosmicErrorCard } from '../components/CosmicErrorState';
+import { SignalsEmpty } from '../components/CosmicEmptyState';
+import { ExportButton } from '../components/ExportButton';
+import { Sparkline } from '../components/Sparkline';
+import { SignalStrengthBar, MomentumBadge, CrashRiskHeat, HorizonCell } from '../components/SignalTableVisuals';
 import {
-  ArrowUpCircle, ArrowDownCircle, Filter, ChevronDown, ChevronRight, ChevronUp,
+  ArrowUpCircle, ArrowDownCircle, Filter, ChevronDown, ChevronRight,
   TrendingUp, TrendingDown, Search, X, ExternalLink, BarChart3,
 } from 'lucide-react';
 import { formatHorizon, responsiveHorizons } from '../utils/horizons';
@@ -52,7 +58,8 @@ class SignalsErrorBoundary extends Component<
             </pre>
             <button
               onClick={() => this.setState({ hasError: false, error: null })}
-              className="mt-3 px-3 py-1 bg-[#42A5F5]/20 text-[#42A5F5] rounded text-sm"
+              className="mt-3 px-3 py-1 rounded text-sm"
+              style={{ background: 'rgba(139,92,246,0.15)', color: '#a78bfa' }}
             >
               Retry
             </button>
@@ -75,54 +82,9 @@ function useWindowWidth(): number {
   return width;
 }
 
-/* ── Story 6.1: SVG directional arrows ───────────────────────── */
-function DirectionArrow({ direction }: { direction: 'up' | 'down' | 'neutral' }) {
-  if (direction === 'up') {
-    return (
-      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="inline-block mr-0.5" aria-label="Up">
-        <path d="M6 2L10 8H2L6 2Z" fill="#66BB6A" />
-      </svg>
-    );
-  }
-  if (direction === 'down') {
-    return (
-      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="inline-block mr-0.5" aria-label="Down">
-        <path d="M6 10L2 4H10L6 10Z" fill="#EF5350" />
-      </svg>
-    );
-  }
-  return (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="inline-block mr-0.5" aria-label="Neutral">
-      <rect x="2" y="5" width="8" height="2" rx="1" fill="#64748b" />
-    </svg>
-  );
-}
-
-/** Determine direction and color from expected return. */
-function signalDirection(expRet: number | null | undefined): { dir: 'up' | 'down' | 'neutral'; color: string } {
-  if (expRet == null || Math.abs(expRet) < 0.001) return { dir: 'neutral', color: '#64748b' };
-  return expRet > 0 ? { dir: 'up', color: '#66BB6A' } : { dir: 'down', color: '#EF5350' };
-}
-
-/** Story 6.3: Compact exhaustion heat bar (ue_down=red left, ue_up=green right). */
-function ExhaustionBar({ ueUp, ueDown }: { ueUp: number; ueDown: number }) {
-  const up = Math.min(Math.max(ueUp || 0, 0), 1);
-  const down = Math.min(Math.max(ueDown || 0, 0), 1);
-  if (up < 0.01 && down < 0.01) return null;
-  return (
-    <div
-      className="flex h-[3px] w-full mt-0.5 rounded-sm overflow-hidden"
-      title={`Exhaustion: up=${(up * 100).toFixed(0)}% down=${(down * 100).toFixed(0)}%`}
-    >
-      <div style={{ width: '50%', background: `rgba(239,83,80,${down})` }} />
-      <div style={{ width: '50%', background: `rgba(102,187,106,${up})` }} />
-    </div>
-  );
-}
-
 /** Story 6.4: WebSocket connection status indicator. */
 function WsStatusDot({ status }: { status: WSStatus }) {
-  const color = status === 'connected' ? '#66BB6A' : status === 'connecting' ? '#FFA726' : '#EF5350';
+  const color = status === 'connected' ? '#34d399' : status === 'connecting' ? '#f59e0b' : '#f87171';
   const label = status === 'connected' ? 'Live' : status === 'connecting' ? 'Connecting' : 'Offline';
   return (
     <span className="inline-flex items-center gap-1 ml-2 text-[10px]" title={`WebSocket: ${status}`}>
@@ -137,22 +99,73 @@ function SignalsPageInner() {
   const [view, setView] = useState<ViewMode>('sectors');
   const [filter, setFilter] = useState<SignalFilter>('all');
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [expandedSectors, setExpandedSectors] = useState<Set<string>>(new Set());
 
   const [updatedAsset, setUpdatedAsset] = useState<string | null>(null);
-  const [sortCol, setSortCol] = useState<SortColumn>('momentum');
-  const [sortDir, setSortDir] = useState<SortDir>('desc');
+
+  // Story 3.4: Change tracking for aurora trails + ticker tape
+  type ChangeEntry = { asset: string; from: string; to: string; time: number };
+  const [changeLog, setChangeLog] = useState<ChangeEntry[]>([]);
+  const [showTickerTape, setShowTickerTape] = useState(false);
+  const [awayChanges, setAwayChanges] = useState<ChangeEntry[]>([]);
+  const changeCountRef = useRef(0);
+
+  // Story 3.2: Multi-axis sort (up to 3 levels, persisted in localStorage)
+  type SortLevel = { col: SortColumn; dir: SortDir };
+  const sortKey = `signals-sort-${view}`;
+  const [sortLevels, setSortLevels] = useState<SortLevel[]>(() => {
+    try {
+      const stored = localStorage.getItem(sortKey);
+      if (stored) return JSON.parse(stored);
+    } catch { /* ignore */ }
+    return [{ col: 'momentum' as SortColumn, dir: 'desc' as SortDir }];
+  });
+  // Persist sort state
+  useEffect(() => {
+    try { localStorage.setItem(sortKey, JSON.stringify(sortLevels)); } catch { /* ignore */ }
+  }, [sortLevels, sortKey]);
+
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+
+  // Story 3.5: Debounce search (100ms)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 100);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  // Story 3.5: Cmd+K or / shortcut to focus search
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey && e.key === 'k') || (e.key === '/' && !['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName))) {
+        e.preventDefault();
+        searchRef.current?.focus();
+      }
+      if (e.key === 'Escape' && document.activeElement === searchRef.current) {
+        setSearch('');
+        searchRef.current?.blur();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
 
   const queryClient = useQueryClient();
   const { status: wsStatus, lastMessage } = useWebSocket('/ws');
 
-  // Story 6.4: Real-time signal updates via WebSocket
+  // Story 6.4 + 3.4: Real-time signal updates via WebSocket with change tracking
   useEffect(() => {
     if (!lastMessage || lastMessage.type !== 'signal_update') return;
     const summary = lastMessage.summary as SummaryRow | undefined;
     if (!summary?.asset_label) return;
+
+    // Detect label change for aurora trail
+    const oldRow = queryClient.getQueryData<SignalSummaryData>(['signalSummary'])
+      ?.summary_rows.find(r => r.asset_label === summary.asset_label);
+    const oldLabel = oldRow ? (oldRow.nearest_label || 'HOLD').toUpperCase() : '';
+    const newLabel = (summary.nearest_label || 'HOLD').toUpperCase();
+    const labelChanged = oldLabel && newLabel && oldLabel !== newLabel;
 
     queryClient.setQueryData<SignalSummaryData>(['signalSummary'], (old) => {
       if (!old) return old;
@@ -161,6 +174,17 @@ function SignalsPageInner() {
       );
       return { ...old, summary_rows: rows };
     });
+
+    // Story 3.4: Track change
+    if (labelChanged) {
+      const entry: ChangeEntry = { asset: extractTicker(summary.asset_label), from: oldLabel, to: newLabel, time: Date.now() };
+      if (document.hidden) {
+        setAwayChanges(prev => [...prev, entry]);
+      } else {
+        setChangeLog(prev => [entry, ...prev].slice(0, 20));
+        changeCountRef.current++;
+      }
+    }
 
     // Highlight animation
     setUpdatedAsset(summary.asset_label);
@@ -201,20 +225,59 @@ function SignalsPageInner() {
   const rows = data?.summary_rows || [];
   const allHorizons = data?.horizons || [];
   const windowWidth = useWindowWidth();
-  const horizons = useMemo(() => responsiveHorizons(allHorizons, windowWidth), [allHorizons, windowWidth]);
+
+  // Story 3.6: Horizon pill selector with localStorage override
+  const [horizonOverride, setHorizonOverride] = useState<number[] | null>(() => {
+    try {
+      const stored = localStorage.getItem('signals-horizons');
+      if (stored) return JSON.parse(stored);
+    } catch { /* ignore */ }
+    return null;
+  });
+  const autoHorizons = useMemo(() => responsiveHorizons(allHorizons, windowWidth), [allHorizons, windowWidth]);
+  const horizons = horizonOverride ?? autoHorizons;
+
+  const toggleHorizon = useCallback((h: number) => {
+    setHorizonOverride(prev => {
+      const current = prev ?? autoHorizons;
+      const next = current.includes(h) ? current.filter(x => x !== h) : [...current, h].sort((a, b) => a - b);
+      if (next.length === 0) return prev; // don't allow empty
+      try { localStorage.setItem('signals-horizons', JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }, [autoHorizons]);
+
+  const resetHorizons = useCallback(() => {
+    setHorizonOverride(null);
+    try { localStorage.removeItem('signals-horizons'); } catch { /* ignore */ }
+  }, []);
   const stats = statsQ.data;
   const sectors = sectorQ.data?.sectors || [];
 
+  // Story 3.5: Fuzzy match scoring
+  const fuzzyMatch = useCallback((text: string, query: string): boolean => {
+    if (!query) return true;
+    const t = text.toLowerCase();
+    const q = query.toLowerCase();
+    if (t.includes(q)) return true; // substring match
+    // Character-skip fuzzy
+    let qi = 0;
+    for (let ti = 0; ti < t.length && qi < q.length; ti++) {
+      if (t[ti] === q[qi]) qi++;
+    }
+    return qi === q.length;
+  }, []);
+
   const filteredRows = useMemo(() => {
     return rows.filter((row) => {
-      if (search && !row.asset_label.toLowerCase().includes(search.toLowerCase())) return false;
+      if (debouncedSearch && !fuzzyMatch(row.asset_label, debouncedSearch)) return false;
       if (filter === 'all') return true;
       const label = (row.nearest_label || '').toUpperCase().replace(/\s+/g, '_');
       return label === filter.toUpperCase();
     });
-  }, [rows, search, filter]);
+  }, [rows, debouncedSearch, filter, fuzzyMatch]);
 
-  /** Sorted rows for "All Assets" table */
+  /** Story 3.2: Multi-level sorted rows */
   const sortedRows = useMemo(() => {
     const arr = [...filteredRows];
     const signalRank = (label: string): number => {
@@ -225,34 +288,61 @@ function SignalsPageInner() {
       const sig = r.horizon_signals[h] || r.horizon_signals[String(h)];
       return sig?.exp_ret ?? 0;
     };
-    arr.sort((a, b) => {
-      let cmp = 0;
-      switch (sortCol) {
-        case 'asset': cmp = a.asset_label.localeCompare(b.asset_label); break;
-        case 'sector': cmp = (a.sector || '').localeCompare(b.sector || ''); break;
-        case 'signal': cmp = signalRank((a.nearest_label || 'HOLD')) - signalRank((b.nearest_label || 'HOLD')); break;
-        case 'momentum': cmp = (a.momentum_score ?? 0) - (b.momentum_score ?? 0); break;
-        case 'crash_risk': cmp = (a.crash_risk_score ?? 0) - (b.crash_risk_score ?? 0); break;
+    const compare = (a: SummaryRow, b: SummaryRow, col: SortColumn): number => {
+      switch (col) {
+        case 'asset': return a.asset_label.localeCompare(b.asset_label);
+        case 'sector': return (a.sector || '').localeCompare(b.sector || '');
+        case 'signal': return signalRank(a.nearest_label || 'HOLD') - signalRank(b.nearest_label || 'HOLD');
+        case 'momentum': return (a.momentum_score ?? 0) - (b.momentum_score ?? 0);
+        case 'crash_risk': return (a.crash_risk_score ?? 0) - (b.crash_risk_score ?? 0);
         default:
-          if (sortCol.startsWith('horizon_')) {
-            const h = parseInt(sortCol.split('_')[1], 10);
-            cmp = getHorizonVal(a, h) - getHorizonVal(b, h);
+          if (col.startsWith('horizon_')) {
+            const h = parseInt(col.split('_')[1], 10);
+            return getHorizonVal(a, h) - getHorizonVal(b, h);
           }
+          return 0;
       }
-      return sortDir === 'desc' ? -cmp : cmp;
+    };
+    arr.sort((a, b) => {
+      for (const { col, dir } of sortLevels) {
+        const cmp = compare(a, b, col);
+        if (cmp !== 0) return dir === 'desc' ? -cmp : cmp;
+      }
+      return 0;
     });
     return arr;
-  }, [filteredRows, sortCol, sortDir]);
+  }, [filteredRows, sortLevels]);
 
-  /** Toggle sort: click same col flips direction, new col sets desc */
-  const handleSort = useCallback((col: SortColumn) => {
-    if (sortCol === col) {
-      setSortDir(d => d === 'desc' ? 'asc' : 'desc');
-    } else {
-      setSortCol(col);
-      setSortDir('desc');
-    }
-  }, [sortCol]);
+  /** Story 3.2: Handle sort click. Shift+Click adds secondary sort, plain click replaces. Triple-click on same column removes it. */
+  const handleSort = useCallback((col: SortColumn, shiftKey: boolean) => {
+    setSortLevels(prev => {
+      const idx = prev.findIndex(s => s.col === col);
+      if (idx >= 0) {
+        // Column already sorted: toggle direction, or remove on third click
+        const existing = prev[idx];
+        if (existing.dir === 'asc') {
+          // Remove this sort level
+          const next = prev.filter((_, i) => i !== idx);
+          return next.length > 0 ? next : [{ col: 'momentum' as SortColumn, dir: 'desc' as SortDir }];
+        }
+        return prev.map((s, i) => i === idx ? { ...s, dir: 'asc' as SortDir } : s);
+      }
+      if (shiftKey && prev.length < 3) {
+        // Add as secondary/tertiary sort
+        return [...prev, { col, dir: 'desc' as SortDir }];
+      }
+      // Replace all with single primary sort
+      return [{ col, dir: 'desc' as SortDir }];
+    });
+  }, []);
+
+  /** Remove a specific sort level */
+  const removeSortLevel = useCallback((col: SortColumn) => {
+    setSortLevels(prev => {
+      const next = prev.filter(s => s.col !== col);
+      return next.length > 0 ? next : [{ col: 'momentum' as SortColumn, dir: 'desc' as SortDir }];
+    });
+  }, []);
 
   const toggleSector = (name: string) => {
     setExpandedSectors(prev => {
@@ -264,15 +354,12 @@ function SignalsPageInner() {
 
   const expandAll = () => setExpandedSectors(new Set(sectors.map(s => s.name)));
 
-  if (isLoading) return <LoadingSpinner text="Loading signals..." />;
+  if (isLoading) return <SignalTableSkeleton />;
 
   if (error) {
     return (
       <div className="p-6">
-        <div className="glass-card p-6 border border-red-500/50">
-          <h2 className="text-red-400 text-lg font-bold mb-2">Failed to load signals</h2>
-          <p className="text-red-300 text-sm">{String(error)}</p>
-        </div>
+        <CosmicErrorCard title="Unable to load signals" error={error as Error} onRetry={() => window.location.reload()} />
       </div>
     );
   }
@@ -283,17 +370,29 @@ function SignalsPageInner() {
       <PageHeader title="Signals">
         <span>{rows.length} assets across {horizons.length} horizons</span>
         <WsStatusDot status={wsStatus} />
+        <ExportButton
+          filename="signals"
+          columns={[
+            { key: 'asset_label', label: 'Asset' },
+            { key: 'signal', label: 'Signal' },
+            { key: 'momentum_score', label: 'Momentum' },
+            { key: 'crash_risk_score', label: 'Crash Risk' },
+          ]}
+          data={filteredRows as unknown as Record<string, unknown>[]}
+          filteredCount={filteredRows.length}
+          totalCount={rows.length}
+        />
       </PageHeader>
 
       {/* Stats bar */}
       {stats && (
         <div className="grid grid-cols-3 md:grid-cols-6 gap-3 mb-6 fade-up">
-          <MiniStat label="Strong Buy" value={stats.strong_buy_signals} color="#00E676" icon={'\u25B2\u25B2'} />
-          <MiniStat label="Buy" value={stats.buy_signals - stats.strong_buy_signals} color="#66BB6A" icon={'\u25B2'} />
+          <MiniStat label="Strong Buy" value={stats.strong_buy_signals} color="#34d399" icon={'\u25B2\u25B2'} />
+          <MiniStat label="Buy" value={stats.buy_signals - stats.strong_buy_signals} color="#6ee7b7" icon={'\u25B2'} />
           <MiniStat label="Hold" value={stats.hold_signals} color="#64748b" icon={'\u2014'} />
-          <MiniStat label="Sell" value={stats.sell_signals - stats.strong_sell_signals} color="#EF5350" icon={'\u25BC'} />
-          <MiniStat label="Strong Sell" value={stats.strong_sell_signals} color="#FF1744" icon={'\u25BC\u25BC'} />
-          <MiniStat label="Exit" value={stats.exit_signals} color="#FFB300" icon={'\u2298'} />
+          <MiniStat label="Sell" value={stats.sell_signals - stats.strong_sell_signals} color="#f87171" icon={'\u25BC'} />
+          <MiniStat label="Strong Sell" value={stats.strong_sell_signals} color="#fb7185" icon={'\u25BC\u25BC'} />
+          <MiniStat label="Exit" value={stats.exit_signals} color="#f59e0b" icon={'\u2298'} />
         </div>
       )}
 
@@ -324,7 +423,7 @@ function SignalsPageInner() {
               key={key}
               onClick={() => setView(key)}
               className={`px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all duration-200 ${
-                view === key ? 'bg-[#42A5F5]/15 text-[#42A5F5]' : 'text-[#64748b] hover:text-[#94a3b8] hover:bg-white/[0.02]'
+                view === key ? 'bg-[#8b5cf6]/15 text-[#a78bfa]' : 'text-[#64748b] hover:text-[#94a3b8] hover:bg-white/[0.02]'
               }`}
             >
               {label}
@@ -337,12 +436,12 @@ function SignalsPageInner() {
           <div className="flex items-center gap-0.5 glass-card px-2.5 py-1.5">
             <Filter className="w-3 h-3 text-[#64748b] mr-1.5" />
             {([
-              { key: 'all' as SignalFilter, label: 'All', c: '#42A5F5' },
-              { key: 'strong_buy' as SignalFilter, label: '\u25B2\u25B2 SB', c: '#00E676' },
-              { key: 'buy' as SignalFilter, label: '\u25B2 Buy', c: '#66BB6A' },
+              { key: 'all' as SignalFilter, label: 'All', c: '#a78bfa' },
+              { key: 'strong_buy' as SignalFilter, label: '\u25B2\u25B2 SB', c: '#34d399' },
+              { key: 'buy' as SignalFilter, label: '\u25B2 Buy', c: '#6ee7b7' },
               { key: 'hold' as SignalFilter, label: '\u2014 Hold', c: '#64748b' },
-              { key: 'sell' as SignalFilter, label: '\u25BC Sell', c: '#EF5350' },
-              { key: 'strong_sell' as SignalFilter, label: '\u25BC\u25BC SS', c: '#FF1744' },
+              { key: 'sell' as SignalFilter, label: '\u25BC Sell', c: '#f87171' },
+              { key: 'strong_sell' as SignalFilter, label: '\u25BC\u25BC SS', c: '#fb7185' },
             ]).map(({ key, label, c }) => (
               <button
                 key={key}
@@ -356,35 +455,129 @@ function SignalsPageInner() {
           </div>
         )}
 
-        {/* Search */}
-        <div className="flex items-center gap-2 glass-card px-3 py-2 group focus-within:ring-1 focus-within:ring-[#42A5F5]/20 transition-all">
-          <Search className="w-3.5 h-3.5 text-[#64748b] group-focus-within:text-[#42A5F5] transition-colors" />
+        {/* Story 3.5: Smart Search with violet focus */}
+        <div className="flex items-center gap-2 glass-card px-3 py-2 group search-cosmic transition-all duration-200">
+          <Search className="w-3.5 h-3.5 text-[var(--text-muted)] group-focus-within:text-[var(--accent-violet)] transition-colors" />
           <input
             ref={searchRef}
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search assets..."
-            className="bg-transparent text-[13px] text-[#f1f5f9] placeholder:text-[#475569] outline-none w-40"
+            className="bg-transparent text-[13px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none w-40"
           />
+          {!search && (
+            <span className="text-[9px] text-[var(--text-muted)] border border-[var(--border-void)] rounded px-1 py-0.5 opacity-50">/</span>
+          )}
+          {search && debouncedSearch !== search && (
+            <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-violet)] animate-pulse" />
+          )}
           {search && (
-            <button onClick={() => setSearch('')} className="text-[#64748b] hover:text-[#e2e8f0] transition-colors">
-              <X className="w-3 h-3" />
-            </button>
+            <>
+              <span className="text-[10px] text-[var(--text-muted)] tabular-nums whitespace-nowrap">{filteredRows.length} of {rows.length}</span>
+              <button onClick={() => setSearch('')} className="text-[var(--text-muted)] hover:text-[var(--accent-rose)] transition-colors duration-120">
+                <X className="w-3 h-3" />
+              </button>
+            </>
           )}
         </div>
 
-        <span className="text-xs text-[#64748b]">
+        <span className="text-xs text-[var(--text-muted)]">
           {view === 'sectors' ? `${sectors.length} sectors` : `${filteredRows.length} results`}
         </span>
 
+        {/* Story 3.4: Change counter badge */}
+        {changeLog.length > 0 && (
+          <button
+            onClick={() => {
+              const lastChange = changeLog[0];
+              if (lastChange) {
+                const el = document.querySelector(`[data-ticker="${lastChange.asset}"]`);
+                el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }
+            }}
+            className="text-[10px] px-2 py-1 rounded-full animate-pulse"
+            style={{ color: 'var(--accent-violet)', background: 'rgba(139,92,246,0.12)' }}
+          >
+            {changeLog.length} change{changeLog.length > 1 ? 's' : ''}
+          </button>
+        )}
+
+        {/* Story 3.4: Live Feed toggle */}
+        <button
+          onClick={() => setShowTickerTape(p => !p)}
+          className={`text-[10px] px-2 py-1 rounded transition-colors ${showTickerTape ? 'text-[var(--accent-violet)] bg-[rgba(139,92,246,0.12)]' : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'}`}
+        >
+          Live Feed
+        </button>
+
         {view === 'sectors' && (
           <div className="flex gap-2 ml-auto">
-            <button onClick={expandAll} className="text-[10px] text-[#42A5F5] hover:underline">Expand All</button>
-            <button onClick={collapseAll} className="text-[10px] text-[#64748b] hover:underline">Collapse All</button>
+            <button onClick={expandAll} className="text-[10px] text-[var(--accent-violet)] hover:underline">Expand All</button>
+            <button onClick={collapseAll} className="text-[10px] text-[var(--text-muted)] hover:underline">Collapse All</button>
           </div>
         )}
       </div>
+
+      {/* Story 3.4: Ticker tape */}
+      {showTickerTape && changeLog.length > 0 && (
+        <div className="h-[28px] overflow-hidden mb-2 glass-card flex items-center" style={{ background: 'var(--void-hover)' }}>
+          <div className="ticker-tape-scroll flex items-center gap-6 whitespace-nowrap text-[11px] font-mono">
+            {changeLog.map((c, i) => {
+              const isUpgrade = ['STRONG BUY', 'BUY'].includes(c.to) && ['HOLD', 'SELL', 'STRONG SELL', 'EXIT'].includes(c.from);
+              return (
+                <span key={`${c.asset}-${i}`} className="inline-flex items-center gap-1">
+                  <span className="text-[var(--accent-violet)]">{c.asset}</span>
+                  <span className="text-[var(--text-muted)]">{c.from}</span>
+                  <svg width="8" height="8" viewBox="0 0 8 8">
+                    <path d="M1 4H7M5 2L7 4L5 6" stroke={isUpgrade ? 'var(--accent-emerald)' : 'var(--accent-rose)'} strokeWidth="1.5" fill="none" />
+                  </svg>
+                  <span style={{ color: isUpgrade ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}>{c.to}</span>
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Story 3.4: Away changes banner */}
+      {awayChanges.length > 0 && (
+        <div className="mb-2 glass-card px-4 py-2 flex items-center gap-3" style={{ background: 'rgba(139,92,246,0.06)' }}>
+          <span className="text-[12px] text-[var(--accent-violet)]">{awayChanges.length} signal{awayChanges.length > 1 ? 's' : ''} changed while away</span>
+          <button
+            onClick={() => { setChangeLog(prev => [...awayChanges, ...prev].slice(0, 20)); setAwayChanges([]); setShowTickerTape(true); }}
+            className="text-[11px] px-2 py-0.5 rounded text-[var(--accent-violet)] hover:bg-[rgba(139,92,246,0.1)] transition-colors"
+          >
+            Review
+          </button>
+        </div>
+      )}
+
+      {/* Story 3.6: Horizon pill selector */}
+      {view === 'all' && allHorizons.length > 0 && (
+        <div className="flex items-center gap-1.5 mb-3 fade-up-delay-2">
+          <span className="text-[10px] text-[var(--text-muted)] mr-1">Horizons</span>
+          {allHorizons.map(h => {
+            const active = horizons.includes(h);
+            return (
+              <button key={h} onClick={() => toggleHorizon(h)}
+                className="px-2 py-0.5 rounded-full text-[10px] font-medium transition-all duration-120"
+                style={active
+                  ? { color: 'var(--accent-violet)', background: 'rgba(139,92,246,0.15)', border: '1px solid var(--border-glow)' }
+                  : { color: 'var(--text-secondary)', background: 'var(--void-active)', border: '1px solid transparent' }
+                }
+              >
+                {formatHorizon(h)}
+              </button>
+            );
+          })}
+          {horizonOverride && (
+            <button onClick={resetHorizons} className="text-[9px] text-[var(--text-muted)] hover:text-[var(--accent-rose)] transition-colors ml-1">
+              Reset
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Content */}
       {view === 'sectors' && (
@@ -393,7 +586,7 @@ function SignalsPageInner() {
           expandedSectors={expandedSectors}
           toggleSector={toggleSector}
           horizons={horizons}
-          search={search}
+          search={debouncedSearch}
           filter={filter}
           updatedAsset={updatedAsset}
         />
@@ -408,7 +601,7 @@ function SignalsPageInner() {
         <AllAssetsTable
           rows={sortedRows} horizons={horizons}
           updatedAsset={updatedAsset}
-          sortCol={sortCol} sortDir={sortDir} onSort={handleSort}
+          sortLevels={sortLevels} onSort={handleSort} onRemoveSort={removeSortLevel}
           expandedRow={expandedRow} onExpandRow={setExpandedRow}
           onNavigateChart={(sym) => navigate(`/charts/${sym}`)}
         />
@@ -438,7 +631,9 @@ function MiniStat({ label, value, color, icon }: { label: string; value: number;
   );
 }
 
-/* ── Sector Panels ───────────────────────────────────────────────── */
+/* ── Story 3.3: Sector Panels Redesign with Nebula Intelligence ──── */
+type SectorSortBy = 'momentum' | 'exp_ret' | 'signal' | 'count' | 'alpha';
+
 function SectorPanels({
   sectors,
   expandedSectors,
@@ -456,15 +651,56 @@ function SectorPanels({
   filter: SignalFilter;
   updatedAsset: string | null;
 }) {
-  const sorted = useMemo(() =>
-    [...sectors].sort((a, b) => {
-      const scoreA = (a.strong_buy ?? 0) * 3 + (a.buy ?? 0) * 2 - (a.sell ?? 0) * 2 - (a.strong_sell ?? 0) * 3;
-      const scoreB = (b.strong_buy ?? 0) * 3 + (b.buy ?? 0) * 2 - (b.sell ?? 0) * 2 - (b.strong_sell ?? 0) * 3;
-      return scoreB - scoreA;
-    }), [sectors]);
+  const [sectorSort, setSectorSort] = useState<SectorSortBy>('momentum');
+  const [showSortDropdown, setShowSortDropdown] = useState(false);
+
+  const sorted = useMemo(() => {
+    const arr = [...sectors];
+    const signalScore = (s: SectorGroup) => (s.strong_buy ?? 0) * 3 + (s.buy ?? 0) * 2 - (s.sell ?? 0) * 2 - (s.strong_sell ?? 0) * 3;
+    switch (sectorSort) {
+      case 'momentum': return arr.sort((a, b) => (b.avg_momentum ?? 0) - (a.avg_momentum ?? 0));
+      case 'signal': return arr.sort((a, b) => signalScore(b) - signalScore(a));
+      case 'count': return arr.sort((a, b) => b.asset_count - a.asset_count);
+      case 'alpha': return arr.sort((a, b) => a.name.localeCompare(b.name));
+      case 'exp_ret': return arr.sort((a, b) => signalScore(b) - signalScore(a)); // fallback
+      default: return arr;
+    }
+  }, [sectors, sectorSort]);
 
   return (
     <div className="space-y-2">
+      {/* Story 3.3 AC-3: Sort dropdown */}
+      <div className="flex items-center gap-2 mb-2">
+        <div className="relative">
+          <button
+            onClick={() => setShowSortDropdown(p => !p)}
+            className="text-[10px] text-[var(--text-secondary)] flex items-center gap-1 hover:text-[var(--accent-violet)] transition-colors"
+          >
+            Sort <ChevronDown className="w-3 h-3" />
+          </button>
+          {showSortDropdown && (
+            <div className="absolute top-6 left-0 z-20 glass-card py-1 px-1 min-w-[140px]"
+              style={{ boxShadow: '0 8px 32px rgba(0,0,0,0.4)' }}>
+              {([
+                { key: 'momentum' as SectorSortBy, label: 'Momentum' },
+                { key: 'signal' as SectorSortBy, label: 'Signal Strength' },
+                { key: 'count' as SectorSortBy, label: 'Asset Count' },
+                { key: 'alpha' as SectorSortBy, label: 'Alphabetical' },
+              ]).map(({ key, label }) => (
+                <button key={key}
+                  onClick={() => { setSectorSort(key); setShowSortDropdown(false); }}
+                  className={`block w-full text-left px-3 py-1.5 text-[11px] rounded transition-colors ${
+                    sectorSort === key ? 'text-[var(--accent-violet)] bg-[rgba(139,92,246,0.08)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--void-hover)]'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
       {sorted.map((sector) => {
         const expanded = expandedSectors.has(sector.name);
         const assets = sector.assets.filter(row => {
@@ -477,63 +713,110 @@ function SectorPanels({
 
         const bullish = (sector.strong_buy ?? 0) + (sector.buy ?? 0);
         const bearish = (sector.strong_sell ?? 0) + (sector.sell ?? 0);
+        const total = bullish + bearish + (sector.hold ?? 0);
         const sentiment = bullish > bearish ? 'bullish' : bearish > bullish ? 'bearish' : 'neutral';
-        const sentimentColor = sentiment === 'bullish' ? '#00E676' : sentiment === 'bearish' ? '#FF1744' : '#64748b';
+
+        // AC-5: Left border class
+        const borderClass = sentiment === 'bullish' ? 'sector-border-bullish' : sentiment === 'bearish' ? 'sector-border-bearish' : 'sector-border-mixed';
+
+        // AC-2: Best performing asset for peek row
+        const bestAsset = [...sector.assets].sort((a, b) => {
+          const aRet = Object.values(a.horizon_signals)[0]?.exp_ret ?? 0;
+          const bRet = Object.values(b.horizon_signals)[0]?.exp_ret ?? 0;
+          return bRet - aRet;
+        })[0];
+        const bestTicker = bestAsset ? extractTicker(bestAsset.asset_label) : null;
+        const bestRet = bestAsset ? (Object.values(bestAsset.horizon_signals)[0]?.exp_ret ?? 0) * 100 : 0;
+        const bestLabel = bestAsset ? (bestAsset.nearest_label || 'HOLD').toUpperCase() : '';
+
+        // AC-1: Sentiment bar proportions
+        const strongBuyPct = total > 0 ? ((sector.strong_buy ?? 0) / total) * 100 : 0;
+        const buyPct = total > 0 ? ((sector.buy ?? 0) / total) * 100 : 0;
+        const holdPct = total > 0 ? ((sector.hold ?? 0) / total) * 100 : 0;
+        const sellPct = total > 0 ? ((sector.sell ?? 0) / total) * 100 : 0;
+        const strongSellPct = total > 0 ? ((sector.strong_sell ?? 0) / total) * 100 : 0;
+
+        const avgMom = sector.avg_momentum ?? 0;
 
         return (
-          <div key={sector.name} className="glass-card overflow-hidden">
-            {/* Sector header */}
+          <div key={sector.name} className={`glass-card overflow-hidden ${borderClass}`}>
+            {/* AC-1: 48px sector header */}
             <button
               onClick={() => toggleSector(sector.name)}
-              className="w-full flex items-center gap-3 px-4 py-3 hover:bg-[#16213e]/30 transition"
+              className="w-full flex items-center gap-3 px-4 h-[48px] hover:bg-[var(--void-hover)] transition"
             >
-              {expanded
-                ? <ChevronDown className="w-4 h-4 text-[#64748b]" />
-                : <ChevronRight className="w-4 h-4 text-[#64748b]" />
-              }
-              <span className="font-medium text-[#e2e8f0] text-sm">{sector.name}</span>
-              <span className="text-xs text-[#64748b]">{sector.asset_count} assets</span>
+              {/* Sector name */}
+              <span className="font-semibold text-[var(--text-luminous)] text-sm whitespace-nowrap">{sector.name}</span>
+              {/* Asset count pill */}
+              <span className="text-[9px] px-1.5 py-0.5 rounded-full text-[var(--text-muted)]" style={{ background: 'var(--void-active)' }}>
+                {sector.asset_count}
+              </span>
 
-              {/* Mini signal badges */}
-              <div className="flex items-center gap-1.5 ml-auto">
-                {sector.strong_buy > 0 && <CountBadge value={sector.strong_buy} label={'\u25B2\u25B2'} color="#00E676" />}
-                {sector.buy > 0 && <CountBadge value={sector.buy} label={'\u25B2'} color="#66BB6A" />}
-                {sector.hold > 0 && <CountBadge value={sector.hold} label={'\u2014'} color="#64748b" />}
-                {sector.sell > 0 && <CountBadge value={sector.sell} label={'\u25BC'} color="#EF5350" />}
-                {sector.strong_sell > 0 && <CountBadge value={sector.strong_sell} label={'\u25BC\u25BC'} color="#FF1744" />}
-                {sector.exit > 0 && <CountBadge value={sector.exit} label={'\u2298'} color="#FFB300" />}
+              {/* AC-1: Sector sentiment bar */}
+              <div className="flex h-[4px] w-[80px] rounded-[2px] overflow-hidden flex-shrink-0" style={{ border: '1px solid var(--border-void)' }}>
+                <div style={{ width: `${strongBuyPct}%`, background: 'var(--accent-emerald)' }} />
+                <div style={{ width: `${buyPct}%`, background: 'rgba(52,211,153,0.5)' }} />
+                <div style={{ width: `${holdPct}%`, background: 'var(--void-active)' }} />
+                <div style={{ width: `${sellPct}%`, background: 'rgba(251,113,133,0.5)' }} />
+                <div style={{ width: `${strongSellPct}%`, background: 'var(--accent-rose)' }} />
               </div>
 
-              {/* Sentiment indicator */}
-              <span className="text-[10px] font-medium px-2 py-0.5 rounded" style={{ color: sentimentColor, background: `${sentimentColor}15` }}>
-                {sentiment}
+              {/* Avg momentum with arrow */}
+              <span className="text-[10px] font-mono tabular-nums flex items-center gap-0.5"
+                style={{ color: avgMom > 0 ? 'var(--accent-emerald)' : avgMom < 0 ? 'var(--accent-rose)' : 'var(--text-muted)' }}>
+                {avgMom > 0 ? (
+                  <svg width="6" height="6" viewBox="0 0 6 6"><path d="M3 0L6 5H0L3 0Z" fill="currentColor" /></svg>
+                ) : avgMom < 0 ? (
+                  <svg width="6" height="6" viewBox="0 0 6 6"><path d="M3 6L0 1H6L3 6Z" fill="currentColor" /></svg>
+                ) : null}
+                {avgMom > 0 ? '+' : ''}{avgMom.toFixed(1)}%
               </span>
 
-              {/* Avg momentum */}
-              <span className={`text-[10px] ${(sector.avg_momentum ?? 0) > 0 ? 'text-[#00E676]' : (sector.avg_momentum ?? 0) < 0 ? 'text-[#FF1744]' : 'text-[#64748b]'}`}>
-                MOM {(sector.avg_momentum ?? 0).toFixed(1)}%
-              </span>
+              {/* Spacer */}
+              <div className="flex-1" />
+
+              {/* AC-2: Peek row (best asset) */}
+              {!expanded && bestTicker && (
+                <span className="text-[10px] hidden sm:inline-flex items-center gap-1">
+                  <span className="text-[var(--text-muted)]">Best:</span>
+                  <span className="text-[var(--accent-violet)] font-medium">{bestTicker}</span>
+                  <span style={{ color: bestRet >= 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}>
+                    {bestRet >= 0 ? '+' : ''}{bestRet.toFixed(1)}%
+                  </span>
+                  <span className="text-[var(--text-muted)]">({bestLabel})</span>
+                </span>
+              )}
+
+              {/* Expand chevron with rotation animation */}
+              <ChevronDown
+                className="w-3 h-3 flex-shrink-0 transition-transform duration-200"
+                style={{
+                  color: 'var(--accent-violet)',
+                  transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)',
+                }}
+              />
             </button>
 
-            {/* Expanded content */}
+            {/* AC-4: Expanded content with constellation animation */}
             {expanded && (
-              <div className="border-t border-[#2a2a4a]">
+              <div className="border-t border-[var(--border-void)]" style={{ animation: 'slide-down 250ms cubic-bezier(0.2,0,0,1) both' }}>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-[#2a2a4a]/50">
-                        <th className="text-left px-4 py-2 text-[10px] text-[#64748b] font-medium uppercase">Asset</th>
-                        <th className="text-center px-2 py-2 text-[10px] text-[#64748b] font-medium">Signal</th>
-                        <th className="text-center px-2 py-2 text-[10px] text-[#64748b] font-medium">Momentum</th>
+                        <th className="text-left px-4 py-2 text-[10px] text-[var(--text-violet)] font-medium uppercase tracking-[0.06em]">Asset</th>
+                        <th className="text-center px-2 py-2 text-[10px] text-[var(--text-violet)] font-medium w-[60px]">30D</th>
+                        <th className="text-center px-2 py-2 text-[10px] text-[var(--text-violet)] font-medium">Signal</th>
+                        <th className="text-center px-2 py-2 text-[10px] text-[var(--text-violet)] font-medium">Mom</th>
                         {horizons.map(h => (
-                          <th key={h} className="text-center px-2 py-2 text-[10px] text-[#64748b] font-medium">{formatHorizon(h)}</th>
+                          <th key={h} className="text-center px-2 py-2 text-[10px] text-[var(--text-violet)] font-medium">{formatHorizon(h)}</th>
                         ))}
-                        <th className="text-center px-2 py-2 text-[10px] text-[#64748b] font-medium">Risk</th>
+                        <th className="text-center px-2 py-2 text-[10px] text-[var(--text-violet)] font-medium">Risk</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {assets.map(row => (
-                        <SectorSignalRow key={row.asset_label} row={row} horizons={horizons} highlighted={row.asset_label === updatedAsset} />
+                      {assets.map((row, i) => (
+                        <SectorSignalRow key={row.asset_label} row={row} horizons={horizons} highlighted={row.asset_label === updatedAsset} delayMs={i * 50} />
                       ))}
                     </tbody>
                   </table>
@@ -555,23 +838,23 @@ function StrongSignalsView({ strongBuy, strongSell }: { strongBuy: StrongSignalE
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
       <div className="glass-card overflow-hidden">
-        <div className="px-4 py-3 border-b border-[#2a2a4a] flex items-center gap-2">
-          <TrendingUp className="w-4 h-4 text-[#00E676]" />
-          <h3 className="text-sm font-medium text-[#00E676]">Strong Buy Signals</h3>
+        <div className="px-4 py-3 flex items-center gap-2" style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
+          <TrendingUp className="w-4 h-4" style={{ color: '#34d399' }} />
+          <h3 className="text-sm font-medium" style={{ color: '#34d399' }}>Strong Buy Signals</h3>
           <span className="ml-auto text-xs text-[#64748b]">{strongBuy.length} assets</span>
         </div>
         {strongBuy.length === 0 ? (
           <p className="px-4 py-6 text-xs text-[#64748b] text-center">No strong buy signals</p>
         ) : (
-          <div className="divide-y divide-[#2a2a4a]/50">
+          <div>
             {strongBuy.map((s, i) => (
-              <div key={i} className="px-4 py-2.5 flex items-center gap-3 hover:bg-[#16213e]/30 transition">
+              <div key={i} className="px-4 py-2.5 flex items-center gap-3 transition-all duration-150" style={{ borderBottom: '1px solid rgba(139,92,246,0.04)' }}>
                 <div className="flex-1">
                   <span className="text-sm font-medium text-[#e2e8f0]">{s.asset_label || '—'}</span>
                   <span className="text-[10px] text-[#64748b] ml-2">{s.sector}</span>
                 </div>
                 <span className="text-[10px] text-[#64748b]">{s.horizon || '—'}</span>
-                <span className="text-xs text-[#00E676] font-medium">
+                <span className="text-xs font-medium" style={{ color: '#34d399' }}>
                   {s.exp_ret != null ? `${s.exp_ret >= 0 ? '+' : ''}${(s.exp_ret * 100).toFixed(1)}%` : '—'}
                 </span>
                 <span className="text-[10px] text-[#64748b]">p={s.p_up != null ? s.p_up.toFixed(2) : '—'}</span>
@@ -583,23 +866,23 @@ function StrongSignalsView({ strongBuy, strongSell }: { strongBuy: StrongSignalE
       </div>
 
       <div className="glass-card overflow-hidden">
-        <div className="px-4 py-3 border-b border-[#2a2a4a] flex items-center gap-2">
-          <TrendingDown className="w-4 h-4 text-[#FF1744]" />
-          <h3 className="text-sm font-medium text-[#FF1744]">Strong Sell Signals</h3>
+        <div className="px-4 py-3 flex items-center gap-2" style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
+          <TrendingDown className="w-4 h-4" style={{ color: '#fb7185' }} />
+          <h3 className="text-sm font-medium" style={{ color: '#fb7185' }}>Strong Sell Signals</h3>
           <span className="ml-auto text-xs text-[#64748b]">{strongSell.length} assets</span>
         </div>
         {strongSell.length === 0 ? (
           <p className="px-4 py-6 text-xs text-[#64748b] text-center">No strong sell signals</p>
         ) : (
-          <div className="divide-y divide-[#2a2a4a]/50">
+          <div>
             {strongSell.map((s, i) => (
-              <div key={i} className="px-4 py-2.5 flex items-center gap-3 hover:bg-[#16213e]/30 transition">
+              <div key={i} className="px-4 py-2.5 flex items-center gap-3 transition-all duration-150" style={{ borderBottom: '1px solid rgba(139,92,246,0.04)' }}>
                 <div className="flex-1">
                   <span className="text-sm font-medium text-[#e2e8f0]">{s.asset_label || '—'}</span>
                   <span className="text-[10px] text-[#64748b] ml-2">{s.sector}</span>
                 </div>
                 <span className="text-[10px] text-[#64748b]">{s.horizon || '—'}</span>
-                <span className="text-xs text-[#FF1744] font-medium">
+                <span className="text-xs font-medium" style={{ color: '#fb7185' }}>
                   {s.exp_ret != null ? `${(s.exp_ret * 100).toFixed(1)}%` : '—'}
                 </span>
                 <span className="text-[10px] text-[#64748b]">p={s.p_up != null ? s.p_up.toFixed(2) : '—'}</span>
@@ -613,60 +896,133 @@ function StrongSignalsView({ strongBuy, strongSell }: { strongBuy: StrongSignalE
   );
 }
 
-/* ── All Assets Table (sortable + mini chart) ────────────────────── */
-function SortIcon({ col, sortCol, sortDir }: { col: SortColumn; sortCol: SortColumn; sortDir: SortDir }) {
-  if (col !== sortCol) return <ChevronDown className="w-3 h-3 opacity-0 group-hover:opacity-40 transition-opacity inline ml-0.5" />;
-  return sortDir === 'desc'
-    ? <ChevronDown className="w-3 h-3 text-[#42A5F5] inline ml-0.5" />
-    : <ChevronUp className="w-3 h-3 text-[#42A5F5] inline ml-0.5" />;
+/* ── Story 3.2: Sort Indicator with priority badge ───────────────── */
+function SortIndicator({ col, sortLevels }: { col: SortColumn; sortLevels: { col: SortColumn; dir: SortDir }[] }) {
+  const idx = sortLevels.findIndex(s => s.col === col);
+  if (idx < 0) {
+    return (
+      <svg width="10" height="10" viewBox="0 0 10 10" className="inline ml-0.5 opacity-0 group-hover:opacity-40 transition-opacity" style={{ transition: 'opacity 120ms ease' }}>
+        <path d="M5 2L8 7H2L5 2Z" fill="currentColor" />
+      </svg>
+    );
+  }
+  const level = sortLevels[idx];
+  return (
+    <span className="inline-flex items-center gap-0.5 ml-0.5">
+      <svg width="10" height="10" viewBox="0 0 10 10" className={`sort-arrow-rotate ${level.dir === 'asc' ? 'sort-arrow-asc' : ''}`}
+        style={{ color: 'var(--accent-violet)', transition: 'transform 200ms cubic-bezier(0.2,0,0,1)' }}>
+        <path d="M5 2L8 7H2L5 2Z" fill="currentColor" />
+      </svg>
+      {sortLevels.length > 1 && (
+        <span className="inline-flex items-center justify-center w-[14px] h-[14px] rounded-full text-[9px] font-semibold text-white"
+          style={{ background: 'var(--accent-violet)' }}>
+          {idx + 1}
+        </span>
+      )}
+    </span>
+  );
 }
 
-function AllAssetsTable({ rows, horizons, updatedAsset, sortCol, sortDir, onSort, expandedRow, onExpandRow, onNavigateChart }: {
+/** Story 3.2: Human-readable sort column name */
+function sortColName(col: SortColumn): string {
+  if (col.startsWith('horizon_')) return formatHorizon(parseInt(col.split('_')[1], 10));
+  const names: Record<string, string> = { asset: 'Asset', sector: 'Sector', signal: 'Signal', momentum: 'Momentum', crash_risk: 'Risk' };
+  return names[col] || col;
+}
+
+function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRemoveSort, expandedRow, onExpandRow, onNavigateChart }: {
   rows: SummaryRow[]; horizons: number[]; updatedAsset: string | null;
-  sortCol: SortColumn; sortDir: SortDir; onSort: (col: SortColumn) => void;
+  sortLevels: { col: SortColumn; dir: SortDir }[];
+  onSort: (col: SortColumn, shiftKey: boolean) => void;
+  onRemoveSort: (col: SortColumn) => void;
   expandedRow: string | null; onExpandRow: (label: string | null) => void;
   onNavigateChart: (symbol: string) => void;
 }) {
   const [page, setPage] = useState(0);
+  const [scrolled, setScrolled] = useState(false);
+  const tableContainerRef = useRef<HTMLDivElement>(null);
   const pageSize = 50;
   const pageRows = rows.slice(page * pageSize, (page + 1) * pageSize);
   const totalPages = Math.ceil(rows.length / pageSize);
 
-  // Reset page when rows change
   useEffect(() => { setPage(0); }, [rows.length]);
+
+  // Detect scroll for sticky header shadow
+  useEffect(() => {
+    const container = tableContainerRef.current;
+    if (!container) return;
+    const onScroll = () => setScrolled(container.scrollTop > 0);
+    container.addEventListener('scroll', onScroll, { passive: true });
+    return () => container.removeEventListener('scroll', onScroll);
+  }, []);
+
+  const headerCls = `cosmic-table-header${scrolled ? ' scrolled' : ''}`;
 
   return (
     <div className="glass-card overflow-hidden fade-up-delay-3">
-      <div className="overflow-x-auto">
+      {/* Story 3.2 AC-5: Sort indicator bar */}
+      {sortLevels.length > 0 && (
+        <div className="flex items-center gap-2 px-4 h-[28px] text-[10px] text-[var(--text-secondary)]"
+          style={{ background: 'var(--void-hover)' }}>
+          <span>Sorted by </span>
+          {sortLevels.map((s, i) => (
+            <span key={s.col} className="inline-flex items-center gap-1">
+              {i > 0 && <span className="text-[var(--text-muted)]">, then </span>}
+              <span style={{ color: 'var(--accent-violet)' }}>{sortColName(s.col)}</span>
+              <span className="text-[var(--text-muted)]">({s.dir})</span>
+              <button onClick={() => onRemoveSort(s.col)}
+                className="text-[var(--text-muted)] hover:text-[var(--accent-rose)] transition-colors text-[9px] ml-0.5">
+                <X className="w-2.5 h-2.5" />
+              </button>
+            </span>
+          ))}
+          {sortLevels.length < 3 && (
+            <span className="text-[var(--text-muted)] ml-1">(Shift+Click to add)</span>
+          )}
+        </div>
+      )}
+      <div ref={tableContainerRef} className="overflow-auto max-h-[calc(100vh-280px)]">
         <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-[#2a2a4a]">
-              <th className="text-left px-4 py-3 text-xs text-[#64748b] font-medium uppercase sortable-th group"
-                  onClick={() => onSort('asset')}>
-                Asset <SortIcon col="asset" sortCol={sortCol} sortDir={sortDir} />
+          <thead className={headerCls}>
+            <tr>
+              <th className={`text-left px-4 py-3 sortable-th group ${sortLevels.some(s => s.col === 'asset') ? 'active' : ''}`}
+                  style={sortLevels.some(s => s.col === 'asset') ? { color: 'var(--accent-violet)', textShadow: '0 0 8px rgba(139,92,246,0.3)' } : {}}
+                  onClick={(e) => onSort('asset', e.shiftKey)}>
+                Asset <SortIndicator col="asset" sortLevels={sortLevels} />
               </th>
-              <th className="text-left px-3 py-3 text-xs text-[#64748b] font-medium sortable-th group"
-                  onClick={() => onSort('sector')}>
-                Sector <SortIcon col="sector" sortCol={sortCol} sortDir={sortDir} />
+              <th className="text-center px-2 py-3 w-[60px]">
+                <span className="text-[10px] text-[var(--text-violet)] uppercase tracking-[0.06em] font-medium">30D</span>
               </th>
-              <th className="text-center px-3 py-3 text-xs text-[#64748b] font-medium sortable-th group"
-                  onClick={() => onSort('signal')}>
-                Signal <SortIcon col="signal" sortCol={sortCol} sortDir={sortDir} />
+              <th className={`text-left px-3 py-3 sortable-th group ${sortLevels.some(s => s.col === 'sector') ? 'active' : ''}`}
+                  style={sortLevels.some(s => s.col === 'sector') ? { color: 'var(--accent-violet)', textShadow: '0 0 8px rgba(139,92,246,0.3)' } : {}}
+                  onClick={(e) => onSort('sector', e.shiftKey)}>
+                Sector <SortIndicator col="sector" sortLevels={sortLevels} />
               </th>
-              <th className="text-center px-3 py-3 text-xs text-[#64748b] font-medium sortable-th group"
-                  onClick={() => onSort('momentum')}>
-                Momentum <SortIcon col="momentum" sortCol={sortCol} sortDir={sortDir} />
+              <th className={`text-center px-3 py-3 sortable-th group ${sortLevels.some(s => s.col === 'signal') ? 'active' : ''}`}
+                  style={sortLevels.some(s => s.col === 'signal') ? { color: 'var(--accent-violet)', textShadow: '0 0 8px rgba(139,92,246,0.3)' } : {}}
+                  onClick={(e) => onSort('signal', e.shiftKey)}>
+                Signal <SortIndicator col="signal" sortLevels={sortLevels} />
               </th>
-              {horizons.map((h) => (
-                <th key={h} className="text-center px-3 py-3 text-xs text-[#64748b] font-medium sortable-th group"
-                    onClick={() => onSort(`horizon_${h}` as SortColumn)}>
-                  {formatHorizon(h)} <SortIcon col={`horizon_${h}` as SortColumn} sortCol={sortCol} sortDir={sortDir} />
-                </th>
-              ))}
-              <th className="text-center px-3 py-3 text-xs text-[#64748b] font-medium sortable-th group"
-                  onClick={() => onSort('crash_risk')}>
-                Risk <SortIcon col="crash_risk" sortCol={sortCol} sortDir={sortDir} />
+              <th className={`text-center px-3 py-3 sortable-th group ${sortLevels.some(s => s.col === 'momentum') ? 'active' : ''}`}
+                  style={sortLevels.some(s => s.col === 'momentum') ? { color: 'var(--accent-violet)', textShadow: '0 0 8px rgba(139,92,246,0.3)' } : {}}
+                  onClick={(e) => onSort('momentum', e.shiftKey)}>
+                Mom <SortIndicator col="momentum" sortLevels={sortLevels} />
               </th>
+              <th className={`text-center px-3 py-3 sortable-th group ${sortLevels.some(s => s.col === 'crash_risk') ? 'active' : ''}`}
+                  style={sortLevels.some(s => s.col === 'crash_risk') ? { color: 'var(--accent-violet)', textShadow: '0 0 8px rgba(139,92,246,0.3)' } : {}}
+                  onClick={(e) => onSort('crash_risk', e.shiftKey)}>
+                Risk <SortIndicator col="crash_risk" sortLevels={sortLevels} />
+              </th>
+              {horizons.map((h) => {
+                const hCol = `horizon_${h}` as SortColumn;
+                return (
+                  <th key={h} className={`text-center px-3 py-3 sortable-th group ${sortLevels.some(s => s.col === hCol) ? 'active' : ''}`}
+                      style={sortLevels.some(s => s.col === hCol) ? { color: 'var(--accent-violet)', textShadow: '0 0 8px rgba(139,92,246,0.3)' } : {}}
+                      onClick={(e) => onSort(hCol, e.shiftKey)}>
+                    {formatHorizon(h)} <SortIndicator col={hCol} sortLevels={sortLevels} />
+                  </th>
+                );
+              })}
               <th className="w-8 px-2"></th>
             </tr>
           </thead>
@@ -675,7 +1031,7 @@ function AllAssetsTable({ rows, horizons, updatedAsset, sortCol, sortDir, onSort
               const ticker = extractTicker(row.asset_label);
               const isExpanded = expandedRow === row.asset_label;
               return (
-                <SignalRowWithChart
+                <CosmicSignalRow
                   key={row.asset_label}
                   row={row}
                   ticker={ticker}
@@ -691,19 +1047,26 @@ function AllAssetsTable({ rows, horizons, updatedAsset, sortCol, sortDir, onSort
         </table>
       </div>
       {totalPages > 1 && (
-        <div className="flex items-center justify-between px-4 py-2.5 border-t border-[#2a2a4a]">
-          <span className="text-xs text-[#64748b]">
+        <div className="flex items-center justify-between px-4 py-2.5 border-t border-[var(--border-void)]">
+          <span className="text-xs text-[var(--text-muted)]">
             Page {page + 1} of {totalPages} ({rows.length} total)
           </span>
           <div className="flex gap-1">
-            <button onClick={() => setPage(0)} disabled={page === 0}
-              className="px-2 py-0.5 rounded text-xs text-[#42A5F5] hover:bg-[#16213e] disabled:opacity-30 transition">First</button>
-            <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0}
-              className="px-2 py-0.5 rounded text-xs text-[#42A5F5] hover:bg-[#16213e] disabled:opacity-30 transition">Prev</button>
-            <button onClick={() => setPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1}
-              className="px-2 py-0.5 rounded text-xs text-[#42A5F5] hover:bg-[#16213e] disabled:opacity-30 transition">Next</button>
-            <button onClick={() => setPage(totalPages - 1)} disabled={page >= totalPages - 1}
-              className="px-2 py-0.5 rounded text-xs text-[#42A5F5] hover:bg-[#16213e] disabled:opacity-30 transition">Last</button>
+            {(['First', 'Prev', 'Next', 'Last'] as const).map((label) => {
+              const disabled = (label === 'First' || label === 'Prev') ? page === 0 : page >= totalPages - 1;
+              const onClick = () => {
+                if (label === 'First') setPage(0);
+                else if (label === 'Prev') setPage(Math.max(0, page - 1));
+                else if (label === 'Next') setPage(Math.min(totalPages - 1, page + 1));
+                else setPage(totalPages - 1);
+              };
+              return (
+                <button key={label} onClick={onClick} disabled={disabled}
+                  className="px-2 py-0.5 rounded text-xs text-[var(--accent-violet)] hover:bg-[var(--void-hover)] disabled:opacity-30 transition">
+                  {label}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
@@ -711,58 +1074,73 @@ function AllAssetsTable({ rows, horizons, updatedAsset, sortCol, sortDir, onSort
   );
 }
 
-/* ── Signal row with expandable mini chart ───────────────────────── */
-function SignalRowWithChart({ row, ticker, horizons, highlighted, isExpanded, onToggleExpand, onNavigateChart }: {
+/* ── Story 3.1: Cosmic Signal Row ────────────────────────────────── */
+function CosmicSignalRow({ row, ticker, horizons, highlighted, isExpanded, onToggleExpand, onNavigateChart }: {
   row: SummaryRow; ticker: string; horizons: number[];
   highlighted?: boolean; isExpanded: boolean;
   onToggleExpand: () => void; onNavigateChart: () => void;
 }) {
   const label = (row.nearest_label || 'HOLD').toUpperCase();
+  // Compute composite for strength bar
+  const nearestHorizon = Object.values(row.horizon_signals)[0];
+  const pUp = nearestHorizon?.p_up;
+  const kellyVal = nearestHorizon?.kelly_half;
+
   return (
     <>
-      <tr className={`border-b border-[#2a2a4a]/50 row-glow transition ${highlighted ? 'animate-signal-flash' : ''} ${isExpanded ? 'bg-[#16213e]/40' : ''}`}>
+      <tr className={`cosmic-row border-b border-[var(--border-void)] ${highlighted ? 'aurora-upgrade' : ''} ${isExpanded ? 'bg-[var(--void-hover)]' : ''}`}>
+        {/* Asset */}
         <td className="px-4 py-2 whitespace-nowrap">
           <button onClick={onToggleExpand} className="text-left group/asset">
-            <span className="font-semibold text-[#e2e8f0] text-xs group-hover/asset:text-[#42A5F5] transition-colors">
+            <span className="font-semibold text-[var(--text-primary)] text-xs group-hover/asset:text-[var(--accent-violet)] transition-colors">
               {ticker}
             </span>
             {row.asset_label.includes('(') && (
-              <span className="block text-[9px] text-[#475569] truncate max-w-[140px] leading-tight">
+              <span className="block text-[9px] text-[var(--text-muted)] truncate max-w-[140px] leading-tight">
                 {row.asset_label.split('(')[0].trim()}
               </span>
             )}
           </button>
         </td>
-        <td className="px-3 py-2 text-[10px] text-[#94a3b8] max-w-[120px] truncate">{row.sector}</td>
-        <td className="px-3 py-2 text-center"><SignalBadge label={label} /></td>
-        <td className="px-3 py-2 text-center"><MomentumBadge value={row.momentum_score} /></td>
+        {/* AC-1: Sparkline */}
+        <td className="px-1 py-2 text-center">
+          <Sparkline ticker={ticker} width={60} height={28} />
+        </td>
+        {/* Sector */}
+        <td className="px-3 py-2 text-[10px] text-[var(--text-secondary)] max-w-[100px] truncate">{row.sector}</td>
+        {/* AC-2: Signal with strength bar */}
+        <td className="px-3 py-2 text-center">
+          <SignalStrengthBar label={label} pUp={pUp} kelly={kellyVal} />
+        </td>
+        {/* AC-3: Momentum badge */}
+        <td className="px-3 py-2 text-center">
+          <MomentumBadge value={row.momentum_score} />
+        </td>
+        {/* AC-4: Crash risk heat */}
+        <td className="px-3 py-2">
+          <div className="flex justify-center">
+            <CrashRiskHeat score={row.crash_risk_score} />
+          </div>
+        </td>
+        {/* AC-5: Horizon cells */}
         {horizons.map((h) => {
           const sig = row.horizon_signals[h] || row.horizon_signals[String(h)];
-          if (!sig) return <td key={h} className="px-2 py-2 text-center text-[#64748b] text-[10px]">{'\u2014'}</td>;
-          const { dir, color } = signalDirection(sig.exp_ret);
           return (
             <td key={h} className="px-2 py-2 text-center">
-              <DirectionArrow direction={dir} />
-              <span className="text-[10px] font-medium" style={{ color }}>
-                {sig.exp_ret != null ? `${(sig.exp_ret * 100).toFixed(1)}%` : '\u2014'}
-              </span>
-              <span className="block text-[9px] text-[#64748b]">
-                {sig.p_up != null ? `p${(sig.p_up * 100).toFixed(0)}` : ''}
-              </span>
-              <ExhaustionBar ueUp={sig.ue_up} ueDown={sig.ue_down} />
+              <HorizonCell expRet={sig?.exp_ret} pUp={sig?.p_up} />
             </td>
           );
         })}
-        <td className="px-3 py-2 text-center"><CrashRiskBadge score={row.crash_risk_score} /></td>
+        {/* Expand button */}
         <td className="px-2 py-2">
-          <button onClick={onToggleExpand} className="p-1 rounded hover:bg-[#16213e] transition-colors" title="Show chart">
-            <BarChart3 className={`w-3.5 h-3.5 transition-colors ${isExpanded ? 'text-[#42A5F5]' : 'text-[#475569] hover:text-[#94a3b8]'}`} />
+          <button onClick={onToggleExpand} className="p-1 rounded hover:bg-[var(--void-active)] transition-colors" title="Show chart">
+            <BarChart3 className={`w-3.5 h-3.5 transition-colors ${isExpanded ? 'text-[var(--accent-violet)]' : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'}`} />
           </button>
         </td>
       </tr>
       {isExpanded && (
         <tr>
-          <td colSpan={horizons.length + 5} className="p-0">
+          <td colSpan={horizons.length + 7} className="p-0">
             <MiniChartPanel ticker={ticker} onNavigateChart={onNavigateChart} />
           </td>
         </tr>
@@ -807,9 +1185,9 @@ function MiniChartPanel({ ticker, onNavigateChart }: { ticker: string; onNavigat
 
     // Gradient fill
     const isUp = closes[closes.length - 1] >= closes[0];
-    const lineColor = isUp ? '#00E676' : '#FF1744';
+    const lineColor = isUp ? '#34d399' : '#fb7185';
     const gradient = ctx.createLinearGradient(0, padding, 0, rect.height);
-    gradient.addColorStop(0, isUp ? 'rgba(0, 230, 118, 0.15)' : 'rgba(255, 23, 68, 0.15)');
+    gradient.addColorStop(0, isUp ? 'rgba(52, 211, 153, 0.15)' : 'rgba(251, 113, 133, 0.15)');
     gradient.addColorStop(1, 'transparent');
 
     // Draw area fill
@@ -859,7 +1237,7 @@ function MiniChartPanel({ ticker, onNavigateChart }: { ticker: string; onNavigat
         <div className="flex-1 h-[80px]">
           {isLoading ? (
             <div className="h-full flex items-center justify-center">
-              <div className="w-4 h-4 border-2 border-[#2a2a4a] border-t-[#42A5F5] rounded-full animate-spin" />
+              <div className="w-4 h-4 border-2 border-[#2a2a4a] border-t-[#8b5cf6] rounded-full animate-spin" />
             </div>
           ) : error ? (
             <div className="h-full flex items-center justify-center text-[10px] text-[#64748b]">Chart unavailable</div>
@@ -873,7 +1251,7 @@ function MiniChartPanel({ ticker, onNavigateChart }: { ticker: string; onNavigat
           <p className="text-sm font-bold text-[#e2e8f0] tabular-nums">
             {lastPrice > 0 ? (lastPrice < 10 ? lastPrice.toFixed(4) : lastPrice.toFixed(2)) : '--'}
           </p>
-          <p className={`text-xs font-semibold tabular-nums ${isUp ? 'text-[#00E676]' : 'text-[#FF1744]'}`}>
+          <p className={`text-xs font-semibold tabular-nums ${isUp ? 'text-[#34d399]' : 'text-[#fb7185]'}`}>
             {isUp ? '+' : ''}{changePct.toFixed(2)}%
           </p>
           <p className="text-[9px] text-[#475569]">3M change</p>
@@ -882,7 +1260,7 @@ function MiniChartPanel({ ticker, onNavigateChart }: { ticker: string; onNavigat
         {/* Navigate to full chart */}
         <button
           onClick={onNavigateChart}
-          className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-medium text-[#42A5F5] bg-[#42A5F5]/10 hover:bg-[#42A5F5]/20 transition-all"
+          className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-medium text-[#a78bfa] bg-[#8b5cf6]/10 hover:bg-[#8b5cf6]/20 transition-all"
         >
           <ExternalLink className="w-3 h-3" />
           Full Chart
@@ -892,84 +1270,49 @@ function MiniChartPanel({ ticker, onNavigateChart }: { ticker: string; onNavigat
   );
 }
 
-/* ── Sector signal row (compact, no mini chart) ──────────────────── */
-function SectorSignalRow({ row, horizons, highlighted }: { row: SummaryRow; horizons: number[]; highlighted?: boolean }) {
+/* ── Sector signal row (cosmic, with sparkline) ──────────────────── */
+function SectorSignalRow({ row, horizons, highlighted, delayMs = 0 }: { row: SummaryRow; horizons: number[]; highlighted?: boolean; delayMs?: number }) {
   const label = (row.nearest_label || 'HOLD').toUpperCase();
   const ticker = extractTicker(row.asset_label);
+  const nearestHorizon = Object.values(row.horizon_signals)[0];
   return (
-    <tr className={`border-b border-[#2a2a4a]/50 row-glow transition ${highlighted ? 'animate-signal-flash' : ''}`}>
+    <tr className={`cosmic-row constellation-row border-b border-[var(--border-void)] ${highlighted ? 'aurora-upgrade' : ''}`}
+      style={{ animationDelay: `${delayMs}ms` }}>
       <td className="px-4 py-2 whitespace-nowrap">
-        <span className="font-semibold text-[#e2e8f0] text-xs">{ticker}</span>
+        <span className="font-semibold text-[var(--text-primary)] text-xs">{ticker}</span>
         {row.asset_label.includes('(') && (
-          <span className="block text-[9px] text-[#475569] truncate max-w-[140px] leading-tight">
+          <span className="block text-[9px] text-[var(--text-muted)] truncate max-w-[140px] leading-tight">
             {row.asset_label.split('(')[0].trim()}
           </span>
         )}
       </td>
-      <td className="px-3 py-2 text-center"><SignalBadge label={label} /></td>
-      <td className="px-3 py-2 text-center"><MomentumBadge value={row.momentum_score} /></td>
+      <td className="px-1 py-2 text-center">
+        <Sparkline ticker={ticker} width={60} height={24} />
+      </td>
+      <td className="px-3 py-2 text-center">
+        <SignalStrengthBar label={label} pUp={nearestHorizon?.p_up} kelly={nearestHorizon?.kelly_half} />
+      </td>
+      <td className="px-3 py-2 text-center">
+        <MomentumBadge value={row.momentum_score} />
+      </td>
       {horizons.map((h) => {
         const sig = row.horizon_signals[h] || row.horizon_signals[String(h)];
-        if (!sig) return <td key={h} className="px-2 py-2 text-center text-[#64748b] text-[10px]">{'\u2014'}</td>;
-        const { dir, color } = signalDirection(sig.exp_ret);
         return (
           <td key={h} className="px-2 py-2 text-center">
-            <DirectionArrow direction={dir} />
-            <span className="text-[10px] font-medium" style={{ color }}>
-              {sig.exp_ret != null ? `${(sig.exp_ret * 100).toFixed(1)}%` : '\u2014'}
-            </span>
-            <span className="block text-[9px] text-[#64748b]">
-              {sig.p_up != null ? `p${(sig.p_up * 100).toFixed(0)}` : ''}
-            </span>
-            <ExhaustionBar ueUp={sig.ue_up} ueDown={sig.ue_down} />
+            <HorizonCell expRet={sig?.exp_ret} pUp={sig?.p_up} />
           </td>
         );
       })}
-      <td className="px-3 py-2 text-center"><CrashRiskBadge score={row.crash_risk_score} /></td>
+      <td className="px-3 py-2">
+        <div className="flex justify-center">
+          <CrashRiskHeat score={row.crash_risk_score} />
+        </div>
+      </td>
     </tr>
   );
 }
 
 /* ── Badges & Helpers ────────────────────────────────────────────── */
-function SignalBadge({ label }: { label: string }) {
-  const config: Record<string, { icon: string; color: string; bg: string }> = {
-    'STRONG BUY': { icon: '\u25B2\u25B2', color: '#00E676', bg: '#00E67620' },
-    'BUY': { icon: '\u25B2', color: '#66BB6A', bg: '#66BB6A20' },
-    'HOLD': { icon: '\u2014', color: '#64748b', bg: '#64748b15' },
-    'SELL': { icon: '\u25BC', color: '#EF5350', bg: '#EF535020' },
-    'STRONG SELL': { icon: '\u25BC\u25BC', color: '#FF1744', bg: '#FF174420' },
-    'EXIT': { icon: '\u2298', color: '#FFB300', bg: '#FFB30020' },
-  };
-  const c = config[label] || config['HOLD'];
-  return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold"
-      style={{ color: c.color, background: c.bg }}>
-      {c.icon} {label}
-    </span>
-  );
-}
-
-function CrashRiskBadge({ score }: { score: number }) {
-  const s = score ?? 0;
-  const color = s < 30 ? '#00E676' : s < 60 ? '#FFB300' : '#FF1744';
-  return (
-    <span className="inline-block px-2 py-0.5 rounded text-[10px] font-medium"
-      style={{ color, background: `${color}20` }}>
-      {s.toFixed(0)}%
-    </span>
-  );
-}
-
-function MomentumBadge({ value }: { value: number }) {
-  const v = value ?? 0;
-  const color = v > 1 ? '#00E676' : v < -1 ? '#FF1744' : '#64748b';
-  return (
-    <span className="text-[10px] font-medium" style={{ color }}>
-      {v > 0 ? '+' : ''}{v.toFixed(1)}%
-    </span>
-  );
-}
-
 function CountBadge({ value, label, color }: { value: number; label: string; color: string }) {
   return (
     <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium"
@@ -985,7 +1328,7 @@ function HighConvictionCard({
   title: string; signals: HighConvictionSignal[]; color: 'green' | 'red';
 }) {
   const Icon = color === 'green' ? ArrowUpCircle : ArrowDownCircle;
-  const accent = color === 'green' ? '#00E676' : '#FF1744';
+  const accent = color === 'green' ? '#34d399' : '#fb7185';
   const top5 = signals.slice(0, 5);
 
   return (

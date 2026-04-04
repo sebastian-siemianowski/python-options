@@ -4,6 +4,8 @@ import type { SafeStorageModel } from '../api';
 import PageHeader from '../components/PageHeader';
 import StatCard from '../components/StatCard';
 import LoadingSpinner from '../components/LoadingSpinner';
+import { CosmicErrorCard } from '../components/CosmicErrorState';
+import { ArenaEmpty } from '../components/CosmicEmptyState';
 import { Swords, Trophy, FlaskConical, Target, RefreshCw } from 'lucide-react';
 
 /* ── Hard gate thresholds ────────────────────────────────────────── */
@@ -19,8 +21,8 @@ const GATES = {
 function gateColor(val: number | null | undefined, gate: keyof typeof GATES): string {
   if (val == null) return 'text-[#64748b]';
   const g = GATES[gate];
-  if ('cmp' in g && g.cmp === 'lt') return val < g.pass ? 'text-[#00E676]' : 'text-[#FF1744]';
-  return val >= g.pass ? 'text-[#00E676]' : 'text-[#FF1744]';
+  if ('cmp' in g && g.cmp === 'lt') return val < g.pass ? 'text-[#34d399]' : 'text-[#fb7185]';
+  return val >= g.pass ? 'text-[#34d399]' : 'text-[#fb7185]';
 }
 
 export default function ArenaPage() {
@@ -28,6 +30,7 @@ export default function ArenaPage() {
   const safeQ = useQuery({ queryKey: ['arenaSafeStorage'], queryFn: api.arenaSafeStorage });
 
   if (statusQ.isLoading) return <LoadingSpinner text="Loading arena..." />;
+  if (statusQ.error) return <CosmicErrorCard title="Unable to load arena" error={statusQ.error as Error} onRetry={() => statusQ.refetch()} />;
 
   const status = statusQ.data;
   const models = safeQ.data?.models || [];
@@ -41,7 +44,12 @@ export default function ArenaPage() {
           <button
             onClick={() => { statusQ.refetch(); safeQ.refetch(); }}
             disabled={safeQ.isFetching}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#16213e] text-sm text-[#42A5F5] hover:bg-[#1a2744] border border-[#2a2a4a] transition disabled:opacity-50"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm transition-all duration-200 disabled:opacity-50"
+            style={{
+              background: 'rgba(139,92,246,0.08)',
+              color: '#a78bfa',
+              border: '1px solid rgba(139,92,246,0.12)',
+            }}
           >
             <RefreshCw className={`w-3.5 h-3.5 ${safeQ.isFetching ? 'animate-spin' : ''}`} />
             Refresh
@@ -81,14 +89,19 @@ export default function ArenaPage() {
       {/* Benchmark symbols */}
       {status && (
         <div className="glass-card p-4 mb-6 hover-lift">
-          <h3 className="text-sm font-medium text-[#94a3b8] mb-3 flex items-center gap-2">
+          <h3 className="text-sm font-medium mb-3 flex items-center gap-2" style={{ color: 'var(--text-secondary)' }}>
             <Swords className="w-4 h-4" /> Benchmark Universe
           </h3>
           <div className="flex flex-wrap gap-2">
             {status.benchmark_symbols.map((s) => (
               <span
                 key={s}
-                className="px-2.5 py-1 rounded-lg bg-[#16213e] text-xs font-medium text-[#42A5F5] border border-[#2a2a4a] hover:bg-[#1a2744] transition-colors cursor-default"
+                className="px-2.5 py-1 rounded-xl text-xs font-medium transition-colors cursor-default"
+                style={{
+                  background: 'rgba(139,92,246,0.06)',
+                  color: '#a78bfa',
+                  border: '1px solid rgba(139,92,246,0.1)',
+                }}
               >
                 {s}
               </span>
@@ -99,8 +112,8 @@ export default function ArenaPage() {
 
       {/* Safe storage models with scoring */}
       <div className="glass-card overflow-hidden fade-up-delay-1">
-        <div className="px-4 py-3 border-b border-[#2a2a4a] flex items-center justify-between">
-          <h3 className="text-sm font-medium text-[#94a3b8]">Safe Storage Models</h3>
+        <div className="px-4 py-3 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
+          <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Safe Storage Models</h3>
           <span className="text-xs text-[#64748b]">
             {scoredModels.length} scored / {models.length} total
           </span>
@@ -110,19 +123,19 @@ export default function ArenaPage() {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-[#2a2a4a]">
-                  <th className="text-left px-3 py-2 text-[#64748b]">#</th>
-                  <th className="text-left px-3 py-2 text-[#64748b]">Model Name</th>
-                  <th className="text-right px-3 py-2 text-[#64748b]">Final</th>
-                  <th className="text-right px-3 py-2 text-[#64748b]">BIC</th>
-                  <th className="text-right px-3 py-2 text-[#64748b]">CRPS</th>
-                  <th className="text-right px-3 py-2 text-[#64748b]">Hyv</th>
-                  <th className="text-center px-3 py-2 text-[#64748b]">PIT</th>
-                  <th className="text-right px-3 py-2 text-[#64748b]">CSS</th>
-                  <th className="text-right px-3 py-2 text-[#64748b]">FEC</th>
-                  <th className="text-right px-3 py-2 text-[#64748b]">Time</th>
-                  <th className="text-right px-3 py-2 text-[#64748b]">Size</th>
+              <thead style={{ background: 'linear-gradient(135deg, rgba(26,5,51,0.97), rgba(13,27,62,0.97))' }}>
+                <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.08)' }}>
+                  <th className="text-left px-3 py-2" style={{ color: 'var(--text-muted)' }}>#</th>
+                  <th className="text-left px-3 py-2" style={{ color: 'var(--text-muted)' }}>Model Name</th>
+                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Final</th>
+                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>BIC</th>
+                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>CRPS</th>
+                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Hyv</th>
+                  <th className="text-center px-3 py-2" style={{ color: 'var(--text-muted)' }}>PIT</th>
+                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>CSS</th>
+                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>FEC</th>
+                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Time</th>
+                  <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Size</th>
                 </tr>
               </thead>
               <tbody>
@@ -137,21 +150,21 @@ export default function ArenaPage() {
 
       {/* Hard gates reference */}
       <div className="glass-card p-5 mt-6 hover-lift">
-        <h3 className="text-sm font-medium text-[#94a3b8] mb-3">Hard Gates (Promotion Criteria)</h3>
+        <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Hard Gates (Promotion Criteria)</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
           {[
-            { gate: 'CSS ≥ 0.65', desc: 'Calibration stability under stress' },
-            { gate: 'FEC ≥ 0.75', desc: 'Forecast entropy consistency' },
+            { gate: 'CSS >= 0.65', desc: 'Calibration stability under stress' },
+            { gate: 'FEC >= 0.75', desc: 'Forecast entropy consistency' },
             { gate: 'Hyv < 1000', desc: 'Prevent variance collapse' },
-            { gate: 'vs STD ≥ 3', desc: 'Beat best standard by 3+ pts' },
-            { gate: 'PIT ≥ 75%', desc: 'Distributional correctness' },
+            { gate: 'vs STD >= 3', desc: 'Beat best standard by 3+ pts' },
+            { gate: 'PIT >= 75%', desc: 'Distributional correctness' },
             { gate: 'Final > 70', desc: 'Combined score threshold' },
             { gate: 'BIC < -29k', desc: 'Bayesian complexity penalty' },
             { gate: 'CRPS < 0.020', desc: 'Calibration + sharpness' },
           ].map((g) => (
-            <div key={g.gate} className="bg-[#0f0f23] rounded-lg p-2.5">
-              <p className="font-mono font-bold text-[#FFB300]">{g.gate}</p>
-              <p className="text-[#64748b] mt-0.5">{g.desc}</p>
+            <div key={g.gate} className="rounded-xl p-2.5" style={{ background: 'rgba(10,10,26,0.6)', border: '1px solid rgba(139,92,246,0.06)' }}>
+              <p className="font-mono font-bold" style={{ color: '#f59e0b' }}>{g.gate}</p>
+              <p className="mt-0.5" style={{ color: '#64748b' }}>{g.desc}</p>
             </div>
           ))}
         </div>
@@ -165,48 +178,48 @@ export default function ArenaPage() {
 function ModelRow({ model: m, rank }: { model: SafeStorageModel; rank: number }) {
   if (!m.has_scores) {
     return (
-      <tr className="border-b border-[#2a2a4a]/50 row-glow transition">
-        <td className="px-3 py-2.5 text-[#64748b]">{rank}</td>
-        <td className="px-3 py-2.5 font-medium text-[#e2e8f0]">{formatName(m.name)}</td>
-        <td colSpan={8} className="px-3 py-2.5 text-[#64748b] italic">No scoring data</td>
-        <td className="px-3 py-2.5 text-right text-[#64748b]">{m.size_kb} KB</td>
+      <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.04)' }} className="transition-all duration-150">
+        <td className="px-3 py-2.5" style={{ color: '#64748b' }}>{rank}</td>
+        <td className="px-3 py-2.5 font-medium" style={{ color: 'var(--text-luminous)' }}>{formatName(m.name)}</td>
+        <td colSpan={8} className="px-3 py-2.5 italic" style={{ color: '#64748b' }}>No scoring data</td>
+        <td className="px-3 py-2.5 text-right" style={{ color: '#64748b' }}>{m.size_kb} KB</td>
       </tr>
     );
   }
 
   return (
-    <tr className="border-b border-[#2a2a4a]/50 row-glow transition">
-      <td className="px-3 py-2.5 text-[#64748b]">{rank}</td>
+    <tr style={{ borderBottom: '1px solid rgba(139,92,246,0.04)' }} className="transition-all duration-150">
+      <td className="px-3 py-2.5" style={{ color: '#64748b' }}>{rank}</td>
       <td className="px-3 py-2.5">
-        <span className="font-medium text-[#e2e8f0]">{formatName(m.name)}</span>
+        <span className="font-medium" style={{ color: 'var(--text-luminous)' }}>{formatName(m.name)}</span>
       </td>
       <td className={`px-3 py-2.5 text-right font-bold ${gateColor(m.final, 'final')}`}>
-        {m.final?.toFixed(1) ?? '—'}
+        {m.final?.toFixed(1) ?? '--'}
       </td>
       <td className={`px-3 py-2.5 text-right ${gateColor(m.bic, 'bic')}`}>
-        {m.bic != null ? `${(m.bic / 1000).toFixed(1)}k` : '—'}
+        {m.bic != null ? `${(m.bic / 1000).toFixed(1)}k` : '--'}
       </td>
       <td className={`px-3 py-2.5 text-right ${gateColor(m.crps, 'crps')}`}>
-        {m.crps?.toFixed(4) ?? '—'}
+        {m.crps?.toFixed(4) ?? '--'}
       </td>
       <td className={`px-3 py-2.5 text-right ${gateColor(m.hyv, 'hyv')}`}>
-        {m.hyv?.toFixed(0) ?? '—'}
+        {m.hyv?.toFixed(0) ?? '--'}
       </td>
       <td className="px-3 py-2.5 text-center">
-        <span className={m.pit === 'PASS' ? 'text-[#00E676] font-bold' : 'text-[#FF1744]'}>
-          {m.pit ?? '—'}
+        <span style={{ color: m.pit === 'PASS' ? '#34d399' : '#fb7185', fontWeight: m.pit === 'PASS' ? 700 : 400 }}>
+          {m.pit ?? '--'}
         </span>
       </td>
       <td className={`px-3 py-2.5 text-right ${gateColor(m.css, 'css')}`}>
-        {m.css?.toFixed(2) ?? '—'}
+        {m.css?.toFixed(2) ?? '--'}
       </td>
       <td className={`px-3 py-2.5 text-right ${gateColor(m.fec, 'fec')}`}>
-        {m.fec?.toFixed(2) ?? '—'}
+        {m.fec?.toFixed(2) ?? '--'}
       </td>
-      <td className="px-3 py-2.5 text-right text-[#94a3b8]">
-        {m.time_ms != null ? `${(m.time_ms / 1000).toFixed(1)}s` : '—'}
+      <td className="px-3 py-2.5 text-right" style={{ color: 'var(--text-secondary)' }}>
+        {m.time_ms != null ? `${(m.time_ms / 1000).toFixed(1)}s` : '--'}
       </td>
-      <td className="px-3 py-2.5 text-right text-[#64748b]">{m.size_kb} KB</td>
+      <td className="px-3 py-2.5 text-right" style={{ color: '#64748b' }}>{m.size_kb} KB</td>
     </tr>
   );
 }

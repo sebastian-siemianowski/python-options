@@ -9,21 +9,21 @@ interface Props {
 }
 
 const COLOR_MAP = {
-  green: 'text-[#00E676]',
-  red: 'text-[#FF1744]',
-  blue: 'text-[#42A5F5]',
-  amber: 'text-[#FFB300]',
-  purple: 'text-[#AB47BC]',
-  cyan: 'text-[#00BCD4]',
+  green: 'text-[#34d399]',
+  red: 'text-[#fb7185]',
+  blue: 'text-[#a78bfa]',
+  amber: 'text-[#f59e0b]',
+  purple: 'text-[#c084fc]',
+  cyan: 'text-[#22d3ee]',
 };
 
 const BG_MAP = {
-  green: 'from-[#00E676]/[0.06] to-transparent',
-  red: 'from-[#FF1744]/[0.06] to-transparent',
-  blue: 'from-[#42A5F5]/[0.06] to-transparent',
-  amber: 'from-[#FFB300]/[0.06] to-transparent',
-  purple: 'from-[#AB47BC]/[0.06] to-transparent',
-  cyan: 'from-[#00BCD4]/[0.06] to-transparent',
+  green: 'from-[#34d399]/[0.06] to-transparent',
+  red: 'from-[#fb7185]/[0.06] to-transparent',
+  blue: 'from-[#a78bfa]/[0.06] to-transparent',
+  amber: 'from-[#f59e0b]/[0.06] to-transparent',
+  purple: 'from-[#c084fc]/[0.06] to-transparent',
+  cyan: 'from-[#22d3ee]/[0.06] to-transparent',
 };
 
 export default function StatCard({ title, value, subtitle, icon, color = 'blue' }: Props) {
