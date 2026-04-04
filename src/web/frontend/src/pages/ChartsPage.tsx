@@ -48,14 +48,14 @@ const TIME_RANGES: { key: TimeRange; label: string; days: number }[] = [
 ];
 
 const OVERLAY_DEFS: { key: OverlayKey; label: string; color: string; group: string; shortcut: string }[] = [
-  { key: 'sma20',          label: 'SMA 20',          color: 'var(--accent-amber)', group: 'Moving Averages', shortcut: '1' },
+  { key: 'sma20',          label: 'SMA 20',          color: '#f5c542', group: 'Moving Averages', shortcut: '1' },
   { key: 'sma50',          label: 'SMA 50',          color: '#818cf8', group: 'Moving Averages', shortcut: '2' },
   { key: 'sma200',         label: 'SMA 200',         color: '#c084fc', group: 'Moving Averages', shortcut: '3' },
   { key: 'bb',             label: 'Bollinger',        color: 'rgba(139,92,246,0.6)', group: 'Volatility', shortcut: '4' },
   { key: 'rsi',            label: 'RSI (14)',         color: '#818cf8', group: 'Volatility', shortcut: '5' },
   { key: 'forecastMedian', label: 'Forecast',         color: '#b49aff', group: 'Forecast', shortcut: '6' },
-  { key: 'ciUpper',        label: 'CI Upper',         color: 'var(--accent-emerald)', group: 'Forecast', shortcut: '7' },
-  { key: 'ciLower',        label: 'CI Lower',         color: 'var(--accent-rose)', group: 'Forecast', shortcut: '8' },
+  { key: 'ciUpper',        label: 'CI Upper',         color: '#3ee8a5', group: 'Forecast', shortcut: '7' },
+  { key: 'ciLower',        label: 'CI Lower',         color: '#ff6b8a', group: 'Forecast', shortcut: '8' },
   { key: 'priceLine',      label: 'Price Line',       color: '#e2e8f0', group: 'Overlays', shortcut: 'p' },
 ];
 
@@ -159,7 +159,7 @@ export default function ChartsPage() {
           {sidebarCollapsed ? (
             <button
               onClick={() => setSidebarCollapsed(false)}
-              className="w-10 h-10 flex items-center justify-center glass-card text-[var(--text-secondary)] hover:text-[var(--text-violet)] transition-colors"
+              className="w-10 h-10 flex items-center justify-center glass-card text-[#7a8ba4] hover:text-[#b49aff] transition-colors"
               title="Expand sidebar"
             >
               <ChevronRight className="w-4 h-4" />
@@ -167,8 +167,8 @@ export default function ChartsPage() {
           ) : (
             <div className="pr-3">
               {/* Search */}
-              <div className="flex items-center gap-1.5 glass-card px-2.5 py-1.5 mb-2 group focus-within:ring-1 focus-within:ring-[var(--accent-violet)]/30 transition-all">
-                <Search className="w-3 h-3 text-[var(--text-secondary)] group-focus-within:text-[var(--text-violet)] transition-colors" />
+              <div className="flex items-center gap-1.5 glass-card px-2.5 py-1.5 mb-2 group focus-within:ring-1 focus-within:ring-[#8b5cf6]/30 transition-all">
+                <Search className="w-3 h-3 text-[#7a8ba4] group-focus-within:text-[#b49aff] transition-colors" />
                 <input
                   ref={searchRef}
                   type="text"
@@ -186,7 +186,7 @@ export default function ChartsPage() {
                   }}
                 />
                 {search && (
-                  <button onClick={() => setSearch('')} className="text-[var(--text-secondary)] hover:text-[#e2e8f0]">
+                  <button onClick={() => setSearch('')} className="text-[#7a8ba4] hover:text-[#e2e8f0]">
                     <X className="w-3 h-3" />
                   </button>
                 )}
@@ -200,9 +200,9 @@ export default function ChartsPage() {
                 {([
                   { key: 'sector' as PickerView, label: 'Sectors', accent: undefined },
                   { key: 'all' as PickerView, label: 'All', accent: undefined },
-                  { key: 'strong_buy' as PickerView, label: 'Buy', accent: 'var(--accent-emerald)' },
-                  { key: 'strong_sell' as PickerView, label: 'Sell', accent: 'var(--accent-rose)' },
-                  { key: 'filter' as PickerView, label: 'Top', accent: 'var(--accent-amber)' },
+                  { key: 'strong_buy' as PickerView, label: 'Buy', accent: '#3ee8a5' },
+                  { key: 'strong_sell' as PickerView, label: 'Sell', accent: '#ff6b8a' },
+                  { key: 'filter' as PickerView, label: 'Top', accent: '#f5c542' },
                 ]).map(({ key, label, accent }) => (
                   <button
                     key={key}
@@ -210,10 +210,10 @@ export default function ChartsPage() {
                     className={`flex-1 px-1.5 py-1 rounded text-[10px] font-medium transition-all duration-200 ${
                       pickerView === key
                         ? 'text-[#e2e8f0] shadow-sm'
-                        : 'text-[var(--text-secondary)] hover:text-[var(--text-secondary)]'
+                        : 'text-[#7a8ba4] hover:text-[#94a3b8]'
                     }`}
                     style={pickerView === key ? {
-                      background: accent ? `${accent}20` : 'var(--violet-15)',
+                      background: accent ? `${accent}20` : 'rgba(139,92,246,0.15)',
                       color: accent || '#b49aff',
                     } : {}}
                   >
@@ -229,7 +229,7 @@ export default function ChartsPage() {
               </div>
 
               {/* Symbol list */}
-              <div className="glass-card overflow-y-auto max-h-[calc(100vh-260px)] symbol-sidebar">
+              <div className="glass-card overflow-y-auto max-h-[calc(100vh-260px)] scrollbar-thin">
                 {pickerView === 'all' && (
                   <SymbolList symbols={filtered.slice(0, 150)} selected={symbol} onSelect={selectSymbol}
                     strongBuy={strongBuySymbols} strongSell={strongSellSymbols} />
@@ -244,14 +244,14 @@ export default function ChartsPage() {
                 {pickerView === 'strong_buy' && (
                   <SymbolList
                     symbols={strongBuySymbols.filter(s => !search || s.toLowerCase().includes(search.toLowerCase()))}
-                    selected={symbol} onSelect={selectSymbol} emptyText="No strong buy signals" accent="var(--accent-emerald)"
+                    selected={symbol} onSelect={selectSymbol} emptyText="No strong buy signals" accent="#3ee8a5"
                     strongBuy={strongBuySymbols} strongSell={strongSellSymbols}
                   />
                 )}
                 {pickerView === 'strong_sell' && (
                   strongSellSymbols.length === 0 ? (
                     <div className="px-3 py-8 text-center">
-                      <p className="text-xs text-[var(--text-secondary)] mb-1">No strong sell signals</p>
+                      <p className="text-xs text-[#7a8ba4] mb-1">No strong sell signals</p>
                       <p className="text-[10px] text-[#6b7a90] leading-relaxed">
                         No assets currently meet the strong sell threshold.
                       </p>
@@ -259,7 +259,7 @@ export default function ChartsPage() {
                   ) : (
                     <SymbolList
                       symbols={strongSellSymbols.filter(s => !search || s.toLowerCase().includes(search.toLowerCase()))}
-                      selected={symbol} onSelect={selectSymbol} emptyText="No matching symbols" accent="var(--accent-rose)"
+                      selected={symbol} onSelect={selectSymbol} emptyText="No matching symbols" accent="#ff6b8a"
                       strongBuy={strongBuySymbols} strongSell={strongSellSymbols}
                     />
                   )
@@ -276,7 +276,7 @@ export default function ChartsPage() {
 
               <button
                 onClick={() => setSidebarCollapsed(true)}
-                className="mt-2 w-full py-1 text-[9px] text-[#6b7a90] hover:text-[var(--text-secondary)] transition-colors text-center"
+                className="mt-2 w-full py-1 text-[9px] text-[#6b7a90] hover:text-[#94a3b8] transition-colors text-center"
               >
                 Collapse sidebar
               </button>
@@ -289,14 +289,14 @@ export default function ChartsPage() {
           {symbol ? (
             <ChartPanel symbol={symbol} strongBuy={strongBuySymbols} strongSell={strongSellSymbols} />
           ) : (
-            <div className="glass-card p-16 text-center" style={{ borderRadius: 16 }}>
-              <div className="mb-4" style={{ color: 'var(--text-muted)', opacity: 0.3 }}>
+            <div className="glass-card p-16 text-center">
+              <div className="text-[#2a2a4a] mb-4">
                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" className="mx-auto">
                   <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
                 </svg>
               </div>
-              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>Select a symbol to view its chart</p>
-              <p className="text-caption mt-1">
+              <p className="text-sm text-[#7a8ba4]">Select a symbol to begin</p>
+              <p className="text-[10px] text-[#6b7a90] mt-1">
                 Use the sidebar or press {navigator.platform.includes('Mac') ? '\u2318' : 'Ctrl+'}K to search
               </p>
             </div>
@@ -318,7 +318,7 @@ function SymbolList({
   strongBuy: string[]; strongSell: string[];
 }) {
   if (symbols.length === 0) {
-    return <p className="px-3 py-6 text-xs text-[var(--text-secondary)] text-center">{emptyText || 'No symbols'}</p>;
+    return <p className="px-3 py-6 text-xs text-[#7a8ba4] text-center">{emptyText || 'No symbols'}</p>;
   }
   return (
     <>
@@ -331,17 +331,14 @@ function SymbolList({
             key={s}
             onClick={() => onSelect(s)}
             className={`w-full text-left px-3 py-1.5 text-xs font-medium transition-all duration-150 flex items-center gap-1.5
-              ${isSelected ? 'bg-[var(--accent-violet)]/10' : 'hover:bg-[var(--accent-violet)]/5 hover:translate-x-0.5'}`}
-            style={{
-              color: isSelected ? (accent || '#b49aff') : '#94a3b8',
-              borderLeft: isSelected ? `3px solid ${accent || 'var(--accent-violet)'}` : '3px solid transparent',
-            }}
+              ${isSelected ? 'bg-[#8b5cf6]/10' : 'hover:bg-[#8b5cf6]/5'}`}
+            style={{ color: isSelected ? (accent || '#b49aff') : '#94a3b8' }}
           >
             <span className={`w-0.5 h-3 rounded-full transition-all duration-200 ${isSelected ? 'opacity-100' : 'opacity-0'}`}
               style={{ backgroundColor: accent || '#b49aff' }} />
             <span className="flex-1">{s}</span>
-            {isBuy && <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-emerald)]" title="Strong Buy" />}
-            {isSell && <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-rose)]" title="Strong Sell" />}
+            {isBuy && <span className="w-1.5 h-1.5 rounded-full bg-[#3ee8a5]" title="Strong Buy" />}
+            {isSell && <span className="w-1.5 h-1.5 rounded-full bg-[#ff6b8a]" title="Strong Sell" />}
           </button>
         );
       })}
@@ -376,17 +373,17 @@ function SectorSymbolList({
           <div key={sec.name}>
             <button
               onClick={() => toggleSector(sec.name)}
-              className="sector-header w-full flex items-center gap-1.5 hover:bg-[var(--accent-violet)]/5 transition-colors"
+              className="w-full flex items-center gap-1.5 px-2 py-1.5 hover:bg-[#8b5cf6]/5 transition-colors"
             >
               {expanded
-                ? <ChevronDown className="w-3 h-3 text-[var(--text-secondary)]" />
+                ? <ChevronDown className="w-3 h-3 text-[#7a8ba4]" />
                 : <ChevronRight className="w-3 h-3 text-[#6b7a90]" />}
-              <span className={`text-[10px] font-medium flex-1 text-left truncate ${expanded ? 'text-[var(--text-secondary)]' : 'text-[var(--text-secondary)]'}`}>
+              <span className={`text-[10px] font-medium flex-1 text-left truncate ${expanded ? 'text-[#94a3b8]' : 'text-[#7a8ba4]'}`}>
                 {sec.name}
               </span>
               <span className="flex items-center gap-1">
-                {buyCount > 0 && <span className="text-[8px] text-[var(--accent-emerald)]">{buyCount}</span>}
-                {sellCount > 0 && <span className="text-[8px] text-[var(--accent-rose)]">{sellCount}</span>}
+                {buyCount > 0 && <span className="text-[8px] text-[#3ee8a5]">{buyCount}</span>}
+                {sellCount > 0 && <span className="text-[8px] text-[#ff6b8a]">{sellCount}</span>}
                 <span className="text-[9px] text-[#6b7a90]">{syms.length}</span>
               </span>
             </button>
@@ -401,11 +398,11 @@ function SectorSymbolList({
                       key={s}
                       onClick={() => onSelect(s)}
                       className={`w-full text-left pl-7 pr-3 py-1 text-xs transition-all duration-150 flex items-center gap-1.5
-                        ${isSelected ? 'bg-[var(--accent-violet)]/10 text-[var(--text-violet)]' : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--accent-violet)]/5'}`}
+                        ${isSelected ? 'bg-[#8b5cf6]/10 text-[#b49aff]' : 'text-[#7a8599] hover:text-[#94a3b8] hover:bg-[#8b5cf6]/5'}`}
                     >
                       <span className="flex-1">{s}</span>
-                      {isBuy && <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-emerald)]" />}
-                      {isSell && <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-rose)]" />}
+                      {isBuy && <span className="w-1.5 h-1.5 rounded-full bg-[#3ee8a5]" />}
+                      {isSell && <span className="w-1.5 h-1.5 rounded-full bg-[#ff6b8a]" />}
                     </button>
                   );
                 })}
@@ -423,13 +420,13 @@ function SectorSymbolList({
    ═══════════════════════════════════════════════════════════════════ */
 const FILTER_DEFS: { key: FilterMode; label: string; desc: string; color: string; icon: string;
   metric: (r: SummaryRow) => string; rawMetric: (r: SummaryRow) => number; format: 'pct' | 'num' | 'pct100'; }[] = [
-  { key: 'momentum', label: 'Momentum', desc: 'Strongest trend signal', color: 'var(--accent-emerald)', icon: 'M',
+  { key: 'momentum', label: 'Momentum', desc: 'Strongest trend signal', color: '#3ee8a5', icon: 'M',
     metric: (r) => { const v = r.momentum_score ?? 0; return (v >= 0 ? '+' : '') + v.toFixed(0); },
     rawMetric: (r) => r.momentum_score ?? 0, format: 'num' },
   { key: 'edge', label: 'Edge', desc: 'Best signal edge (Kelly)', color: '#b49aff', icon: 'E',
     metric: (r) => { const v = getMaxEdge(r); return (v >= 0 ? '+' : '') + (v * 100).toFixed(1) + '%'; },
     rawMetric: (r) => getMaxEdge(r), format: 'pct' },
-  { key: 'exp_return', label: 'Return', desc: 'Best expected return', color: 'var(--accent-amber)', icon: 'R',
+  { key: 'exp_return', label: 'Return', desc: 'Best expected return', color: '#f5c542', icon: 'R',
     metric: (r) => {
       const sigs = Object.values(r.horizon_signals || {});
       const best = sigs.length ? Math.max(...sigs.map(s => s.exp_ret ?? 0)) : 0;
@@ -455,7 +452,7 @@ const FILTER_DEFS: { key: FilterMode; label: string; desc: string; color: string
   { key: 'kelly', label: 'Kelly', desc: 'Best half-Kelly sizing', color: '#f87171', icon: 'K',
     metric: (r) => (getMaxHalfKelly(r) * 100).toFixed(1) + '%',
     rawMetric: (r) => getMaxHalfKelly(r), format: 'pct' },
-  { key: 'forecast_up', label: 'Upside', desc: 'Most forecast upside', color: 'var(--accent-emerald)', icon: '\u2191',
+  { key: 'forecast_up', label: 'Upside', desc: 'Most forecast upside', color: '#3ee8a5', icon: '\u2191',
     metric: (r) => {
       const sigs = Object.values(r.horizon_signals || {});
       const best = sigs.length ? Math.max(...sigs.map(s => s.exp_ret ?? 0)) : 0;
@@ -465,7 +462,7 @@ const FILTER_DEFS: { key: FilterMode; label: string; desc: string; color: string
       const sigs = Object.values(r.horizon_signals || {});
       return sigs.length ? Math.max(...sigs.map(s => s.exp_ret ?? 0)) : 0;
     }, format: 'pct' },
-  { key: 'forecast_down', label: 'Downside', desc: 'Most forecast downside', color: 'var(--accent-rose)', icon: '\u2193',
+  { key: 'forecast_down', label: 'Downside', desc: 'Most forecast downside', color: '#ff6b8a', icon: '\u2193',
     metric: (r) => {
       const sigs = Object.values(r.horizon_signals || {});
       const worst = sigs.length ? Math.min(...sigs.map(s => s.exp_ret ?? 0)) : 0;
@@ -506,7 +503,7 @@ function RankedFilterList({
   return (
     <div>
       {/* Filter mode pills */}
-      <div className="flex flex-wrap gap-0.5 p-1.5 border-b border-[var(--void-raised)]/50">
+      <div className="flex flex-wrap gap-0.5 p-1.5 border-b border-[#2a2a4a]/50">
         {FILTER_DEFS.map(f => {
           const active = filterMode === f.key;
           return (
@@ -514,7 +511,7 @@ function RankedFilterList({
               key={f.key}
               onClick={() => setFilterMode(f.key)}
               className={`px-1.5 py-1 rounded text-[9px] font-semibold transition-all duration-200 ${
-                active ? 'shadow-sm' : 'text-[#6b7a90] hover:text-[var(--text-secondary)] bg-transparent'
+                active ? 'shadow-sm' : 'text-[#6b7a90] hover:text-[#94a3b8] bg-transparent'
               }`}
               style={active ? { background: `${f.color}18`, color: f.color } : {}}
               title={f.desc}
@@ -526,14 +523,14 @@ function RankedFilterList({
       </div>
 
       {/* Header with count */}
-      <div className="flex items-center justify-between px-2.5 py-1.5 border-b border-[var(--void-raised)]/30">
+      <div className="flex items-center justify-between px-2.5 py-1.5 border-b border-[#2a2a4a]/30">
         <p className="text-[9px] text-[#6b7a90]">{currentFilter.desc}</p>
         <span className="text-[8px] tabular-nums text-[#3a3a5a]">{filteredRows.length} assets</span>
       </div>
 
       {loading ? (
         <div className="px-3 py-8 text-center">
-          <div className="inline-block w-4 h-4 border-2 border-[var(--void-raised)] border-t-[var(--accent-violet)] rounded-full animate-spin mb-2" />
+          <div className="inline-block w-4 h-4 border-2 border-[#2a2a4a] border-t-[#8b5cf6] rounded-full animate-spin mb-2" />
           <p className="text-[10px] text-[#6b7a90]">Loading signals...</p>
         </div>
       ) : filteredRows.length === 0 ? (
@@ -556,8 +553,8 @@ function RankedFilterList({
               onClick={() => onSelect(ticker)}
               className={`group relative w-full text-left px-2 py-1.5 text-xs transition-all duration-150 overflow-hidden
                 ${isSelected
-                  ? 'bg-[var(--accent-violet)]/10'
-                  : 'hover:bg-[var(--accent-violet)]/5'
+                  ? 'bg-[#8b5cf6]/10'
+                  : 'hover:bg-[#8b5cf6]/5'
                 }`}
             >
               {/* Metric bar background */}
@@ -585,10 +582,10 @@ function RankedFilterList({
                       {ticker}
                     </span>
                     {isBuy && (
-                      <span className="px-1 py-px rounded text-[7px] font-bold bg-[var(--accent-emerald)]/15 text-[var(--accent-emerald)]">BUY</span>
+                      <span className="px-1 py-px rounded text-[7px] font-bold bg-[#3ee8a5]/15 text-[#3ee8a5]">BUY</span>
                     )}
                     {isSell && (
-                      <span className="px-1 py-px rounded text-[7px] font-bold bg-[var(--accent-rose)]/15 text-[var(--accent-rose)]">SELL</span>
+                      <span className="px-1 py-px rounded text-[7px] font-bold bg-[#ff6b8a]/15 text-[#ff6b8a]">SELL</span>
                     )}
                   </div>
                   {companyName && (
@@ -703,14 +700,14 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
         fontSize: 11,
       },
       grid: {
-        vertLines: { color: 'var(--violet-4)' },
-        horzLines: { color: 'var(--violet-4)' },
+        vertLines: { color: 'rgba(139,92,246,0.04)' },
+        horzLines: { color: 'rgba(139,92,246,0.04)' },
       },
       width: container.clientWidth,
       height: 480,
       crosshair: {
-        vertLine: { color: 'var(--violet-40)', width: 1, style: LineStyle.Dashed, labelBackgroundColor: '#0a0a1a' },
-        horzLine: { color: 'var(--violet-40)', width: 1, style: LineStyle.Dashed, labelBackgroundColor: '#0a0a1a' },
+        vertLine: { color: 'rgba(139,92,246,0.4)', width: 1, style: LineStyle.Dashed, labelBackgroundColor: '#0a0a1a' },
+        horzLine: { color: 'rgba(139,92,246,0.4)', width: 1, style: LineStyle.Dashed, labelBackgroundColor: '#0a0a1a' },
       },
       rightPriceScale: {
         borderColor: 'rgba(42, 42, 74, 0.5)',
@@ -729,10 +726,10 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
     // Candlesticks
     const showPriceLine = overlays.priceLine;
     const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: 'var(--accent-emerald)',
-      downColor: 'var(--accent-rose)',
-      borderUpColor: 'var(--accent-emerald)',
-      borderDownColor: 'var(--accent-rose)',
+      upColor: '#3ee8a5',
+      downColor: '#ff6b8a',
+      borderUpColor: '#3ee8a5',
+      borderDownColor: '#ff6b8a',
       wickUpColor: '#6ff0c0',
       wickDownColor: '#fda4af',
       lastValueVisible: showPriceLine,
@@ -783,7 +780,7 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
           (candleSeries as any).setMarkers([{
             time: lastBar.time,
             position: isSB ? 'belowBar' : 'aboveBar',
-            color: isSB ? 'var(--accent-emerald)' : 'var(--accent-rose)',
+            color: isSB ? '#3ee8a5' : '#ff6b8a',
             shape: isSB ? 'arrowUp' : 'arrowDown',
             text: isSB ? 'STRONG BUY' : 'STRONG SELL',
           }]);
@@ -796,7 +793,7 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
     if (indQ.data?.indicators) {
       const ind = indQ.data.indicators;
       if (showSMA20 && ind.sma20?.length)
-        chart.addSeries(LineSeries, { color: 'var(--accent-amber)', lineWidth: 1, ...smaOpts }).setData(ind.sma20);
+        chart.addSeries(LineSeries, { color: '#f5c542', lineWidth: 1, ...smaOpts }).setData(ind.sma20);
       if (showSMA50 && ind.sma50?.length)
         chart.addSeries(LineSeries, { color: '#b49aff', lineWidth: 1, ...smaOpts }).setData(ind.sma50);
       if (showSMA200 && ind.sma200?.length)
@@ -807,8 +804,8 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
     if (indQ.data?.indicators?.bollinger && showBollinger) {
       const bb = indQ.data.indicators.bollinger;
       const bbOpts = { lineWidth: 1 as const, lineStyle: LineStyle.Dotted, ...smaOpts };
-      if (bb.upper?.length) chart.addSeries(LineSeries, { color: 'var(--violet-25)', ...bbOpts }).setData(bb.upper);
-      if (bb.lower?.length) chart.addSeries(LineSeries, { color: 'var(--violet-25)', ...bbOpts }).setData(bb.lower);
+      if (bb.upper?.length) chart.addSeries(LineSeries, { color: 'rgba(139,92,246,0.25)', ...bbOpts }).setData(bb.upper);
+      if (bb.lower?.length) chart.addSeries(LineSeries, { color: 'rgba(139,92,246,0.25)', ...bbOpts }).setData(bb.lower);
     }
 
     // Forecast overlay
@@ -837,14 +834,14 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
       const fcOpts = { priceScaleId: 'right' as const, ...smaOpts };
       if (showCIUpper) {
         chart.addSeries(AreaSeries, {
-          topColor: 'var(--violet-12)', bottomColor: 'var(--violet-2)',
-          lineColor: 'var(--violet-25)', lineWidth: 1, lineStyle: LineStyle.Dashed, ...fcOpts,
+          topColor: 'rgba(139,92,246,0.12)', bottomColor: 'rgba(139,92,246,0.02)',
+          lineColor: 'rgba(139,92,246,0.25)', lineWidth: 1, lineStyle: LineStyle.Dashed, ...fcOpts,
         }).setData(upperData);
       }
       if (showCILower) {
         chart.addSeries(AreaSeries, {
-          topColor: 'var(--violet-2)', bottomColor: 'var(--violet-12)',
-          lineColor: 'var(--violet-25)', lineWidth: 1, lineStyle: LineStyle.Dashed, ...fcOpts,
+          topColor: 'rgba(139,92,246,0.02)', bottomColor: 'rgba(139,92,246,0.12)',
+          lineColor: 'rgba(139,92,246,0.25)', lineWidth: 1, lineStyle: LineStyle.Dashed, ...fcOpts,
         }).setData(lowerData);
       }
       if (showForecastMedian) {
@@ -924,7 +921,7 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
   if (ohlcvQ.error) {
     return (
       <div className="glass-card p-8 text-center">
-        <p className="text-[var(--accent-rose)] text-sm">Failed to load chart for {symbol}</p>
+        <p className="text-[#ff6b8a] text-sm">Failed to load chart for {symbol}</p>
         <p className="text-[10px] text-[#6b7a90] mt-1">Check data availability or try another symbol</p>
       </div>
     );
@@ -962,42 +959,42 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
                 <span className="text-sm font-semibold tabular-nums px-1.5 py-0.5 rounded"
                   style={{
                     color: change >= 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)',
-                    background: change >= 0 ? 'var(--emerald-8)' : 'var(--rose-8)',
+                    background: change >= 0 ? 'rgba(62,232,165,0.08)' : 'rgba(255,107,138,0.08)',
                   }}>
                   {change >= 0 ? '+' : ''}{change.toFixed(2)}%
                 </span>
               </>
             )}
             {isSB && (
-              <span className="px-2 py-0.5 rounded-md text-[10px] font-bold" style={{ background: 'var(--emerald-15)', color: 'var(--accent-emerald)', border: '1px solid rgba(62,232,165,0.2)' }}>
+              <span className="px-2 py-0.5 rounded-md text-[10px] font-bold" style={{ background: 'rgba(62,232,165,0.15)', color: 'var(--accent-emerald)', border: '1px solid rgba(62,232,165,0.2)' }}>
                 STRONG BUY
               </span>
             )}
             {isSS && (
-              <span className="px-2 py-0.5 rounded-md text-[10px] font-bold" style={{ background: 'var(--rose-15)', color: 'var(--accent-rose)', border: '1px solid rgba(255,107,138,0.2)' }}>
+              <span className="px-2 py-0.5 rounded-md text-[10px] font-bold" style={{ background: 'rgba(255,107,138,0.15)', color: 'var(--accent-rose)', border: '1px solid rgba(255,107,138,0.2)' }}>
                 STRONG SELL
               </span>
             )}
           </div>
 
           {/* OHLCV data bar (live with crosshair) */}
-          <div className="flex items-center gap-4 text-[10px] text-[var(--text-secondary)] tabular-nums">
-            <span>O <span className="text-[var(--text-secondary)]">{(crosshairData?.o ?? open).toFixed(2)}</span></span>
-            <span>H <span className="text-[var(--accent-emerald)]/70">{(crosshairData?.h ?? high).toFixed(2)}</span></span>
-            <span>L <span className="text-[var(--accent-rose)]/70">{(crosshairData?.l ?? low).toFixed(2)}</span></span>
-            <span>C <span className="text-[var(--text-secondary)]">{(crosshairData?.c ?? lastBar?.close ?? 0).toFixed(2)}</span></span>
+          <div className="flex items-center gap-4 text-[10px] text-[#7a8ba4] tabular-nums">
+            <span>O <span className="text-[#94a3b8]">{(crosshairData?.o ?? open).toFixed(2)}</span></span>
+            <span>H <span className="text-[#3ee8a5]/70">{(crosshairData?.h ?? high).toFixed(2)}</span></span>
+            <span>L <span className="text-[#ff6b8a]/70">{(crosshairData?.l ?? low).toFixed(2)}</span></span>
+            <span>C <span className="text-[#94a3b8]">{(crosshairData?.c ?? lastBar?.close ?? 0).toFixed(2)}</span></span>
             <span className="text-[#2a2a4a]">|</span>
-            <span>Vol <span className="text-[var(--text-secondary)]">{formatVolume(crosshairData?.v ?? volume)}</span></span>
+            <span>Vol <span className="text-[#94a3b8]">{formatVolume(crosshairData?.v ?? volume)}</span></span>
             {rsiValue != null && (
               <>
                 <span className="text-[#2a2a4a]">|</span>
-                <span>RSI <span className={rsiValue > 70 ? 'text-[var(--accent-rose)]' : rsiValue < 30 ? 'text-[var(--accent-emerald)]' : 'text-[var(--text-secondary)]'}>
+                <span>RSI <span className={rsiValue > 70 ? 'text-[#ff6b8a]' : rsiValue < 30 ? 'text-[#3ee8a5]' : 'text-[#94a3b8]'}>
                   {rsiValue.toFixed(1)}
                 </span></span>
               </>
             )}
             <span className="text-[#2a2a4a]">|</span>
-            <span>Period <span className={periodReturn >= 0 ? 'text-[var(--accent-emerald)]/70' : 'text-[var(--accent-rose)]/70'}>
+            <span>Period <span className={periodReturn >= 0 ? 'text-[#3ee8a5]/70' : 'text-[#ff6b8a]/70'}>
               {periodReturn >= 0 ? '+' : ''}{periodReturn.toFixed(1)}%
             </span></span>
             {crosshairData && (
@@ -1019,7 +1016,7 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
                 onClick={() => setTimeRange(r.key)}
                 className="px-2 py-1 rounded-md text-[10px] font-semibold transition-all duration-200"
                 style={timeRange === r.key
-                  ? { background: 'var(--violet-15)', color: 'var(--accent-violet)', boxShadow: '0 0 8px var(--violet-15)' }
+                  ? { background: 'rgba(139,92,246,0.15)', color: 'var(--accent-violet)', boxShadow: '0 0 8px rgba(139,92,246,0.15)' }
                   : { color: 'var(--text-muted)' }
                 }
               >
@@ -1033,7 +1030,7 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
             onClick={() => setPanelOpen(v => !v)}
             className="px-2.5 py-1.5 rounded-lg text-[10px] font-semibold transition-all duration-200 flex items-center gap-1.5"
             style={panelOpen
-              ? { background: 'var(--violet-15)', color: 'var(--accent-violet)', border: '1px solid var(--violet-30)' }
+              ? { background: 'rgba(139,92,246,0.15)', color: 'var(--accent-violet)', border: '1px solid rgba(139,92,246,0.3)' }
               : { background: 'var(--void)', color: 'var(--text-muted)', border: '1px solid var(--border-void)' }
             }
           >
@@ -1056,11 +1053,11 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
             <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider font-semibold">Chart Layers</span>
             <div className="flex gap-1.5">
               <button onClick={allOn} disabled={allActive}
-                className="px-2 py-0.5 rounded text-[9px] font-semibold transition-all bg-[var(--accent-emerald)]/8 text-[var(--accent-emerald)] hover:bg-[var(--accent-emerald)]/15 disabled:opacity-20 disabled:cursor-default">
+                className="px-2 py-0.5 rounded text-[9px] font-semibold transition-all bg-[#3ee8a5]/8 text-[#3ee8a5] hover:bg-[#3ee8a5]/15 disabled:opacity-20 disabled:cursor-default">
                 All On
               </button>
               <button onClick={allOff} disabled={noneActive}
-                className="px-2 py-0.5 rounded text-[9px] font-semibold transition-all bg-[var(--accent-rose)]/8 text-[var(--accent-rose)] hover:bg-[var(--accent-rose)]/15 disabled:opacity-20 disabled:cursor-default">
+                className="px-2 py-0.5 rounded text-[9px] font-semibold transition-all bg-[#ff6b8a]/8 text-[#ff6b8a] hover:bg-[#ff6b8a]/15 disabled:opacity-20 disabled:cursor-default">
                 All Off
               </button>
             </div>
@@ -1076,7 +1073,7 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
                       key={d.key}
                       onClick={() => toggle(d.key)}
                       className={`flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] font-medium transition-all duration-200 group ${
-                        overlays[d.key] ? 'bg-[var(--accent-violet)]/10' : 'bg-transparent hover:bg-[var(--accent-violet)]/5'
+                        overlays[d.key] ? 'bg-[#8b5cf6]/10' : 'bg-transparent hover:bg-[#8b5cf6]/5'
                       }`}
                       style={{
                         color: overlays[d.key] ? d.color : '#6b7a90',
@@ -1141,18 +1138,18 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
       {showRSI && indQ.data?.indicators?.rsi?.length && (
         <div className="chart-container rounded-xl overflow-hidden ring-1 ring-[#2a2a4a]/30 mt-1">
           <div className="flex items-center gap-3 px-3 py-1.5">
-            <span className="text-[10px] text-[var(--text-secondary)] font-semibold">RSI (14)</span>
+            <span className="text-[10px] text-[#7a8ba4] font-semibold">RSI (14)</span>
             {rsiValue != null && (
               <span className={`text-[10px] font-bold tabular-nums ${
-                rsiValue > 70 ? 'text-[var(--accent-rose)]' : rsiValue < 30 ? 'text-[var(--accent-emerald)]' : 'text-[var(--text-secondary)]'
+                rsiValue > 70 ? 'text-[#ff6b8a]' : rsiValue < 30 ? 'text-[#3ee8a5]' : 'text-[#7a8ba4]'
               }`}>
                 {rsiValue.toFixed(1)}
               </span>
             )}
             <div className="flex gap-3 ml-auto text-[8px] font-medium">
-              <span className="text-[var(--accent-rose)]/40">70 Overbought</span>
-              <span className="text-[var(--text-secondary)]/30">50</span>
-              <span className="text-[var(--accent-emerald)]/40">30 Oversold</span>
+              <span className="text-[#ff6b8a]/40">70 Overbought</span>
+              <span className="text-[#7a8ba4]/30">50</span>
+              <span className="text-[#3ee8a5]/40">30 Oversold</span>
             </div>
           </div>
           <div ref={rsiChartRef} />
