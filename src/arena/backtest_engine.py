@@ -26,6 +26,45 @@ from .backtest_config import BacktestConfig, DEFAULT_BACKTEST_CONFIG, DecisionOu
 from .backtest_data import BacktestDataBundle, BacktestDataset, load_backtest_data
 from .backtest_tune import BacktestParams, ModelTunedParams, load_tuned_params, list_tuned_models
 
+# =============================================================================
+# OPTIONAL ANALYTICS MODULES (graceful degradation)
+# =============================================================================
+try:
+    from calibration.drawdown_analysis import analyze_drawdowns
+    DRAWDOWN_ANALYSIS_AVAILABLE = True
+except ImportError:
+    DRAWDOWN_ANALYSIS_AVAILABLE = False
+
+try:
+    from calibration.bootstrap_confidence import block_bootstrap_ci
+    BOOTSTRAP_CI_AVAILABLE = True
+except ImportError:
+    BOOTSTRAP_CI_AVAILABLE = False
+
+try:
+    from calibration.regime_profitability import compute_regime_profitability
+    REGIME_PROFITABILITY_AVAILABLE = True
+except ImportError:
+    REGIME_PROFITABILITY_AVAILABLE = False
+
+try:
+    from calibration.sector_attribution import compute_sector_attribution
+    SECTOR_ATTRIBUTION_AVAILABLE = True
+except ImportError:
+    SECTOR_ATTRIBUTION_AVAILABLE = False
+
+try:
+    from calibration.cost_sensitivity import run_cost_sensitivity
+    COST_SENSITIVITY_AVAILABLE = True
+except ImportError:
+    COST_SENSITIVITY_AVAILABLE = False
+
+try:
+    from calibration.forecast_quality import compute_forecast_quality
+    FORECAST_QUALITY_AVAILABLE = True
+except ImportError:
+    FORECAST_QUALITY_AVAILABLE = False
+
 
 @dataclass
 class FinancialDiagnostics:
@@ -107,6 +146,7 @@ class ModelBacktestResult:
     decision_rationale: List[str]
     warnings: List[str]
     timestamp: str
+    enhanced_analytics: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self):
         return {
@@ -119,6 +159,7 @@ class ModelBacktestResult:
             "decision_rationale": self.decision_rationale,
             "warnings": self.warnings,
             "timestamp": self.timestamp,
+            "enhanced_analytics": self.enhanced_analytics,
         }
 
 
@@ -686,6 +727,42 @@ def run_structural_backtest(model_name, data_bundle=None, config=None):
     aggregate_financial, aggregate_behavioral = _aggregate_diagnostics(ticker_results)
     decision, rationale = make_decision(ticker_results, config)
     
+    # Enhanced analytics from calibration modules (observational only)
+    enhanced = {}
+    
+    # Collect all PnL series across tickers for analytics
+    all_pnl = []
+    for tr in ticker_results.values():
+        if hasattr(tr, 'pnl_series') and tr.pnl_series is not None:
+            all_pnl.extend(tr.pnl_series)
+    
+    if all_pnl:
+        pnl_arr = np.array(all_pnl)
+        
+        # Drawdown analysis (Epic 24)
+        if DRAWDOWN_ANALYSIS_AVAILABLE:
+            try:
+                dd_result = analyze_drawdowns(pnl_arr)
+                enhanced["drawdown_analysis"] = dd_result.to_dict() if hasattr(dd_result, 'to_dict') else str(dd_result)
+            except Exception:
+                pass
+        
+        # Bootstrap confidence intervals (Epic 24)
+        if BOOTSTRAP_CI_AVAILABLE:
+            try:
+                ci_result = block_bootstrap_ci(pnl_arr)
+                enhanced["bootstrap_ci"] = ci_result.to_dict() if hasattr(ci_result, 'to_dict') else str(ci_result)
+            except Exception:
+                pass
+        
+        # Forecast quality (Epic 27)
+        if FORECAST_QUALITY_AVAILABLE:
+            try:
+                fq_result = compute_forecast_quality(pnl_arr)
+                enhanced["forecast_quality"] = fq_result.to_dict() if hasattr(fq_result, 'to_dict') else str(fq_result)
+            except Exception:
+                pass
+    
     return ModelBacktestResult(
         model_name=model_name,
         ticker_results=ticker_results,
@@ -696,6 +773,7 @@ def run_structural_backtest(model_name, data_bundle=None, config=None):
         decision_rationale=rationale,
         warnings=all_warnings,
         timestamp=datetime.now().isoformat(),
+        enhanced_analytics=enhanced,
     )
 
 

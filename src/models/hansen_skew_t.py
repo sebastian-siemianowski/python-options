@@ -45,11 +45,11 @@ import math
 import warnings
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from scipy import stats
-from scipy.optimize import minimize
+from scipy.optimize import minimize, minimize_scalar
 from scipy.special import gammaln
 from scipy.stats import kstest
 
@@ -866,3 +866,422 @@ def parse_hansen_skew_t_model_name(model_name: str) -> Optional[Tuple[float, flo
         return (nu, lambda_)
     except Exception:
         return None
+
+
+# =============================================================================
+# Epic 17 Story 17.1: Continuous Lambda Optimization
+# =============================================================================
+
+# Regime labels (shared with tuning/signals)
+LOW_VOL_TREND = "LOW_VOL_TREND"
+HIGH_VOL_TREND = "HIGH_VOL_TREND"
+LOW_VOL_RANGE = "LOW_VOL_RANGE"
+HIGH_VOL_RANGE = "HIGH_VOL_RANGE"
+CRISIS_JUMP = "CRISIS_JUMP"
+ALL_REGIMES = [LOW_VOL_TREND, HIGH_VOL_TREND, LOW_VOL_RANGE, HIGH_VOL_RANGE, CRISIS_JUMP]
+
+# Lambda grid for warm-start
+LAMBDA_GRID = [-0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3]
+
+# Minimum observations per regime for separate estimation
+MIN_REGIME_OBS = 50
+
+
+@dataclass
+class HansenLambdaResult:
+    """Result from continuous lambda optimization."""
+    lambda_star: float
+    log_likelihood: float
+    nu: float
+    bic: float
+    converged: bool
+
+
+@dataclass
+class RegimeLambdaResult:
+    """Result from regime-conditional lambda estimates."""
+    lambda_by_regime: Dict[str, float]
+    ll_by_regime: Dict[str, float]
+    n_obs_by_regime: Dict[str, int]
+    total_bic: float
+    regimes_estimated: List[str]
+
+
+@dataclass
+class SkewAdjustedDirectionResult:
+    """Result from skew-adjusted directional signal."""
+    prob_positive: float
+    prob_positive_symmetric: float
+    skew_adjustment: float
+    lambda_: float
+    nu: float
+
+
+def _hansen_profile_loglik(
+    lambda_val: float,
+    standardized_innovations: np.ndarray,
+    nu: float,
+) -> float:
+    """
+    Profile log-likelihood for lambda given fixed nu.
+
+    Parameters
+    ----------
+    lambda_val : skewness parameter to evaluate
+    standardized_innovations : z_t = v_t / sqrt(S_t)
+    nu : degrees of freedom (fixed)
+
+    Returns
+    -------
+    Negative log-likelihood (for minimization).
+    """
+    lambda_val = float(np.clip(lambda_val, -0.9, 0.9))
+    nu = max(float(nu), 2.01)
+
+    valid = np.isfinite(standardized_innovations)
+    z = standardized_innovations[valid]
+
+    if len(z) == 0:
+        return 1e12
+
+    ll_vals = hansen_skew_t_logpdf(z, nu, lambda_val)
+    total_ll = np.sum(ll_vals[np.isfinite(ll_vals)])
+
+    return -total_ll
+
+
+def optimize_hansen_lambda(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu: float = HANSEN_NU_DEFAULT,
+    lambda_init: float = 0.0,
+) -> HansenLambdaResult:
+    """
+    Continuous lambda optimization for Hansen skew-t via Brent's method.
+
+    Story 17.1: Uses Brent's method (1D root-free optimization) with grid
+    warm-start. Replaces discrete lambda grid with continuous optimization.
+
+    Parameters
+    ----------
+    returns : asset return series
+    vol : EWMA/GK volatility series
+    q : process noise
+    c : observation noise coefficient
+    phi : AR(1) coefficient
+    nu : degrees of freedom (fixed)
+    lambda_init : initial lambda guess
+
+    Returns
+    -------
+    HansenLambdaResult with optimal lambda* in (-0.9, 0.9).
+    """
+    returns = np.asarray(returns, dtype=np.float64).ravel()
+    vol = np.asarray(vol, dtype=np.float64).ravel()
+    n = len(returns)
+    nu = max(float(nu), 2.01)
+
+    # Run Kalman filter to get standardized innovations
+    phi_val = float(np.clip(phi, -0.999, 0.999))
+    q_val = float(q)
+    c_val = float(c)
+
+    mu = 0.0
+    P = 1e-4
+    innovations = np.zeros(n)
+    S_pred = np.zeros(n)
+
+    for t in range(n):
+        mu_pred = phi_val * mu
+        P_pred = (phi_val ** 2) * P + q_val
+        vol_t = float(vol[t])
+        R = c_val * (vol_t ** 2)
+        S = P_pred + R
+        if S <= 1e-12:
+            S = 1e-12
+        S_pred[t] = S
+        r_val = float(returns[t])
+        innovations[t] = r_val - mu_pred
+        K = P_pred / S
+        mu = mu_pred + K * innovations[t]
+        P = (1.0 - K) * P_pred
+        P = max(P, 1e-12)
+
+    std_innovations = innovations / np.sqrt(np.maximum(S_pred, 1e-12))
+    valid = np.isfinite(std_innovations)
+    std_innovations_clean = std_innovations[valid]
+
+    if len(std_innovations_clean) < 20:
+        return HansenLambdaResult(
+            lambda_star=0.0, log_likelihood=-1e6, nu=nu,
+            bic=1e6, converged=False,
+        )
+
+    # Grid warm-start
+    best_nll = 1e12
+    best_lambda = lambda_init
+
+    for lam in LAMBDA_GRID:
+        nll = _hansen_profile_loglik(lam, std_innovations_clean, nu)
+        if nll < best_nll:
+            best_nll = nll
+            best_lambda = lam
+
+    # Brent's method refinement
+    bracket_lo = max(-0.9, best_lambda - 0.15)
+    bracket_hi = min(0.9, best_lambda + 0.15)
+
+    try:
+        result = minimize_scalar(
+            _hansen_profile_loglik,
+            bounds=(bracket_lo, bracket_hi),
+            args=(std_innovations_clean, nu),
+            method='bounded',
+            options={'xatol': 1e-6, 'maxiter': 100},
+        )
+        if result.fun < best_nll:
+            best_lambda = float(result.x)
+            best_nll = result.fun
+            converged = True
+        else:
+            converged = True
+    except Exception:
+        converged = False
+
+    best_lambda = float(np.clip(best_lambda, -0.9, 0.9))
+    log_likelihood = -best_nll
+
+    n_valid = len(std_innovations_clean)
+    k = 1  # lambda parameter
+    bic = -2.0 * log_likelihood + k * np.log(n_valid)
+
+    return HansenLambdaResult(
+        lambda_star=best_lambda,
+        log_likelihood=log_likelihood,
+        nu=nu,
+        bic=bic,
+        converged=converged,
+    )
+
+
+# =============================================================================
+# Epic 17 Story 17.2: Regime-Conditional Lambda
+# =============================================================================
+
+def regime_lambda_estimates(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    regime_labels: List[str],
+    q: float,
+    c: float,
+    phi: float,
+    nu: float = HANSEN_NU_DEFAULT,
+) -> RegimeLambdaResult:
+    """
+    Regime-specific lambda estimates for Hansen skew-t.
+
+    Story 17.2: Estimate separate lambda per regime so that crash risk
+    is properly sized during high-vol periods.
+
+    Parameters
+    ----------
+    returns : asset return series
+    vol : EWMA/GK volatility series
+    regime_labels : regime label per observation
+    q, c, phi : Kalman filter parameters
+    nu : degrees of freedom (fixed)
+
+    Returns
+    -------
+    RegimeLambdaResult with per-regime lambda estimates.
+    """
+    returns = np.asarray(returns, dtype=np.float64).ravel()
+    vol = np.asarray(vol, dtype=np.float64).ravel()
+    n = len(returns)
+
+    if len(regime_labels) != n:
+        raise ValueError("regime_labels must match returns length")
+
+    # Run filter to get standardized innovations
+    phi_val = float(np.clip(phi, -0.999, 0.999))
+    q_val = float(q)
+    c_val = float(c)
+
+    mu = 0.0
+    P = 1e-4
+    innovations = np.zeros(n)
+    S_pred = np.zeros(n)
+
+    for t in range(n):
+        mu_pred = phi_val * mu
+        P_pred = (phi_val ** 2) * P + q_val
+        vol_t = float(vol[t])
+        R = c_val * (vol_t ** 2)
+        S = P_pred + R
+        if S <= 1e-12:
+            S = 1e-12
+        S_pred[t] = S
+        r_val = float(returns[t])
+        innovations[t] = r_val - mu_pred
+        K = P_pred / S
+        mu = mu_pred + K * innovations[t]
+        P = (1.0 - K) * P_pred
+        P = max(P, 1e-12)
+
+    std_innovations = innovations / np.sqrt(np.maximum(S_pred, 1e-12))
+
+    lambda_by_regime = {}
+    ll_by_regime = {}
+    n_obs_by_regime = {}
+    regimes_estimated = []
+    total_ll = 0.0
+
+    for regime in ALL_REGIMES:
+        mask = np.array([r == regime for r in regime_labels])
+        regime_inno = std_innovations[mask]
+        valid = np.isfinite(regime_inno)
+        regime_inno = regime_inno[valid]
+        n_obs = len(regime_inno)
+        n_obs_by_regime[regime] = n_obs
+
+        if n_obs < MIN_REGIME_OBS:
+            lambda_by_regime[regime] = 0.0
+            ll_by_regime[regime] = 0.0
+            continue
+
+        # Optimize lambda for this regime
+        best_nll = 1e12
+        best_lam = 0.0
+
+        for lam in LAMBDA_GRID:
+            nll = _hansen_profile_loglik(lam, regime_inno, nu)
+            if nll < best_nll:
+                best_nll = nll
+                best_lam = lam
+
+        bracket_lo = max(-0.9, best_lam - 0.15)
+        bracket_hi = min(0.9, best_lam + 0.15)
+
+        try:
+            result = minimize_scalar(
+                _hansen_profile_loglik,
+                bounds=(bracket_lo, bracket_hi),
+                args=(regime_inno, nu),
+                method='bounded',
+                options={'xatol': 1e-6, 'maxiter': 100},
+            )
+            if result.fun < best_nll:
+                best_lam = float(result.x)
+                best_nll = result.fun
+        except Exception:
+            pass
+
+        best_lam = float(np.clip(best_lam, -0.9, 0.9))
+        lambda_by_regime[regime] = best_lam
+        ll_by_regime[regime] = -best_nll
+        total_ll += -best_nll
+        regimes_estimated.append(regime)
+
+    k = len(regimes_estimated)
+    n_total = sum(n_obs_by_regime[r] for r in regimes_estimated) if regimes_estimated else 1
+    total_bic = -2.0 * total_ll + k * np.log(max(n_total, 1))
+
+    return RegimeLambdaResult(
+        lambda_by_regime=lambda_by_regime,
+        ll_by_regime=ll_by_regime,
+        n_obs_by_regime=n_obs_by_regime,
+        total_bic=total_bic,
+        regimes_estimated=regimes_estimated,
+    )
+
+
+# =============================================================================
+# Epic 17 Story 17.3: Skew-Adjusted Directional Signals
+# =============================================================================
+
+def skew_adjusted_direction(
+    mu: float,
+    sigma: float,
+    nu: float = HANSEN_NU_DEFAULT,
+    lambda_: float = 0.0,
+) -> SkewAdjustedDirectionResult:
+    """
+    Directional signal adjusted for Hansen skew-t skewness.
+
+    Story 17.3: Computes P(r > 0) using the Hansen CDF, accounting for
+    the asymmetry parameter lambda.
+
+    - Left-skewed (lambda < 0): P(r > 0) increases relative to symmetric
+    - Right-skewed (lambda > 0): P(r > 0) decreases relative to symmetric
+
+    Parameters
+    ----------
+    mu : forecast mean
+    sigma : forecast standard deviation (sqrt(S_pred))
+    nu : degrees of freedom
+    lambda_ : Hansen skewness parameter
+
+    Returns
+    -------
+    SkewAdjustedDirectionResult with P(r > 0) and adjustment.
+    """
+    sigma = max(float(sigma), 1e-12)
+    nu = max(float(nu), 2.01)
+    lambda_ = float(np.clip(lambda_, -0.9, 0.9))
+
+    # Standardize: z corresponding to r=0
+    z = -float(mu) / sigma
+
+    # Symmetric Student-t P(r > 0) = 1 - T_nu(z)
+    prob_symmetric = 1.0 - float(stats.t.cdf(z, df=nu))
+
+    # Hansen skew-t P(r > 0) = 1 - F_hansen(z)
+    prob_hansen = 1.0 - float(hansen_skew_t_cdf(z, nu, lambda_))
+    prob_hansen = max(0.001, min(0.999, prob_hansen))
+    prob_symmetric = max(0.001, min(0.999, prob_symmetric))
+
+    skew_adjustment = prob_hansen - prob_symmetric
+
+    return SkewAdjustedDirectionResult(
+        prob_positive=prob_hansen,
+        prob_positive_symmetric=prob_symmetric,
+        skew_adjustment=skew_adjustment,
+        lambda_=lambda_,
+        nu=nu,
+    )
+
+
+def skew_adjusted_direction_array(
+    mu_array: np.ndarray,
+    sigma_array: np.ndarray,
+    nu: float = HANSEN_NU_DEFAULT,
+    lambda_: float = 0.0,
+) -> np.ndarray:
+    """
+    Vectorized skew-adjusted P(r > 0) for arrays.
+
+    Parameters
+    ----------
+    mu_array : array of forecast means
+    sigma_array : array of forecast standard deviations
+    nu : degrees of freedom
+    lambda_ : Hansen skewness parameter
+
+    Returns
+    -------
+    Array of P(r > 0) values.
+    """
+    mu_array = np.asarray(mu_array, dtype=np.float64).ravel()
+    sigma_array = np.asarray(sigma_array, dtype=np.float64).ravel()
+
+    probs = np.zeros(len(mu_array))
+    for i in range(len(mu_array)):
+        result = skew_adjusted_direction(
+            mu_array[i], sigma_array[i], nu, lambda_,
+        )
+        probs[i] = result.prob_positive
+
+    return probs

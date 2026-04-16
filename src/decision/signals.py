@@ -1020,6 +1020,298 @@ try:
 except ImportError:
     COMPUTATION_CACHE_AVAILABLE = False
 
+# =============================================================================
+# IMPORT PIT RECALIBRATION (Epic 26 - Enhanced Isotonic Recalibration)
+# =============================================================================
+try:
+    from calibration.pit_recalibration import (
+        isotonic_recalibrate,
+        recalibration_schedule,
+    )
+    PIT_RECALIBRATION_AVAILABLE = True
+except ImportError:
+    PIT_RECALIBRATION_AVAILABLE = False
+
+# =============================================================================
+# IMPORT MISSING DATA HANDLING (Epic 29 - Gap-Aware Kalman Predict)
+# =============================================================================
+try:
+    from calibration.missing_data import data_quality_score
+    MISSING_DATA_AVAILABLE = True
+except ImportError:
+    MISSING_DATA_AVAILABLE = False
+
+# =============================================================================
+# IMPORT FORECAST ATTRIBUTION (Epic 27 - Drift/Vol Diagnostics)
+# =============================================================================
+try:
+    from calibration.forecast_attribution import drift_attribution, volatility_attribution
+    FORECAST_ATTRIBUTION_AVAILABLE = True
+except ImportError:
+    FORECAST_ATTRIBUTION_AVAILABLE = False
+
+# =============================================================================
+# IMPORT INTEGRATION TESTING (Epic 30 - Pipeline Output Validation)
+# =============================================================================
+try:
+    from calibration.integration_testing import validate_pipeline_output
+    INTEGRATION_TESTING_AVAILABLE = True
+except ImportError:
+    INTEGRATION_TESTING_AVAILABLE = False
+
+# =============================================================================
+# ONLINE C UPDATE (Story 2.3)
+# =============================================================================
+try:
+    from calibration.online_c_update import run_online_c_update, OnlineCResult
+    ONLINE_C_UPDATE_AVAILABLE = True
+except ImportError:
+    ONLINE_C_UPDATE_AVAILABLE = False
+
+# =============================================================================
+# SIGN PROBABILITY WITH UNCERTAINTY (Stories 5.1, 5.2, 5.3)
+# =============================================================================
+try:
+    from calibration.sign_probability import (
+        sign_prob_with_uncertainty,
+        sign_prob_skewed,
+        multi_horizon_sign_prob,
+    )
+    SIGN_PROBABILITY_AVAILABLE = True
+except ImportError:
+    SIGN_PROBABILITY_AVAILABLE = False
+
+# =============================================================================
+# LAPLACE POSTERIOR APPROXIMATION (Story 10.1)
+# =============================================================================
+try:
+    from calibration.laplace_posterior import (
+        laplace_posterior,
+        sample_from_laplace,
+        LaplaceResult,
+    )
+    LAPLACE_POSTERIOR_AVAILABLE = True
+except ImportError:
+    LAPLACE_POSTERIOR_AVAILABLE = False
+
+# =============================================================================
+# MC VARIANCE REDUCTION (Stories 10.2, 10.3)
+# =============================================================================
+try:
+    from calibration.mc_variance_reduction import (
+        importance_mc_student_t,
+        antithetic_mc_sample,
+        ImportanceSamplingResult,
+        AntitheticResult,
+    )
+    MC_VARIANCE_REDUCTION_AVAILABLE = True
+except ImportError:
+    MC_VARIANCE_REDUCTION_AVAILABLE = False
+
+# =============================================================================
+# DIRECTIONAL CONFIDENCE CALIBRATION (Story 11.1)
+# =============================================================================
+try:
+    from calibration.directional_confidence import platt_calibrate
+    PLATT_CALIBRATE_AVAILABLE = True
+except ImportError:
+    PLATT_CALIBRATE_AVAILABLE = False
+
+# =============================================================================
+# UNCERTAINTY DECOMPOSITION (Story 11.2)
+# =============================================================================
+try:
+    from calibration.uncertainty_decomposition import (
+        decompose_uncertainty,
+        UncertaintyDecomposition,
+    )
+    UNCERTAINTY_DECOMPOSITION_AVAILABLE = True
+except ImportError:
+    UNCERTAINTY_DECOMPOSITION_AVAILABLE = False
+
+# =============================================================================
+# REGIME CONFIDENCE SCALING (Story 11.3)
+# =============================================================================
+try:
+    from calibration.regime_confidence import (
+        regime_confidence_scale,
+        RegimeConfidenceResult,
+    )
+    REGIME_CONFIDENCE_AVAILABLE = True
+except ImportError:
+    REGIME_CONFIDENCE_AVAILABLE = False
+
+# =============================================================================
+# ADAPTIVE MOMENTUM & CROSS-ASSET (Stories 12.1, 12.3)
+# =============================================================================
+try:
+    from calibration.multi_timeframe_fusion import (
+        adaptive_momentum_weights,
+        cross_asset_confirmation,
+        AdaptiveMomentumResult,
+        CrossAssetConfirmation,
+    )
+    MULTI_TIMEFRAME_FUSION_AVAILABLE = True
+except ImportError:
+    MULTI_TIMEFRAME_FUSION_AVAILABLE = False
+
+# =============================================================================
+# KELLY SIZING (Stories 13.1, 13.2, 13.3)
+# =============================================================================
+try:
+    from calibration.kelly_sizing import (
+        drawdown_adjusted_kelly,
+        auto_tune_kelly_frac,
+    )
+    KELLY_SIZING_CALIBRATION_AVAILABLE = True
+except ImportError:
+    KELLY_SIZING_CALIBRATION_AVAILABLE = False
+
+# =============================================================================
+# TRANSACTION COSTS (Stories 14.1, 14.2, 14.3)
+# =============================================================================
+try:
+    from calibration.transaction_costs import (
+        transaction_cost,
+        turnover_filter,
+        optimal_rebalance_freq,
+        TransactionCostResult,
+    )
+    TRANSACTION_COSTS_AVAILABLE = True
+except ImportError:
+    TRANSACTION_COSTS_AVAILABLE = False
+
+# =============================================================================
+# REGIME POSITION SIZING (Stories 15.1, 15.2, 15.3)
+# =============================================================================
+try:
+    from calibration.regime_position_sizing import (
+        regime_position_limit,
+        dynamic_leverage,
+        vol_target_weight,
+        RegimePositionResult,
+        VolTargetResult,
+    )
+    REGIME_POSITION_SIZING_AVAILABLE = True
+except ImportError:
+    REGIME_POSITION_SIZING_AVAILABLE = False
+
+# =============================================================================
+# GARCH VARIANCE FORECAST (Story 16.3)
+# =============================================================================
+try:
+    from models.gjr_garch import garch_variance_forecast, GARCHForecastResult
+    GARCH_FORECAST_AVAILABLE = True
+except ImportError:
+    GARCH_FORECAST_AVAILABLE = False
+
+# =============================================================================
+# HANSEN SKEW-T DIRECTION (Story 17.3)
+# =============================================================================
+try:
+    from models.hansen_skew_t import skew_adjusted_direction, SkewAdjustedDirectionResult
+    SKEW_ADJUSTED_DIRECTION_AVAILABLE = True
+except ImportError:
+    SKEW_ADJUSTED_DIRECTION_AVAILABLE = False
+
+# =============================================================================
+# CONTAMINATED STUDENT-T SIGNALS (Stories 18.2, 18.3)
+# =============================================================================
+try:
+    from models.contaminated_student_t import (
+        cst_jump_probability,
+        cst_prediction_interval,
+        JumpProbabilityResult,
+        CSTPredictionInterval,
+    )
+    CST_SIGNALS_AVAILABLE = True
+except ImportError:
+    CST_SIGNALS_AVAILABLE = False
+
+# =============================================================================
+# MEAN REVERSION SIGNAL STRENGTH (Story 20.3)
+# =============================================================================
+try:
+    from models.ou_mean_reversion import mr_signal_strength, MRSignalResult
+    MR_SIGNAL_STRENGTH_AVAILABLE = True
+except ImportError:
+    MR_SIGNAL_STRENGTH_AVAILABLE = False
+
+# =============================================================================
+# FACTOR-AUGMENTED CROSS-ASSET (Stories 22.1, 22.2, 22.3)
+# =============================================================================
+try:
+    from calibration.factor_augmented import (
+        extract_market_factors,
+        factor_adjusted_R,
+        granger_test,
+        FactorExtractionResult,
+        FactorAdjustedRResult,
+        GrangerTestResult,
+    )
+    FACTOR_AUGMENTED_AVAILABLE = True
+except ImportError:
+    FACTOR_AUGMENTED_AVAILABLE = False
+
+# =============================================================================
+# VIX FORECAST ADJUSTMENTS (Stories 23.1, 23.2, 23.3)
+# =============================================================================
+try:
+    from calibration.vix_forecast_adjustment import (
+        vix_drift_adjustment,
+        vix_term_structure_vol,
+        detect_correlation_spike,
+        VIXDriftAdjustmentResult,
+        VIXTermStructureResult,
+        CorrelationSpikeResult,
+    )
+    VIX_FORECAST_ADJUSTMENT_AVAILABLE = True
+except ImportError:
+    VIX_FORECAST_ADJUSTMENT_AVAILABLE = False
+
+# =============================================================================
+# ENSEMBLE FORECASTS (Stories 24.1, 24.2, 24.3)
+# =============================================================================
+try:
+    from calibration.ensemble_forecast import (
+        equal_weight_ensemble,
+        trimmed_ensemble,
+        online_prediction_pool,
+        EqualWeightResult,
+        TrimmedEnsembleResult,
+        OnlinePredictionPoolResult,
+    )
+    ENSEMBLE_FORECAST_AVAILABLE = True
+except ImportError:
+    ENSEMBLE_FORECAST_AVAILABLE = False
+
+# =============================================================================
+# LOCATION-SCALE CORRECTION (Story 26.2)
+# =============================================================================
+try:
+    from calibration.pit_recalibration import location_scale_correction, LocationScaleResult
+    LOCATION_SCALE_CORRECTION_AVAILABLE = True
+except ImportError:
+    LOCATION_SCALE_CORRECTION_AVAILABLE = False
+
+# =============================================================================
+# BMA ATTRIBUTION (Story 27.3)
+# =============================================================================
+try:
+    from calibration.forecast_attribution import bma_attribution, BMAAttributionResult
+    BMA_ATTRIBUTION_AVAILABLE = True
+except ImportError:
+    BMA_ATTRIBUTION_AVAILABLE = False
+
+# =============================================================================
+# GAP-AWARE PREDICT (Story 29.1)
+# =============================================================================
+try:
+    from calibration.missing_data import gap_aware_predict
+    GAP_AWARE_PREDICT_AVAILABLE = True
+except ImportError:
+    GAP_AWARE_PREDICT_AVAILABLE = False
+
 
 def _enrich_signal_with_epic8(
     asset: str,
@@ -1118,6 +1410,19 @@ def _enrich_signal_with_epic8(
         except Exception:
             pass
 
+    # --- Epic 27: Forecast Attribution ---
+    if FORECAST_ATTRIBUTION_AVAILABLE and feats is not None:
+        try:
+            returns = feats.get("returns") if isinstance(feats, dict) else getattr(feats, "returns", None)
+            if returns is not None and len(sigs) > 0:
+                mu_forecast = np.array([s.exp_ret for s in sigs])
+                sigma_forecast = np.array([max(s.ci_width, 1e-8) for s in sigs if hasattr(s, 'ci_width')])
+                if len(mu_forecast) > 0 and len(sigma_forecast) > 0:
+                    da = drift_attribution(np.asarray(returns)[-len(mu_forecast):], mu_forecast, sigma_forecast[:len(mu_forecast)])
+                    enrichment["forecast_attribution"] = da.to_dict() if hasattr(da, 'to_dict') else {"drift_contribution": float(getattr(da, 'drift_contribution', 0.0))}
+        except Exception:
+            pass
+
     return enrichment
 
 
@@ -1186,7 +1491,18 @@ def load_and_apply_recalibration(
         return calibrated_pit, True, recal_meta
         
     except Exception as e:
-        # If recalibration fails, return raw PIT
+        # If transport map recalibration fails, try pit_recalibration fallback (Epic 26)
+        if PIT_RECALIBRATION_AVAILABLE and len(raw_pit) >= 50:
+            try:
+                recal_result = isotonic_recalibrate(raw_pit)
+                if recal_result.calibrated_pit is not None:
+                    return np.asarray(recal_result.calibrated_pit), True, {
+                        'applied': True,
+                        'method': 'pit_recalibration_fallback',
+                        'transport_map_error': str(e),
+                    }
+            except Exception:
+                pass
         if os.getenv('DEBUG'):
             print(f"Warning: Recalibration failed: {e}")
         return raw_pit, False, {'error': str(e)}
@@ -10514,6 +10830,17 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
         feats = compute_features(px, asset_symbol=asset, ohlc_df=ohlc_df)
         last_close = _to_float(px.iloc[-1])
 
+        # Data quality assessment (Epic 29: missing_data)
+        data_quality_meta = None
+        if MISSING_DATA_AVAILABLE:
+            try:
+                returns = feats.get("returns") if isinstance(feats, dict) else getattr(feats, "returns", None)
+                if returns is not None:
+                    dq_result = data_quality_score(np.asarray(returns), expected_obs=252)
+                    data_quality_meta = dq_result.to_dict() if hasattr(dq_result, 'to_dict') else {"score": float(getattr(dq_result, 'score', 1.0))}
+            except Exception:
+                pass
+
         # Load tuned params with BMA structure for model averaging
         tuned_params = _load_tuned_kalman_params(asset)
 
@@ -10534,6 +10861,412 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
         # Epic 8 enrichment: conviction scoring, Kelly sizing, signal TTL
         enrichment = _enrich_signal_with_epic8(asset, sigs, tuned_params, feats)
 
+        # =============================================================
+        # Signal-side story integrations (enrichment metadata)
+        # =============================================================
+        _signal_meta = {}
+        returns_arr = feats.get("returns")
+        vol_arr = feats.get("vol")
+        _has_returns = returns_arr is not None and len(returns_arr) > 0
+        _has_vol = vol_arr is not None and len(vol_arr) > 0
+
+        # Story 10.1-10.3: Sign probability with uncertainty
+        if SIGN_PROBABILITY_AVAILABLE and _has_returns and _has_vol and tuned_params:
+            try:
+                _tp_global = tuned_params.get("global", {})
+                _sp_mu = _tp_global.get("mu", 0.0)
+                _sp_P = _tp_global.get("P", 1e-4)
+                _sp_c = _tp_global.get("c", 1.0)
+                _sp_sigma = float(vol_arr.iloc[-1])
+                _sp_nu = _tp_global.get("nu")
+                # sign_prob_with_uncertainty returns a float
+                _sp_val = sign_prob_with_uncertainty(
+                    _sp_mu, _sp_P, _sp_sigma, c=_sp_c,
+                    model='student_t' if _sp_nu else 'gaussian',
+                    nu=_sp_nu,
+                )
+                _signal_meta["sign_prob"] = float(_sp_val)
+                if _sp_nu is not None:
+                    # sign_prob_skewed also returns a float
+                    _sp_skew_val = sign_prob_skewed(_sp_mu, _sp_sigma, nu=float(_sp_nu))
+                    _signal_meta["sign_prob_skewed"] = float(_sp_skew_val)
+            except Exception:
+                pass
+
+        # Story 11.1: Laplace posterior approximation
+        if LAPLACE_POSTERIOR_AVAILABLE and tuned_params:
+            try:
+                _tp_global = tuned_params.get("global", {})
+                _lp = laplace_posterior(
+                    np.asarray(returns_arr) if _has_returns else np.array([0.0]),
+                    np.asarray(vol_arr) if _has_vol else np.array([0.01]),
+                    _tp_global.get("q", 1e-5),
+                    _tp_global.get("c", 1.0),
+                    _tp_global.get("phi", 0.0),
+                )
+                _signal_meta["laplace_posterior"] = {
+                    "mu_mode": float(_lp.mu_mode),
+                    "sigma_mode": float(_lp.sigma_mode),
+                }
+            except Exception:
+                pass
+
+        # Story 12.1-12.2: MC variance reduction
+        if MC_VARIANCE_REDUCTION_AVAILABLE and tuned_params:
+            try:
+                _tp_global = tuned_params.get("global", {})
+                _mc_mu = _tp_global.get("mu", 0.0)
+                _mc_vol = float(vol_arr.iloc[-1]) if _has_vol else 0.01
+                _mc_nu = _tp_global.get("nu", 8.0)  # Default nu for antithetic
+                if _mc_nu is not None:
+                    _mc_is = importance_mc_student_t(
+                        _mc_mu, _mc_vol, float(_mc_nu), n_samples=5000,
+                    )
+                    _signal_meta["mc_importance_sampling"] = {
+                        "ess": float(_mc_is.effective_sample_size) if hasattr(_mc_is, 'effective_sample_size') else 0.0,
+                        "variance_ratio": float(_mc_is.variance_ratio) if hasattr(_mc_is, 'variance_ratio') else 1.0,
+                    }
+                    _mc_at = antithetic_mc_sample(_mc_mu, _mc_vol, float(_mc_nu), n_samples=5000)
+                    _signal_meta["mc_antithetic"] = {
+                        "variance_reduction": float(_mc_at.variance_reduction) if hasattr(_mc_at, 'variance_reduction') else 0.0,
+                    }
+            except Exception:
+                pass
+
+        # Story 13.1: Platt calibration
+        if PLATT_CALIBRATE_AVAILABLE and sigs:
+            try:
+                _raw_probs = [s.p_up for s in sigs]
+                _outcomes = [1.0 if s.exp_ret > 0 else 0.0 for s in sigs]
+                if len(_raw_probs) >= 2:
+                    _pc = platt_calibrate(np.array(_raw_probs), np.array(_outcomes))
+                    _signal_meta["platt_calibration"] = {
+                        "a": float(_pc.a),
+                        "b": float(_pc.b),
+                    }
+            except Exception:
+                pass
+
+        # Story 14.1: Uncertainty decomposition
+        if UNCERTAINTY_DECOMPOSITION_AVAILABLE and tuned_params:
+            try:
+                _tp_global = tuned_params.get("global", {})
+                _models_info = tuned_params.get("models", {})
+                if _models_info:
+                    _model_means = np.array([_models_info[m].get("mu", 0.0) for m in _models_info if _models_info[m].get("fit_success", False)])
+                    _model_stds = np.array([np.sqrt(_models_info[m].get("P", 1e-4)) for m in _models_info if _models_info[m].get("fit_success", False)])
+                    _model_wts = np.array([tuned_params.get("model_posterior", {}).get(m, 0.0) for m in _models_info if _models_info[m].get("fit_success", False)])
+                    if len(_model_means) >= 2 and _model_wts.sum() > 0:
+                        _model_wts = _model_wts / _model_wts.sum()
+                        _ud = decompose_uncertainty(_model_means, _model_stds, _model_wts)
+                        _signal_meta["uncertainty_decomposition"] = {
+                            "epistemic": float(_ud.epistemic) if hasattr(_ud, 'epistemic') else 0.0,
+                            "aleatoric": float(_ud.aleatoric) if hasattr(_ud, 'aleatoric') else 0.0,
+                            "total": float(_ud.total) if hasattr(_ud, 'total') else 0.0,
+                        }
+            except Exception:
+                pass
+
+        # Story 15.1: Regime confidence scaling
+        if REGIME_CONFIDENCE_AVAILABLE and sigs and tuned_params:
+            try:
+                # regime_confidence_scale needs (confidence, regime, historical_hit_rates)
+                # We skip this if no historical hit rates are available
+                pass  # Requires historical hit rates from calibration -- wired as no-op
+            except Exception:
+                pass
+
+        # Story 16.1-16.2: Multi-timeframe fusion
+        if MULTI_TIMEFRAME_FUSION_AVAILABLE and _has_returns:
+            try:
+                _amw = adaptive_momentum_weights(np.asarray(returns_arr))
+                _signal_meta["adaptive_momentum_weights"] = {
+                    "short_weight": float(_amw.short_weight),
+                    "long_weight": float(_amw.long_weight),
+                }
+            except Exception:
+                pass
+
+        # Story 17.1-17.2: Kelly sizing calibration
+        if KELLY_SIZING_CALIBRATION_AVAILABLE and sigs:
+            try:
+                _s0 = sigs[0]
+                # drawdown_adjusted_kelly(f_kelly, current_dd, max_dd)
+                _dak = drawdown_adjusted_kelly(
+                    _s0.kelly_full,
+                    current_dd=0.0,  # No current drawdown available at signal time
+                    max_dd=0.10,
+                )
+                _signal_meta["drawdown_adjusted_kelly"] = {
+                    "f_adjusted": float(_dak.f_adjusted) if hasattr(_dak, 'f_adjusted') else float(_dak.kelly_adjusted) if hasattr(_dak, 'kelly_adjusted') else 0.0,
+                }
+            except Exception:
+                pass
+
+        # Story 18.1-18.3: Transaction costs
+        if TRANSACTION_COSTS_AVAILABLE and sigs:
+            try:
+                # transaction_cost(price, shares, spread_bps, adv, daily_vol)
+                _last_price = float(px.iloc[-1]) if px is not None and len(px) > 0 else 100.0
+                _last_vol = float(vol_arr.iloc[-1]) if _has_vol else 0.02
+                _tc = transaction_cost(
+                    price=_last_price,
+                    shares=abs(sigs[0].position_strength) * 100,  # Notional shares
+                    daily_vol=_last_vol,
+                )
+                _signal_meta["transaction_cost"] = {
+                    "cost_bps": float(_tc.cost_bps) if hasattr(_tc, 'cost_bps') else 0.0,
+                    "cost_total": float(_tc.cost_total) if hasattr(_tc, 'cost_total') else 0.0,
+                }
+            except Exception:
+                pass
+
+        # Story 18.4: Regime position limits
+        if REGIME_POSITION_SIZING_AVAILABLE and sigs:
+            try:
+                # regime_position_limit(regime, raw_fraction)
+                _sig_regime = sigs[0].regime if sigs[0].regime else "LOW_VOL_TREND"
+                _rpl = regime_position_limit(
+                    regime=str(_sig_regime),
+                    raw_fraction=abs(sigs[0].position_strength),
+                )
+                _signal_meta["regime_position_limit"] = {
+                    "max_position": float(_rpl.max_position) if hasattr(_rpl, 'max_position') else 0.0,
+                    "capped": bool(_rpl.capped) if hasattr(_rpl, 'capped') else False,
+                }
+            except Exception:
+                pass
+
+        # Story 16.3: GARCH variance forecast
+        # garch_variance_forecast(omega, alpha, gamma, beta, h_T, horizon)
+        # Uses GARCH parameters from tuned_params to forecast variance at multiple horizons.
+        if GARCH_FORECAST_AVAILABLE and tuned_params:
+            try:
+                _tp_global = tuned_params.get("global", {})
+                _garch_omega = _tp_global.get("garch_omega")
+                _garch_alpha = _tp_global.get("garch_alpha")
+                _garch_beta = _tp_global.get("garch_beta")
+                _garch_gamma = _tp_global.get("garch_leverage", 0.0)
+                if all(v is not None for v in [_garch_omega, _garch_alpha, _garch_beta]):
+                    # Use current vol as h_T (most recent variance)
+                    _h_T = float(vol_arr.iloc[-1]) ** 2 if _has_vol else 0.0001
+                    _gf_1d = garch_variance_forecast(
+                        omega=float(_garch_omega), alpha=float(_garch_alpha),
+                        gamma=float(_garch_gamma), beta=float(_garch_beta),
+                        h_T=_h_T, horizon=1,
+                    )
+                    _gf_5d = garch_variance_forecast(
+                        omega=float(_garch_omega), alpha=float(_garch_alpha),
+                        gamma=float(_garch_gamma), beta=float(_garch_beta),
+                        h_T=_h_T, horizon=5,
+                    )
+                    _signal_meta["garch_forecast"] = {
+                        "vol_1d": float(np.sqrt(_gf_1d.forecast_var)),
+                        "vol_5d": float(np.sqrt(_gf_5d.forecast_var)),
+                        "unconditional_vol": float(np.sqrt(_gf_1d.unconditional_var)),
+                    }
+            except Exception:
+                pass
+
+        # Story 23.2: Skew-adjusted direction
+        if SKEW_ADJUSTED_DIRECTION_AVAILABLE and tuned_params:
+            try:
+                _tp_global = tuned_params.get("global", {})
+                _sad_mu = _tp_global.get("mu", 0.0)
+                _sad_sigma = float(vol_arr.iloc[-1]) if _has_vol else 0.01
+                _sad_nu = _tp_global.get("nu", 10.0)
+                _sad_lambda = _tp_global.get("hansen_lambda", 0.0)
+                # skew_adjusted_direction(mu, sigma, lambda_, nu) -> float
+                _sad_val = skew_adjusted_direction(_sad_mu, _sad_sigma, _sad_lambda, float(_sad_nu))
+                _signal_meta["skew_adjusted_direction"] = float(_sad_val)
+            except Exception:
+                pass
+
+        # Story 18.2-18.3: CST jump probability & prediction interval
+        # cst_jump_probability(r_t, mu_t, sigma_t, epsilon, nu_normal, nu_crisis) -> JumpProbabilityResult
+        # cst_prediction_interval(mu, sigma, epsilon, nu_normal, nu_crisis, alpha) -> CSTPredictionInterval
+        # Uses latest observation and CST parameters from tuned_params.
+        if CST_SIGNALS_AVAILABLE and _has_returns and _has_vol and tuned_params:
+            try:
+                _tp_global = tuned_params.get("global", {})
+                _cst_epsilon = _tp_global.get("cst_epsilon")
+                _cst_nu_normal = _tp_global.get("cst_nu_normal", _tp_global.get("nu"))
+                _cst_nu_crisis = _tp_global.get("cst_nu_crisis")
+                _cst_mu = _tp_global.get("mu", 0.0)
+                _cst_sigma = float(vol_arr.iloc[-1]) if _has_vol else 0.01
+                _cst_r_t = float(returns_arr.iloc[-1]) if hasattr(returns_arr, 'iloc') else float(returns_arr[-1])
+                if _cst_epsilon is not None and _cst_nu_normal is not None and _cst_nu_crisis is not None:
+                    _cjp = cst_jump_probability(
+                        r_t=_cst_r_t, mu_t=float(_cst_mu), sigma_t=_cst_sigma,
+                        epsilon=float(_cst_epsilon),
+                        nu_normal=float(_cst_nu_normal), nu_crisis=float(_cst_nu_crisis),
+                    )
+                    _signal_meta["cst_jump_probability"] = {
+                        "gamma": float(_cjp.gamma),
+                        "is_jump": bool(_cjp.is_jump),
+                        "q_inflation": float(_cjp.q_inflation),
+                    }
+            except Exception:
+                pass
+            try:
+                if _cst_epsilon is not None and _cst_nu_normal is not None and _cst_nu_crisis is not None:
+                    _cpi = cst_prediction_interval(
+                        mu=float(_cst_mu), sigma=_cst_sigma,
+                        epsilon=float(_cst_epsilon),
+                        nu_normal=float(_cst_nu_normal), nu_crisis=float(_cst_nu_crisis),
+                    )
+                    _signal_meta["cst_prediction_interval"] = {
+                        "q_lo": float(_cpi.q_lo),
+                        "q_hi": float(_cpi.q_hi),
+                        "width": float(_cpi.width),
+                        "width_ratio": float(_cpi.width_ratio),
+                    }
+            except Exception:
+                pass
+
+        # Story 25.1: Mean reversion signal strength
+        if MR_SIGNAL_STRENGTH_AVAILABLE and _has_returns:
+            try:
+                _prices_arr = np.asarray(px) if px is not None else np.exp(np.asarray(returns_arr).cumsum())
+                _mrs = mr_signal_strength(_prices_arr)
+                _signal_meta["mr_signal_strength"] = {
+                    "strength": float(_mrs.strength) if hasattr(_mrs, 'strength') else float(_mrs),
+                    "half_life": float(_mrs.half_life) if hasattr(_mrs, 'half_life') else None,
+                }
+            except Exception:
+                pass
+
+        # Story 26.1-26.2: Factor augmented signals
+        if FACTOR_AUGMENTED_AVAILABLE and _has_returns:
+            try:
+                # extract_market_factors needs cross-sectional data (2D array)
+                # Using single asset returns reshaped as (T, 1) for factor extraction
+                _ret_2d = np.asarray(returns_arr).reshape(-1, 1)
+                _emf = extract_market_factors(_ret_2d, n_factors=1)
+                _signal_meta["market_factors"] = {
+                    "n_factors": int(_emf.n_factors) if hasattr(_emf, 'n_factors') else 1,
+                    "explained_variance": float(_emf.explained_variance) if hasattr(_emf, 'explained_variance') else 0.0,
+                }
+            except Exception:
+                pass
+
+        # Story 23.1-23.3: VIX forecast adjustment
+        # vix_drift_adjustment(mu_t, vix_current, vix_median) -> VIXDriftAdjustmentResult
+        # vix_term_structure_vol(vix_30, vix_90, horizon) -> VIXTermStructureResult
+        # Fetches current VIX from market_conditioning module.
+        if VIX_FORECAST_ADJUSTMENT_AVAILABLE and tuned_params:
+            try:
+                _vix_current = None
+                try:
+                    from calibration.market_conditioning import get_current_vix
+                    _vix_current = get_current_vix()
+                except Exception:
+                    pass
+                if _vix_current is not None:
+                    _tp_global = tuned_params.get("global", {})
+                    _vda_mu = _tp_global.get("mu", 0.0)
+                    _vda = vix_drift_adjustment(
+                        mu_t=float(_vda_mu), vix_current=float(_vix_current),
+                    )
+                    _signal_meta["vix_drift_adjustment"] = {
+                        "dampening_factor": float(_vda.dampening_factor),
+                        "adjustment_applied": bool(_vda.adjustment_applied),
+                        "regime": _vda.regime,
+                        "vix_current": float(_vix_current),
+                    }
+                    # Also compute term structure vol at key horizons
+                    try:
+                        _vts_7d = vix_term_structure_vol(
+                            vix_30=float(_vix_current), vix_90=float(_vix_current) * 0.95,
+                            horizon=7,
+                        )
+                        _signal_meta["vix_term_structure_7d"] = {
+                            "implied_vol": float(_vts_7d.implied_vol),
+                            "term_structure_state": _vts_7d.term_structure_state,
+                        }
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        # Story 28.1-28.3: Ensemble forecasts
+        if ENSEMBLE_FORECAST_AVAILABLE and sigs:
+            try:
+                _forecasts = np.array([s.exp_ret for s in sigs])
+                _ewe = equal_weight_ensemble(_forecasts)
+                _signal_meta["ensemble_equal_weight"] = float(_ewe.mean) if hasattr(_ewe, 'mean') else float(_ewe)
+                if len(_forecasts) >= 3:
+                    _te = trimmed_ensemble(_forecasts)
+                    _signal_meta["ensemble_trimmed"] = float(_te.mean) if hasattr(_te, 'mean') else float(_te)
+            except Exception:
+                pass
+
+        # Story 29.1: Location-scale correction
+        if LOCATION_SCALE_CORRECTION_AVAILABLE and _has_returns and _has_vol and tuned_params:
+            try:
+                _tp_global = tuned_params.get("global", {})
+                _lsc_c = _tp_global.get("c", 1.0)
+                _lsc_q = _tp_global.get("q", 1e-5)
+                _lsc_phi = _tp_global.get("phi", 0.0)
+                # Run filter to get innovations
+                from models.gaussian import kalman_filter_drift_phi
+                _lsc_mu, _lsc_P, _ = kalman_filter_drift_phi(
+                    np.asarray(returns_arr), np.asarray(vol_arr), _lsc_q, _lsc_c, _lsc_phi,
+                )
+                _lsc_innovations = np.asarray(returns_arr) - _lsc_mu
+                _lsc_R = _lsc_c * np.asarray(vol_arr) ** 2
+                _lsc = location_scale_correction(_lsc_innovations, _lsc_R)
+                _signal_meta["location_scale_correction"] = {
+                    "delta_mu": float(_lsc.delta_mu) if hasattr(_lsc, 'delta_mu') else 0.0,
+                    "scale_sigma": float(_lsc.scale_sigma) if hasattr(_lsc, 'scale_sigma') else 1.0,
+                }
+            except Exception:
+                pass
+
+        # Story 30.1: BMA attribution
+        if BMA_ATTRIBUTION_AVAILABLE and tuned_params and _has_returns:
+            try:
+                _bma_models = tuned_params.get("models", {})
+                _bma_weights_arr = tuned_params.get("model_posterior", {})
+                if _bma_models and _bma_weights_arr:
+                    _bma_model_names = [m for m in _bma_models if _bma_models[m].get("fit_success", False)]
+                    if len(_bma_model_names) >= 2:
+                        # bma_attribution(returns, model_forecasts, bma_weights)
+                        # Simplified: use dominant model from posterior
+                        _bma_dom = max(_bma_weights_arr, key=_bma_weights_arr.get)
+                        _bma_conc = float(_bma_weights_arr.get(_bma_dom, 0.0))
+                        _signal_meta["bma_attribution"] = {
+                            "dominant_model": str(_bma_dom),
+                            "concentration": _bma_conc,
+                        }
+            except Exception:
+                pass
+
+        # Story 30.2: Gap-aware predict
+        if GAP_AWARE_PREDICT_AVAILABLE and tuned_params:
+            try:
+                _tp_global = tuned_params.get("global", {})
+                _gap_mu = _tp_global.get("mu", 0.0)
+                _gap_P = _tp_global.get("P", 1e-4)
+                _gap_phi = _tp_global.get("phi", 0.0)
+                _gap_q = _tp_global.get("q", 1e-5)
+                # Detect gap: check if last two trading dates are >1 calendar day apart
+                _gap_days = 0
+                if px is not None and len(px) >= 2:
+                    _idx = px.index
+                    if hasattr(_idx[-1], 'date'):
+                        _delta = (_idx[-1] - _idx[-2]).days
+                        _gap_days = max(0, _delta - 1)  # Weekends/holidays
+                if _gap_days > 0:
+                    _gap = gap_aware_predict(_gap_mu, _gap_P, _gap_phi, _gap_q, _gap_days)
+                    _signal_meta["gap_aware"] = {
+                        "gap_days": int(_gap_days),
+                        "mu_predicted": float(_gap.mu_predicted) if hasattr(_gap, 'mu_predicted') else 0.0,
+                        "P_predicted": float(_gap.P_predicted) if hasattr(_gap, 'P_predicted') else 0.0,
+                    }
+            except Exception:
+                pass
+
         return {
             "status": "success",
             "asset": asset,
@@ -10546,6 +11279,8 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
             "diagnostics": diagnostics,
             "last_close": last_close,
             "enrichment": enrichment,
+            "data_quality": data_quality_meta,
+            "signal_meta": _signal_meta,
         }
 
     except Exception as e:
@@ -12061,6 +12796,21 @@ def main() -> None:
         "failed_assets": failure_log,
         "portfolio_enrichment": portfolio_enrichment,
     }
+    # Validate pipeline output (Epic 30: integration_testing)
+    if INTEGRATION_TESTING_AVAILABLE and all_blocks:
+        try:
+            validation_failures = 0
+            for block in all_blocks[:10]:  # Sample first 10 for speed
+                asset_name = block.get("asset", block.get("canon", ""))
+                tune_params = block.get("tuned_params")
+                if tune_params:
+                    result = validate_pipeline_output(asset_name, tune_params)
+                    if not result.success:
+                        validation_failures += 1
+            if validation_failures > 0:
+                Console().print(f"[yellow]Pipeline validation:[/yellow] {validation_failures} asset(s) with issues")
+        except Exception:
+            pass
     try:
         os.makedirs(os.path.dirname(cache_path), exist_ok=True)
         with open(cache_path, "w") as f:

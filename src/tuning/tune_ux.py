@@ -85,6 +85,20 @@ try:
 except ImportError:
     PIT_PENALTY_AVAILABLE = False
 
+# Import Executive Summary (Epic 25 - Post-Tuning Summary)
+try:
+    from calibration.executive_summary import generate_executive_summary
+    EXECUTIVE_SUMMARY_AVAILABLE = True
+except ImportError:
+    EXECUTIVE_SUMMARY_AVAILABLE = False
+
+# Import Forecast Scorecard (Epic 25 - Forecast Quality Display)
+try:
+    from calibration.forecast_scorecard import compute_scorecard_metrics, display_scorecard
+    FORECAST_SCORECARD_AVAILABLE = True
+except ImportError:
+    FORECAST_SCORECARD_AVAILABLE = False
+
 # Rich imports for presentation layer
 import json
 import multiprocessing
@@ -3244,6 +3258,31 @@ Examples:
         console=console,
         cache=cache,
     )
+
+    # Executive summary (Epic 25)
+    if EXECUTIVE_SUMMARY_AVAILABLE and cache:
+        try:
+            # Compute aggregate metrics from cache for executive summary
+            sharpe_vals = []
+            hit_rate_vals = []
+            for asset_data in cache.values():
+                meta = asset_data.get("meta", {})
+                if "sharpe" in meta:
+                    sharpe_vals.append(meta["sharpe"])
+                if "hit_rate" in meta:
+                    hit_rate_vals.append(meta["hit_rate"])
+            summary = generate_executive_summary(
+                sharpe=float(np.mean(sharpe_vals)) if sharpe_vals else 0.0,
+                hit_rate=float(np.mean(hit_rate_vals)) if hit_rate_vals else 0.0,
+            )
+            console.print(Panel(
+                f"Recommendation: {summary.recommendation}\n"
+                f"Sharpe: {summary.sharpe:.3f}  Hit Rate: {summary.hit_rate:.3f}\n"
+                + ("\n".join(summary.reasons) if summary.reasons else ""),
+                title="Executive Summary",
+            ))
+        except Exception:
+            pass
 
 
 if __name__ == '__main__':
