@@ -162,6 +162,66 @@ PHI_SHRINKAGE_LAMBDA_DEFAULT = 0.05
 STUDENT_T_NU_GRID = [3, 4, 8, 20]
 
 
+# ── Story 6.1: Continuous nu optimization via profile likelihood ──────
+def profile_likelihood_refine_nu(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu_grid_best: float,
+    nu_lo: float = 2.1,
+    nu_hi: float = 50.0,
+    filter_func=None,
+) -> Tuple[float, float]:
+    """Refine nu via golden-section search on profile log-likelihood.
+
+    Fixes (q, c, phi) at their optimized values and searches for the
+    nu that maximizes the Kalman filter log-likelihood over [nu_lo, nu_hi].
+    Default search range: [nu_grid_best - 2, nu_grid_best + 4], clipped to [2.1, 50].
+
+    Args:
+        returns: Return series.
+        vol: Volatility series.
+        q, c, phi: Fixed filter parameters.
+        nu_grid_best: Best nu from discrete grid search.
+        nu_lo, nu_hi: Absolute bounds for nu search.
+        filter_func: Callable(returns, vol, q, c, phi, nu) -> (mu, P, ll).
+                     If None, uses PhiStudentTDriftModel.filter_phi.
+
+    Returns:
+        (nu_refined, ll_refined): Refined nu and its log-likelihood.
+    """
+    from scipy.optimize import minimize_scalar
+
+    # Search range: [nu_grid_best - 2, nu_grid_best + 4], clipped
+    search_lo = max(nu_lo, nu_grid_best - 2.0)
+    search_hi = min(nu_hi, nu_grid_best + 4.0)
+    if search_lo >= search_hi:
+        search_lo = max(nu_lo, nu_grid_best - 1.0)
+        search_hi = min(nu_hi, nu_grid_best + 2.0)
+
+    if filter_func is None:
+        filter_func = PhiStudentTDriftModel.filter_phi
+
+    def neg_ll(nu_val):
+        if nu_val <= 2.0 or nu_val > 50.0:
+            return 1e12
+        try:
+            _, _, ll = filter_func(returns, vol, q, c, phi, nu_val)
+            return -ll if math.isfinite(ll) else 1e12
+        except Exception:
+            return 1e12
+
+    result = minimize_scalar(neg_ll, bounds=(search_lo, search_hi), method='bounded',
+                             options={'xatol': 0.1, 'maxiter': 30})
+
+    nu_refined = float(result.x) if result.success else nu_grid_best
+    ll_refined = float(-result.fun) if result.success else float('nan')
+
+    return nu_refined, ll_refined
+
+
 # ---------------------------------------------------------------------------
 # ENHANCED STUDENT-T CONFIGURATION
 # Three enhancements for Hyvarinen/PIT calibration:
@@ -180,6 +240,79 @@ NU_LEFT_GRID = [3, 4, 5]
 NU_RIGHT_GRID = [8, 12, 20]
 TWO_PIECE_BMA_PENALTY = 0.0  # REMOVED: Equal competition with base Student-t
 
+
+def refine_two_piece_nu(
+    nu_L_grid: float,
+    nu_R_grid: float,
+    innovations: np.ndarray,
+    scale: float = 1.0,
+    nu_L_bounds: Tuple[float, float] = (2.1, 30.0),
+    nu_R_bounds: Tuple[float, float] = (2.1, 30.0),
+) -> Tuple[float, float, float]:
+    """Refine (nu_L, nu_R) for two-piece Student-t via profile likelihood.
+
+    Story 8.1: After grid search selects best (nu_L, nu_R), refine via
+    2D bounded optimization. Uses two-piece Student-t log-likelihood:
+    f(r) = c * t(r; nu_L) for r < 0, c * t(r; nu_R) for r >= 0.
+
+    Args:
+        nu_L_grid: Grid-selected left tail nu.
+        nu_R_grid: Grid-selected right tail nu.
+        innovations: Standardized innovations (residuals / scale).
+        scale: Scale parameter (sigma).
+        nu_L_bounds: Absolute bounds for nu_L search.
+        nu_R_bounds: Absolute bounds for nu_R search.
+
+    Returns:
+        (nu_L_refined, nu_R_refined, ll): Refined parameters and log-likelihood.
+    """
+    from scipy.optimize import minimize
+    from scipy.special import gammaln as scipy_gammaln
+
+    innovations = np.asarray(innovations).flatten()
+    z = innovations / max(scale, 1e-12)
+    left_mask = z < 0.0
+    right_mask = ~left_mask
+
+    def _student_t_logpdf(x, nu):
+        """Log-pdf of Student-t(nu, 0, 1)."""
+        return (
+            scipy_gammaln(0.5 * (nu + 1)) - scipy_gammaln(0.5 * nu)
+            - 0.5 * np.log(nu * np.pi)
+            - 0.5 * (nu + 1) * np.log(1.0 + x ** 2 / nu)
+        )
+
+    def neg_ll(params):
+        nu_L, nu_R = params
+        if nu_L < 2.01 or nu_R < 2.01:
+            return 1e12
+        ll_left = np.sum(_student_t_logpdf(z[left_mask], nu_L)) if np.any(left_mask) else 0.0
+        ll_right = np.sum(_student_t_logpdf(z[right_mask], nu_R)) if np.any(right_mask) else 0.0
+        return -(ll_left + ll_right)
+
+    # Search around grid-selected values
+    lo_L = max(nu_L_bounds[0], nu_L_grid - 2.0)
+    hi_L = min(nu_L_bounds[1], nu_L_grid + 3.0)
+    lo_R = max(nu_R_bounds[0], nu_R_grid - 3.0)
+    hi_R = min(nu_R_bounds[1], nu_R_grid + 3.0)
+
+    result = minimize(
+        neg_ll,
+        x0=[nu_L_grid, nu_R_grid],
+        method='L-BFGS-B',
+        bounds=[(lo_L, hi_L), (lo_R, hi_R)],
+        options={'maxiter': 100, 'ftol': 1e-8},
+    )
+
+    if result.success:
+        nu_L_ref, nu_R_ref = float(result.x[0]), float(result.x[1])
+        ll_ref = float(-result.fun)
+    else:
+        nu_L_ref, nu_R_ref = nu_L_grid, nu_R_grid
+        ll_ref = float(-neg_ll([nu_L_grid, nu_R_grid]))
+
+    return nu_L_ref, nu_R_ref, ll_ref
+
 # Two-Component Mixture Student-t Enhancement
 NU_CALM_GRID = [12, 20]
 NU_STRESS_GRID = [4, 6]
@@ -197,6 +330,199 @@ MIXTURE_BMA_PENALTY = 0.0  # REMOVED: Equal competition with base Student-t
 MIXTURE_WEIGHT_A_SHOCK = 1.0       # Sensitivity to standardized residuals
 MIXTURE_WEIGHT_B_VOL_ACCEL = 0.5   # Sensitivity to vol acceleration
 MIXTURE_WEIGHT_C_MOMENTUM = 0.3    # Sensitivity to momentum
+
+
+# ── Story 8.2: Multi-Factor Mixture Weight Dynamics ──────────────────
+# Asset-class default factor loadings (a=shock, b=vol_accel, c=momentum)
+MIXTURE_FACTOR_LOADINGS = {
+    'metals_gold':     (0.8, 0.3, 0.2),
+    'metals_silver':   (1.2, 0.6, 0.2),
+    'high_vol_equity': (1.5, 0.8, 0.4),
+    'crypto':          (1.3, 0.7, 0.3),
+    'large_cap':       (1.0, 0.5, 0.3),
+    'index':           (0.8, 0.4, 0.3),
+    'forex':           (0.9, 0.4, 0.2),
+}
+
+
+def compute_mixture_weight_dynamic(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    a: float = MIXTURE_WEIGHT_A_SHOCK,
+    b: float = MIXTURE_WEIGHT_B_VOL_ACCEL,
+    c: float = MIXTURE_WEIGHT_C_MOMENTUM,
+    base_weight: float = MIXTURE_WEIGHT_DEFAULT,
+    momentum_window: int = 20,
+) -> Tuple[np.ndarray, dict]:
+    """Compute time-varying mixture weight from multi-factor conditioning.
+
+    Story 8.2: w_t = sigmoid(logit(base) + a*z_t + b*delta_sigma_t + c*M_t)
+
+    Three factors:
+      z_t:         Standardized shock (abs return / rolling vol)
+      delta_sigma:  Vol acceleration (change in rolling vol)
+      M_t:         Momentum signal (sign * rolling mean return)
+
+    Higher w_t = more weight on calm component.
+    w_t drops (more stress) when shocks are large or vol accelerates.
+
+    Args:
+        returns: Return series.
+        vol: Volatility series (same length).
+        a, b, c: Factor loadings for shock, vol accel, momentum.
+        base_weight: Base calm-regime weight (0, 1).
+        momentum_window: Lookback for momentum computation.
+
+    Returns:
+        (w_t, diagnostics): Time-varying calm weight and factor diagnostics.
+    """
+    returns = np.asarray(returns).flatten()
+    vol = np.asarray(vol).flatten()
+    n = len(returns)
+
+    # Factor 1: Standardized shocks (negative = stress)
+    vol_safe = np.maximum(vol, 1e-8)
+    z_t = -np.abs(returns) / vol_safe  # negative shocks push w_t down
+
+    # Factor 2: Vol acceleration (positive = stress)
+    delta_sigma = np.zeros(n)
+    if n > 1:
+        delta_sigma[1:] = np.diff(vol)
+    delta_sigma_signal = -delta_sigma / np.maximum(np.std(delta_sigma[1:]) if n > 2 else 1.0, 1e-8)
+
+    # Factor 3: Momentum (positive = calm trends)
+    M_t = np.zeros(n)
+    for t in range(momentum_window, n):
+        window_ret = returns[t - momentum_window:t]
+        M_t[t] = np.mean(window_ret) / max(np.std(window_ret), 1e-8)
+
+    # Combine via logistic
+    logit_base = np.log(max(base_weight, 1e-6) / max(1 - base_weight, 1e-6))
+    linear = logit_base + a * z_t + b * delta_sigma_signal + c * M_t
+    w_t = 1.0 / (1.0 + np.exp(-linear))
+    w_t = np.clip(w_t, 0.01, 0.99)
+
+    diagnostics = {
+        'mean_w': float(np.mean(w_t)),
+        'min_w': float(np.min(w_t)),
+        'max_w': float(np.max(w_t)),
+        'factor_z_std': float(np.std(z_t)),
+        'factor_vol_accel_std': float(np.std(delta_sigma_signal)),
+        'factor_momentum_std': float(np.std(M_t)),
+    }
+
+    return w_t, diagnostics
+
+
+def get_mixture_factor_loadings(asset_symbol: str = None) -> Tuple[float, float, float]:
+    """Return calibrated (a, b, c) factor loadings per asset class.
+
+    Args:
+        asset_symbol: Ticker symbol.
+
+    Returns:
+        (a_shock, b_vol_accel, c_momentum) tuple.
+    """
+    if asset_symbol is None:
+        return (MIXTURE_WEIGHT_A_SHOCK, MIXTURE_WEIGHT_B_VOL_ACCEL,
+                MIXTURE_WEIGHT_C_MOMENTUM)
+
+    sym = asset_symbol.strip().upper()
+    asset_class = _detect_asset_class(sym)
+
+    if asset_class is not None and asset_class in MIXTURE_FACTOR_LOADINGS:
+        return MIXTURE_FACTOR_LOADINGS[asset_class]
+
+    if sym in _CRYPTO_SYMBOLS or 'BTC' in sym or 'ETH' in sym:
+        return MIXTURE_FACTOR_LOADINGS['crypto']
+
+    if sym in _LARGE_CAP_SYMBOLS:
+        return MIXTURE_FACTOR_LOADINGS['large_cap']
+
+    if sym in _INDEX_SYMBOLS:
+        return MIXTURE_FACTOR_LOADINGS['index']
+
+    return (MIXTURE_WEIGHT_A_SHOCK, MIXTURE_WEIGHT_B_VOL_ACCEL,
+            MIXTURE_WEIGHT_C_MOMENTUM)
+
+
+# ── Story 8.3: Mixture vs Two-Piece Model Selection Gate ─────────────
+VOV_MIXTURE_THRESHOLD = 0.5    # Vol-of-vol threshold for mixture preference
+SKEW_TWO_PIECE_THRESHOLD = 0.3  # Abs skewness threshold for two-piece preference
+BIC_OCCAM_MARGIN = 6.0          # BIC margin (3 nats * 2) for Occam gate
+
+
+def compute_model_selection_gate(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    bic_mixture: float,
+    bic_two_piece: float,
+) -> Tuple[str, dict]:
+    """Select between mixture and two-piece Student-t models.
+
+    Story 8.3: Selection heuristic beyond BIC:
+    - Mixture preferred when vol-of-vol > 0.5 (dynamic regimes)
+    - Two-piece preferred when |empirical skewness| > 0.3 (static asymmetry)
+    - When BIC within 3 nats: prefer simpler (two-piece)
+
+    Args:
+        returns: Return series.
+        vol: Volatility series.
+        bic_mixture: BIC of mixture model.
+        bic_two_piece: BIC of two-piece model.
+
+    Returns:
+        (selected_model, diagnostics): 'mixture' or 'two_piece' and details.
+    """
+    returns = np.asarray(returns).flatten()
+    vol = np.asarray(vol).flatten()
+
+    # Compute data diagnostics
+    skew = float(np.mean(((returns - np.mean(returns)) / max(np.std(returns), 1e-8)) ** 3))
+    abs_skew = abs(skew)
+
+    # Vol-of-vol: std(vol) / mean(vol)
+    vol_mean = float(np.mean(np.abs(vol)))
+    vol_std = float(np.std(vol))
+    vov = vol_std / max(vol_mean, 1e-8)
+
+    # BIC difference (positive = two-piece better)
+    bic_diff = bic_mixture - bic_two_piece
+    bic_diff_nats = bic_diff / 2.0
+
+    # Heuristic adjustments
+    adjusted_bic_mixture = bic_mixture
+    adjusted_bic_two_piece = bic_two_piece
+
+    # VoV > threshold => upweight mixture by 2 BIC nats (=4 in BIC scale)
+    if vov > VOV_MIXTURE_THRESHOLD:
+        adjusted_bic_mixture -= 4.0
+
+    # Occam gate: when within 3 nats, prefer two-piece (simpler)
+    if abs(bic_diff) < BIC_OCCAM_MARGIN:
+        selected = 'two_piece'
+    elif adjusted_bic_mixture < adjusted_bic_two_piece:
+        selected = 'mixture'
+    else:
+        selected = 'two_piece'
+
+    # Static asymmetry override: strong skewness favors two-piece
+    if abs_skew > SKEW_TWO_PIECE_THRESHOLD and bic_diff_nats < 5.0:
+        selected = 'two_piece'
+
+    diagnostics = {
+        'empirical_skewness': float(skew),
+        'abs_skewness': float(abs_skew),
+        'vol_of_vol': float(vov),
+        'bic_mixture': float(bic_mixture),
+        'bic_two_piece': float(bic_two_piece),
+        'bic_diff_nats': float(bic_diff_nats),
+        'selected': selected,
+        'skew_favors_two_piece': bool(abs_skew > SKEW_TWO_PIECE_THRESHOLD),
+        'vov_favors_mixture': bool(vov > VOV_MIXTURE_THRESHOLD),
+    }
+
+    return selected, diagnostics
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +609,285 @@ def _detect_asset_class(asset_symbol: str) -> Optional[str]:
     return None
 
 
+# ── Story 7.1: Calibrated MS-q sensitivity per asset class ───────────
+# Each entry: (sensitivity, threshold)
+MS_Q_ASSET_CLASS_PARAMS = {
+    'metals_gold':     (4.0, 1.5),   # Slow, macro-driven
+    'metals_silver':   (4.5, 1.2),   # Faster, gap-prone
+    'metals_other':    (4.0, 1.3),   # Similar to gold
+    'large_cap':       (2.5, 1.3),   # Standard
+    'high_vol_equity': (3.0, 1.0),   # Earlier switching
+    'crypto':          (3.5, 1.1),   # Structural breaks
+    'index':           (2.5, 1.3),   # Standard
+    'forex':           (3.0, 1.2),   # Moderate
+}
+
+# Crypto symbols for detection
+_CRYPTO_SYMBOLS = frozenset({
+    'BTC-USD', 'ETH-USD', 'SOL-USD', 'DOGE-USD', 'ADA-USD',
+    'XRP-USD', 'DOT-USD', 'AVAX-USD', 'LINK-USD', 'MATIC-USD',
+})
+
+_LARGE_CAP_SYMBOLS = frozenset({
+    'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'NVDA', 'META',
+    'TSLA', 'BRK-B', 'JPM', 'V', 'MA', 'UNH', 'HD', 'PG',
+    'JNJ', 'WMT', 'DIS', 'NFLX', 'COST', 'CRM', 'ADBE',
+})
+
+_INDEX_SYMBOLS = frozenset({
+    'SPY', 'QQQ', 'IWM', 'DIA', 'VOO', 'VTI', '^GSPC', '^DJI', '^IXIC',
+})
+
+
+def get_ms_q_params(asset_symbol: str = None) -> Tuple[float, float]:
+    """Return calibrated (sensitivity, threshold) for MS-q per asset class.
+
+    Story 7.1: Asset-class calibrated sigmoid parameters for regime detection.
+
+    Args:
+        asset_symbol: Ticker symbol (e.g. 'MSTR', 'GC=F', 'BTC-USD').
+
+    Returns:
+        (sensitivity, threshold) tuple.
+    """
+    if asset_symbol is None:
+        return (MS_Q_SENSITIVITY, MS_Q_THRESHOLD)
+
+    sym = asset_symbol.strip().upper()
+
+    # Check specific asset classes
+    asset_class = _detect_asset_class(sym)
+    if asset_class is not None:
+        if asset_class in MS_Q_ASSET_CLASS_PARAMS:
+            return MS_Q_ASSET_CLASS_PARAMS[asset_class]
+
+    # Crypto
+    if sym in _CRYPTO_SYMBOLS or 'BTC' in sym or 'ETH' in sym:
+        return MS_Q_ASSET_CLASS_PARAMS['crypto']
+
+    # Large cap
+    if sym in _LARGE_CAP_SYMBOLS:
+        return MS_Q_ASSET_CLASS_PARAMS['large_cap']
+
+    # Index
+    if sym in _INDEX_SYMBOLS:
+        return MS_Q_ASSET_CLASS_PARAMS['index']
+
+    # Default
+    return (MS_Q_SENSITIVITY, MS_Q_THRESHOLD)
+
+
+# ── Story 7.2: EWM vs Expanding Window Z-Score Selection ─────────────
+# Per-asset-class preferred z-score method and EWM lambda
+MS_Z_ASSET_CLASS_DEFAULTS = {
+    'metals_gold':     ('ewm', 0.97),    # Slow regimes, long memory
+    'metals_silver':   ('ewm', 0.96),    # Slightly faster
+    'metals_other':    ('ewm', 0.97),    # Similar to gold
+    'high_vol_equity': ('ewm', 0.94),    # Fast regimes
+    'crypto':          ('ewm', 0.95),    # Structural breaks
+    'large_cap':       ('expanding', 0.0),  # Stable, long-run mean informative
+    'index':           ('expanding', 0.0),  # Stable
+    'forex':           ('ewm', 0.96),    # Moderate
+}
+
+
+def get_ms_z_method(asset_symbol: str = None) -> Tuple[str, float]:
+    """Return preferred (z_method, ewm_lambda) per asset class.
+
+    Story 7.2: Asset-class z-score method selection.
+
+    Args:
+        asset_symbol: Ticker symbol.
+
+    Returns:
+        ('ewm', lambda) or ('expanding', 0.0).
+    """
+    if asset_symbol is None:
+        return ('expanding', 0.0)
+
+    sym = asset_symbol.strip().upper()
+    asset_class = _detect_asset_class(sym)
+
+    if asset_class is not None and asset_class in MS_Z_ASSET_CLASS_DEFAULTS:
+        return MS_Z_ASSET_CLASS_DEFAULTS[asset_class]
+
+    # Crypto
+    if sym in _CRYPTO_SYMBOLS or 'BTC' in sym or 'ETH' in sym:
+        return MS_Z_ASSET_CLASS_DEFAULTS['crypto']
+
+    # Large cap
+    if sym in _LARGE_CAP_SYMBOLS:
+        return MS_Z_ASSET_CLASS_DEFAULTS['large_cap']
+
+    # Index
+    if sym in _INDEX_SYMBOLS:
+        return MS_Z_ASSET_CLASS_DEFAULTS['index']
+
+    return ('expanding', 0.0)
+
+
+def select_ms_z_method_auto(
+    vol: np.ndarray,
+    q_calm: float,
+    q_stress: float,
+    sensitivity: float = 2.0,
+    returns: np.ndarray = None,
+) -> Tuple[str, float, dict]:
+    """Select optimal z-score method via in-sample BIC comparison.
+
+    Story 7.2: Compare EWM-based MS-q vs expanding-window MS-q.
+    Selection via log-likelihood proxy: sum of log(q_t) weighted by
+    squared innovations.
+
+    Args:
+        vol: Volatility series.
+        q_calm: Calm regime process noise.
+        q_stress: Stress regime process noise.
+        sensitivity: Sigmoid sensitivity.
+        returns: Optional returns series for innovation-weighted BIC.
+
+    Returns:
+        (best_method, best_lambda, diagnostics) where diagnostics contains
+        BIC for each candidate.
+    """
+    n = len(vol)
+    candidates = [
+        ('expanding', 0.0),
+        ('ewm', 0.94),
+        ('ewm', 0.96),
+        ('ewm', 0.97),
+    ]
+
+    best_bic = np.inf
+    best_method = 'expanding'
+    best_lambda = 0.0
+    bic_results = {}
+
+    for method, lam in candidates:
+        ewm_lam = lam if method == 'ewm' else 0.0
+        q_t, p_stress = compute_ms_process_noise_smooth(
+            vol, q_calm, q_stress, sensitivity=sensitivity, ewm_lambda=ewm_lam
+        )
+        # Log-likelihood proxy: -0.5 * sum(log(q_t) + innovations^2 / q_t)
+        log_q = np.log(np.maximum(q_t, 1e-20))
+
+        if returns is not None and len(returns) == n:
+            innov_sq = returns ** 2
+            ll = -0.5 * np.sum(log_q + innov_sq / np.maximum(q_t, 1e-20))
+        else:
+            ll = -0.5 * np.sum(log_q)
+
+        # BIC: -2*ll + k*log(n), k=1 for ewm (lambda), k=0 for expanding
+        k = 1 if method == 'ewm' else 0
+        bic = -2.0 * ll + k * np.log(max(n, 1))
+
+        label = f"{method}_{lam}" if method == 'ewm' else 'expanding'
+        bic_results[label] = float(bic)
+
+        if bic < best_bic:
+            best_bic = bic
+            best_method = method
+            best_lambda = lam
+
+    # Expanding requires n > 100 for stable mean
+    if best_method == 'expanding' and n < 100:
+        best_method = 'ewm'
+        best_lambda = 0.96
+
+    return best_method, best_lambda, bic_results
+
+
+# ── Story 7.3: Joint q_calm / q_stress optimization ──────────────────
+MIN_Q_RATIO = 5.0     # Hard constraint: q_stress / q_calm >= 5
+MAX_Q_RATIO = 1000.0  # Hard constraint: q_stress / q_calm <= 1000
+
+
+def optimize_q_calm_stress(
+    vol: np.ndarray,
+    returns: np.ndarray,
+    sensitivity: float = 2.0,
+    ewm_lambda: float = 0.0,
+    q_calm_bounds: Tuple[float, float] = (1e-8, 1e-4),
+    q_stress_bounds: Tuple[float, float] = (1e-5, 1e-1),
+    n_grid: int = 10,
+) -> Tuple[float, float, dict]:
+    """Optimize q_calm and q_stress jointly with identifiability constraints.
+
+    Story 7.3: Constrained optimization ensuring the two-regime model is
+    genuinely bimodal (not a single-regime collapse).
+
+    Constraints:
+        MIN_Q_RATIO <= q_stress / q_calm <= MAX_Q_RATIO
+
+    Args:
+        vol: Volatility series.
+        returns: Return series (same length as vol).
+        sensitivity: Sigmoid sensitivity for MS transition.
+        ewm_lambda: EWM decay for vol statistics.
+        q_calm_bounds: (min, max) for q_calm search.
+        q_stress_bounds: (min, max) for q_stress search.
+        n_grid: Grid points per dimension.
+
+    Returns:
+        (q_calm_opt, q_stress_opt, diagnostics) where diagnostics
+        includes ratio, BIC, and comparison with single-q model.
+    """
+    n = len(vol)
+    returns = np.asarray(returns).flatten()
+
+    # Grid search over q_calm x q_stress
+    q_calm_grid = np.geomspace(q_calm_bounds[0], q_calm_bounds[1], n_grid)
+    q_stress_grid = np.geomspace(q_stress_bounds[0], q_stress_bounds[1], n_grid)
+
+    best_ll = -np.inf
+    best_qc = q_calm_bounds[0]
+    best_qs = q_stress_bounds[1]
+
+    for qc in q_calm_grid:
+        for qs in q_stress_grid:
+            ratio = qs / max(qc, 1e-20)
+            if ratio < MIN_Q_RATIO or ratio > MAX_Q_RATIO:
+                continue
+
+            q_t, _ = compute_ms_process_noise_smooth(
+                vol, qc, qs, sensitivity=sensitivity, ewm_lambda=ewm_lambda
+            )
+            log_q = np.log(np.maximum(q_t, 1e-20))
+            ll = -0.5 * np.sum(log_q + returns ** 2 / np.maximum(q_t, 1e-20))
+
+            if ll > best_ll:
+                best_ll = ll
+                best_qc = qc
+                best_qs = qs
+
+    # Single-q baseline for BIC comparison
+    q_single = 0.5 * (best_qc + best_qs)
+    ll_single = -0.5 * np.sum(
+        np.log(q_single) + returns ** 2 / q_single
+    )
+
+    # BIC: -2*ll + k*log(n)
+    bic_msq = -2.0 * best_ll + 2.0 * np.log(max(n, 1))    # k=2 (q_calm, q_stress)
+    bic_single = -2.0 * ll_single + 1.0 * np.log(max(n, 1))  # k=1
+
+    ratio = best_qs / max(best_qc, 1e-20)
+    bic_improvement = bic_single - bic_msq  # positive = MS-q is better
+
+    diagnostics = {
+        'q_calm': float(best_qc),
+        'q_stress': float(best_qs),
+        'ratio': float(ratio),
+        'bic_msq': float(bic_msq),
+        'bic_single': float(bic_single),
+        'bic_improvement_nats': float(bic_improvement / 2.0),
+        'll_msq': float(best_ll),
+        'll_single': float(ll_single),
+        'msq_selected': bool(bic_improvement > 10.0),  # > 5 nats = 10 in -2*ll scale
+    }
+
+    return float(best_qc), float(best_qs), diagnostics
+
+
 # ---------------------------------------------------------------------------
 # MARKOV-SWITCHING PROCESS NOISE
 # ---------------------------------------------------------------------------
@@ -366,6 +971,140 @@ def compute_ms_process_noise_smooth(
     q_t = (1.0 - p_stress) * q_calm + p_stress * q_stress
 
     return q_t, p_stress
+
+
+# ── Story 6.2: Regime-dependent nu via stress probability ─────────────
+def compute_regime_dependent_nu(
+    vol: np.ndarray,
+    nu_calm: float = 12.0,
+    nu_crisis: float = 4.0,
+    sensitivity: float = 2.0,
+    ewm_lambda: float = 0.0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute time-varying nu based on volatility regime.
+
+    nu_eff(t) = (1 - p_stress(t)) * nu_calm + p_stress(t) * nu_crisis
+
+    Uses the same MS stress probability as MS-q, ensuring consistent
+    regime assignments across process noise and tail heaviness.
+
+    Args:
+        vol: Volatility series.
+        nu_calm: Degrees of freedom in calm regime (>= 8).
+        nu_crisis: Degrees of freedom in crisis regime (<= 6).
+        sensitivity: Sigmoid sensitivity to vol z-score.
+        ewm_lambda: EWM decay for vol statistics (0 = expanding window).
+
+    Returns:
+        (nu_eff, p_stress): Time-varying nu and stress probability arrays.
+    """
+    # Reuse MS-q stress probability computation
+    _, p_stress = compute_ms_process_noise_smooth(
+        vol, q_calm=1e-6, q_stress=1e-4,
+        sensitivity=sensitivity, ewm_lambda=ewm_lambda,
+    )
+
+    nu_calm = max(nu_calm, 2.5)
+    nu_crisis = max(nu_crisis, 2.1)
+    nu_eff = (1.0 - p_stress) * nu_calm + p_stress * nu_crisis
+
+    return nu_eff, p_stress
+
+
+# ── Story 6.3: Asymmetric nu calibration per asset class ──────────────
+ASSET_CLASS_ASYMMETRIC_NU = {
+    # (alpha_asym, k_asym) per asset class
+    # alpha < 0: heavier left tail (crash asymmetry)
+    # alpha ~ 0: symmetric
+    'equity':       (-0.15, 1.5),   # Equities: heavier left tail
+    'large_cap':    (-0.10, 1.5),   # Large cap: mild left skew
+    'small_cap':    (-0.20, 1.5),   # Small cap: stronger crash asymmetry
+    'high_vol':     (-0.25, 2.0),   # High vol: pronounced crash tail
+    'metals_gold':  (0.0, 1.0),     # Gold: symmetric (safe haven)
+    'metals_silver':(-0.05, 1.5),   # Silver: slight left skew
+    'metals_other': (-0.05, 1.5),   # Other metals: slight left skew
+    'crypto':       (0.05, 1.5),    # Crypto: unconstrained, slight bubble tail
+    'forex':        (0.0, 1.0),     # Forex: symmetric
+    'index':        (-0.10, 1.5),   # Indices: mild crash asymmetry
+}
+
+
+def get_asymmetric_nu_params(asset_symbol: str = None) -> Tuple[float, float]:
+    """Return calibrated (alpha_asym, k_asym) for an asset's class.
+
+    Story 6.3: Empirically calibrated asymmetry parameters.
+    alpha < 0 means heavier left (crash) tail.
+
+    Args:
+        asset_symbol: Ticker symbol (e.g. 'MSTR', 'GC=F', 'BTC-USD').
+
+    Returns:
+        (alpha_asym, k_asym) tuple.
+    """
+    if asset_symbol is None:
+        return ASSET_CLASS_ASYMMETRIC_NU.get('equity', (-0.15, 1.5))
+
+    sym = asset_symbol.strip().upper()
+
+    asset_class = _detect_asset_class(sym)
+    if asset_class is not None:
+        if asset_class in ASSET_CLASS_ASYMMETRIC_NU:
+            return ASSET_CLASS_ASYMMETRIC_NU[asset_class]
+        # Map detector classes to our dict
+        mapping = {
+            'metals_gold': 'metals_gold',
+            'metals_silver': 'metals_silver',
+            'metals_other': 'metals_other',
+            'high_vol_equity': 'high_vol',
+        }
+        mapped = mapping.get(asset_class)
+        if mapped and mapped in ASSET_CLASS_ASYMMETRIC_NU:
+            return ASSET_CLASS_ASYMMETRIC_NU[mapped]
+
+    # Crypto detection
+    if 'BTC' in sym or 'ETH' in sym or 'SOL' in sym or 'DOGE' in sym:
+        return ASSET_CLASS_ASYMMETRIC_NU['crypto']
+
+    # Index detection
+    if sym in ('SPY', 'QQQ', 'IWM', 'DIA', 'VOO', 'VTI'):
+        return ASSET_CLASS_ASYMMETRIC_NU['index']
+
+    # Large cap heuristic
+    _LARGE_CAP = {'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'NVDA', 'META',
+                  'TSLA', 'BRK-B', 'JPM', 'V', 'MA', 'UNH', 'HD', 'PG'}
+    if sym in _LARGE_CAP:
+        return ASSET_CLASS_ASYMMETRIC_NU['large_cap']
+
+    # Default: equity
+    return ASSET_CLASS_ASYMMETRIC_NU['equity']
+
+
+def compute_empirical_tail_ratio(returns: np.ndarray) -> float:
+    """Compute empirical tail asymmetry from return series.
+
+    Returns alpha_hat = (left_kurtosis - right_kurtosis) / total_kurtosis.
+    Negative means heavier left tail (crashes), positive means heavier right.
+    """
+    r = np.asarray(returns).flatten()
+    r_centered = r - np.mean(r)
+
+    left_mask = r_centered < 0
+    right_mask = r_centered > 0
+
+    if np.sum(left_mask) < 10 or np.sum(right_mask) < 10:
+        return 0.0
+
+    std = max(float(np.std(r_centered)), 1e-10)
+    z = r_centered / std
+
+    left_kurt = float(np.mean(z[left_mask] ** 4))
+    right_kurt = float(np.mean(z[right_mask] ** 4))
+    total_kurt = left_kurt + right_kurt
+
+    if total_kurt < 1e-10:
+        return 0.0
+
+    return (left_kurt - right_kurt) / total_kurt
 
 
 def compute_ms_process_noise(

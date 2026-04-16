@@ -108,6 +108,54 @@ PHI_SHRINKAGE_TAU_MIN = 1e-3
 PHI_SHRINKAGE_GLOBAL_DEFAULT = 0.0
 PHI_SHRINKAGE_LAMBDA_DEFAULT = 0.05
 
+# Story 4.3: Asset-class-specific phi priors
+ASSET_CLASS_PHI_PRIORS = {
+    'metals':       (0.0, 0.15),   # Mean reversion, tight prior
+    'large_cap':    (0.3, 0.20),   # Mild persistence
+    'small_cap':    (0.0, 0.30),   # Agnostic, loose prior
+    'high_vol':     (0.0, 0.30),   # Agnostic, loose prior
+    'crypto':       (0.2, 0.25),   # Momentum
+    'index':        (0.2, 0.20),   # Mild persistence
+    'default':      (0.0, 0.25),   # Agnostic
+}
+
+_METALS_SYMBOLS = {'GC=F', 'SI=F', 'HG=F', 'PL=F', 'PA=F', 'GLD', 'SLV', 'IAU'}
+_LARGE_CAP_SYMBOLS = {'MSFT', 'GOOGL', 'GOOG', 'AAPL', 'AMZN', 'META', 'NVDA',
+                       'NFLX', 'TSLA', 'JPM', 'V', 'MA', 'UNH', 'JNJ', 'PG'}
+_SMALL_CAP_SYMBOLS = {'MSTR', 'RKLB', 'UPST', 'AFRM', 'IONQ', 'SOFI'}
+_HIGH_VOL_SYMBOLS = {'MSTR', 'RKLB'}
+_CRYPTO_SYMBOLS = {'BTC-USD', 'ETH-USD', 'SOL-USD', 'DOGE-USD'}
+_INDEX_SYMBOLS = {'SPY', 'QQQ', 'IWM', 'DIA', '^GSPC', '^IXIC'}
+
+
+def _detect_phi_asset_class(asset_symbol: str) -> str:
+    """Story 4.3: Detect asset class for phi prior selection."""
+    if asset_symbol is None:
+        return 'default'
+    sym = asset_symbol.strip().upper()
+    if sym in _METALS_SYMBOLS:
+        return 'metals'
+    if sym in _HIGH_VOL_SYMBOLS:
+        return 'high_vol'
+    if sym in _CRYPTO_SYMBOLS:
+        return 'crypto'
+    if sym in _INDEX_SYMBOLS:
+        return 'index'
+    if sym in _LARGE_CAP_SYMBOLS:
+        return 'large_cap'
+    if sym in _SMALL_CAP_SYMBOLS:
+        return 'small_cap'
+    # Futures: symbol contains =F
+    if '=F' in sym:
+        return 'metals'  # conservative for commodities
+    return 'default'
+
+
+def get_phi_prior(asset_symbol: str = None) -> tuple:
+    """Story 4.3: Return (phi_0, tau) for the given asset."""
+    cls = _detect_phi_asset_class(asset_symbol)
+    return ASSET_CLASS_PHI_PRIORS.get(cls, ASSET_CLASS_PHI_PRIORS['default'])
+
 
 def _phi_shrinkage_log_prior(
     phi_r: float,
@@ -188,7 +236,10 @@ def _kalman_filter_phi(returns: np.ndarray, vol: np.ndarray, q: float, c: float,
         K = P_pred / S
 
         mu = mu_pred + K * innovation
-        P = (1.0 - K) * P_pred
+        # Story 4.1: Joseph form for guaranteed positive-definiteness
+        # P = (1-K)*P_pred*(1-K) + K^2*R  instead of P = (1-K)*P_pred
+        one_minus_K = 1.0 - K
+        P = one_minus_K * one_minus_K * P_pred + K * K * R[t]
         if P < 1e-12:
             P = 1e-12
 
@@ -238,7 +289,9 @@ def _kalman_filter_phi_with_trajectory(returns: np.ndarray, vol: np.ndarray, q: 
         K = P_pred / S
 
         mu = mu_pred + K * innovation
-        P = (1.0 - K) * P_pred
+        # Story 4.1: Joseph form for guaranteed positive-definiteness
+        one_minus_K = 1.0 - K
+        P = one_minus_K * one_minus_K * P_pred + K * K * R[t]
         if P < 1e-12:
             P = 1e-12
 
@@ -250,6 +303,57 @@ def _kalman_filter_phi_with_trajectory(returns: np.ndarray, vol: np.ndarray, q: 
         log_likelihood += ll_t
 
     return mu_filtered, P_filtered, float(log_likelihood), loglik_trajectory
+
+
+def adaptive_ll_clip(loglik_trajectory: np.ndarray, c_clip: float = 5.0,
+                     min_clip: float = 50.0, mode: str = 'adaptive') -> Tuple[np.ndarray, float]:
+    """Story 4.2: Adaptive log-likelihood clipping.
+
+    Modes:
+      - 'fixed': clip at +/- min_clip (legacy behavior)
+      - 'adaptive': clip at +/- max(min_clip, c_clip * MAD)
+      - 'none': no clipping
+
+    Returns (clipped_trajectory, clip_fraction).
+    """
+    traj = loglik_trajectory.copy()
+    n = len(traj)
+
+    if mode == 'none' or n < 5:
+        return traj, 0.0
+
+    if mode == 'fixed':
+        n_clipped = 0
+        for i in range(n):
+            if abs(traj[i]) > min_clip:
+                traj[i] = min_clip if traj[i] > 0 else -min_clip
+                n_clipped += 1
+        return traj, n_clipped / n
+
+    # Adaptive mode: running MAD-based clip
+    n_clipped = 0
+    sorted_buf = np.empty(n, dtype=np.float64)
+    for t in range(n):
+        if t < 10:
+            # Not enough data for MAD; use fixed clip
+            clip_val = min_clip
+        else:
+            # Compute median of ll[0:t]
+            sorted_buf[:t] = traj[:t]
+            sorted_buf[:t].sort()
+            med = sorted_buf[t // 2] if t % 2 == 1 else 0.5 * (sorted_buf[t // 2 - 1] + sorted_buf[t // 2])
+            # MAD = median(|ll - median|)
+            for j in range(t):
+                sorted_buf[j] = abs(loglik_trajectory[j] - med)
+            sorted_buf[:t].sort()
+            mad = sorted_buf[t // 2] if t % 2 == 1 else 0.5 * (sorted_buf[t // 2 - 1] + sorted_buf[t // 2])
+            clip_val = max(min_clip, c_clip * mad)
+
+        if abs(loglik_trajectory[t]) > clip_val:
+            traj[t] = clip_val if loglik_trajectory[t] > 0 else -clip_val
+            n_clipped += 1
+
+    return traj, n_clipped / n
 
 
 class PhiGaussianDriftModel:
@@ -330,15 +434,17 @@ class PhiGaussianDriftModel:
         vol_std = float(np.std(vol))
         
         # ================================================================
-        # ELITE FIX 2: Scale-aware q_min
+        # Story 4.4: Scale-aware q_min with regime detection
         # ================================================================
-        # Prevent deterministic state collapse by setting q_min relative
-        # to observation variance. This ensures state evolution maintains
-        # meaningful uncertainty.
+        # q_min = max(1e-8, 0.001 * Var(sigma^2_ewma), 0.002 * Var(r))
+        # Prevents deterministic state collapse during calm markets.
         # ================================================================
         vol_var_median = float(np.median(vol ** 2))
-        q_min_scaled = max(1e-10, 0.001 * vol_var_median)
-        q_min = max(q_min, q_min_scaled, 1e-8)  # Hard floor at 1e-8
+        ret_var = float(np.var(returns_robust))
+        q_min_vol = max(1e-10, 0.001 * vol_var_median)
+        q_min_ret = max(1e-10, 0.002 * ret_var)
+        q_min = max(q_min, q_min_vol, q_min_retret_var)
+        q_min = max(q_min, q_min_vol, q_min_ret, 1e-8)  # Hard floor at 1e-8
 
         if vol_mean > 0:
             vol_cv = vol_std / vol_mean

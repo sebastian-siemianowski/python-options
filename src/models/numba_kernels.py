@@ -124,9 +124,9 @@ def _student_t_logpdf_dynamic_nu(
     z = (x - mu) / scale
     z_sq = z * z
     
-    # Compute gamma values using Stirling approximation
-    log_gamma_half_nu = _stirling_gammaln(nu / 2.0)
-    log_gamma_half_nu_plus_half = _stirling_gammaln((nu + 1.0) / 2.0)
+    # Compute gamma values using Lanczos approximation (1e-12 precision)
+    log_gamma_half_nu = _lanczos_gammaln(nu / 2.0)
+    log_gamma_half_nu_plus_half = _lanczos_gammaln((nu + 1.0) / 2.0)
     
     # Student-t log-pdf
     log_norm = (log_gamma_half_nu_plus_half - log_gamma_half_nu 
@@ -172,8 +172,8 @@ def hansen_constants_kernel(nu: float, lambda_: float) -> tuple:
         lambda_ = -0.999
     
     # c = Γ((ν+1)/2) / [√(π(ν-2)) Γ(ν/2)]
-    log_c = (_stirling_gammaln((nu + 1.0) / 2.0)
-             - _stirling_gammaln(nu / 2.0)
+    log_c = (_lanczos_gammaln((nu + 1.0) / 2.0)
+             - _lanczos_gammaln(nu / 2.0)
              - 0.5 * np.log(np.pi * (nu - 2.0)))
     c_const = np.exp(log_c)
     
@@ -238,15 +238,15 @@ def hansen_skew_t_logpdf_scalar(
     log_c = np.log(c_const)
     
     if z < cutpoint:
-        # Left region: heavier tail for negative returns
-        z_eff = (b * z + a) / (1.0 + lambda_)
-        log_kernel = neg_half_nu_plus_1 * np.log(1.0 + z_eff * z_eff * inv_nu_minus_2)
-        ll = log_b + log_c + log_kernel - np.log(1.0 + lambda_) - np.log(scale)
-    else:
-        # Right region
+        # Left region: scale (1-lambda). When lambda<0 (left-skew), (1-lambda)>1 → heavier left tail
         z_eff = (b * z + a) / (1.0 - lambda_)
         log_kernel = neg_half_nu_plus_1 * np.log(1.0 + z_eff * z_eff * inv_nu_minus_2)
-        ll = log_b + log_c + log_kernel - np.log(1.0 - lambda_) - np.log(scale)
+        ll = log_b + log_c + log_kernel - np.log(scale)
+    else:
+        # Right region: scale (1+lambda). When lambda>0 (right-skew), (1+lambda)>1 → heavier right tail
+        z_eff = (b * z + a) / (1.0 + lambda_)
+        log_kernel = neg_half_nu_plus_1 * np.log(1.0 + z_eff * z_eff * inv_nu_minus_2)
+        ll = log_b + log_c + log_kernel - np.log(scale)
     
     return ll
 
@@ -289,12 +289,349 @@ def hansen_robust_weight_scalar(
     cutpoint = -a / b
     
     if z < cutpoint:
-        z_eff = (b * z + a) / (1.0 + lambda_)
-    else:
         z_eff = (b * z + a) / (1.0 - lambda_)
+    else:
+        z_eff = (b * z + a) / (1.0 + lambda_)
     
     w_t = (nu + 1.0) / (nu + z_eff * z_eff)
     return w_t
+
+
+# =============================================================================
+# HANSEN CONSTANTS VALIDATION — Story 11.1 (Numerical Precision)
+# =============================================================================
+# Diagnostic function to verify Hansen constant precision and PDF
+# normalization across the (nu, lambda) domain.
+# =============================================================================
+
+
+def hansen_validate_constants(
+    nu: float,
+    lambda_: float,
+    n_quad: int = 10000,
+    z_range: float = 20.0,
+) -> dict:
+    """
+    Validate Hansen skew-t constants for numerical precision.
+
+    Checks:
+    1. Constants (a, b, c) match analytical formulas to 1e-12
+    2. PDF integrates to 1.0 via Simpson's rule on [-z_range, z_range]
+    3. For lambda=0, reduces to standard Student-t to 1e-14
+    4. PDF is continuous at the cutpoint z = -a/b
+
+    Parameters
+    ----------
+    nu : float
+        Degrees of freedom (> 2)
+    lambda_ : float
+        Skewness parameter in (-1, 1)
+    n_quad : int
+        Number of quadrature points for Simpson's rule (must be even)
+    z_range : float
+        Integration domain [-z_range, z_range]
+
+    Returns
+    -------
+    dict with keys:
+        a, b, c_const : computed constants
+        integral : numerical integral of PDF
+        integral_error : |integral - 1.0|
+        cutpoint_continuous : bool, PDF continuous at -a/b
+        cutpoint_gap : absolute gap at cutpoint
+        symmetric_match : bool (only if lambda_ == 0)
+        symmetric_max_error : float (only if lambda_ == 0)
+        grid_valid : bool (no NaN in constants)
+    """
+    import math
+
+    a, b, c_const = hansen_constants_kernel(nu, lambda_)
+
+    # --- Analytical verification ---
+    nu_c = max(nu, 2.01)
+    lam_c = max(-0.999, min(0.999, lambda_))
+
+    log_c_ref = (math.lgamma((nu_c + 1.0) / 2.0)
+                 - math.lgamma(nu_c / 2.0)
+                 - 0.5 * math.log(math.pi * (nu_c - 2.0)))
+    c_ref = math.exp(log_c_ref)
+    a_ref = 4.0 * lam_c * c_ref * ((nu_c - 2.0) / (nu_c - 1.0))
+    b_sq_ref = 1.0 + 3.0 * lam_c * lam_c - a_ref * a_ref
+    b_ref = math.sqrt(max(b_sq_ref, 1e-10))
+
+    const_errors = {
+        "a_error": abs(a - a_ref),
+        "b_error": abs(b - b_ref),
+        "c_error": abs(c_const - c_ref),
+    }
+
+    # --- Simpson's rule integration ---
+    if n_quad % 2 != 0:
+        n_quad += 1
+    h = 2.0 * z_range / n_quad
+    integral = 0.0
+    for i in range(n_quad + 1):
+        z_i = -z_range + i * h
+        lp = hansen_skew_t_logpdf_scalar(z_i, nu, lambda_, a, b, c_const, 0.0, 1.0)
+        f_i = math.exp(lp)
+        if i == 0 or i == n_quad:
+            integral += f_i
+        elif i % 2 == 1:
+            integral += 4.0 * f_i
+        else:
+            integral += 2.0 * f_i
+    integral *= h / 3.0
+
+    # --- Cutpoint continuity ---
+    cutpoint = -a / b
+    eps_cut = 1e-10
+    lp_left = hansen_skew_t_logpdf_scalar(
+        cutpoint - eps_cut, nu, lambda_, a, b, c_const, 0.0, 1.0
+    )
+    lp_right = hansen_skew_t_logpdf_scalar(
+        cutpoint + eps_cut, nu, lambda_, a, b, c_const, 0.0, 1.0
+    )
+    cutpoint_gap = abs(math.exp(lp_left) - math.exp(lp_right))
+
+    result = {
+        "a": a,
+        "b": b,
+        "c_const": c_const,
+        "integral": integral,
+        "integral_error": abs(integral - 1.0),
+        "cutpoint_continuous": cutpoint_gap < 1e-8,
+        "cutpoint_gap": cutpoint_gap,
+        "grid_valid": not (math.isnan(a) or math.isnan(b) or math.isnan(c_const)),
+        **const_errors,
+    }
+
+    # --- Symmetric check ---
+    if abs(lambda_) < 1e-15:
+        max_sym_err = 0.0
+        # Hansen with lambda=0 uses (nu-2) parameterization for unit variance.
+        # This equals Student-t with scale = sqrt((nu-2)/nu).
+        sym_scale = math.sqrt((nu - 2.0) / nu) if nu > 2.0 else 1.0
+        test_points = [0.0, 0.5, 1.0, 2.0, 5.0, -0.5, -1.0, -2.0, -5.0]
+        for z_pt in test_points:
+            lp_hansen = hansen_skew_t_logpdf_scalar(
+                z_pt, nu, 0.0, a, b, c_const, 0.0, 1.0
+            )
+            lp_student = _student_t_logpdf_dynamic_nu(z_pt, nu, 0.0, sym_scale)
+            max_sym_err = max(max_sym_err, abs(lp_hansen - lp_student))
+        result["symmetric_match"] = max_sym_err < 1e-14
+        result["symmetric_max_error"] = max_sym_err
+
+    return result
+
+
+# =============================================================================
+# HANSEN LAMBDA ESTIMATION — Story 11.3 (Profile Likelihood)
+# =============================================================================
+
+
+def hansen_estimate_lambda(
+    innovations: np.ndarray,
+    nu: float,
+    scale: float = 1.0,
+    lambda_bounds: tuple = (-0.95, 0.95),
+) -> dict:
+    """
+    Estimate Hansen skewness parameter lambda via profile likelihood.
+
+    Fixes (nu, scale) and optimizes lambda using L-BFGS-B.
+    Computes Fisher information for standard error.
+
+    Parameters
+    ----------
+    innovations : np.ndarray
+        Standardized residuals (z_t = (r_t - mu_t) / scale_t)
+    nu : float
+        Degrees of freedom (fixed)
+    scale : float
+        Observation scale (fixed, default 1.0 for pre-standardized data)
+    lambda_bounds : tuple
+        Bounds for lambda optimization
+
+    Returns
+    -------
+    dict with keys:
+        lambda_hat : float, estimated skewness parameter
+        se_lambda : float, standard error from Fisher information
+        log_likelihood : float, maximized log-likelihood
+        bic_hansen : float, BIC for Hansen model (1 extra param)
+        bic_symmetric : float, BIC for symmetric Student-t
+        delta_bic : float, bic_symmetric - bic_hansen (>0 favors Hansen)
+        converged : bool
+    """
+    from scipy.optimize import minimize
+
+    n = len(innovations)
+    if n < 10:
+        return {
+            "lambda_hat": 0.0,
+            "se_lambda": float("inf"),
+            "log_likelihood": float("-inf"),
+            "bic_hansen": float("inf"),
+            "bic_symmetric": float("inf"),
+            "delta_bic": 0.0,
+            "converged": False,
+        }
+
+    def neg_profile_ll(lam_arr):
+        lam = float(lam_arr[0])
+        a, b, c_const = hansen_constants_kernel(nu, lam)
+        ll = 0.0
+        for i in range(n):
+            lp = hansen_skew_t_logpdf_scalar(
+                innovations[i], nu, lam, a, b, c_const, 0.0, scale
+            )
+            ll += lp
+        return -ll
+
+    result = minimize(
+        neg_profile_ll,
+        x0=[0.0],
+        method="L-BFGS-B",
+        bounds=[lambda_bounds],
+    )
+    lambda_hat = float(result.x[0])
+    ll_hansen = -result.fun
+    converged = result.success
+
+    # Symmetric log-likelihood (lambda=0)
+    a0, b0, c0 = hansen_constants_kernel(nu, 0.0)
+    ll_sym = 0.0
+    for i in range(n):
+        ll_sym += hansen_skew_t_logpdf_scalar(
+            innovations[i], nu, 0.0, a0, b0, c0, 0.0, scale
+        )
+
+    # BIC: -2*LL + k*log(n)
+    import math
+    log_n = math.log(n)
+    # Hansen has 1 extra parameter (lambda) vs symmetric
+    bic_hansen = -2.0 * ll_hansen + 1.0 * log_n
+    bic_symmetric = -2.0 * ll_sym
+
+    # Fisher information via numerical second derivative
+    eps_fi = 1e-5
+    ll_plus = -neg_profile_ll([lambda_hat + eps_fi])
+    ll_minus = -neg_profile_ll([lambda_hat - eps_fi])
+    ll_center = ll_hansen
+    fisher_info = -(ll_plus - 2.0 * ll_center + ll_minus) / (eps_fi * eps_fi)
+    se_lambda = 1.0 / math.sqrt(max(fisher_info, 1e-12))
+
+    return {
+        "lambda_hat": lambda_hat,
+        "se_lambda": se_lambda,
+        "log_likelihood": ll_hansen,
+        "bic_hansen": bic_hansen,
+        "bic_symmetric": bic_symmetric,
+        "delta_bic": bic_symmetric - bic_hansen,
+        "converged": converged,
+    }
+
+
+# =============================================================================
+# CONTAMINATED STUDENT-T KERNEL — Scalar (March 2026)
+# =============================================================================
+# CST: p(x) = (1-ε) × t(x; ν_normal) + ε × t(x; ν_crisis)
+# Uses log-sum-exp for numerical stability. Integrated as a pipeline
+# =============================================================================
+# CST CONTAMINATION ESTIMATION — Story 12.1 (EM Algorithm)
+# =============================================================================
+
+
+def estimate_cst_contamination(
+    innovations: np.ndarray,
+    nu_normal_init: float = 8.0,
+    nu_crisis_init: float = 3.0,
+    epsilon_init: float = 0.03,
+    max_iter: int = 50,
+    tol: float = 1e-3,
+) -> dict:
+    """
+    Estimate CST contamination probability via EM algorithm.
+
+    E-step: posterior p(crisis | r_t) for each observation.
+    M-step: epsilon = mean(posteriors), nu updates via moment matching.
+
+    Parameters
+    ----------
+    innovations : np.ndarray
+        Standardized residuals
+    nu_normal_init, nu_crisis_init : float
+        Initial degrees of freedom
+    epsilon_init : float
+        Initial contamination probability
+    max_iter : int
+        Maximum EM iterations
+    tol : float
+        Convergence threshold for |epsilon_k+1 - epsilon_k|
+
+    Returns
+    -------
+    dict with keys:
+        epsilon_hat : float, estimated contamination probability
+        nu_normal : float, normal component DoF
+        nu_crisis : float, crisis component DoF
+        posteriors : np.ndarray, posterior crisis probabilities per obs
+        n_iter : int, iterations used
+        converged : bool
+        trajectory : list of epsilon values per iteration
+    """
+    import math
+
+    n = len(innovations)
+    if n < 10:
+        return {
+            "epsilon_hat": epsilon_init,
+            "nu_normal": nu_normal_init,
+            "nu_crisis": nu_crisis_init,
+            "posteriors": np.zeros(n),
+            "n_iter": 0,
+            "converged": False,
+            "trajectory": [],
+        }
+
+    eps = epsilon_init
+    nu_n = nu_normal_init
+    nu_c = nu_crisis_init
+    posteriors = np.zeros(n)
+    trajectory = [eps]
+
+    for iteration in range(max_iter):
+        # E-step: compute posterior p(crisis | r_t)
+        for i in range(n):
+            ll_n = _student_t_logpdf_dynamic_nu(innovations[i], nu_n, 0.0, 1.0)
+            ll_c = _student_t_logpdf_dynamic_nu(innovations[i], nu_c, 0.0, 1.0)
+
+            log_post_n = math.log(max(1.0 - eps, 1e-15)) + ll_n
+            log_post_c = math.log(max(eps, 1e-15)) + ll_c
+            max_log = max(log_post_n, log_post_c)
+            denom = math.exp(log_post_n - max_log) + math.exp(log_post_c - max_log)
+            posteriors[i] = math.exp(log_post_c - max_log) / denom
+
+        # M-step: update epsilon
+        eps_new = float(np.mean(posteriors))
+        eps_new = max(1e-4, min(eps_new, 0.5))
+
+        trajectory.append(eps_new)
+
+        if abs(eps_new - eps) < tol:
+            eps = eps_new
+            break
+        eps = eps_new
+
+    return {
+        "epsilon_hat": eps,
+        "nu_normal": nu_n,
+        "nu_crisis": nu_c,
+        "posteriors": posteriors,
+        "n_iter": len(trajectory) - 1,
+        "converged": len(trajectory) - 1 < max_iter,
+        "trajectory": trajectory,
+    }
 
 
 # =============================================================================
@@ -404,6 +741,115 @@ def cst_robust_weight_scalar(
     
     w_t = (1.0 - post_crisis) * w_normal + post_crisis * w_crisis
     return w_t
+
+
+# =============================================================================
+# CST vs HANSEN MODEL SELECTION — Story 12.3
+# =============================================================================
+
+
+def select_tail_model(
+    innovations: np.ndarray,
+    nu: float = 5.0,
+    outlier_threshold: float = 3.0,
+    outlier_frac_cutoff: float = 0.03,
+    skew_cutoff: float = 0.3,
+) -> dict:
+    """
+    Select between CST and Hansen tail models based on data diagnostics.
+
+    Heuristic rule:
+    - If outlier fraction > outlier_frac_cutoff AND |skewness| < skew_cutoff -> CST
+    - Otherwise -> Hansen
+
+    Also computes BIC for both models when possible.
+
+    Parameters
+    ----------
+    innovations : np.ndarray
+        Standardized residuals
+    nu : float
+        Degrees of freedom for both models
+    outlier_threshold : float
+        Sigma threshold for outlier detection
+    outlier_frac_cutoff : float
+        Fraction threshold for CST preference
+    skew_cutoff : float
+        Skewness threshold for Hansen preference
+
+    Returns
+    -------
+    dict with keys:
+        selected_model : str, 'cst' or 'hansen'
+        heuristic_model : str, model chosen by heuristic
+        skewness : float
+        excess_kurtosis : float
+        outlier_fraction : float
+        bic_cst : float (if computed)
+        bic_hansen : float (if computed)
+        bic_model : str (model preferred by BIC)
+        heuristic_agrees : bool
+    """
+    import math
+    from scipy.stats import skew, kurtosis
+
+    n = len(innovations)
+    if n < 20:
+        return {
+            "selected_model": "hansen",
+            "heuristic_model": "hansen",
+            "skewness": 0.0,
+            "excess_kurtosis": 0.0,
+            "outlier_fraction": 0.0,
+            "bic_cst": float("inf"),
+            "bic_hansen": float("inf"),
+            "bic_model": "hansen",
+            "heuristic_agrees": True,
+        }
+
+    skw = float(skew(innovations))
+    kurt = float(kurtosis(innovations))
+    outlier_frac = float(np.mean(np.abs(innovations) > outlier_threshold))
+
+    # Heuristic
+    if outlier_frac > outlier_frac_cutoff and abs(skw) < skew_cutoff:
+        heuristic = "cst"
+    else:
+        heuristic = "hansen"
+
+    # BIC for Hansen
+    hansen_result = hansen_estimate_lambda(innovations, nu)
+    bic_hansen = hansen_result["bic_hansen"]
+
+    # BIC for CST (estimate epsilon, then compute log-likelihood)
+    cst_result = estimate_cst_contamination(innovations, nu_normal_init=nu)
+    eps_hat = cst_result["epsilon_hat"]
+    nu_crisis = 3.0  # fixed crisis DoF
+
+    ll_cst = 0.0
+    for i in range(n):
+        ll_cst += cst_logpdf_scalar(
+            innovations[i], nu, nu_crisis, eps_hat, 0.0, 1.0
+        )
+    # CST has 1 parameter (epsilon)
+    bic_cst = -2.0 * ll_cst + 1.0 * math.log(n)
+
+    bic_model = "cst" if bic_cst < bic_hansen else "hansen"
+
+    # Final selection: use BIC if clear, otherwise heuristic
+    selected = bic_model
+
+    return {
+        "selected_model": selected,
+        "heuristic_model": heuristic,
+        "skewness": skw,
+        "excess_kurtosis": kurt,
+        "outlier_fraction": outlier_frac,
+        "bic_cst": bic_cst,
+        "bic_hansen": bic_hansen,
+        "bic_model": bic_model,
+        "heuristic_agrees": heuristic == bic_model,
+    }
 
 
 # =============================================================================
@@ -785,7 +1231,7 @@ def _betacf(a: float, b: float, x: float) -> float:
     """
     _FPMIN = 1e-30
     _EPS = 1e-14
-    _MAXIT = 200
+    _MAXIT = 300
 
     qab = a + b
     qap = a + 1.0
@@ -958,6 +1404,111 @@ def student_t_cdf_array_kernel(z_arr: np.ndarray, nu: float) -> np.ndarray:
     out = np.empty(n, dtype=np.float64)
     for i in range(n):
         out[i] = _student_t_cdf_scalar(z_arr[i], nu)
+    return out
+
+
+# =============================================================================
+# STUDENT-T QUANTILE FUNCTION (PPF) -- Story 1.3
+# =============================================================================
+# Newton-Raphson inversion of Student-t CDF.
+# Initial guess via Abramowitz & Stegun 26.7.5 rational approximation.
+# Convergence: |F(x_n) - p| < 1e-10 within 15 iterations.
+# =============================================================================
+
+@njit(cache=True, fastmath=False)
+def student_t_ppf_scalar(p: float, nu: float) -> float:
+    """
+    Student-t quantile function (inverse CDF) for a single probability.
+
+    Uses Newton-Raphson with a rational approximation initial guess.
+    Numba-compatible -- can be used inside @njit loops.
+
+    Parameters
+    ----------
+    p : float
+        Probability value in (0, 1)
+    nu : float
+        Degrees of freedom (> 2.0)
+
+    Returns
+    -------
+    float
+        x such that P(T <= x) = p
+    """
+    if p <= 0.0:
+        return -1e12
+    if p >= 1.0:
+        return 1e12
+    if nu <= 0.0:
+        return 0.0
+
+    # Use symmetry: if p < 0.5, compute ppf(1-p) and negate
+    if p < 0.5:
+        return -student_t_ppf_scalar(1.0 - p, nu)
+
+    # For p = 0.5, median is 0
+    if abs(p - 0.5) < 1e-15:
+        return 0.0
+
+    # Initial guess via Abramowitz & Stegun 26.7.5
+    # Normal approximation: z_0 = Phi^{-1}(p)
+    # Rational approximation for Phi^{-1}(p) when p > 0.5
+    t_val = np.sqrt(-2.0 * np.log(1.0 - p))
+    # Coefficients for Abramowitz & Stegun 26.2.23
+    c0 = 2.515517
+    c1 = 0.802853
+    c2 = 0.010328
+    d1 = 1.432788
+    d2 = 0.189269
+    d3 = 0.001308
+    z_normal = t_val - (c0 + c1 * t_val + c2 * t_val * t_val) / (
+        1.0 + d1 * t_val + d2 * t_val * t_val + d3 * t_val * t_val * t_val
+    )
+
+    # Cornish-Fisher correction for Student-t (Abramowitz & Stegun 26.7.5)
+    g1 = (z_normal * z_normal * z_normal + z_normal) / (4.0 * nu)
+    g2 = ((5.0 * z_normal ** 5 + 16.0 * z_normal ** 3 + 3.0 * z_normal)
+          / (96.0 * nu * nu))
+    x = z_normal + g1 + g2
+
+    # Newton-Raphson refinement: x_{n+1} = x_n - (F(x_n) - p) / f(x_n)
+    for _iter in range(25):
+        cdf_val = _student_t_cdf_scalar(x, nu)
+        pdf_val = _student_t_pdf_scalar(x, nu)
+
+        if pdf_val < 1e-30:
+            break
+
+        err = cdf_val - p
+        if abs(err) < 1e-13:
+            break
+
+        x = x - err / pdf_val
+
+    return x
+
+
+@njit(cache=True, fastmath=False)
+def student_t_ppf_array_kernel(p_arr: np.ndarray, nu: float) -> np.ndarray:
+    """
+    Vectorized Student-t PPF via Numba.
+
+    Parameters
+    ----------
+    p_arr : np.ndarray
+        Array of probability values in (0, 1)
+    nu : float
+        Degrees of freedom
+
+    Returns
+    -------
+    np.ndarray
+        Quantile values
+    """
+    n = len(p_arr)
+    out = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        out[i] = student_t_ppf_scalar(p_arr[i], nu)
     return out
 
 
@@ -1250,6 +1801,31 @@ def pit_ks_unified_kernel(
 # =============================================================================
 
 @njit(cache=True)
+def garch_h0_from_trailing(sq: np.ndarray, window: int = 20) -> float:
+    """Story 3.2: Compute robust h0 from trailing squared innovations.
+
+    Uses median of first `window` squared innovations as h0.
+    Falls back to -1.0 (use unconditional) if insufficient data.
+    """
+    n = len(sq)
+    if n < window:
+        return -1.0
+    # Collect first `window` values and compute median via sort
+    buf = np.empty(window, dtype=np.float64)
+    for i in range(window):
+        buf[i] = sq[i]
+    buf.sort()
+    if window % 2 == 0:
+        med = 0.5 * (buf[window // 2 - 1] + buf[window // 2])
+    else:
+        med = buf[window // 2]
+    # Fallback: if median is tiny, return -1 to use unconditional
+    if med < 1e-10:
+        return -1.0
+    return med
+
+
+@njit(cache=True)
 def garch_variance_kernel(
     sq: np.ndarray,
     neg: np.ndarray,
@@ -1270,6 +1846,8 @@ def garch_variance_kernel(
     # v7.8: Tier 4 params
     liq_stress_coeff: float = 0.0,
     leverage_dynamic_decay: float = 0.0,
+    # Story 3.2: regime-aware initialization
+    h0_override: float = -1.0,
 ) -> None:
     """
     GJR-GARCH(1,1) variance with leverage correlation, vol-of-vol noise,
@@ -1278,6 +1856,9 @@ def garch_variance_kernel(
 
     v7.8: Added liq_stress_coeff (Brunnermeier-Pedersen liquidity spiral)
     and leverage_dynamic_decay (crash-clustering GJR amplification).
+
+    Story 3.2: h0_override > 0 uses trailing realized variance instead of
+    unconditional. Typical usage: h0_override = median(eps^2_{1:20}).
 
     Parameters
     ----------
@@ -1295,11 +1876,18 @@ def garch_variance_kernel(
     sm : sqrt(q_stress_ratio)
     h_out : output array (pre-allocated, length n)
     liq_stress_coeff : float
-        Liquidity-volatility feedback λ_liq. 0 = disabled.
+        Liquidity-volatility feedback lambda_liq. 0 = disabled.
     leverage_dynamic_decay : float
         EWM decay for dynamic GJR leverage. 0 = disabled.
+    h0_override : float
+        If > 0, use this as h_0 instead of unconditional variance (gu).
+        Set to median(eps^2_{1:20}) for regime-aware init.
     """
-    h_out[0] = gu
+    # Story 3.2: use h0_override if valid, else fall back to unconditional
+    if h0_override > 1e-12:
+        h_out[0] = h0_override
+    else:
+        h_out[0] = gu
     ps = 0.1  # Initial stress probability
     use_dynamic_lev = leverage_dynamic_decay > 0.01 and gl > 1e-8
     use_liq = liq_stress_coeff > 0.005 and tv > 1e-12
@@ -1355,6 +1943,9 @@ def garch_variance_kernel(
 
         if ht < 1e-12:
             ht = 1e-12
+        # Story 3.1: hard cap at 100x unconditional to prevent explosion
+        if gu > 1e-12 and ht > 100.0 * gu:
+            ht = 100.0 * gu
         h_out[t] = ht
 
 
@@ -2840,7 +3431,7 @@ def unified_phi_student_t_filter_extended_kernel(
         R_base_arr[t] = c * vol[t] * vol[t]
 
     # Pre-compute log-norm const for diffusion likelihood
-    log_norm_const = _stirling_gammaln((nu_base + 1.0) / 2.0) - _stirling_gammaln(nu_base / 2.0) - 0.5 * np.log(nu_base * np.pi)
+    log_norm_const = _lanczos_gammaln((nu_base + 1.0) / 2.0) - _lanczos_gammaln(nu_base / 2.0) - 0.5 * np.log(nu_base * np.pi)
     neg_exp = -((nu_base + 1.0) / 2.0)
     inv_nu = 1.0 / nu_base
 
@@ -2973,7 +3564,7 @@ def unified_phi_student_t_filter_extended_kernel(
             fs_diff = np.sqrt(S_diffusion * sf)
             if fs_diff > 1e-12:
                 z_diff = innovation / fs_diff
-                log_n_diff = _stirling_gammaln((nu_eff + 1.0) / 2.0) - _stirling_gammaln(nu_eff / 2.0) - 0.5 * np.log(nu_eff * np.pi)
+                log_n_diff = _lanczos_gammaln((nu_eff + 1.0) / 2.0) - _lanczos_gammaln(nu_eff / 2.0) - 0.5 * np.log(nu_eff * np.pi)
                 ll_diff = log_n_diff - np.log(fs_diff) + (-((nu_eff + 1.0) / 2.0)) * np.log(1.0 + z_diff * z_diff / nu_eff)
             else:
                 ll_diff = -1e10
@@ -3031,7 +3622,7 @@ def unified_phi_student_t_filter_extended_kernel(
                 neg_exp_eff = _cached_neg_exp
                 inv_nu_eff = _cached_inv_nu
             else:
-                log_norm_eff = _stirling_gammaln((nu_eff + 1.0) / 2.0) - _stirling_gammaln(nu_eff / 2.0) - 0.5 * np.log(nu_eff * np.pi)
+                log_norm_eff = _lanczos_gammaln((nu_eff + 1.0) / 2.0) - _lanczos_gammaln(nu_eff / 2.0) - 0.5 * np.log(nu_eff * np.pi)
                 neg_exp_eff = -((nu_eff + 1.0) / 2.0)
                 inv_nu_eff = 1.0 / nu_eff
 

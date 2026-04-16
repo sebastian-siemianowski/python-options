@@ -2957,7 +2957,7 @@ GARCH_STARTS = [
 ]
 
 
-def gjr_garch_log_likelihood(params, returns):
+def gjr_garch_log_likelihood(params, returns, barrier_lambda=5.0):
     """
     GJR-GARCH(1,1) negative log-likelihood (Glosten-Jagannathan-Runkle 1993).
 
@@ -2965,6 +2965,7 @@ def gjr_garch_log_likelihood(params, returns):
 
     params: [omega, alpha, beta, gamma]
     returns: array of mean-adjusted returns
+    barrier_lambda: log-barrier penalty weight for stationarity (Story 3.1)
 
     The leverage term gamma captures asymmetric volatility:
       - Negative returns increase variance by (alpha + gamma) * e^2
@@ -2975,6 +2976,13 @@ def gjr_garch_log_likelihood(params, returns):
 
     # Effective persistence including half the leverage effect
     eff_pers = alpha + gamma * 0.5 + beta
+
+    # Story 3.1: log-barrier stationarity penalty
+    # -lambda * log(1 - persistence) -> +inf as persistence -> 1
+    if eff_pers >= 1.0:
+        return 1e15
+    barrier_penalty = -barrier_lambda * np.log(max(1.0 - eff_pers, 1e-15))
+
     if eff_pers < 1.0:
         sigma2_init = omega / (1.0 - eff_pers)
     else:
@@ -2991,7 +2999,7 @@ def gjr_garch_log_likelihood(params, returns):
         leverage = gamma * r * r * (1.0 if r < 0.0 else 0.0)
         sigma2 = omega + alpha * r * r + leverage + beta * sigma2
 
-    return -total_ll  # Negative for minimization
+    return -total_ll + barrier_penalty  # Negative for minimization
 
 
 def garch_log_likelihood(params, returns):

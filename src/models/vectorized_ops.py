@@ -63,14 +63,22 @@ def vectorized_phi_variance(
     """
     horizons = np.asarray(horizons, dtype=float)
     phi_sq = phi * phi
-    
-    if abs(phi_sq - 1.0) < 1e-10:
-        # Random walk case
-        state_var = q * horizons
+    delta = phi_sq - 1.0
+
+    if abs(delta) < 1e-6:
+        # Taylor expansion for near-unit-root: avoids catastrophic
+        # cancellation in (1 - phi^{2H}) / (1 - phi^2).
+        # Series: sum_{j=0}^{H-1} phi^{2j} = H + H(H-1)/2 * delta
+        #         + H(H-1)(H-2)/6 * delta^2 + O(delta^3)
+        H = horizons
+        term0 = H
+        term1 = H * (H - 1.0) / 2.0 * delta
+        term2 = H * (H - 1.0) * (H - 2.0) / 6.0 * delta * delta
+        state_var = q * (term0 + term1 + term2)
     else:
         phi_2H = np.power(phi_sq, horizons)
         state_var = q * (1 - phi_2H) / (1 - phi_sq)
-    
+
     return state_var + R
 
 
@@ -101,12 +109,18 @@ def vectorized_bma_weights(
     log_weights = -0.5 * bic
     max_lw = np.max(log_weights)
     exp_shifted = np.exp(log_weights - max_lw)
-    
+
+    # Floor: ensure no model gets exactly zero weight (Story 2.2)
+    floor = np.finfo(float).tiny  # ~5e-324
+    exp_shifted = np.maximum(exp_shifted, floor)
+
     total = np.sum(exp_shifted)
     if total <= 0:
         return np.ones(len(bic)) / len(bic)
-    
-    return exp_shifted / total
+
+    weights = exp_shifted / total
+    assert np.all(weights > 0), "BMA: zero-weight model detected"
+    return weights
 
 
 def batch_monte_carlo_sample(
@@ -114,17 +128,22 @@ def batch_monte_carlo_sample(
     variances: np.ndarray,
     n_samples: int = 1000,
     rng: Optional[np.random.Generator] = None,
+    antithetic: bool = False,
 ) -> np.ndarray:
     """
     Batched Monte Carlo draws for multiple horizons simultaneously.
     
     Instead of looping per-horizon, draws all at once.
+    When antithetic=True, uses antithetic variates: for each z_i,
+    also uses -z_i, halving the required random draws while reducing
+    variance for symmetric distributions.
     
     Args:
         means: Array of means (one per horizon).
         variances: Array of variances (one per horizon).
-        n_samples: Number of MC draws per horizon.
+        n_samples: Number of MC draws per horizon (total output size).
         rng: Random generator.
+        antithetic: If True, use antithetic variates.
     
     Returns:
         Shape (n_horizons, n_samples) array of samples.
@@ -137,9 +156,15 @@ def batch_monte_carlo_sample(
     stds = np.sqrt(np.maximum(variances, 0.0))
     
     n_horizons = len(means)
-    
-    # Batch draw: shape (n_horizons, n_samples)
-    z = rng.standard_normal((n_horizons, n_samples))
+
+    if antithetic:
+        # Draw half, mirror to get antithetic pairs
+        n_half = (n_samples + 1) // 2
+        z_half = rng.standard_normal((n_horizons, n_half))
+        z = np.concatenate([z_half, -z_half], axis=1)[:, :n_samples]
+    else:
+        z = rng.standard_normal((n_horizons, n_samples))
+
     samples = means[:, np.newaxis] + stds[:, np.newaxis] * z
     
     return samples
