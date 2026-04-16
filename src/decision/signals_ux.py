@@ -100,6 +100,96 @@ def build_asset_display_label(asset_symbol: str, full_title: str) -> str:
     return name_part
 
 
+# =============================================================================
+# ADAPTIVE PRECISION AND SEMANTIC LABELING (Story 1.8)
+# =============================================================================
+
+def adaptive_format_pct(value: float) -> str:
+    """
+    Format a percentage with adaptive precision based on magnitude.
+    
+    Rules:
+      |value| < 0.1%  -> 2 decimal places (e.g., +0.05%)
+      |value| < 1.0%  -> 1 decimal place  (e.g., +0.3%)
+      |value| >= 1.0% -> 1 decimal place  (e.g., +2.3%)
+    """
+    import math
+    if not math.isfinite(value):
+        return "N/A"
+    abs_val = abs(value)
+    if abs_val < 0.1:
+        return f"{value:+.2f}%"
+    else:
+        return f"{value:+.1f}%"
+
+
+def semantic_signal_label(value: float) -> str:
+    """
+    Return a semantic label for the forecast magnitude.
+    
+    Tiers:
+      < 0.02%  -> FLAT
+      0.02-0.1% -> SLIGHT
+      0.1-0.5% -> LEAN
+      0.5-2%   -> MODERATE
+      2-5%     -> STRONG
+      > 5%     -> EXTREME
+    """
+    import math
+    if not math.isfinite(value):
+        return "N/A"
+    abs_val = abs(value)
+    if abs_val < 0.02:
+        return "FLAT"
+    elif abs_val < 0.1:
+        return "SLIGHT"
+    elif abs_val < 0.5:
+        return "LEAN"
+    elif abs_val < 2.0:
+        return "MODERATE"
+    elif abs_val < 5.0:
+        return "STRONG"
+    else:
+        return "EXTREME"
+
+
+def format_forecast_rich(value: float) -> str:
+    """
+    Format a forecast percentage with adaptive precision and Rich color intensity.
+    
+    Color intensity scales with absolute magnitude:
+      FLAT/SLIGHT -> dim
+      LEAN -> normal
+      MODERATE -> bold  
+      STRONG/EXTREME -> bold bright
+    """
+    import math
+    if not math.isfinite(value):
+        return "[dim]N/A[/dim]"
+    
+    pct_str = adaptive_format_pct(value)
+    label = semantic_signal_label(value)
+    
+    if value >= 0:
+        if label in ("FLAT", "SLIGHT"):
+            return f"[dim]{pct_str}[/dim]"
+        elif label == "LEAN":
+            return f"[#00d700]{pct_str}[/#00d700]"
+        elif label == "MODERATE":
+            return f"[bold #00d700]{pct_str}[/bold #00d700]"
+        else:  # STRONG, EXTREME
+            return f"[bold bright_green]{pct_str}[/bold bright_green]"
+    else:
+        if label in ("FLAT", "SLIGHT"):
+            return f"[dim]{pct_str}[/dim]"
+        elif label == "LEAN":
+            return f"[indian_red1]{pct_str}[/indian_red1]"
+        elif label == "MODERATE":
+            return f"[bold indian_red1]{pct_str}[/bold indian_red1]"
+        else:  # STRONG, EXTREME
+            return f"[bold bright_red]{pct_str}[/bold bright_red]"
+
+
 def format_profit_with_signal(signal_label: str, profit_pln: float, notional_pln: float = 1_000_000) -> str:
     """Format signal with ultra-compact styling.
     

@@ -680,6 +680,27 @@ except ImportError:
     FILTER_CACHE_AVAILABLE = False
 
 # =============================================================================
+# EPIC 7: VECTORIZED OPERATIONS AND COMPUTATION CACHE (April 2026)
+# =============================================================================
+# Performance optimization modules for BMA weight computation and regime caching.
+# vectorized_ops: NumPy-vectorized BMA weights (log-sum-exp stable softmax).
+# computation_cache: Content-hash based caching for regime/vol computations.
+# =============================================================================
+try:
+    from models.vectorized_ops import vectorized_bma_weights
+    VECTORIZED_OPS_AVAILABLE = True
+except ImportError:
+    VECTORIZED_OPS_AVAILABLE = False
+
+try:
+    from models.computation_cache import ComputationCache
+    COMPUTATION_CACHE_AVAILABLE = True
+    _computation_cache = ComputationCache(max_size=500)
+except ImportError:
+    COMPUTATION_CACHE_AVAILABLE = False
+    _computation_cache = None
+
+# =============================================================================
 # IMPORT ELITE TUNING MODULE (February 2026)
 # =============================================================================
 # Plateau-optimal parameter selection with:
@@ -806,6 +827,19 @@ except ImportError as e:
         return f"phi_student_t_nu_{nu}"
 
     STUDENT_T_NU_GRID = [3, 4, 8, 20]
+
+# =============================================================================
+# CONTINUOUS NU OPTIMIZATION CONSTANTS (Story 1.5)
+# =============================================================================
+# After discrete grid search, refine nu via profile log-likelihood maximization.
+# Holds (q, c, phi) at MLE and optimises nu alone using bounded Brent.
+#
+# Standard error from observed Fisher information:
+#   se(nu) = 1 / sqrt( -d^2 LL / d nu^2 )
+# computed via central finite differences at the MLE.
+# =============================================================================
+NU_CONTINUOUS_BOUNDS = (2.5, 60.0)   # search domain for nu
+NU_SE_FD_STEP = 0.25                 # finite-difference step for Hessian
 
 # =============================================================================
 # IMPORT DIAGNOSTICS & REPORTING
@@ -1342,53 +1376,9 @@ def get_adaptive_nu_config() -> Optional['AdaptiveNuConfig']:
 DEFAULT_TEMPORAL_ALPHA = 0.3
 
 
-class MarketRegime(IntEnum):
-    """
-    Market regime definitions for conditional parameter estimation.
+# Story 4.2: Import regime definitions from shared module
+from models.regime import MarketRegime, REGIME_LABELS, MIN_REGIME_SAMPLES
 
-    Regime 0: LOW_VOL_TREND
-        - Low EWMA volatility
-        - Strong drift persistence
-        - Positive or negative trend
-
-    Regime 1: HIGH_VOL_TREND
-        - High volatility
-        - Strong drift persistence
-        - Large trend amplitude
-
-    Regime 2: LOW_VOL_RANGE
-        - Low volatility
-        - Drift near zero
-        - Mean reversion dominant
-
-    Regime 3: HIGH_VOL_RANGE
-        - High volatility
-        - Drift near zero
-        - Whipsaw / choppy behavior
-
-    Regime 4: CRISIS_JUMP
-        - Extreme volatility
-        - Tail events / jumps
-        - Correlation breakdown
-    """
-    LOW_VOL_TREND = 0
-    HIGH_VOL_TREND = 1
-    LOW_VOL_RANGE = 2
-    HIGH_VOL_RANGE = 3
-    CRISIS_JUMP = 4
-
-
-# Regime labels for display
-REGIME_LABELS = {
-    MarketRegime.LOW_VOL_TREND: "LOW_VOL_TREND",
-    MarketRegime.HIGH_VOL_TREND: "HIGH_VOL_TREND",
-    MarketRegime.LOW_VOL_RANGE: "LOW_VOL_RANGE",
-    MarketRegime.HIGH_VOL_RANGE: "HIGH_VOL_RANGE",
-    MarketRegime.CRISIS_JUMP: "CRISIS_JUMP",
-}
-
-# Minimum sample size per regime for stable parameter estimation
-MIN_REGIME_SAMPLES = 60
 
 # Minimum sample size for reliable Hyvärinen score computation
 # Below this threshold, Hyvärinen is DISABLED to prevent illusory smoothness
@@ -1397,82 +1387,810 @@ MIN_HYVARINEN_SAMPLES = 100
 
 
 # =============================================================================
-# REGIME CLASSIFICATION FUNCTION
+# REGIME-CONDITIONAL PROCESS NOISE FLOOR (Story 1.1, April 2026)
+# =============================================================================
+# The Kalman filter's MLE-optimal q converges to ~1e-6, which collapses drift
+# estimates to zero. A regime-conditional floor ensures the filter maintains
+# meaningful sensitivity to drift in each market regime.
+#
+# Rationale for floor values:
+#   - LOW_VOL_TREND:  drift matters, need moderate sensitivity  -> 5e-5
+#   - HIGH_VOL_TREND: fast-moving drift, need high sensitivity  -> 1e-4
+#   - LOW_VOL_RANGE:  small drift, low but nonzero floor        -> 2e-5
+#   - HIGH_VOL_RANGE: choppy, moderate sensitivity              -> 5e-5
+#   - CRISIS_JUMP:    maximum adaptivity needed                  -> 5e-4
+#
+# BIC adjustment when floor binds:
+#   BIC_adj = BIC + Q_FLOOR_BIC_LAMBDA * log(q_floor / q_mle)
+# This penalizes the deviation from MLE to prevent the floor from
+# distorting model selection. Lambda = 2.0 means ~4.6 BIC penalty
+# when floor is 10x above q_mle (moderate penalty).
 # =============================================================================
 
-def assign_regime_labels(returns: np.ndarray, vol: np.ndarray, lookback: int = 21) -> np.ndarray:
+Q_FLOOR_BY_REGIME = {
+    0: 5e-5,   # LOW_VOL_TREND
+    1: 1e-4,   # HIGH_VOL_TREND
+    2: 2e-5,   # LOW_VOL_RANGE
+    3: 5e-5,   # HIGH_VOL_RANGE
+    4: 5e-4,   # CRISIS_JUMP
+}
+
+# -------------------------------------------------------------------------
+# Vol-Proportional Q Floor (Story 1.7)
+# -------------------------------------------------------------------------
+# Q_FLOOR_BY_REGIME are calibrated for a reference equity with ~16%
+# annualized vol (~1%/day).  For assets with different volatility, the
+# floor scales quadratically because q is in variance (returns^2) units:
+#
+#   q_floor(regime, vol) = Q_FLOOR_BY_REGIME[regime] * (vol / REF_VOL)^2
+#
+# Clamped to [Q_FLOOR_ABS_MIN, inf) for numerical stability.
+# -------------------------------------------------------------------------
+REFERENCE_VOL = 0.16   # annualized vol of reference equity (~1%/day)
+Q_FLOOR_ABS_MIN = 1e-8  # absolute minimum for numerical stability
+
+
+def compute_vol_proportional_q_floor(regime: int, asset_vol: float) -> float:
     """
-    Assign market regime labels to each observation.
-    
-    Classification Logic:
-    - CRISIS_JUMP (4): vol_relative > 2.0 OR tail_indicator > 4.0
-    - HIGH_VOL_TREND (1): vol_relative > 1.3 AND drift_abs > threshold
-    - HIGH_VOL_RANGE (3): vol_relative > 1.3 AND drift_abs <= threshold
-    - LOW_VOL_TREND (0): vol_relative < 0.85 AND drift_abs > threshold
-    - LOW_VOL_RANGE (2): vol_relative < 0.85 AND drift_abs <= threshold
-    - Normal vol: based on drift threshold
-    
+    Compute vol-proportional q floor for a given regime and asset vol.
+
     Args:
-        returns: Array of returns
-        vol: Array of EWMA volatility
-        lookback: Rolling window for feature computation (default 21 days)
-        
+        regime: Regime index (0-4).
+        asset_vol: Annualized asset volatility.
+
     Returns:
-        Array of regime labels (0-4) for each observation
+        q_floor scaled by (asset_vol / REFERENCE_VOL)^2, floored at Q_FLOOR_ABS_MIN.
     """
-    n = len(returns)
-    regime_labels = np.zeros(n, dtype=int)
-    
-    # Drift threshold
-    drift_threshold = 0.0005  # ~0.05% daily drift threshold
-    
-    # Compute expanding median for volatility normalization
-    vol_series = pd.Series(vol)
-    vol_median_expanding = vol_series.expanding(min_periods=lookback).median().values
-    
-    # Handle early periods where expanding median is NaN
-    vol_median_expanding[:lookback] = np.nanmedian(vol[:lookback]) if lookback <= n else np.nanmedian(vol)
-    
-    for t in range(n):
-        # Current volatility and return
-        vol_now = vol[t]
-        ret_now = returns[t]
-        
-        # Volatility relative to expanding median
-        vol_median = vol_median_expanding[t] if vol_median_expanding[t] > 1e-12 else vol_now
-        vol_relative = vol_now / vol_median if vol_median > 1e-12 else 1.0
-        
-        # Rolling mean absolute return (drift proxy)
-        start_idx = max(0, t - lookback + 1)
-        drift_abs = abs(np.mean(returns[start_idx:t+1]))
-        
-        # Tail indicator: |return| / vol
-        tail_indicator = abs(ret_now) / vol_now if vol_now > 1e-12 else 0.0
-        
-        # Classification logic
-        # Crisis/Jump: extreme volatility or tail events
-        if vol_relative > 2.0 or tail_indicator > 4.0:
-            regime_labels[t] = MarketRegime.CRISIS_JUMP
-        # High volatility regimes
-        elif vol_relative > 1.3:
-            if drift_abs > drift_threshold:
-                regime_labels[t] = MarketRegime.HIGH_VOL_TREND
-            else:
-                regime_labels[t] = MarketRegime.HIGH_VOL_RANGE
-        # Low volatility regimes
-        elif vol_relative < 0.85:
-            if drift_abs > drift_threshold:
-                regime_labels[t] = MarketRegime.LOW_VOL_TREND
-            else:
-                regime_labels[t] = MarketRegime.LOW_VOL_RANGE
-        # Normal volatility (between 0.85 and 1.3)
+    q_base = Q_FLOOR_BY_REGIME.get(regime, 0.0)
+    if q_base <= 0 or asset_vol <= 0:
+        return max(q_base, Q_FLOOR_ABS_MIN)
+    vol_ratio = asset_vol / REFERENCE_VOL
+    q_scaled = q_base * vol_ratio * vol_ratio
+    return max(q_scaled, Q_FLOOR_ABS_MIN)
+
+# BIC penalty multiplier when floor overrides MLE-optimal q
+Q_FLOOR_BIC_LAMBDA = 2.0
+
+# =============================================================================
+# CROSS-ASSET PHI POOLING (Story 1.3, April 2026)
+# =============================================================================
+# Phi (drift persistence) estimated independently per asset can produce
+# nonsensical values when regime windows are short (60-200 samples):
+#   - GOOGL: phi=-0.016 (anti-persistent -- floored to 0)
+#   - MSFT:  phi=0.124  (fast decay -- drift gone in 7 days)
+#   - SPY:   phi=0.994  (very persistent -- good)
+#
+# Hierarchical Bayesian pooling shrinks pathological phi values toward
+# the cross-asset population median using precision-weighted averaging:
+#
+#   phi_shrunk = (tau_asset * phi_mle + tau_pop * phi_pop_median) / (tau_asset + tau_pop)
+#
+# where tau_asset = n_samples / se_phi^2  (more data = higher precision)
+#       tau_pop   = 1 / phi_pop_std^2     (tighter population = stronger pull)
+#
+# Default phi prior when insufficient cross-asset data:
+DEFAULT_PHI_PRIOR = 0.85         # Conservative default (persistent but not unit root)
+DEFAULT_PHI_PRIOR_STD = 0.15     # Moderate prior uncertainty
+PHI_POOL_MIN_ASSETS = 5          # Minimum assets to form cross-asset prior
+
+# -------------------------------------------------------------------------
+# Phi ACF Lower Bound (Story 1.8)
+# -------------------------------------------------------------------------
+# A principled phi lower bound from the lag-1 autocorrelation:
+#   phi_floor = max(0, acf_1 * PHI_ACF_SCALE)
+# PHI_ACF_SCALE > 1 because acf_1 underestimates true AR(1) persistence
+# due to noise contamination (Yule-Walker bias).
+# -------------------------------------------------------------------------
+PHI_ACF_SCALE = 2.0
+
+
+def apply_cross_asset_phi_pooling(cache: Dict[str, Dict]) -> Dict[str, Dict]:
+    """
+    Post-processing step: shrink per-asset phi toward cross-asset population median.
+
+    Two-pass approach:
+      Pass 1: Collect all asset phi values and sample counts.
+      Pass 2: Compute population prior (median, MAD) and shrink each asset.
+
+    Hierarchical precision-weighted shrinkage formula:
+      tau_asset = n_regime_samples (proxy for estimation precision)
+      tau_pop   = 1 / phi_pop_std^2
+      phi_shrunk = (tau_asset * phi_mle + tau_pop * phi_pop_median) / (tau_asset + tau_pop)
+
+    Assets with many regime samples (high tau_asset) barely shrink.
+    Assets with few samples (low tau_asset) shrink strongly toward population.
+
+    Modifies cache in-place and returns it.
+    """
+    # Pass 1: collect phi values across all assets
+    phi_entries = []  # (asset, phi_mle, n_samples)
+    for asset, data in cache.items():
+        if not isinstance(data, dict):
+            continue
+        global_data = data.get("global", data)
+        phi_val = global_data.get("phi")
+        if phi_val is None or not np.isfinite(phi_val):
+            continue
+        # Estimate n_samples from regime_counts or data_length
+        n_samples = 252  # Default
+        regime_counts = data.get("regime_counts", {})
+        if regime_counts:
+            n_samples = max(sum(int(v) for v in regime_counts.values() if isinstance(v, (int, float))), 100)
+        elif "data_length" in global_data:
+            n_samples = int(global_data["data_length"])
+        phi_entries.append((asset, float(phi_val), n_samples))
+
+    if len(phi_entries) < PHI_POOL_MIN_ASSETS:
+        # Not enough assets to form cross-asset prior -- use defaults
+        phi_pop_median = DEFAULT_PHI_PRIOR
+        phi_pop_std = DEFAULT_PHI_PRIOR_STD
+    else:
+        # Robust location and scale from cross-asset phi distribution
+        all_phi = np.array([e[1] for e in phi_entries])
+        phi_pop_median = float(np.median(all_phi))
+        # MAD-based robust std estimate (1.4826 converts MAD to std for normal)
+        mad = float(np.median(np.abs(all_phi - phi_pop_median)))
+        phi_pop_std = max(mad * 1.4826, 0.05)  # Floor at 0.05 to prevent over-shrinkage
+
+    tau_pop = 1.0 / (phi_pop_std ** 2)
+
+    # Pass 2: shrink each asset's phi toward population
+    n_shrunk = 0
+    for asset, phi_mle, n_samples in phi_entries:
+        # Precision proportional to sample count
+        # Fisher information for AR(1) coefficient scales as O(n)
+        tau_asset = float(n_samples)
+        tau_total = tau_asset + tau_pop
+
+        phi_shrunk = (tau_asset * phi_mle + tau_pop * phi_pop_median) / tau_total
+
+        # Clamp to valid range
+        phi_shrunk = float(np.clip(phi_shrunk, -0.999, 0.999))
+
+        # Update cache
+        data = cache[asset]
+        global_data = data.get("global", data)
+        phi_original = global_data.get("phi")
+
+        if abs(phi_shrunk - phi_mle) > 0.001:
+            n_shrunk += 1
+
+        global_data["phi_mle_original"] = phi_original
+        global_data["phi"] = phi_shrunk
+
+        # Also update per-regime phi values
+        regime_data = data.get("regime", {})
+        if isinstance(regime_data, dict):
+            for r_key, r_params in regime_data.items():
+                if isinstance(r_params, dict):
+                    models = r_params.get("models", {})
+                    if isinstance(models, dict):
+                        for m_name, m_info in models.items():
+                            if isinstance(m_info, dict) and "phi" in m_info:
+                                m_phi = m_info["phi"]
+                                if m_phi is not None and np.isfinite(m_phi):
+                                    m_tau_asset = float(n_samples)
+                                    m_phi_shrunk = (m_tau_asset * m_phi + tau_pop * phi_pop_median) / (m_tau_asset + tau_pop)
+                                    m_info["phi_mle_original"] = m_phi
+                                    m_info["phi"] = float(np.clip(m_phi_shrunk, -0.999, 0.999))
+
+    # Store population prior in metadata
+    _pool_meta = {
+        "phi_population_median": phi_pop_median,
+        "phi_population_std": phi_pop_std,
+        "n_assets_pooled": len(phi_entries),
+        "n_assets_shrunk": n_shrunk,
+    }
+    for asset in cache:
+        if isinstance(cache[asset], dict):
+            ht = cache[asset].setdefault("hierarchical_tuning", {})
+            ht["phi_prior"] = _pool_meta
+
+    return cache
+
+
+# =========================================================================
+# Story 2.2: EMOS Calibration from Walk-Forward Errors
+# =========================================================================
+# Train per-horizon EMOS parameters via CRPS minimization on walk-forward
+# (forecast, realized) pairs.
+#
+# EMOS (Gneiting 2005) applies:
+#   mu_corrected  = a + b * mu_raw
+#   sig_corrected = c + d * sig_raw   (c,d >= 0 enforced)
+#
+# The CRPS for a Normal(mu, sig) distribution is:
+#   CRPS(y; mu, sig) = sig * [ z*(2*Phi(z)-1) + 2*phi(z) - 1/sqrt(pi) ]
+# where z = (y - mu) / sig.
+# =========================================================================
+
+EMOS_TRAIN_FRAC = 0.70   # Use first 70% for training, last 30% for validation
+EMOS_IDENTITY = {"a": 0.0, "b": 1.0, "c": 0.0, "d": 1.0}
+
+
+def _crps_normal_single(y: float, mu: float, sig: float) -> float:
+    """CRPS for a single observation against Normal(mu, sig)."""
+    if sig <= 0:
+        return abs(y - mu)
+    from scipy.stats import norm
+    z = (y - mu) / sig
+    return sig * (z * (2.0 * norm.cdf(z) - 1.0) + 2.0 * norm.pdf(z) - 1.0 / math.sqrt(math.pi))
+
+
+def _emos_crps_objective(params: np.ndarray, forecasts: np.ndarray,
+                         sigmas: np.ndarray, realized: np.ndarray) -> float:
+    """Mean CRPS for EMOS-corrected Normal distribution."""
+    a, b, c, d = params
+    mu_cor = a + b * forecasts
+    sig_cor = np.abs(c + d * sigmas)
+    sig_cor = np.maximum(sig_cor, 1e-8)
+    n = len(realized)
+    total = 0.0
+    for i in range(n):
+        total += _crps_normal_single(realized[i], mu_cor[i], sig_cor[i])
+    return total / n
+
+
+def train_emos_parameters(
+    wf_records: list,
+    horizons: Optional[List[int]] = None,
+) -> Dict[int, Dict[str, float]]:
+    """
+    Train per-horizon EMOS parameters via CRPS minimization.
+
+    Using walk-forward (forecast, realized) pairs, fits the affine EMOS
+    correction (a + b*mu, |c + d*sig|) that minimises the CRPS of the
+    corrected Normal predictive distribution.
+
+    Training uses the first EMOS_TRAIN_FRAC of records, validation uses
+    the remainder.
+
+    Args:
+        wf_records: List of WalkForwardRecord (from Story 2.1).
+        horizons: Horizons to calibrate (default [1,3,7,21,63]).
+
+    Returns:
+        {horizon: {'a', 'b', 'c', 'd', 'crps_train', 'crps_val',
+                   'crps_uncorrected', 'crps_improvement_pct', 'n_train', 'n_val'}}
+    """
+    from scipy.optimize import minimize as sp_minimize
+
+    if horizons is None:
+        horizons = [1, 3, 7, 21, 63]
+
+    results: Dict[int, Dict[str, float]] = {}
+
+    for H in horizons:
+        h_recs = [r for r in wf_records if r.horizon == H]
+        if len(h_recs) < 20:
+            results[H] = dict(EMOS_IDENTITY)
+            results[H].update({"n_train": 0, "n_val": 0,
+                               "crps_train": float("nan"),
+                               "crps_val": float("nan"),
+                               "crps_uncorrected": float("nan"),
+                               "crps_improvement_pct": 0.0})
+            continue
+
+        # Sort by date_idx to respect temporal ordering
+        h_recs.sort(key=lambda r: r.date_idx)
+
+        # Train/validation split
+        n_train = max(10, int(len(h_recs) * EMOS_TRAIN_FRAC))
+        train = h_recs[:n_train]
+        val = h_recs[n_train:]
+
+        f_train = np.array([r.forecast_ret for r in train])
+        s_train = np.array([r.forecast_sig for r in train])
+        y_train = np.array([r.realized_ret for r in train])
+
+        # Optimize EMOS params on training set
+        x0 = np.array([0.0, 1.0, 0.0, 1.0])
+        try:
+            opt = sp_minimize(
+                _emos_crps_objective, x0, args=(f_train, s_train, y_train),
+                method="Nelder-Mead",
+                options={"maxiter": 2000, "xatol": 1e-6, "fatol": 1e-8},
+            )
+            a, b, c, d = opt.x
+        except Exception:
+            a, b, c, d = 0.0, 1.0, 0.0, 1.0
+
+        # Ensure sigma correction is non-negative
+        if c + d * np.mean(s_train) < 0:
+            c, d = 0.0, 1.0
+
+        crps_train = _emos_crps_objective(np.array([a, b, c, d]), f_train, s_train, y_train)
+        crps_uncorrected = _emos_crps_objective(x0, f_train, s_train, y_train)
+
+        # Validation
+        crps_val = float("nan")
+        n_val = len(val)
+        if n_val > 0:
+            f_val = np.array([r.forecast_ret for r in val])
+            s_val = np.array([r.forecast_sig for r in val])
+            y_val = np.array([r.realized_ret for r in val])
+            crps_val = _emos_crps_objective(np.array([a, b, c, d]), f_val, s_val, y_val)
+
+        improvement = 0.0
+        if crps_uncorrected > 0:
+            improvement = (crps_uncorrected - crps_train) / crps_uncorrected * 100.0
+
+        results[H] = {
+            "a": float(a),
+            "b": float(b),
+            "c": float(c),
+            "d": float(d),
+            "crps_train": float(crps_train),
+            "crps_val": float(crps_val),
+            "crps_uncorrected": float(crps_uncorrected),
+            "crps_improvement_pct": float(improvement),
+            "n_train": n_train,
+            "n_val": n_val,
+        }
+
+    return results
+
+
+# =========================================================================
+# Story 2.3: Realized Volatility Feedback for Sigma Calibration
+# =========================================================================
+# Compute per-horizon vol calibration ratio from walk-forward data.
+#
+# vol_ratio_H = realized_std(returns_H) / mean(forecast_sig_H)
+#
+# If vol_ratio > 1: system is overconfident (underestimates uncertainty)
+# If vol_ratio < 1: system is too cautious (overestimates uncertainty)
+#
+# The ratio is clamped to [0.5, 2.0] for stability.
+# =========================================================================
+
+VOL_RATIO_CLAMP_LOW = 0.5
+VOL_RATIO_CLAMP_HIGH = 2.0
+
+
+def compute_vol_calibration_ratios(
+    wf_records: list,
+    horizons: Optional[List[int]] = None,
+) -> Dict[int, float]:
+    """
+    Compute per-horizon volatility calibration ratio from walk-forward data.
+
+    vol_ratio_H = std(realized_ret_H) / mean(forecast_sig_H)
+
+    If vol_ratio > 1.0 the system is overconfident.
+    If vol_ratio < 1.0 the system is too cautious.
+
+    Args:
+        wf_records: List of WalkForwardRecord from Story 2.1.
+        horizons: Horizons (default [1,3,7,21,63]).
+
+    Returns:
+        {horizon: vol_ratio} clamped to [0.5, 2.0].
+    """
+    if horizons is None:
+        horizons = [1, 3, 7, 21, 63]
+
+    ratios: Dict[int, float] = {}
+    for H in horizons:
+        h_recs = [r for r in wf_records if r.horizon == H]
+        if len(h_recs) < 10:
+            ratios[H] = 1.0
+            continue
+        realized = np.array([r.realized_ret for r in h_recs])
+        forecast_sig = np.array([r.forecast_sig for r in h_recs])
+        realized_vol = float(np.std(realized, ddof=1))
+        mean_sig = float(np.mean(forecast_sig))
+        if mean_sig <= 0:
+            ratios[H] = 1.0
+            continue
+        ratio = realized_vol / mean_sig
+        ratios[H] = float(np.clip(ratio, VOL_RATIO_CLAMP_LOW, VOL_RATIO_CLAMP_HIGH))
+    return ratios
+
+
+# ─── Story 2.4: Directional Information Gain (DIG) for BMA Weights ──────
+DIG_BASELINE = 0.5          # random walk hit rate
+DIG_W_START = 0.10          # DIG weight when data is sparse
+DIG_W_MAX = 0.25            # DIG weight at full data accumulation
+DIG_MIN_RECORDS = 30        # minimum records per model for meaningful DIG
+DIG_FULL_DATA_THRESHOLD = 200  # records at which w_dig reaches DIG_W_MAX
+
+
+def compute_dig_per_model(
+    wf_records: list,
+    horizons: Optional[List[int]] = None,
+) -> Dict[str, float]:
+    """
+    Compute Directional Information Gain (DIG) per model from walk-forward data.
+
+    DIG_m = hit_rate_m - 0.5
+
+    Where hit_rate_m = P(sign(forecast_ret) == sign(realized_ret)).
+    Positive DIG means directional edge over random. Negative DIG means
+    worse than random (penalized in BMA weighting).
+
+    Args:
+        wf_records: List of WalkForwardRecord from Story 2.1.
+        horizons: Horizons to include (default all).
+
+    Returns:
+        {model_or_horizon_key: DIG}. Uses "ensemble" key for the
+        overall ensemble, and "H={h}" for per-horizon.
+    """
+    if horizons is not None:
+        recs = [r for r in wf_records if r.horizon in horizons]
+    else:
+        recs = list(wf_records)
+
+    if len(recs) < DIG_MIN_RECORDS:
+        return {"ensemble": 0.0}
+
+    hit_count = sum(1 for r in recs if r.hit)
+    hit_rate = hit_count / len(recs)
+    result: Dict[str, float] = {"ensemble": hit_rate - DIG_BASELINE}
+
+    # Per-horizon DIG
+    horizon_set = set(r.horizon for r in recs)
+    for h in sorted(horizon_set):
+        h_recs = [r for r in recs if r.horizon == h]
+        if len(h_recs) >= DIG_MIN_RECORDS:
+            h_hits = sum(1 for r in h_recs if r.hit)
+            result[f"H={h}"] = h_hits / len(h_recs) - DIG_BASELINE
+    return result
+
+
+def compute_dig_weight(n_records: int) -> float:
+    """
+    Compute adaptive DIG weight that grows from DIG_W_START to DIG_W_MAX
+    as walk-forward data accumulates.
+
+    Linear ramp: w_dig = DIG_W_START + (DIG_W_MAX - DIG_W_START) * frac
+    where frac = min(1, n_records / DIG_FULL_DATA_THRESHOLD).
+
+    Args:
+        n_records: Total walk-forward records available.
+
+    Returns:
+        DIG weight in [DIG_W_START, DIG_W_MAX].
+    """
+    if n_records <= 0:
+        return DIG_W_START
+    frac = min(1.0, n_records / DIG_FULL_DATA_THRESHOLD)
+    return DIG_W_START + (DIG_W_MAX - DIG_W_START) * frac
+
+
+def adjust_bma_weights_with_dig(
+    raw_weights: Dict[str, float],
+    dig_values: Dict[str, float],
+    n_records: int,
+) -> Dict[str, float]:
+    """
+    Adjust BMA weights using Directional Information Gain (DIG).
+
+    Models with DIG > 0 get a proportional boost. Models with DIG < 0
+    get penalized. The adjustment is multiplicative:
+
+    adjusted_w_m = raw_w_m * (1 + w_dig * DIG_m_standardized)
+
+    Where DIG_m_standardized is robust z-score across the ensemble.
+
+    Args:
+        raw_weights: BMA weights from the 6-component scoring system.
+        dig_values: Per-model DIG values (model_name -> DIG).
+        n_records: Walk-forward record count (for adaptive weighting).
+
+    Returns:
+        Adjusted and renormalized BMA weights.
+    """
+    if not dig_values or n_records < DIG_MIN_RECORDS:
+        return dict(raw_weights)
+
+    w_dig = compute_dig_weight(n_records)
+
+    # Robust standardize DIG across models present in raw_weights
+    model_digs = {}
+    for m in raw_weights:
+        if m in dig_values:
+            model_digs[m] = dig_values[m]
+    if not model_digs:
+        return dict(raw_weights)
+
+    vals = np.array(list(model_digs.values()))
+    med = float(np.median(vals))
+    mad = float(np.median(np.abs(vals - med)))
+    if mad < 1e-10:
+        mad = float(np.std(vals)) if np.std(vals) > 1e-10 else 1.0
+
+    adjusted = {}
+    for m, w in raw_weights.items():
+        if m in model_digs:
+            dig_std = (model_digs[m] - med) / mad
+            dig_std = float(np.clip(dig_std, -3.0, 3.0))  # winsorize
+            multiplier = 1.0 + w_dig * dig_std
+            multiplier = max(0.1, multiplier)  # floor to prevent zeroing
+            adjusted[m] = w * multiplier
         else:
-            if drift_abs > drift_threshold * 1.5:
-                regime_labels[t] = MarketRegime.HIGH_VOL_TREND if vol_relative > 1.0 else MarketRegime.LOW_VOL_TREND
+            adjusted[m] = w
+
+    # Renormalize
+    total = sum(adjusted.values())
+    if total > 0:
+        adjusted = {m: v / total for m, v in adjusted.items()}
+    return adjusted
+
+
+# ─── Story 2.6: Automated Calibration Pipeline ──────────────────────────
+CALIBRATION_REPORT_DIR = "src/data/calibration"
+CALIBRATION_REPORT_FILE = "calibration_report.json"
+CALIBRATION_DEFAULT_START = "2024-01-01"
+
+
+def run_calibration_pipeline(
+    assets: List[str],
+    cache: Dict[str, Dict],
+    cache_json: str = "src/data/tune",
+    start_date: str = CALIBRATION_DEFAULT_START,
+    horizons: Optional[List[int]] = None,
+) -> Dict[str, Any]:
+    """
+    Run the full calibration pipeline for a list of assets.
+
+    For each asset:
+        1. Run walk-forward backtest (Story 2.1)
+        2. Train EMOS parameters (Story 2.2)
+        3. Compute volatility calibration ratios (Story 2.3)
+        4. Compute DIG (Story 2.4)
+        5. Compute P&L attribution (Story 2.5)
+        6. Update tune cache with calibration data
+
+    Args:
+        assets: List of asset symbols.
+        cache: Existing tune cache (modified in-place).
+        cache_json: Path to cache directory.
+        start_date: Walk-forward start date.
+        horizons: Horizons for calibration (default [1,3,7,21,63]).
+
+    Returns:
+        Calibration report dict with per-asset results and summary.
+    """
+    from decision.signals import (
+        run_walk_forward_backtest, compute_pnl_attribution,
+        WF_HORIZONS,
+    )
+
+    if horizons is None:
+        horizons = WF_HORIZONS
+
+    report: Dict[str, Any] = {
+        "assets": {},
+        "summary": {},
+    }
+
+    n_nontrivial_emos = 0
+    total_assets = len(assets)
+
+    for i, asset in enumerate(assets, 1):
+        print(f"\n[Calibrate {i}/{total_assets}] {asset}")
+        asset_report: Dict[str, Any] = {"asset": asset, "status": "pending"}
+
+        try:
+            # Step 1: Walk-forward
+            wf = run_walk_forward_backtest(
+                asset, start_date=start_date, horizons=horizons,
+            )
+            n_records = len(wf.records)
+            asset_report["n_records"] = n_records
+            asset_report["hit_rate"] = dict(wf.hit_rate)
+
+            if n_records < 10:
+                asset_report["status"] = "skipped_insufficient_data"
+                report["assets"][asset] = asset_report
+                continue
+
+            # Step 2: EMOS
+            emos_params = train_emos_parameters(wf.records, horizons=horizons)
+            asset_report["emos_params"] = {}
+            for h, ep in emos_params.items():
+                is_identity = (abs(ep.get("a", 0)) < 0.01
+                               and abs(ep.get("b", 1) - 1.0) < 0.01
+                               and abs(ep.get("c", 0)) < 0.01
+                               and abs(ep.get("d", 1) - 1.0) < 0.01)
+                if not is_identity:
+                    n_nontrivial_emos += 1
+                asset_report["emos_params"][h] = {
+                    "a": ep.get("a", 0), "b": ep.get("b", 1),
+                    "c": ep.get("c", 0), "d": ep.get("d", 1),
+                    "crps_train": ep.get("crps_train", None),
+                    "crps_val": ep.get("crps_val", None),
+                    "is_identity": is_identity,
+                }
+
+            # Step 3: Vol ratios
+            vol_ratios = compute_vol_calibration_ratios(wf.records, horizons=horizons)
+            asset_report["vol_ratios"] = {str(k): v for k, v in vol_ratios.items()}
+
+            # Step 4: DIG
+            dig = compute_dig_per_model(wf.records, horizons=horizons)
+            asset_report["dig"] = dig
+
+            # Step 5: P&L attribution
+            pnl = compute_pnl_attribution(wf.records, horizons=horizons)
+            asset_report["pnl_attribution"] = {
+                str(k): v for k, v in pnl.items()
+            }
+
+            # Step 6: Update cache
+            if asset not in cache:
+                cache[asset] = {}
+            if "calibration" not in cache[asset]:
+                cache[asset]["calibration"] = {}
+            cache[asset]["calibration"]["emos"] = {
+                str(h): {k: v for k, v in ep.items()
+                         if k in ("a", "b", "c", "d")}
+                for h, ep in emos_params.items()
+            }
+            cache[asset]["calibration"]["vol_ratios"] = {
+                str(k): v for k, v in vol_ratios.items()
+            }
+            cache[asset]["calibration"]["dig"] = dig
+
+            asset_report["status"] = "success"
+
+        except Exception as e:
+            asset_report["status"] = "failed"
+            asset_report["error"] = str(e)
+
+        report["assets"][asset] = asset_report
+
+    # Summary
+    n_success = sum(1 for r in report["assets"].values() if r["status"] == "success")
+    n_failed = sum(1 for r in report["assets"].values() if r["status"] == "failed")
+    n_skipped = sum(1 for r in report["assets"].values() if r["status"].startswith("skipped"))
+    report["summary"] = {
+        "total_assets": total_assets,
+        "success": n_success,
+        "failed": n_failed,
+        "skipped": n_skipped,
+        "n_nontrivial_emos": n_nontrivial_emos,
+    }
+
+    return report
+
+
+def save_calibration_report(report: Dict[str, Any],
+                            output_dir: str = CALIBRATION_REPORT_DIR) -> str:
+    """Save calibration report to JSON. Returns path."""
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, CALIBRATION_REPORT_FILE)
+
+    class _Encoder(json.JSONEncoder):
+        def default(self, obj):
+            if isinstance(obj, (np.integer,)):
+                return int(obj)
+            if isinstance(obj, (np.floating,)):
+                return float(obj)
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            return super().default(obj)
+
+    with open(path, "w") as f:
+        json.dump(report, f, indent=2, cls=_Encoder)
+    return path
+
+
+def apply_regime_q_floor(
+    models: Dict[str, Dict],
+    regime: int,
+    returns: np.ndarray,
+    vol: np.ndarray,
+    asset_vol: float = 0.0,
+) -> Tuple[int, int]:
+    """
+    Apply regime-conditional q floor to all fitted models in-place.
+
+    For each model where q_mle < q_floor:
+      1. Store original q as q_mle_original
+      2. Set q = q_floor
+      3. Re-run filter to get updated log-likelihood
+      4. Recompute BIC with penalty term
+      5. Set q_floor_applied = True
+
+    This preserves the optimiser's choice of c and phi while only lifting q.
+    The BIC adjustment ensures model selection is not distorted by the floor.
+
+    Story 1.7: When asset_vol > 0, uses vol-proportional q floor via
+    compute_vol_proportional_q_floor().  Falls back to Q_FLOOR_BY_REGIME
+    when asset_vol is not provided.
+
+    Args:
+        models: Dict of model_name -> model_dict (modified in-place)
+        regime: Regime index (0-4) for floor lookup
+        returns: Regime-specific returns (for re-filtering)
+        vol: Regime-specific volatility (for re-filtering)
+        asset_vol: Annualized asset volatility (for vol-proportional floor)
+
+    Returns:
+        (n_floored, n_total): count of models where floor was applied
+    """
+    if asset_vol > 0:
+        q_floor = compute_vol_proportional_q_floor(regime, asset_vol)
+    else:
+        q_floor = Q_FLOOR_BY_REGIME.get(regime, 0.0)
+    if q_floor <= 0:
+        return 0, len(models)
+
+    n_floored = 0
+    n_total = 0
+    n_obs = len(returns)
+
+    for model_name, info in models.items():
+        if not info.get("fit_success", False):
+            continue
+        n_total += 1
+
+        q_mle = info.get("q")
+        if q_mle is None or q_mle >= q_floor:
+            info["q_floor_applied"] = False
+            continue
+
+        # Floor binds: override q
+        n_floored += 1
+        info["q_mle_original"] = float(q_mle)
+        info["q"] = float(q_floor)
+        info["q_floor_applied"] = True
+        info["q_floor_regime"] = int(regime)
+        info["q_floor_value"] = float(q_floor)
+
+        # Re-run filter with floored q to get updated log-likelihood
+        c_val = info.get("c", 1.0)
+        phi_val = info.get("phi")
+        nu_val = info.get("nu")
+
+        try:
+            if nu_val is not None and phi_val is not None:
+                # Student-t model
+                _, _, ll_new = PhiStudentTDriftModel.filter_phi(
+                    returns, vol, q_floor, c_val, phi_val, nu_val
+                )
+            elif phi_val is not None:
+                # Phi-Gaussian model
+                _, _, ll_new = PhiGaussianDriftModel.filter_phi(
+                    returns, vol, q_floor, c_val, phi_val
+                )
             else:
-                regime_labels[t] = MarketRegime.HIGH_VOL_RANGE if vol_relative > 1.0 else MarketRegime.LOW_VOL_RANGE
-    
-    return regime_labels
+                # Gaussian model
+                _, _, ll_new = GaussianDriftModel.filter(
+                    returns, vol, q_floor, c_val
+                )
+
+            # Update log-likelihood
+            old_ll = info.get("log_likelihood", ll_new)
+            info["log_likelihood"] = float(ll_new)
+            info["mean_log_likelihood"] = float(ll_new / max(n_obs, 1))
+
+            # Recompute BIC with penalty for floor deviation
+            n_params = info.get("n_params", 3)
+            from calibration.model_selection import compute_bic as _compute_bic
+            base_bic = _compute_bic(ll_new, n_params, n_obs)
+
+            # BIC penalty: penalise for deviating from MLE-optimal q
+            # log(q_floor / q_mle) is always positive when floor binds
+            bic_penalty = Q_FLOOR_BIC_LAMBDA * math.log(q_floor / max(q_mle, 1e-15))
+            info["bic"] = float(base_bic + bic_penalty)
+            info["bic_floor_penalty"] = float(bic_penalty)
+
+        except Exception as e:
+            # If re-filtering fails, keep original BIC but still apply floor
+            info["q_floor_refilter_error"] = str(e)
+
+    return n_floored, n_total
+
+
+# =============================================================================
+# REGIME CLASSIFICATION FUNCTION
+# Story 4.2: Imported from shared module models.regime
+# =============================================================================
+from models.regime import assign_regime_labels
 
 
 # =============================================================================
@@ -2036,6 +2754,470 @@ def load_asset_list(assets_arg: Optional[str], assets_file: Optional[str]) -> Li
     
     # Default asset list: use centralized universe from fx_data_utils
     return get_default_asset_universe()
+
+
+# =============================================================================
+# Story 3.1: Content-Based Change Detection for Incremental Tuning
+# =============================================================================
+# Uses hash of last 20 rows of price CSV to detect new data.
+# NOT based on mtime (unreliable across git checkout, rsync, backup restore).
+# =============================================================================
+
+def compute_price_data_hash(symbol: str, prices_dir: str = None) -> Optional[str]:
+    """
+    Story 3.1: Compute content-based hash of last 20 rows of price CSV.
+    
+    Uses hashlib.sha256 on the raw bytes of the last 20 lines.
+    Returns hex digest or None if file not found.
+    """
+    import hashlib
+    
+    if prices_dir is None:
+        prices_dir = os.path.join(os.path.dirname(__file__), os.pardir, "data", "prices")
+    
+    price_file = os.path.join(prices_dir, f"{symbol}_1d.csv")
+    if not os.path.exists(price_file):
+        return None
+    
+    try:
+        with open(price_file, 'rb') as f:
+            lines = f.readlines()
+        # Hash last 20 lines (or all if fewer)
+        tail = lines[-20:] if len(lines) > 20 else lines
+        return hashlib.sha256(b''.join(tail)).hexdigest()
+    except Exception:
+        return None
+
+
+def get_last_price_date(symbol: str, prices_dir: str = None) -> Optional[str]:
+    """
+    Story 3.1: Get the date of the last price row.
+    """
+    if prices_dir is None:
+        prices_dir = os.path.join(os.path.dirname(__file__), os.pardir, "data", "prices")
+    
+    price_file = os.path.join(prices_dir, f"{symbol}_1d.csv")
+    if not os.path.exists(price_file):
+        return None
+    
+    try:
+        import csv
+        with open(price_file, 'r') as f:
+            lines = f.readlines()
+        if len(lines) < 2:
+            return None
+        # Last line, first column (date)
+        last_line = lines[-1].strip()
+        if last_line:
+            return last_line.split(',')[0]
+    except Exception:
+        pass
+    return None
+
+
+def needs_retune(symbol: str, cached_params: Optional[dict], prices_dir: str = None) -> bool:
+    """
+    Story 3.1: Check if an asset needs re-tuning based on content hash.
+    
+    Returns True if:
+      - No cached params exist
+      - Cached params don't have a price_data_hash
+      - Price data hash has changed since last tune
+    """
+    if cached_params is None:
+        return True
+    
+    stored_hash = None
+    if isinstance(cached_params, dict):
+        global_block = cached_params.get("global", cached_params)
+        stored_hash = global_block.get("price_data_hash")
+    
+    if stored_hash is None:
+        return True
+    
+    current_hash = compute_price_data_hash(symbol, prices_dir)
+    if current_hash is None:
+        return False  # No price file -> can't tune
+    
+    return current_hash != stored_hash
+
+
+def stamp_tune_result(result: dict, symbol: str, prices_dir: str = None) -> dict:
+    """
+    Story 3.1: Add price_data_hash and last_price_date to tune result.
+    """
+    if result is None:
+        return result
+    
+    current_hash = compute_price_data_hash(symbol, prices_dir)
+    last_date = get_last_price_date(symbol, prices_dir)
+    
+    global_block = result.get("global", result)
+    if current_hash:
+        global_block["price_data_hash"] = current_hash
+    if last_date:
+        global_block["last_price_date"] = last_date
+    
+    return result
+
+
+# =============================================================================
+# Story 3.2: Parallel Tuning Optimization
+# =============================================================================
+
+def estimate_tuning_complexity(symbol: str, prices_dir: str = None) -> float:
+    """
+    Story 3.2: Estimate tuning complexity for work-stealing optimization.
+    
+    Higher score = more complex (should be tuned first for load balancing).
+    Based on: data length, annualized vol (volatile assets have more models to try).
+    
+    Returns estimated complexity score (0-100).
+    """
+    if prices_dir is None:
+        prices_dir = os.path.join(os.path.dirname(__file__), os.pardir, "data", "prices")
+    
+    price_file = os.path.join(prices_dir, f"{symbol}_1d.csv")
+    if not os.path.exists(price_file):
+        return 50.0  # Default complexity
+    
+    try:
+        with open(price_file, 'r') as f:
+            line_count = sum(1 for _ in f)
+        # Length score: more data = more work
+        length_score = min(line_count / 30, 50)
+        
+        # Vol score: approximate from last 20 lines
+        with open(price_file, 'r') as f:
+            lines = f.readlines()
+        if len(lines) < 22:
+            return length_score
+        
+        closes = []
+        for line in lines[-21:]:
+            parts = line.strip().split(',')
+            if len(parts) >= 5:
+                try:
+                    closes.append(float(parts[4]))
+                except (ValueError, IndexError):
+                    continue
+        
+        if len(closes) >= 10:
+            import numpy as np
+            rets = np.diff(np.log(np.array(closes)))
+            vol = float(np.std(rets) * np.sqrt(252))
+            vol_score = min(vol / 0.01, 50)  # High vol = more complexity
+            return length_score + vol_score
+        
+        return length_score
+    except Exception:
+        return 50.0
+
+
+def sort_assets_by_complexity(assets: list, prices_dir: str = None) -> list:
+    """
+    Story 3.2: Sort assets by estimated complexity, slowest first.
+    
+    This enables work-stealing: slow assets start first, fast ones fill gaps.
+    """
+    scored = [(a, estimate_tuning_complexity(a, prices_dir)) for a in assets]
+    scored.sort(key=lambda x: -x[1])  # Descending: most complex first
+    return [a for a, _ in scored]
+
+
+def get_optimal_worker_count() -> int:
+    """Story 3.2: Optimal worker count for parallel tuning."""
+    cpu = os.cpu_count() or 4
+    return min(cpu - 1, 8)  # Leave 1 core for OS, cap at 8
+
+
+# =============================================================================
+# Story 3.3: GARCH(1,1) MLE Parameter Fitting
+# =============================================================================
+
+GARCH_ALPHA_MIN = 1e-6
+GARCH_ALPHA_MAX = 0.50
+GARCH_BETA_MIN = 1e-6
+GARCH_BETA_MAX = 0.999
+GARCH_OMEGA_MIN = 1e-12
+GARCH_PERSISTENCE_MAX = 0.999
+
+# -------------------------------------------------------------------------
+# Multi-Start GARCH (Story 1.6)
+# -------------------------------------------------------------------------
+# Five (alpha, beta) starting points covering the typical GARCH parameter
+# space.  The optimizer runs from each start and selects the highest LL.
+# -------------------------------------------------------------------------
+GARCH_STARTS = [
+    (0.03, 0.93),  # Low reactivity, high persistence
+    (0.08, 0.88),  # Standard (legacy)
+    (0.15, 0.80),  # High reactivity
+    (0.05, 0.90),  # Medium
+    (0.10, 0.85),  # Medium-high reactivity
+]
+
+
+def gjr_garch_log_likelihood(params, returns, barrier_lambda=5.0):
+    """
+    GJR-GARCH(1,1) negative log-likelihood (Glosten-Jagannathan-Runkle 1993).
+
+    h_t = omega + alpha * e_{t-1}^2 + gamma * e_{t-1}^2 * I(e_{t-1}<0) + beta * h_{t-1}
+
+    params: [omega, alpha, beta, gamma]
+    returns: array of mean-adjusted returns
+    barrier_lambda: log-barrier penalty weight for stationarity (Story 3.1)
+
+    The leverage term gamma captures asymmetric volatility:
+      - Negative returns increase variance by (alpha + gamma) * e^2
+      - Positive returns increase variance by alpha * e^2
+    """
+    omega, alpha, beta, gamma = params
+    T = len(returns)
+
+    # Effective persistence including half the leverage effect
+    eff_pers = alpha + gamma * 0.5 + beta
+
+    # Story 3.1: log-barrier stationarity penalty
+    # -lambda * log(1 - persistence) -> +inf as persistence -> 1
+    if eff_pers >= 1.0:
+        return 1e15
+    barrier_penalty = -barrier_lambda * np.log(max(1.0 - eff_pers, 1e-15))
+
+    if eff_pers < 1.0:
+        sigma2_init = omega / (1.0 - eff_pers)
+    else:
+        sigma2_init = np.var(returns)
+
+    sigma2 = max(sigma2_init, 1e-20)
+    total_ll = 0.0
+
+    for t in range(T):
+        r = returns[t]
+        if sigma2 < 1e-20:
+            sigma2 = 1e-20
+        total_ll += -0.5 * (np.log(2 * np.pi) + np.log(sigma2) + r * r / sigma2)
+        leverage = gamma * r * r * (1.0 if r < 0.0 else 0.0)
+        sigma2 = omega + alpha * r * r + leverage + beta * sigma2
+
+    return -total_ll + barrier_penalty  # Negative for minimization
+
+
+def garch_log_likelihood(params, returns):
+    """
+    GARCH(1,1) negative log-likelihood (backward compatible wrapper).
+
+    Delegates to GJR-GARCH with gamma=0.
+    """
+    omega, alpha, beta = params
+    return gjr_garch_log_likelihood([omega, alpha, beta, 0.0], returns)
+
+
+def fit_garch_mle(returns, max_iter=200):
+    """
+    Fit GJR-GARCH(1,1) via multi-start MLE (Story 1.6).
+
+    Runs SLSQP from 5 starting points covering the (alpha, beta) space,
+    selects the solution with highest log-likelihood.  The GJR leverage
+    term gamma captures asymmetric volatility.
+
+    Returns dict with:
+      - omega, alpha, beta, gamma (GJR leverage)
+      - persistence (alpha + gamma/2 + beta)
+      - long_run_vol (annualized)
+      - converged: bool
+      - se_alpha, se_beta, se_gamma (standard errors via Hessian)
+      - best_start: (alpha0, beta0) of the winning start
+      - n_starts_tried: number of starts attempted
+    """
+    from scipy.optimize import minimize
+
+    returns = np.asarray(returns, dtype=np.float64)
+    returns = returns - np.mean(returns)
+    sample_var = float(np.var(returns))
+
+    if sample_var < 1e-20 or len(returns) < 30:
+        return None
+
+    bounds = [
+        (GARCH_OMEGA_MIN, sample_var * 10),   # omega
+        (GARCH_ALPHA_MIN, GARCH_ALPHA_MAX),    # alpha
+        (GARCH_BETA_MIN, GARCH_BETA_MAX),      # beta
+        (0.0, 0.30),                           # gamma (leverage)
+    ]
+
+    # Stationarity: alpha + gamma/2 + beta < 0.999
+    constraints = [{
+        'type': 'ineq',
+        'fun': lambda p: GARCH_PERSISTENCE_MAX - (p[1] + p[3] * 0.5 + p[2]),
+    }]
+
+    best_result = None
+    best_ll = float('inf')  # minimising neg-LL
+    best_start = None
+    n_tried = 0
+
+    for alpha0, beta0 in GARCH_STARTS:
+        omega0 = sample_var * max(1.0 - alpha0 - beta0, 0.01)
+        x0 = [max(omega0, 1e-10), alpha0, beta0, 0.02]  # gamma0=0.02
+
+        try:
+            result = minimize(
+                gjr_garch_log_likelihood,
+                x0,
+                args=(returns,),
+                method='SLSQP',
+                bounds=bounds,
+                constraints=constraints,
+                options={'maxiter': max_iter, 'ftol': 1e-10},
+            )
+            n_tried += 1
+            if result.fun < best_ll:
+                best_ll = result.fun
+                best_result = result
+                best_start = (alpha0, beta0)
+        except Exception:
+            n_tried += 1
+            continue
+
+    if best_result is None:
+        return None
+
+    omega, alpha, beta, gamma = best_result.x
+    persistence = alpha + gamma * 0.5 + beta
+
+    if persistence >= 1.0:
+        return None
+
+    long_run_var = omega / (1.0 - persistence) if persistence < 1 else sample_var
+    long_run_vol = float(np.sqrt(max(long_run_var, 0.0) * 252))
+
+    # Standard errors via numerical Hessian (central finite differences)
+    se_alpha = float('inf')
+    se_beta = float('inf')
+    se_gamma = float('inf')
+    try:
+        h = 1e-5
+        x_opt = best_result.x
+        n_p = len(x_opt)
+        hessian = np.zeros((n_p, n_p))
+        f0 = best_result.fun
+        for i in range(n_p):
+            for j in range(i, n_p):
+                xpp = x_opt.copy()
+                xpn = x_opt.copy()
+                xnp = x_opt.copy()
+                xnn = x_opt.copy()
+                xpp[i] += h; xpp[j] += h
+                xpn[i] += h; xpn[j] -= h
+                xnp[i] -= h; xnp[j] += h
+                xnn[i] -= h; xnn[j] -= h
+                hessian[i, j] = (
+                    gjr_garch_log_likelihood(xpp, returns)
+                    - gjr_garch_log_likelihood(xpn, returns)
+                    - gjr_garch_log_likelihood(xnp, returns)
+                    + gjr_garch_log_likelihood(xnn, returns)
+                ) / (4.0 * h * h)
+                hessian[j, i] = hessian[i, j]
+        # Hessian of neg-LL -> information matrix
+        # SE = sqrt(diag(inv(Hessian)))
+        eigvals = np.linalg.eigvalsh(hessian)
+        if np.all(eigvals > 1e-12):
+            cov = np.linalg.inv(hessian)
+            diag = np.diag(cov)
+            if diag[1] > 0:
+                se_alpha = float(np.sqrt(diag[1]))
+            if diag[2] > 0:
+                se_beta = float(np.sqrt(diag[2]))
+            if diag[3] > 0:
+                se_gamma = float(np.sqrt(diag[3]))
+    except Exception:
+        pass
+
+    return {
+        "omega": float(omega),
+        "alpha": float(alpha),
+        "beta": float(beta),
+        "gamma": float(gamma),
+        "garch_leverage": float(gamma),  # alias for downstream
+        "persistence": float(persistence),
+        "long_run_vol": long_run_vol,
+        "converged": bool(best_result.success),
+        "se_alpha": se_alpha,
+        "se_beta": se_beta,
+        "se_gamma": se_gamma,
+        "best_start": best_start,
+        "n_starts_tried": n_tried,
+    }
+
+
+# =============================================================================
+# Story 3.4: OU Parameter Estimation in Tuning Pipeline
+# =============================================================================
+
+OU_HALF_LIFE_MIN_TUNE = 5
+OU_HALF_LIFE_MAX_TUNE = 252
+
+
+def fit_ou_params(prices):
+    """
+    Story 3.4: Estimate Ornstein-Uhlenbeck parameters from prices.
+    
+    AR(1) regression: log_price_t = phi * log_price_{t-1} + c + eps
+    kappa = -log(phi) (daily frequency, dt=1)
+    
+    Returns dict with:
+      - kappa: mean reversion speed
+      - theta: long-run level (current EWMA of prices)
+      - sigma_ou: residual volatility
+      - half_life_days: ln(2)/kappa
+    """
+    prices_arr = np.asarray(prices, dtype=np.float64)
+    if len(prices_arr) < 60:
+        return None
+    
+    log_p = np.log(prices_arr[prices_arr > 0])
+    if len(log_p) < 60:
+        return None
+    
+    # AR(1) regression: y_t = phi * y_{t-1}
+    y = log_p[1:]
+    x = log_p[:-1]
+    
+    x_mean = float(np.mean(x))
+    y_mean = float(np.mean(y))
+    
+    num = float(np.sum((x - x_mean) * (y - y_mean)))
+    den = float(np.sum((x - x_mean) ** 2))
+    
+    if den < 1e-20:
+        return None
+    
+    phi = num / den
+    phi = max(phi, 0.001)
+    phi = min(phi, 0.9999)
+    
+    kappa = -np.log(phi)
+    kappa = np.clip(kappa, np.log(2) / OU_HALF_LIFE_MAX_TUNE, np.log(2) / OU_HALF_LIFE_MIN_TUNE)
+    
+    half_life = np.log(2) / kappa
+    
+    # Theta from EWMA with span = half_life
+    span = max(int(half_life), 5)
+    ew_alpha = 2.0 / (span + 1)
+    theta = float(prices_arr[0])
+    for p in prices_arr[1:]:
+        theta = ew_alpha * float(p) + (1 - ew_alpha) * theta
+    
+    # Residual vol
+    residuals = y - phi * x
+    sigma_ou = float(np.std(residuals))
+    
+    return {
+        "kappa": float(kappa),
+        "theta": float(theta),
+        "sigma_ou": sigma_ou,
+        "half_life_days": float(half_life),
+    }
 
 
 # =============================================================================
@@ -3131,6 +4313,25 @@ def fit_all_models_for_regime(
     models = {}
 
     # =========================================================================
+    # Phi Lower Bound from Autocorrelation (Story 1.8)
+    # =========================================================================
+    # Compute empirical lag-1 autocorrelation of returns and derive a
+    # principled lower bound for phi.  If autocorrelation is positive,
+    # phi should be positive — preventing the anti-persistent phi values
+    # that signals.py currently floors at 0.0 post-hoc.
+    #
+    # phi_floor = max(0, acf_1 * PHI_ACF_SCALE)
+    # =========================================================================
+    _acf_1 = 0.0
+    _phi_acf_floor = 0.0
+    if n_obs > 10:
+        _r = np.asarray(returns).flatten()
+        _acf_corr = np.corrcoef(_r[:-1], _r[1:])
+        if _acf_corr.shape == (2, 2) and np.isfinite(_acf_corr[0, 1]):
+            _acf_1 = float(_acf_corr[0, 1])
+        _phi_acf_floor = max(0.0, _acf_1 * PHI_ACF_SCALE)
+
+    # =========================================================================
     # FILTER RESULT CACHE (February 2026 Performance Optimization)
     # =========================================================================
     # Cache filter results to avoid redundant filter runs when creating
@@ -3244,6 +4445,96 @@ def fit_all_models_for_regime(
                 "nu": float(nu_fixed),
                 "nu_fixed": True,
             }
+
+    # =========================================================================
+    # Model 1b: Continuous Nu Optimization (Story 1.5)
+    # =========================================================================
+    # Profile-likelihood refinement: hold (q, c, phi) at best discrete MLE,
+    # optimise nu over [2.5, 60] via bounded Brent.  The discrete grid remains
+    # the initialisation — this finds the true MLE between grid points.
+    #
+    # Mathematical justification:
+    #   L_profile(nu) = L(q_hat, c_hat, phi_hat, nu)
+    #   nu_mle = argmax_nu  L_profile(nu)
+    #   se(nu) = 1 / sqrt( -d^2 log L_profile / d nu^2 |_{nu=nu_mle} )
+    # =========================================================================
+    _best_discrete_bic = float('inf')
+    _best_discrete_name = None
+    for _dn, _dm in models.items():
+        if _dn.startswith("phi_student_t_nu_") and _dm.get("fit_success", False):
+            _dbic = _dm.get("bic", float('inf'))
+            if _dbic < _best_discrete_bic:
+                _best_discrete_bic = _dbic
+                _best_discrete_name = _dn
+
+    if _best_discrete_name is not None:
+        _best_dm = models[_best_discrete_name]
+        _prof_q = float(_best_dm.get("q", 1e-5))
+        _prof_c = float(_best_dm.get("c", 1.0))
+        _prof_phi = float(_best_dm.get("phi", 0.0))
+        _prof_nu_init = float(_best_dm.get("nu", 8.0))
+        _prof_gamma_vov = float(_best_dm.get("gamma_vov", 0.0))
+
+        # Profile log-likelihood: filter with fixed (q, c, phi), varying nu
+        def _profile_neg_ll(nu_candidate):
+            nu_c = float(np.clip(nu_candidate, NU_CONTINUOUS_BOUNDS[0], NU_CONTINUOUS_BOUNDS[1]))
+            try:
+                _, _, _, _, ll = PhiStudentTDriftModel.filter_phi_with_predictive(
+                    returns, vol, _prof_q, _prof_c, _prof_phi, nu_c,
+                    robust_wt=True,
+                    gamma_vov=_prof_gamma_vov,
+                    vov_rolling=_vov_rolling if _prof_gamma_vov > 1e-12 else None,
+                )
+                if not np.isfinite(ll):
+                    return 1e12
+                return -ll
+            except Exception:
+                return 1e12
+
+        try:
+            _nu_opt_result = minimize_scalar(
+                _profile_neg_ll,
+                bounds=NU_CONTINUOUS_BOUNDS,
+                method='bounded',
+                options={'xatol': 0.05, 'maxiter': 40},
+            )
+            _nu_mle = float(_nu_opt_result.x)
+
+            # Standard error via central finite-difference Hessian
+            _h = NU_SE_FD_STEP
+            _ll_center = -_profile_neg_ll(_nu_mle)
+            _ll_plus = -_profile_neg_ll(_nu_mle + _h)
+            _ll_minus = -_profile_neg_ll(_nu_mle - _h)
+            _d2ll = (_ll_plus - 2.0 * _ll_center + _ll_minus) / (_h * _h)
+            if _d2ll < -1e-12:
+                _nu_se = 1.0 / math.sqrt(-_d2ll)
+            else:
+                _nu_se = float('inf')
+
+            # Profile LL at the optimum
+            _ll_mle = -_profile_neg_ll(_nu_mle)
+
+            # Only create the continuous model if it improves on discrete
+            _n_params_mle = 4  # q, c, phi, nu (same param count as discrete)
+            _bic_mle = -2.0 * _ll_mle + _n_params_mle * math.log(max(n_obs, 1))
+
+            _nu_mle_name = "phi_student_t_nu_mle"
+
+            # Copy best discrete model and update nu-related fields
+            _mle_model = dict(_best_dm)
+            _mle_model["nu"] = _nu_mle
+            _mle_model["nu_mle"] = _nu_mle
+            _mle_model["nu_se"] = min(_nu_se, 999.0)
+            _mle_model["nu_discrete_init"] = _prof_nu_init
+            _mle_model["nu_fixed"] = False
+            _mle_model["log_likelihood"] = _ll_mle
+            _mle_model["bic"] = _bic_mle
+            _mle_model["fit_success"] = True
+            _mle_model["continuous_nu_optimization"] = True
+
+            models[_nu_mle_name] = _mle_model
+        except Exception:
+            pass  # Discrete grid models still available
 
     # =========================================================================
     # Model 2: UNIFIED Phi-Student-t (February 2026 - Elite Architecture)
@@ -3837,6 +5128,22 @@ def fit_all_models_for_regime(
     # models via Stages 7.x / U-x pipeline.
     # =========================================================================
 
+    # =========================================================================
+    # Phi ACF Lower Bound Enforcement (Story 1.8)
+    # =========================================================================
+    # Apply the autocorrelation-based phi floor to all fitted models.
+    # Store acf_1 and phi_acf_floor in model diagnostics.
+    # =========================================================================
+    for _mn, _md in models.items():
+        if not _md.get("fit_success", False):
+            continue
+        _md["acf_1"] = _acf_1
+        _md["phi_acf_floor"] = _phi_acf_floor
+        _phi_val = _md.get("phi")
+        if _phi_val is not None and _phi_val < _phi_acf_floor:
+            _md["phi_original_pre_acf_floor"] = _phi_val
+            _md["phi"] = _phi_acf_floor
+
     return models
 
 
@@ -4020,7 +5327,21 @@ def fit_regime_model_posterior(
             regime_labels=regime_labels_regime,
             asset=asset,  # FIX #4: Asset-class adaptive c bounds
         )
-        
+
+        # =====================================================================
+        # Step 1b: Apply regime-conditional q floor (Story 1.1, April 2026)
+        # Story 1.7: Vol-proportional q floor
+        # =====================================================================
+        _asset_vol_ann = float(np.median(vol_regime)) * np.sqrt(252) if len(vol_regime) > 0 else 0.0
+        n_floored, n_total = apply_regime_q_floor(
+            models, regime, ret_regime, vol_regime,
+            asset_vol=_asset_vol_ann,
+        )
+        _q_floor_val = compute_vol_proportional_q_floor(regime, _asset_vol_ann) if _asset_vol_ann > 0 else Q_FLOOR_BY_REGIME.get(regime, 0)
+        if n_floored > 0:
+            _log(f"     Q-floor applied: {n_floored}/{n_total} models "
+                 f"(floor={_q_floor_val:.1e} for {regime_name}, vol={_asset_vol_ann:.2%})")
+
         # =====================================================================
         # Step 2: Extract BIC, Hyvärinen, CRPS, PIT and compute LFO-CV scores
         # =====================================================================
@@ -4422,7 +5743,39 @@ def tune_regime_model_averaging(
         regime_labels=regime_labels,
         asset=asset,  # FIX #4: Asset-class adaptive c bounds
     )
-    
+
+    # Apply global q floor (Story 1.1): use regime-count-weighted average floor
+    # This ensures global fallback models also have meaningful drift sensitivity
+    if regime_labels is not None and len(regime_labels) > 0:
+        _regime_counts = np.bincount(regime_labels.astype(int), minlength=5)
+        _regime_total = max(_regime_counts.sum(), 1)
+        _global_q_floor = sum(
+            Q_FLOOR_BY_REGIME.get(r, 0) * _regime_counts[r] / _regime_total
+            for r in range(5)
+        )
+    else:
+        # No regime info: use median floor
+        _global_q_floor = 5e-5  # median of Q_FLOOR_BY_REGIME values
+
+    _n_fl_global, _n_total_global = 0, 0
+    for _gm_name, _gm_info in global_models.items():
+        if not _gm_info.get("fit_success", False):
+            continue
+        _n_total_global += 1
+        _gm_q = _gm_info.get("q")
+        if _gm_q is not None and _gm_q < _global_q_floor:
+            _n_fl_global += 1
+            _gm_info["q_mle_original"] = float(_gm_q)
+            _gm_info["q"] = float(_global_q_floor)
+            _gm_info["q_floor_applied"] = True
+            _gm_info["q_floor_value"] = float(_global_q_floor)
+        else:
+            _gm_info["q_floor_applied"] = False
+
+    if _n_fl_global > 0:
+        _log(f"     Global Q-floor applied: {_n_fl_global}/{_n_total_global} models "
+             f"(weighted floor={_global_q_floor:.1e})")
+
     # Compute global model posterior using elite CRPS-dominated scoring
     global_bic = {m: global_models[m].get("bic", float('inf')) for m in global_models if global_models[m].get("fit_success", False)}
     global_hyvarinen = {m: global_models[m].get("hyvarinen_score", float('-inf')) for m in global_models if global_models[m].get("fit_success", False)}
@@ -4453,7 +5806,14 @@ def tune_regime_model_averaging(
             lambda_entropy=DEFAULT_ENTROPY_LAMBDA
         )
     elif model_selection_method == 'bic':
-        global_raw_weights = compute_bic_model_weights(global_bic)
+        # Use vectorized BMA weights when available (log-sum-exp stable)
+        if VECTORIZED_OPS_AVAILABLE and global_bic:
+            model_names = list(global_bic.keys())
+            bic_arr = np.array([global_bic[m] for m in model_names])
+            w_arr = vectorized_bma_weights(bic_arr)
+            global_raw_weights = dict(zip(model_names, w_arr.tolist()))
+        else:
+            global_raw_weights = compute_bic_model_weights(global_bic)
     elif model_selection_method == 'hyvarinen':
         global_raw_weights = compute_hyvarinen_model_weights(global_hyvarinen)
     else:
@@ -4834,9 +6194,14 @@ def tune_asset_with_bma(
                 "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
 
-        # Assign regime labels
-        _log(f"     📊 Assigning regime labels for {len(returns)} observations...")
-        regime_labels = assign_regime_labels(returns, vol)
+        # Assign regime labels (with optional computation cache)
+        _log(f"     Assigning regime labels for {len(returns)} observations...")
+        if COMPUTATION_CACHE_AVAILABLE and _computation_cache is not None:
+            regime_labels = _computation_cache.get_regime(
+                asset, returns, lambda r: assign_regime_labels(r, vol)
+            )
+        else:
+            regime_labels = assign_regime_labels(returns, vol)
 
         # Count samples per regime
         regime_counts = {r: int(np.sum(regime_labels == r)) for r in range(5)}
@@ -5175,6 +6540,10 @@ Examples:
     parser.add_argument('--lambda-regime', type=float, default=0.05,
                        help='Hierarchical shrinkage toward global (default: 0.05, set to 0 for original behavior)')
 
+    # Story 2.6: Calibration pipeline
+    parser.add_argument('--calibrate', action='store_true',
+                       help='Run walk-forward calibration pipeline instead of tuning')
+
     args = parser.parse_args()
 
     # Enable debug mode
@@ -5220,6 +6589,27 @@ Examples:
     # Load existing cache
     cache = load_cache(args.cache_json)
     print(f"Loaded cache with {len(cache)} existing entries")
+
+    # Story 2.6: Calibration pipeline mode
+    if args.calibrate:
+        print("\n" + "=" * 60)
+        print("CALIBRATION PIPELINE (Story 2.6)")
+        print("=" * 60)
+        report = run_calibration_pipeline(
+            assets, cache, cache_json=args.cache_json,
+            start_date=CALIBRATION_DEFAULT_START,
+        )
+        # Save report
+        path = save_calibration_report(report)
+        print(f"\nCalibration report saved to: {path}")
+        # Save updated cache
+        save_cache_json(cache, args.cache_json)
+        # Summary
+        s = report["summary"]
+        print(f"\nSummary: {s['success']}/{s['total_assets']} success, "
+              f"{s['failed']} failed, {s['skipped']} skipped, "
+              f"{s['n_nontrivial_emos']} non-trivial EMOS")
+        return
 
     # Process each asset with regime-conditional tuning
     new_estimates = 0
@@ -5352,6 +6742,25 @@ Examples:
                     print(f"  ❌ {asset}: {e}")
     else:
         print("\nNo assets to process (all reused from cache).")
+
+    # ==================================================================
+    # CROSS-ASSET PHI POOLING (Story 1.3)
+    # ==================================================================
+    # After all assets are tuned independently, apply hierarchical
+    # shrinkage on phi values toward the cross-asset population median.
+    # This corrects pathological phi estimates (negative, near-zero)
+    # from short regime windows while preserving well-estimated values.
+    # ==================================================================
+    if cache and len(cache) >= PHI_POOL_MIN_ASSETS:
+        print("\nApplying cross-asset phi pooling...")
+        cache = apply_cross_asset_phi_pooling(cache)
+        _pool_sample = next(iter(cache.values()), {})
+        _pool_meta = _pool_sample.get("hierarchical_tuning", {}).get("phi_prior", {})
+        if _pool_meta:
+            print(f"  Population phi median: {_pool_meta.get('phi_population_median', 'N/A'):.4f}")
+            print(f"  Population phi std:    {_pool_meta.get('phi_population_std', 'N/A'):.4f}")
+            print(f"  Assets pooled:         {_pool_meta.get('n_assets_pooled', 0)}")
+            print(f"  Assets shrunk:         {_pool_meta.get('n_assets_shrunk', 0)}")
 
     # Save updated cache (JSON only)
     if new_estimates > 0:

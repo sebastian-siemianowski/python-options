@@ -55,6 +55,8 @@ from rich import box
 from rich.align import Align
 from rich.rule import Rule
 
+from decision.signals_ux import adaptive_format_pct, format_forecast_rich
+
 
 # =============================================================================
 # OUTPUT SUPPRESSION CONTEXT MANAGER
@@ -730,11 +732,11 @@ def compute_and_render_unified_risk(
             f"{metal.volatility:.0%}",
             Text(momentum, style=mom_style),
             Text(f"{metal_crash_risk}", style=metal_risk_style),
-            Text(f"{fc_7d:+.1f}%", style=fc_7d_style),
-            Text(f"{fc_30d:+.1f}%", style=fc_30d_style),
-            Text(f"{fc_90d:+.1f}%", style=fc_90d_style),
-            Text(f"{fc_180d:+.1f}%", style=fc_180d_style),
-            Text(f"{fc_365d:+.1f}%", style=fc_365d_style),
+            Text.from_markup(format_forecast_rich(fc_7d)),
+            Text.from_markup(format_forecast_rich(fc_30d)),
+            Text.from_markup(format_forecast_rich(fc_90d)),
+            Text.from_markup(format_forecast_rich(fc_180d)),
+            Text.from_markup(format_forecast_rich(fc_365d)),
             Text(fc_conf, style=conf_style),
         )
     
@@ -866,13 +868,13 @@ def compute_and_render_unified_risk(
             Text(f"{univ.return_21d:+.1%}", style=ret_21d_style),
             Text(f"{univ.volatility_20d:.0%}", style=vol_style),
             Text(f"{univ_crash_risk}", style=univ_risk_style),
-            Text(f"{fc_1d:+.1f}%", style=forecast_style(fc_1d)),
-            Text(f"{fc_3d:+.1f}%", style=forecast_style(fc_3d)),
-            Text(f"{fc_7d:+.1f}%", style=forecast_style(fc_7d)),
-            Text(f"{fc_30d:+.1f}%", style=forecast_style(fc_30d)),
-            Text(f"{fc_90d:+.1f}%", style=forecast_style(fc_90d)),
-            Text(f"{fc_180d:+.1f}%", style=forecast_style(fc_180d)),
-            Text(f"{fc_365d:+.1f}%", style=forecast_style(fc_365d)),
+            Text.from_markup(format_forecast_rich(fc_1d)),
+            Text.from_markup(format_forecast_rich(fc_3d)),
+            Text.from_markup(format_forecast_rich(fc_7d)),
+            Text.from_markup(format_forecast_rich(fc_30d)),
+            Text.from_markup(format_forecast_rich(fc_90d)),
+            Text.from_markup(format_forecast_rich(fc_180d)),
+            Text.from_markup(format_forecast_rich(fc_365d)),
             Text(fc_conf, style=fc_conf_style),
         )
     
@@ -978,13 +980,13 @@ def compute_and_render_unified_risk(
                 Text(f"{sector.volatility_20d:.0%}", style=vol_style),
                 Text(momentum, style=mom_style),
                 Text(f"{risk_score}", style=risk_style),
-                Text(f"{fc_1d:+.1f}%", style=fc_1d_style),
-                Text(f"{fc_3d:+.1f}%", style=fc_3d_style),
-                Text(f"{fc_7d:+.1f}%", style=fc_7d_style),
-                Text(f"{fc_30d:+.1f}%", style=fc_30d_style),
-                Text(f"{fc_90d:+.1f}%", style=fc_90d_style),
-                Text(f"{fc_180d:+.1f}%", style=fc_180d_style),
-                Text(f"{fc_365d:+.1f}%", style=fc_365d_style),
+                Text.from_markup(format_forecast_rich(fc_1d)),
+                Text.from_markup(format_forecast_rich(fc_3d)),
+                Text.from_markup(format_forecast_rich(fc_7d)),
+                Text.from_markup(format_forecast_rich(fc_30d)),
+                Text.from_markup(format_forecast_rich(fc_90d)),
+                Text.from_markup(format_forecast_rich(fc_180d)),
+                Text.from_markup(format_forecast_rich(fc_365d)),
                 Text(fc_conf, style=conf_style),
             )
         
@@ -1075,13 +1077,13 @@ def compute_and_render_unified_risk(
                 Text(f"{currency.return_5d:+.1%}", style=ret_5d_style),
                 Text(f"{currency.return_21d:+.1%}", style=ret_21d_style),
                 Text(f"{risk_score}", style=risk_style),
-                Text(f"{fc_1d:+.1f}%", style=fc_1d_style),
-                Text(f"{fc_3d:+.1f}%", style=fc_3d_style),
-                Text(f"{fc_7d:+.1f}%", style=fc_7d_style),
-                Text(f"{fc_30d:+.1f}%", style=fc_30d_style),
-                Text(f"{fc_90d:+.1f}%", style=fc_90d_style),
-                Text(f"{fc_180d:+.1f}%", style=fc_180d_style),
-                Text(f"{fc_365d:+.1f}%", style=fc_365d_style),
+                Text.from_markup(format_forecast_rich(fc_1d)),
+                Text.from_markup(format_forecast_rich(fc_3d)),
+                Text.from_markup(format_forecast_rich(fc_7d)),
+                Text.from_markup(format_forecast_rich(fc_30d)),
+                Text.from_markup(format_forecast_rich(fc_90d)),
+                Text.from_markup(format_forecast_rich(fc_180d)),
+                Text.from_markup(format_forecast_rich(fc_365d)),
                 Text(fc_conf, style=conf_style),
             )
         

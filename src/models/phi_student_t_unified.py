@@ -1167,6 +1167,486 @@ def _compute_phi_prior_diagnostics(
     }
 
 
+# ── Story 9.1: Tier Interaction Diagnostics ──────────────────────────
+def compute_tier_interaction_diagnostics(
+    h_garch: np.ndarray = None,
+    q_msq: np.ndarray = None,
+    phi: float = 0.0,
+    risk_premium: float = 0.0,
+    vov_gamma: float = 0.0,
+    garch_active: bool = False,
+    msq_active: bool = False,
+    vov_active: bool = False,
+) -> Dict[str, Any]:
+    """Detect harmful tier interactions across unified model components.
+
+    Story 9.1: Diagnostic flags for:
+    - GARCH + MS-q double-counting (Tier 2 + Tier 1 variance overlap)
+    - Phi + risk premium collinearity (Tier 1 + Tier 3 location overlap)
+    - VoV + GARCH redundancy (Tier 1 + Tier 2 volatility overlap)
+
+    Args:
+        h_garch: GARCH conditional variance series (Tier 2).
+        q_msq: MS-q process noise series (Tier 1).
+        phi: AR(1) persistence parameter.
+        risk_premium: Risk premium lambda_1.
+        vov_gamma: VoV scaling parameter.
+        garch_active: Whether GARCH tier is active.
+        msq_active: Whether MS-q tier is active.
+        vov_active: Whether VoV tier is active.
+
+    Returns:
+        Dict with diagnostic flags and recommended adjustments.
+    """
+    flags = []
+    adjustments = {}
+
+    # 1. GARCH + MS-q double-counting
+    garch_msq_var_ratio = None
+    if garch_active and msq_active and h_garch is not None and q_msq is not None:
+        h_var = float(np.var(h_garch))
+        q_var = float(np.var(q_msq))
+        if q_var > 1e-20:
+            garch_msq_var_ratio = h_var / q_var
+        if garch_msq_var_ratio is not None:
+            if garch_msq_var_ratio < 0.2 or garch_msq_var_ratio > 5.0:
+                flags.append('garch_msq_imbalance')
+                # If both contribute significantly, total variance inflation check
+                if h_garch is not None and q_msq is not None:
+                    total_var = np.var(h_garch + q_msq)
+                    base_var = min(h_var, q_var)
+                    if base_var > 1e-20 and total_var / base_var > 2.0:
+                        flags.append('garch_msq_double_counting')
+                        adjustments['increase_vov_damping'] = True
+
+    # 2. Phi + risk premium collinearity
+    phi_risk_corr = None
+    if abs(phi) > 0.01 and abs(risk_premium) > 0.001:
+        # Correlation proxy: both affect location, check if they are similar magnitude
+        phi_risk_corr = abs(phi * risk_premium)
+        if phi_risk_corr > 0.7:
+            flags.append('phi_risk_premium_collinearity')
+            adjustments['disable_risk_premium'] = True
+
+    # 3. VoV + GARCH redundancy
+    vov_garch_redundant = False
+    if vov_active and garch_active:
+        if vov_gamma < 0.2:
+            flags.append('vov_garch_redundancy')
+            vov_garch_redundant = True
+            adjustments['increase_vov_damping'] = True
+
+    return {
+        'flags': flags,
+        'n_flags': len(flags),
+        'adjustments': adjustments,
+        'garch_msq_var_ratio': garch_msq_var_ratio,
+        'phi_risk_premium_interaction': phi_risk_corr,
+        'vov_garch_redundant': vov_garch_redundant,
+        'garch_active': garch_active,
+        'msq_active': msq_active,
+        'vov_active': vov_active,
+    }
+
+
+# ── Story 9.3: Asset-Class Profile Validation Suite ──────────────────
+GENERIC_DEFAULTS = {
+    'ms_sensitivity_init': 2.0,
+    'ms_sensitivity_reg_center': 2.0,
+    'ms_sensitivity_reg_weight': 10.0,
+    'ms_ewm_lambda': 0.0,
+    'vov_damping': 0.15,
+    'risk_premium_reg_penalty': 0.5,
+    'risk_premium_init': 0.0,
+    'jump_threshold': 3.0,
+    'k_asym': 1.0,
+    'alpha_asym_init': 0.0,
+    'q_stress_ratio': 10.0,
+}
+
+
+def validate_asset_class_profile(
+    asset_symbol: str,
+    profile_metrics: Dict[str, float],
+    generic_metrics: Dict[str, float],
+) -> Dict[str, Any]:
+    """Validate that an asset-class profile outperforms generic defaults.
+
+    Story 9.3: Compares profile vs generic on CRPS, PIT KS, CSS, FEC, BIC.
+
+    Args:
+        asset_symbol: Ticker symbol.
+        profile_metrics: Metrics from profile-calibrated run.
+            Expected keys: 'crps', 'pit_ks_p', 'css', 'fec', 'bic'
+        generic_metrics: Metrics from generic defaults run.
+            Same keys as profile_metrics.
+
+    Returns:
+        Validation result dict with improvement metrics and pass/fail status.
+    """
+    asset_class = _detect_asset_class(asset_symbol)
+
+    # CRPS improvement (positive = profile better)
+    crps_profile = profile_metrics.get('crps', np.inf)
+    crps_generic = generic_metrics.get('crps', np.inf)
+    crps_improvement = (crps_generic - crps_profile) / max(crps_generic, 1e-12)
+
+    # PIT KS p-value (higher = better)
+    pit_ks_profile = profile_metrics.get('pit_ks_p', 0.0)
+    pit_ks_generic = generic_metrics.get('pit_ks_p', 0.0)
+
+    # CSS (higher = better)
+    css_profile = profile_metrics.get('css', 0.0)
+    css_generic = generic_metrics.get('css', 0.0)
+
+    # FEC (higher = better)
+    fec_profile = profile_metrics.get('fec', 0.0)
+    fec_generic = generic_metrics.get('fec', 0.0)
+
+    # BIC (lower = better)
+    bic_profile = profile_metrics.get('bic', np.inf)
+    bic_generic = generic_metrics.get('bic', np.inf)
+    bic_improvement_nats = (bic_generic - bic_profile) / 2.0
+
+    # Per-class specific thresholds
+    class_thresholds = {
+        'metals_gold':     {'crps_max': 0.018, 'crps_improvement_min': 0.03},
+        'metals_silver':   {'pit_ks_min': 0.15, 'crps_improvement_min': 0.03},
+        'high_vol_equity': {'css_min': 0.70, 'crps_improvement_min': 0.03},
+        'forex':           {'fec_min': 0.80, 'crps_improvement_min': 0.03},
+    }
+    thresholds = class_thresholds.get(asset_class, {'crps_improvement_min': 0.03})
+
+    # Check thresholds
+    passes = True
+    failures = []
+    if 'crps_max' in thresholds and crps_profile > thresholds['crps_max']:
+        passes = False
+        failures.append(f"CRPS {crps_profile:.4f} > {thresholds['crps_max']}")
+    if 'pit_ks_min' in thresholds and pit_ks_profile < thresholds['pit_ks_min']:
+        passes = False
+        failures.append(f"PIT KS p {pit_ks_profile:.3f} < {thresholds['pit_ks_min']}")
+    if 'css_min' in thresholds and css_profile < thresholds['css_min']:
+        passes = False
+        failures.append(f"CSS {css_profile:.3f} < {thresholds['css_min']}")
+    if 'fec_min' in thresholds and fec_profile < thresholds['fec_min']:
+        passes = False
+        failures.append(f"FEC {fec_profile:.3f} < {thresholds['fec_min']}")
+    if crps_improvement < thresholds.get('crps_improvement_min', 0.03):
+        passes = False
+        failures.append(f"CRPS improvement {crps_improvement:.4f} < {thresholds.get('crps_improvement_min', 0.03)}")
+
+    return {
+        'asset_symbol': asset_symbol,
+        'asset_class': asset_class,
+        'profile_metrics': profile_metrics,
+        'generic_metrics': generic_metrics,
+        'crps_improvement_pct': float(crps_improvement * 100),
+        'bic_improvement_nats': float(bic_improvement_nats),
+        'pit_ks_improvement': float(pit_ks_profile - pit_ks_generic),
+        'passes': passes,
+        'failures': failures,
+    }
+
+
+def get_generic_defaults() -> Dict[str, float]:
+    """Return generic default profile parameters.
+
+    Returns:
+        Dict of parameter name -> default value.
+    """
+    return dict(GENERIC_DEFAULTS)
+
+
+# ── Story 10.1: GARCH-Kalman Variance Coherence Check ────────────────
+COHERENCE_RATIO_LO = 0.5
+COHERENCE_RATIO_HI = 2.0
+
+
+def compute_variance_coherence(
+    h_garch: np.ndarray,
+    S_innovation: np.ndarray,
+    P_prior: np.ndarray,
+    c_obs: float = 1.0,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
+    """Check and correct GARCH-Kalman variance coherence.
+
+    Story 10.1: Detects when GARCH h_t and Kalman innovation variance S_t diverge.
+    When incoherent, blends R_t = 0.5 * c * h_t + 0.5 * R_kalman.
+
+    Coherence ratio: rho_t = h_t / max(S_t - P_t|t-1, eps)
+    Valid range: [0.5, 2.0]
+
+    Args:
+        h_garch: GARCH conditional variance series.
+        S_innovation: Kalman innovation variance S_t series.
+        P_prior: Kalman prior state variance P_t|t-1 series.
+        c_obs: Observation noise multiplier.
+
+    Returns:
+        (R_corrected, coherence_ratio, diagnostics)
+    """
+    h_garch = np.asarray(h_garch).flatten()
+    S_innovation = np.asarray(S_innovation).flatten()
+    P_prior = np.asarray(P_prior).flatten()
+    n = len(h_garch)
+
+    R_kalman = np.maximum(S_innovation - P_prior, 1e-12)
+    rho = h_garch / np.maximum(R_kalman, 1e-12)
+
+    incoherent = (rho < COHERENCE_RATIO_LO) | (rho > COHERENCE_RATIO_HI)
+    R_garch = c_obs * h_garch
+    R_blended = np.where(incoherent, 0.5 * R_garch + 0.5 * R_kalman, R_garch)
+
+    frac_incoherent = float(np.mean(incoherent))
+
+    diagnostics = {
+        'frac_incoherent': frac_incoherent,
+        'n_incoherent': int(np.sum(incoherent)),
+        'mean_rho': float(np.mean(rho)),
+        'median_rho': float(np.median(rho)),
+        'min_rho': float(np.min(rho)),
+        'max_rho': float(np.max(rho)),
+    }
+
+    return R_blended, rho, diagnostics
+
+
+# ── Story 10.2: GJR Leverage Effect Calibration ──────────────────────
+def compute_empirical_news_impact(
+    returns: np.ndarray,
+    n_bins: int = 20,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute empirical news impact curve from returns.
+
+    Story 10.2: Bin returns by magnitude, compute conditional variance
+    in each bin to create the empirical news impact curve.
+
+    Args:
+        returns: Return series.
+        n_bins: Number of bins for return magnitudes.
+
+    Returns:
+        (bin_centers, conditional_var): Arrays of return levels and
+        their corresponding conditional variance.
+    """
+    returns = np.asarray(returns).flatten()
+    # Create realized variance proxy: next-day squared return
+    n = len(returns)
+    if n < 10:
+        return np.array([0.0]), np.array([np.var(returns)])
+
+    # Conditional variance: E[r_{t+1}^2 | r_t]
+    r_t = returns[:-1]
+    r_sq_next = returns[1:] ** 2
+
+    # Sort by r_t and bin
+    sort_idx = np.argsort(r_t)
+    r_sorted = r_t[sort_idx]
+    v_sorted = r_sq_next[sort_idx]
+
+    bin_size = max(1, len(r_sorted) // n_bins)
+    centers = []
+    cond_var = []
+    for i in range(0, len(r_sorted), bin_size):
+        chunk_r = r_sorted[i:i + bin_size]
+        chunk_v = v_sorted[i:i + bin_size]
+        if len(chunk_r) > 0:
+            centers.append(float(np.mean(chunk_r)))
+            cond_var.append(float(np.mean(chunk_v)))
+
+    return np.array(centers), np.array(cond_var)
+
+
+def fit_gjr_news_impact(
+    returns: np.ndarray,
+) -> Dict[str, float]:
+    """Fit GJR leverage parameters from empirical news impact.
+
+    Story 10.2: h(z) = omega + (alpha + gamma * I(z<0)) * z^2
+
+    Args:
+        returns: Return series.
+
+    Returns:
+        Dict with 'omega', 'alpha', 'gamma_lev', 'asymmetry_ratio'.
+    """
+    returns = np.asarray(returns).flatten()
+    r_sq = returns ** 2
+    neg_indicator = (returns < 0).astype(float)
+    n = len(returns)
+
+    if n < 30:
+        return {'omega': float(np.var(returns)), 'alpha': 0.05,
+                'gamma_lev': 0.0, 'asymmetry_ratio': 1.0}
+
+    # Conditional variance proxy
+    r_sq_next = np.zeros(n)
+    r_sq_next[:-1] = returns[1:] ** 2
+    r_sq_next[-1] = r_sq[-1]
+
+    # OLS: r_sq_next = omega + alpha * r_sq + gamma * neg * r_sq
+    X = np.column_stack([np.ones(n), r_sq, neg_indicator * r_sq])
+    try:
+        beta = np.linalg.lstsq(X, r_sq_next, rcond=None)[0]
+        omega = max(float(beta[0]), 1e-10)
+        alpha = max(float(beta[1]), 0.0)
+        gamma_lev = float(beta[2])
+    except np.linalg.LinAlgError:
+        omega = float(np.var(returns))
+        alpha = 0.05
+        gamma_lev = 0.0
+
+    # Asymmetry ratio: impact of neg shock / impact of pos shock
+    denom = max(alpha, 1e-10)
+    asym_ratio = (alpha + gamma_lev) / denom if alpha > 1e-10 else 1.0
+
+    return {
+        'omega': omega,
+        'alpha': alpha,
+        'gamma_lev': gamma_lev,
+        'asymmetry_ratio': asym_ratio,
+    }
+
+
+# ── Story 10.3: Rough Volatility Hurst Estimation ────────────────────
+def estimate_hurst_exponent(
+    vol: np.ndarray,
+    max_lag: int = 50,
+) -> Tuple[float, Dict[str, Any]]:
+    """Estimate Hurst exponent H via variogram method on log-realized-vol.
+
+    Story 10.3: H < 0.5 indicates rough volatility (anti-persistent).
+    Most equity assets show H in [0.05, 0.20] (Gatheral et al.).
+
+    Args:
+        vol: Realized volatility series.
+        max_lag: Maximum lag for variogram computation.
+
+    Returns:
+        (H, diagnostics): Hurst exponent and fitting diagnostics.
+    """
+    vol = np.asarray(vol).flatten()
+    log_vol = np.log(np.maximum(vol, 1e-12))
+    n = len(log_vol)
+
+    if n < 2 * max_lag:
+        max_lag = max(5, n // 3)
+
+    lags = np.arange(1, max_lag + 1)
+    variogram = np.zeros(len(lags))
+    for i, lag in enumerate(lags):
+        diffs = log_vol[lag:] - log_vol[:-lag]
+        variogram[i] = np.mean(diffs ** 2)
+
+    # log(variogram) = 2H * log(lag) + const
+    valid = variogram > 0
+    if np.sum(valid) < 3:
+        return 0.5, {'n_valid_lags': int(np.sum(valid)), 'r_squared': 0.0}
+
+    log_lags = np.log(lags[valid])
+    log_var = np.log(variogram[valid])
+
+    # OLS fit
+    X = np.column_stack([np.ones(len(log_lags)), log_lags])
+    beta = np.linalg.lstsq(X, log_var, rcond=None)[0]
+    H = float(beta[1]) / 2.0
+
+    # R-squared
+    fitted = X @ beta
+    ss_res = np.sum((log_var - fitted) ** 2)
+    ss_tot = np.sum((log_var - np.mean(log_var)) ** 2)
+    r_sq = 1.0 - ss_res / max(ss_tot, 1e-12) if ss_tot > 1e-12 else 0.0
+
+    # Clamp to reasonable range
+    H = float(np.clip(H, 0.01, 0.99))
+
+    # Auto-disable if H > 0.30 (not rough)
+    rough_active = H < 0.30
+
+    diagnostics = {
+        'H_raw': float(beta[1] / 2.0),
+        'H_clamped': H,
+        'r_squared': float(r_sq),
+        'n_lags_used': int(np.sum(valid)),
+        'rough_active': rough_active,
+    }
+
+    return H, diagnostics
+
+
+# ── Story 9.2: Hierarchical Parameter Optimization ───────────────────
+class HierarchicalParameterLock:
+    """Manages parameter locks across optimization stages.
+
+    Story 9.2: Prevents early-stage errors from propagating by locking
+    converged parameters in later stages.
+
+    Lock rules:
+    - Stage 1 params (q, c, phi) locked during Stages 3-5
+    - Stage 2 (beta) allowed to update in Stage 5
+    - Stage 3 (GARCH) bounded by 2x Stage 1 variance scale
+    """
+
+    def __init__(self):
+        self._locked: Dict[str, float] = {}
+        self._bounds: Dict[str, Tuple[float, float]] = {}
+        self._stage_locks = {
+            1: set(),           # Nothing locked in Stage 1
+            2: {'q', 'c', 'phi'},
+            3: {'q', 'c', 'phi'},
+            4: {'q', 'c', 'phi', 'garch_omega', 'garch_alpha', 'garch_beta_g', 'garch_gamma'},
+            5: {'q', 'c', 'phi', 'garch_omega', 'garch_alpha', 'garch_beta_g', 'garch_gamma'},
+        }
+        self._stage_free = {
+            5: {'beta', 'crps_sigma_shrinkage'},  # Stage 5: only calibration params free
+        }
+
+    def lock_after_stage(self, stage: int, params: Dict[str, float],
+                         stage1_variance_scale: float = None):
+        """Lock parameters after a stage completes.
+
+        Args:
+            stage: Completed stage number.
+            params: Dict of param_name -> optimized_value.
+            stage1_variance_scale: Base variance from Stage 1 for bounding.
+        """
+        for name, value in params.items():
+            self._locked[name] = value
+
+        # Set GARCH bounds based on Stage 1 variance scale
+        if stage == 1 and stage1_variance_scale is not None:
+            max_garch_var = 2.0 * stage1_variance_scale
+            self._bounds['garch_omega'] = (1e-10, max_garch_var)
+            self._bounds['garch_persistence'] = (0.0, 0.999)
+            self._bounds['garch_leverage'] = (-0.5, 0.5)
+
+    def is_locked(self, param_name: str, stage: int) -> bool:
+        """Check if a parameter is locked at a given stage."""
+        locks = self._stage_locks.get(stage, set())
+        return param_name in locks
+
+    def get_locked_value(self, param_name: str) -> Optional[float]:
+        """Get the locked value for a parameter."""
+        return self._locked.get(param_name)
+
+    def get_bounds(self, param_name: str) -> Optional[Tuple[float, float]]:
+        """Get bounds for a parameter."""
+        return self._bounds.get(param_name)
+
+    def get_free_params(self, stage: int) -> Optional[set]:
+        """Get explicitly free params for a stage, if defined."""
+        return self._stage_free.get(stage)
+
+    def get_diagnostics(self) -> Dict[str, Any]:
+        """Return lock state diagnostics."""
+        return {
+            'locked_params': dict(self._locked),
+            'bounds': dict(self._bounds),
+            'n_locked': len(self._locked),
+        }
+
+
 class UnifiedPhiStudentTModel:
     """
     Unified Student-t Kalman filter with heavy tails, regime switching, and CRPS tuning.

@@ -267,7 +267,7 @@ import sys
 # Ensure src directory is in path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from multiprocessing import Pool, cpu_count
 
@@ -621,6 +621,14 @@ except ImportError:
     EVT_MIN_EXCEEDANCES = 30
     EVT_FALLBACK_MULTIPLIER = 1.15
 
+# Story 5.2: EVT inflation cap and balanced EU constants
+EVT_MAX_INFLATION = 1.5   # E_loss_evt <= EVT_MAX_INFLATION * E_loss_empirical
+EVT_GAIN_FACTOR = 0.5     # Symmetric gain correction (conservative: half the loss factor)
+
+# Story 5.3: Forecast-magnitude-aware position sizing blend weights
+SIZE_EU_WEIGHT = 0.6   # Weight on EU-based (risk-adjusted) sizing
+SIZE_MAG_WEIGHT = 0.4  # Weight on forecast-magnitude (conviction) sizing
+
 
 # =============================================================================
 # CONTAMINATED STUDENT-T DISTRIBUTION
@@ -922,6 +930,198 @@ except ImportError:
 
 
 # =============================================================================
+# EPIC 8: SIGNAL ENRICHMENT MODULES (April 2026)
+# =============================================================================
+# Post-processing enrichment for conviction scoring, Kelly sizing, signal decay,
+# earnings/macro event adjustments, and volatility surface context.
+# All imports are guarded — missing modules degrade gracefully.
+# =============================================================================
+
+try:
+    from decision.conviction_scoring import compute_conviction, rank_by_conviction
+    CONVICTION_SCORING_AVAILABLE = True
+except ImportError:
+    CONVICTION_SCORING_AVAILABLE = False
+
+try:
+    from decision.kelly_sizing import (
+        recommend_position_size,
+        compute_kelly_from_quantiles,
+        normalize_portfolio,
+    )
+    KELLY_SIZING_AVAILABLE = True
+except ImportError:
+    KELLY_SIZING_AVAILABLE = False
+
+try:
+    from decision.signal_decay import decay_signal, compute_half_life
+    SIGNAL_DECAY_AVAILABLE = True
+except ImportError:
+    SIGNAL_DECAY_AVAILABLE = False
+
+try:
+    from decision.earnings_signal import (
+        detect_earnings_window,
+        adjust_for_earnings,
+        find_nearest_earnings,
+    )
+    EARNINGS_SIGNAL_AVAILABLE = True
+except ImportError:
+    EARNINGS_SIGNAL_AVAILABLE = False
+
+try:
+    from decision.macro_events import (
+        MacroEventCalendar,
+        detect_event_proximity,
+        adjust_for_macro_event,
+    )
+    MACRO_EVENTS_AVAILABLE = True
+except ImportError:
+    MACRO_EVENTS_AVAILABLE = False
+
+try:
+    from decision.vol_surface import compute_iv_context, adjust_forecast_with_iv
+    VOL_SURFACE_AVAILABLE = True
+except ImportError:
+    VOL_SURFACE_AVAILABLE = False
+
+try:
+    from decision.sector_rotation import generate_rotation_signal, rank_sectors
+    SECTOR_ROTATION_AVAILABLE = True
+except ImportError:
+    SECTOR_ROTATION_AVAILABLE = False
+
+try:
+    from decision.pair_trading import screen_pairs
+    PAIR_TRADING_AVAILABLE = True
+except ImportError:
+    PAIR_TRADING_AVAILABLE = False
+
+try:
+    from models.quant_db import QuantDB
+    QUANT_DB_AVAILABLE = True
+except ImportError:
+    QUANT_DB_AVAILABLE = False
+
+try:
+    from models.vectorized_ops import (
+        vectorized_phi_forecast,
+        vectorized_phi_variance,
+        vectorized_bma_weights as vec_bma_weights,
+        batch_monte_carlo_sample,
+    )
+    VECTORIZED_OPS_AVAILABLE = True
+except ImportError:
+    VECTORIZED_OPS_AVAILABLE = False
+
+try:
+    from models.computation_cache import ComputationCache
+    COMPUTATION_CACHE_AVAILABLE = True
+except ImportError:
+    COMPUTATION_CACHE_AVAILABLE = False
+
+
+def _enrich_signal_with_epic8(
+    asset: str,
+    sigs: list,
+    tuned_params: Optional[Dict],
+    feats: Optional[Dict] = None,
+) -> Dict:
+    """
+    Post-processing enrichment from Epic 8 modules.
+
+    Adds conviction score, Kelly sizing, and signal TTL to the result dict.
+    All enrichments are optional and degrade gracefully.
+
+    Args:
+        asset: Symbol.
+        sigs: List of Signal objects from latest_signals().
+        tuned_params: Tuned params dict (contains BMA weights).
+        feats: Feature dict from compute_features().
+
+    Returns:
+        Dict with enrichment data (may be empty if modules unavailable).
+    """
+    enrichment: Dict = {}
+
+    if not sigs:
+        return enrichment
+
+    # --- 8.3: Conviction Scoring ---
+    if CONVICTION_SCORING_AVAILABLE and tuned_params:
+        try:
+            # Extract BMA weights from tuned params
+            bma_weights = {}
+            global_data = tuned_params.get("global") or {}
+            bma_weights = global_data.get("model_posterior", {})
+
+            # Get regime fit from first signal
+            regime_fit = 1.0 - sigs[0].pit_violation_severity if sigs else 0.5
+
+            # Forecast stability from multiple horizon forecasts
+            forecasts_by_horizon = {}
+            for s in sigs:
+                forecasts_by_horizon[s.horizon_days] = [s.exp_ret]
+
+            conviction = compute_conviction(
+                symbol=asset,
+                bma_weights=bma_weights if bma_weights else {"default": 1.0},
+                regime_fit=float(regime_fit),
+                recent_hits=[],  # Historical accuracy requires past forecasts
+                forecasts_by_horizon=forecasts_by_horizon,
+            )
+            enrichment["conviction"] = {
+                "composite": conviction.composite,
+                "category": conviction.category,
+                "model_agreement": conviction.model_agreement,
+                "regime_confidence": conviction.regime_confidence,
+                "forecast_stability": conviction.forecast_stability,
+            }
+        except Exception:
+            pass
+
+    # --- 8.7: Kelly Sizing ---
+    if KELLY_SIZING_AVAILABLE:
+        try:
+            kelly_recs = []
+            for s in sigs:
+                if s.p_up > 0.01 and s.p_up < 0.99 and s.expected_gain > 0:
+                    rec = recommend_position_size(
+                        symbol=asset,
+                        p_win=float(s.p_up),
+                        avg_win=float(s.expected_gain),
+                        avg_loss=float(max(s.expected_loss, 1e-6)),
+                    )
+                    kelly_recs.append({
+                        "horizon": s.horizon_days,
+                        "half_kelly": rec.half_kelly,
+                        "capped_size": rec.capped_size,
+                        "edge": rec.edge,
+                    })
+            if kelly_recs:
+                enrichment["kelly"] = kelly_recs
+        except Exception:
+            pass
+
+    # --- 8.8: Signal Decay / TTL ---
+    if SIGNAL_DECAY_AVAILABLE:
+        try:
+            decay_info = []
+            for s in sigs:
+                hl = compute_half_life(s.horizon_days)
+                decay_info.append({
+                    "horizon": s.horizon_days,
+                    "half_life_days": hl,
+                    "ttl_at_generation": hl * 3.32,  # log2(10) * hl ≈ time to 10% strength
+                })
+            enrichment["signal_ttl"] = decay_info
+        except Exception:
+            pass
+
+    return enrichment
+
+
+# =============================================================================
 # ISOTONIC RECALIBRATION HELPER
 # =============================================================================
 # This function loads a persisted transport map and applies it to PIT values.
@@ -1006,7 +1206,58 @@ except Exception:
 # Clamp to a reasonable range to avoid misuse
 EDGE_FLOOR = float(np.clip(EDGE_FLOOR, 0.0, 1.5))
 
+# Story 5.1: Adaptive edge floor scaling factor (fraction of horizon-scaled vol)
+# Calibrated so that USDJPY (vol~0.005) gets ~0.02 and BTC (vol~0.03) gets ~0.15 at H=7
+EDGE_FLOOR_Z = 0.65
+
 DEFAULT_CACHE_PATH = os.path.join("src", "data", "currencies", "fx_plnjpy.json")
+
+# ============================================================================
+# MOMENTUM-AUGMENTED DRIFT (Story 1.1, April 2026)
+# ============================================================================
+# The Kalman posterior drift mu_t is microscopic for most assets (~0.04%/day
+# for SPY). Momentum features (t-stat style, computed in compute_features())
+# carry proven directional information (Sharpe ~1.3 in arena validation).
+#
+# We blend momentum-derived drift into mu_t_mc with a horizon-dependent weight:
+#   w_mom = min(1.0, H / MOM_CROSSOVER_HORIZON)
+#   mu_augmented = (1 - w_mom) * mu_kalman + w_mom * mom_drift
+#
+# At short horizons (H=1), Kalman drift dominates (w_mom ~ 0.016).
+# At long horizons (H>=63), momentum drift dominates (w_mom = 1.0).
+#
+# mom_drift = momentum_score * vol_now * MOM_DRIFT_SCALE
+# where momentum_score is in [-1, +1] (normalized from [-100, +100])
+# and MOM_DRIFT_SCALE controls the magnitude in return units.
+# ============================================================================
+MOM_DRIFT_SCALE = 0.10           # Momentum score -> daily return units scaling
+MOM_CROSSOVER_HORIZON = 63       # Horizon (days) at which momentum fully dominates
+MOM_MIN_OBSERVATIONS = 126       # Minimum price history to trust momentum signal
+
+# ============================================================================
+# DUAL-FREQUENCY DRIFT PROPAGATION (Story 1.4, April 2026)
+# ============================================================================
+# Single-phi AR(1) drift decays too fast: with phi=0.2, drift halves every
+# 3.1 days and is <0.1% of original by H=21d. Forecasts beyond 2 weeks
+# become indistinguishable from a pure random walk.
+#
+# Dual-frequency model decomposes drift into fast + slow components:
+#   mu_fast[t] = phi_fast * mu_fast[t-1] + eta     (microstructure, fast decay)
+#   mu_slow[t] = phi_slow * mu_slow[t-1]            (momentum, slow decay)
+#   mu_total[t] = mu_fast[t] + mu_slow[t]
+#
+# phi_fast = asset-specific MLE from tune.py (0.1-0.99)
+# phi_slow = exp(-1/MOMENTUM_HALF_LIFE_DAYS) ~ 0.976 (42-day half-life)
+#
+# mu_fast_0 = mu_t * (1 - MOM_SLOW_FRAC)   (70% to fast)
+# mu_slow_0 = mu_t * MOM_SLOW_FRAC          (30% to slow)
+#
+# Impact: at H=21d, slow component retains ~60% of H=1d signal.
+#         at H=63d, slow component retains ~22% of H=1d signal.
+# ============================================================================
+MOMENTUM_HALF_LIFE_DAYS = 42     # Half-life of slow drift component (days)
+MOM_SLOW_FRAC = 0.30             # Fraction of initial drift allocated to slow component
+SLOW_Q_RATIO = 0.0               # Slow component noise ratio (0 = deterministic decay)
 
 # ============================================================================
 # ASSET-TYPE-AWARE FORECAST BOUNDS (March 2026)
@@ -1628,8 +1879,10 @@ class Signal:
     score: float          # edge in z units (mu_H/sigma_H with filters)
     p_up: float           # P(return>0) - UNIFIED posterior predictive MC probability (THE ONLY TRADING PROBABILITY)
     exp_ret: float        # expected log return over horizon
-    ci_low: float         # lower bound of expected log return CI
-    ci_high: float        # upper bound of expected log return CI
+    ci_low: float         # lower bound of expected log return CI (68% or user-specified)
+    ci_high: float        # upper bound of expected log return CI (68% or user-specified)
+    ci_low_90: float      # lower bound of 90% CI (Story 3.2: quantile-based)
+    ci_high_90: float     # upper bound of 90% CI (Story 3.2: quantile-based)
     profit_pln: float     # expected profit in PLN for NOTIONAL_PLN invested
     profit_ci_low_pln: float  # low CI bound for profit in PLN
     profit_ci_high_pln: float # high CI bound for profit in PLN
@@ -1703,6 +1956,14 @@ class Signal:
     crps_score: Optional[float] = None       # Model's CRPS score (lower is better)
     scoring_weights: Optional[Dict[str, float]] = None  # Regime-aware weights used {bic, hyvarinen, crps}
     scoring_method: Optional[str] = None     # "regime_aware_bic_hyv_crps" or "bic_only"
+    # Story 3.6: MC Path Diagnostics
+    mc_diagnostics: Optional[Dict[str, float]] = None  # diagnose_mc_paths() output
+    # Story 5.2: Balanced EU fields
+    eu_asymmetric: float = 0.0         # Legacy EU with asymmetric EVT correction
+    eu_balanced: float = 0.0           # Balanced EU with symmetric tail treatment
+    # Story 5.6: Kelly sizing fields
+    kelly_full: float = 0.0            # Full Kelly fraction
+    kelly_half: float = 0.0            # Half-Kelly (conservative)
 
 
 
@@ -2870,6 +3131,223 @@ def _select_regime_params(
         }
 
 
+# =============================================================================
+# KALMAN GAIN MONITORING AND ADAPTIVE RESET (Story 1.2)
+# =============================================================================
+# When Kalman gain K_t collapses below K_MIN_THRESHOLD for GAIN_STALL_WINDOW
+# consecutive bars, the filter ignores >99% of new observations. This makes
+# it unable to adapt when the market regime changes.
+#
+# The adaptive reset inflates P (state variance) at the stall point, which
+# increases K_t and allows the filter to relearn from new observations.
+#
+# Anti-oscillation: maximum MAX_RESETS_PER_WINDOW resets per 252-bar window,
+# with RESET_COOLDOWN_BARS bars between resets.
+#
+# K_t = P_pred / (P_pred + R_t)   [Gaussian]
+# K_t = (nu/(nu+3)) * P_pred / (P_pred + R_t)   [Student-t]
+# =============================================================================
+K_MIN_THRESHOLD = 0.005           # Below this, filter is effectively stalled
+GAIN_STALL_WINDOW = 10            # Consecutive bars below threshold to trigger reset
+RESET_INFLATION_FACTOR = 10.0     # P_new = P_old * this factor
+MAX_RESETS_PER_WINDOW = 3         # Maximum resets per 252-bar rolling window
+RESET_COOLDOWN_BARS = 20          # Minimum bars between resets
+GAIN_RESET_WINDOW_SIZE = 252      # Rolling window size (1 trading year)
+
+
+# =============================================================================
+# INNOVATION-WEIGHTED DRIFT AGGREGATION (Story 1.5)
+# =============================================================================
+# Large standardized innovations (z_t = innov / sqrt(S_t)) carry more information
+# about regime changes than noise. Innovation weighting amplifies K_effective for
+# surprising observations:
+#
+#   w(z_t) = min(1 + alpha * (|z_t| - 1)^+, w_max)
+#   K_effective = K_t * w(z_t)
+#
+# This trades Kalman optimality guarantees (which assume Gaussian noise) for
+# practical utility: faster response to earnings surprises and regime shifts.
+# P_max bound prevents feedback divergence.
+# =============================================================================
+IW_ALPHA_UP = 0.3        # Sensitivity for positive surprises
+IW_ALPHA_DOWN = 0.4      # Sensitivity for negative surprises (slightly higher)
+IW_W_MAX = 2.0           # Maximum weight cap (conservative)
+IW_P_MAX_MULT = 10.0     # P_max = this * P_steady_state
+
+
+def innovation_weight(z_t: float, alpha_up: float = IW_ALPHA_UP,
+                      alpha_down: float = IW_ALPHA_DOWN,
+                      w_max: float = IW_W_MAX) -> float:
+    """
+    Compute innovation weight from standardized innovation z_t.
+
+    w(z_t) = min(1 + alpha * (|z_t| - 1)^+, w_max)
+
+    Asymmetric: negative surprises (z_t < 0) use alpha_down.
+    Non-surprising observations (|z_t| <= 1) get w = 1.0 (no change).
+    """
+    abs_z = abs(z_t)
+    if abs_z <= 1.0:
+        return 1.0
+    alpha = alpha_down if z_t < 0 else alpha_up
+    return min(1.0 + alpha * (abs_z - 1.0), w_max)
+
+
+def _compute_kalman_gain_from_filtered(
+    P_filtered: np.ndarray,
+    sigma: np.ndarray,
+    phi: float,
+    q: float,
+    c: float,
+    nu: Optional[float] = None,
+) -> np.ndarray:
+    """
+    Compute K_t post-hoc from filtered P and observation noise.
+
+    K_t = P_pred_t / (P_pred_t + R_t)  [Gaussian]
+    K_t = (nu/(nu+3)) * P_pred_t / (P_pred_t + R_t)  [Student-t]
+
+    where P_pred_t = phi^2 * P_{t-1} + q and R_t = c * sigma_t^2
+    """
+    T = len(P_filtered)
+    K = np.zeros(T, dtype=float)
+    phi_sq = phi * phi
+
+    for t in range(T):
+        if t == 0:
+            P_prev = P_filtered[0]
+        else:
+            P_prev = P_filtered[t - 1]
+
+        P_pred = phi_sq * P_prev + q
+        R_t = max(c * sigma[t] * sigma[t], 1e-12)
+        S_t = max(P_pred + R_t, 1e-12)
+        K_t = P_pred / S_t
+
+        if nu is not None and nu > 3.0:
+            K_t *= nu / (nu + 3.0)
+
+        K[t] = K_t
+
+    return K
+
+
+def _apply_gain_monitoring_reset(
+    mu_filtered: np.ndarray,
+    P_filtered: np.ndarray,
+    K_gain: np.ndarray,
+    y: np.ndarray,
+    sigma: np.ndarray,
+    phi: float,
+    q: float,
+    c: float,
+    nu: Optional[float] = None,
+) -> dict:
+    """
+    Detect Kalman gain stalls and apply P-inflation resets.
+
+    When K_t < K_MIN_THRESHOLD for GAIN_STALL_WINDOW consecutive bars,
+    inflate P and re-run the filter forward from the stall point.
+
+    Returns dict with:
+        - reset_count: number of resets applied
+        - reset_indices: list of bar indices where resets occurred
+        - K_gain_pre_reset: original K_t before any resets
+        - gain_stall_detected: bool
+    """
+    T = len(mu_filtered)
+    if T < GAIN_STALL_WINDOW + RESET_COOLDOWN_BARS:
+        return {
+            "reset_count": 0,
+            "reset_indices": [],
+            "K_gain_pre_reset": K_gain.copy(),
+            "gain_stall_detected": False,
+        }
+
+    K_pre = K_gain.copy()
+    phi_sq = phi * phi
+    is_student_t = nu is not None and nu > 3.0
+    nu_factor = (nu / (nu + 3.0)) if is_student_t else 1.0
+
+    # Detect stall windows: K_t < threshold for N consecutive bars
+    stall_mask = K_gain < K_MIN_THRESHOLD
+    consecutive_stall = np.zeros(T, dtype=int)
+    for t in range(T):
+        if stall_mask[t]:
+            consecutive_stall[t] = (consecutive_stall[t - 1] + 1) if t > 0 else 1
+        else:
+            consecutive_stall[t] = 0
+
+    # Find reset trigger points
+    reset_indices = []
+    last_reset = -RESET_COOLDOWN_BARS - 1  # Allow first reset immediately
+
+    for t in range(GAIN_STALL_WINDOW, T):
+        if consecutive_stall[t] >= GAIN_STALL_WINDOW:
+            # Check cooldown
+            if t - last_reset < RESET_COOLDOWN_BARS:
+                continue
+
+            # Check per-window maximum
+            window_start = max(0, t - GAIN_RESET_WINDOW_SIZE)
+            resets_in_window = sum(
+                1 for ri in reset_indices if ri >= window_start
+            )
+            if resets_in_window >= MAX_RESETS_PER_WINDOW:
+                continue
+
+            reset_indices.append(t)
+            last_reset = t
+
+    if not reset_indices:
+        return {
+            "reset_count": 0,
+            "reset_indices": [],
+            "K_gain_pre_reset": K_pre,
+            "gain_stall_detected": bool(np.any(consecutive_stall >= GAIN_STALL_WINDOW)),
+        }
+
+    # Apply resets: inflate P and re-run filter forward
+    for ri in reset_indices:
+        P_filtered[ri] = P_filtered[ri] * RESET_INFLATION_FACTOR
+
+        # Re-run filter forward from reset point
+        mu_t = mu_filtered[ri]
+        P_t = P_filtered[ri]
+
+        for t in range(ri + 1, T):
+            # Check if we hit the next reset point (it will handle forward from there)
+            if t in reset_indices:
+                break
+
+            mu_pred = phi * mu_t
+            P_pred = phi_sq * P_t + q
+            R_t = max(c * sigma[t] * sigma[t], 1e-12)
+            S_t = max(P_pred + R_t, 1e-12)
+            innov = y[t] - mu_pred
+            K_t = nu_factor * P_pred / S_t
+
+            if is_student_t:
+                z_sq = (innov * innov) / S_t
+                w_t = (nu + 1.0) / (nu + z_sq)
+                mu_t = mu_pred + K_t * w_t * innov
+                P_t = max((1.0 - w_t * K_t) * P_pred, 1e-12)
+            else:
+                mu_t = mu_pred + K_t * innov
+                P_t = max((1.0 - K_t) * P_pred, 1e-12)
+
+            mu_filtered[t] = mu_t
+            P_filtered[t] = P_t
+            K_gain[t] = K_t
+
+    return {
+        "reset_count": len(reset_indices),
+        "reset_indices": reset_indices,
+        "K_gain_pre_reset": K_pre,
+        "gain_stall_detected": True,
+    }
+
+
 def _kalman_filter_drift(
     ret: pd.Series, 
     vol: pd.Series, 
@@ -3369,6 +3847,11 @@ def _kalman_filter_drift(
     # Only run static filter if neither GAS-Q nor enhanced models were used
     if gas_q_result is None and enhanced_result is None:
         log_likelihood = log_likelihood_init
+        # P_max bound for innovation weighting (Story 1.5)
+        # Estimate steady-state P from q and obs_scale * typical vol^2
+        _P_ss_est = max(q_scalar * 100.0, 1e-6)
+        _P_max = IW_P_MAX_MULT * _P_ss_est
+
         for t in range(T):
             mu_pred = phi_used * mu_t
             P_pred = (phi_used ** 2) * P_t + q_scalar
@@ -3382,12 +3865,18 @@ def _kalman_filter_drift(
             else:
                 K_t = P_pred / S_t
 
-            mu_t = mu_pred + K_t * innov
-            P_t = float(max((1.0 - K_t) * P_pred, 1e-12))
+            # Innovation weighting (Story 1.5): boost K_t for surprising obs
+            z_t = innov / max(math.sqrt(S_t), 1e-8)
+            w_iw = innovation_weight(z_t)
+            K_eff = min(K_t * w_iw, 0.99)  # Cap to prevent K >= 1
+
+            mu_t = mu_pred + K_eff * innov
+            P_t = float(max((1.0 - K_eff) * P_pred, 1e-12))
+            P_t = min(P_t, _P_max)  # P_max bound (Story 1.5)
 
             mu_filtered[t] = mu_t
             P_filtered[t] = P_t
-            K_gain[t] = K_t
+            K_gain[t] = K_eff
             innovations[t] = innov
             innovation_vars[t] = S_t
 
@@ -3408,6 +3897,42 @@ def _kalman_filter_drift(
 
     kalman_gain_mean = float(np.mean(K_gain))
     kalman_gain_recent = float(K_gain[-1]) if len(K_gain) > 0 else float('nan')
+
+    # =========================================================================
+    # KALMAN GAIN MONITORING AND ADAPTIVE RESET (Story 1.2)
+    # =========================================================================
+    # For enhanced/GAS-Q paths, K_gain may be all zeros since the external
+    # filter functions don't return it. Compute post-hoc from P_filtered.
+    # Then detect gain stalls and apply P-inflation resets.
+    # =========================================================================
+    gain_reset_info = {
+        "reset_count": 0,
+        "reset_indices": [],
+        "gain_stall_detected": False,
+    }
+
+    if T >= GAIN_STALL_WINDOW + RESET_COOLDOWN_BARS:
+        # Compute K_t post-hoc if not already populated (enhanced/GAS-Q paths)
+        if np.all(K_gain == 0) and T > 1:
+            K_gain[:] = _compute_kalman_gain_from_filtered(
+                P_filtered, sigma, phi_used, q_scalar, obs_scale,
+                nu=float(nu_used) if nu_used is not None else None,
+            )
+            kalman_gain_mean = float(np.mean(K_gain))
+            kalman_gain_recent = float(K_gain[-1])
+
+        # Apply gain monitoring and adaptive reset
+        gain_reset_info = _apply_gain_monitoring_reset(
+            mu_filtered, P_filtered, K_gain,
+            y, sigma,
+            phi=phi_used, q=q_scalar, c=obs_scale,
+            nu=float(nu_used) if nu_used is not None else None,
+        )
+
+        if gain_reset_info["reset_count"] > 0:
+            # Recompute diagnostics after reset
+            kalman_gain_mean = float(np.mean(K_gain))
+            kalman_gain_recent = float(K_gain[-1])
 
     # =========================================================================
     # TWSC SCALE CORRECTION — REAL MODEL IMPROVEMENT (March 2026)
@@ -3452,6 +3977,12 @@ def _kalman_filter_drift(
         "phi_used": float(phi_used) if phi_used is not None and np.isfinite(phi_used) else None,
         "kalman_noise_model": noise_model,
         "kalman_nu": float(nu_used) if nu_used is not None else None,
+        # =========================================================================
+        # KALMAN GAIN MONITORING AND ADAPTIVE RESET (Story 1.2)
+        # =========================================================================
+        "gain_reset_count": gain_reset_info["reset_count"],
+        "gain_reset_indices": gain_reset_info["reset_indices"],
+        "gain_stall_detected": gain_reset_info["gain_stall_detected"],
         # =========================================================================
         # GAS-Q SCORE-DRIVEN PARAMETER DYNAMICS DIAGNOSTICS (February 2026)
         # =========================================================================
@@ -4969,6 +5500,496 @@ def walk_forward_validation(px: pd.Series, train_days: int = 504, test_days: int
 
     return oos_metrics
 
+
+# =========================================================================
+# Story 2.1: Walk-Forward Backtest Infrastructure
+# =========================================================================
+# Full-pipeline walk-forward that uses latest_signals() to produce
+# (forecast, realized) pairs for downstream calibration (EMOS, vol ratio).
+#
+# Design:
+#   At each rebalance date t:
+#     1. Truncate prices/OHLC to [:t]  (no look-ahead)
+#     2. compute_features() on truncated data
+#     3. latest_signals() with tune cache
+#     4. Record forecast_ret, forecast_sig, p_up per horizon
+#     5. After waiting for realized, compute realized_log_ret
+#
+# Output: DataFrame with columns:
+#   [date, horizon, forecast_ret, forecast_p_up, forecast_sig,
+#    realized_ret, hit, signed_error, calibration_bucket]
+# =========================================================================
+
+WF_HORIZONS = [1, 3, 7, 21, 63]
+WF_REBALANCE_FREQ = 5
+WF_RETUNE_FREQ = 63
+WF_MIN_TRAIN_DAYS = 504   # ~2 years of trading days required before first forecast
+WF_CALIBRATION_BUCKETS = 10
+
+
+@dataclass
+class WalkForwardRecord:
+    """Single forecast-vs-realized observation."""
+    date_idx: int
+    date: object             # pd.Timestamp
+    horizon: int
+    forecast_ret: float      # E[log_ret] from latest_signals
+    forecast_p_up: float     # P(r>0) from latest_signals
+    forecast_sig: float      # sigma_H from latest_signals
+    realized_ret: float      # actual log(P[t+H]/P[t])
+    hit: bool                # (realized>0)==(forecast>0)
+    signed_error: float      # realized - forecast
+    calibration_bucket: int  # int in [0, WF_CALIBRATION_BUCKETS)
+
+
+@dataclass
+class WalkForwardResult:
+    """Aggregate walk-forward backtest results."""
+    records: List['WalkForwardRecord'] = field(default_factory=list)
+    hit_rate: Dict[int, float] = field(default_factory=dict)
+    rmse: Dict[int, float] = field(default_factory=dict)
+    mae: Dict[int, float] = field(default_factory=dict)
+    mean_signed_error: Dict[int, float] = field(default_factory=dict)
+    calibration_curve: Dict[int, List[Dict[str, float]]] = field(default_factory=dict)
+    n_forecasts: Dict[int, int] = field(default_factory=dict)
+    symbol: str = ""
+
+
+def run_walk_forward_backtest(
+    symbol: str,
+    start_date: str = "2024-01-01",
+    end_date: str = "2026-03-01",
+    rebalance_freq: int = WF_REBALANCE_FREQ,
+    horizons: Optional[List[int]] = None,
+    retune_freq: int = WF_RETUNE_FREQ,
+    n_mc_paths: int = 5000,
+) -> WalkForwardResult:
+    """
+    Full-pipeline walk-forward backtest using latest_signals().
+
+    At each rebalance date, truncates data to simulate real-time and calls
+    the production signal pipeline.  Records (forecast, realized) pairs
+    for downstream EMOS calibration and volatility ratio computation.
+
+    Args:
+        symbol: Asset ticker (e.g. "SPY").
+        start_date: First date for price data fetch.
+        end_date: Last date for price data fetch.
+        rebalance_freq: Days between rebalance dates.
+        horizons: Forecast horizons (default [1,3,7,21,63]).
+        retune_freq: Re-tune model every N steps (placeholder).
+        n_mc_paths: MC paths per call (reduced from 10k for speed).
+
+    Returns:
+        WalkForwardResult with per-record detail and aggregate stats.
+    """
+    if horizons is None:
+        horizons = list(WF_HORIZONS)
+    h_max = max(horizons)
+
+    # ------------------------------------------------------------------
+    # 1. Load full price + OHLC data ONCE
+    # ------------------------------------------------------------------
+    px, _title = fetch_px_asset(symbol, start_date, end_date)
+    px = _ensure_float_series(px).dropna()
+    px = px[px > 0]
+    n_total = len(px)
+    if n_total < WF_MIN_TRAIN_DAYS + h_max + 1:
+        return WalkForwardResult(symbol=symbol)
+
+    ohlc_df = None
+    if GK_VOLATILITY_AVAILABLE:
+        try:
+            ohlc_df = _download_prices(symbol, start_date, end_date)
+        except Exception:
+            ohlc_df = None
+
+    log_px = np.log(px.values)
+
+    # Load tune cache once (static params for entire backtest)
+    tuned_params = _load_tuned_kalman_params(symbol)
+    _asset_type = classify_asset_type(symbol)
+
+    # Story 7.2: Smart caching for tune params within retune window
+    _fc = _WFFeatureCache(retune_freq=retune_freq)
+
+    # ------------------------------------------------------------------
+    # 2. Walk forward
+    # ------------------------------------------------------------------
+    records: List[WalkForwardRecord] = []
+
+    t = WF_MIN_TRAIN_DAYS
+    while t + h_max < n_total:
+        # Truncate data to [0, t]  — no look-ahead
+        px_as_of_t = px.iloc[:t + 1]  # inclusive of t
+        ohlc_as_of_t = None
+        if ohlc_df is not None and not ohlc_df.empty:
+            ohlc_as_of_t = ohlc_df.iloc[:t + 1]
+
+        last_close = float(px_as_of_t.iloc[-1])
+
+        # Story 7.2: Use cached tune params within retune window
+        tuned_params = _fc.get_tune_params(symbol, t)
+
+        # Compute features on truncated data (respects no look-ahead)
+        try:
+            feats = compute_features(
+                px_as_of_t, asset_symbol=symbol, ohlc_df=ohlc_as_of_t,
+            )
+        except Exception:
+            t += rebalance_freq
+            continue
+
+        # Call production signal pipeline
+        try:
+            sigs, _thr = latest_signals(
+                feats, horizons, last_close=last_close, t_map=True,
+                ci=0.68, tuned_params=tuned_params, asset_key=symbol,
+                n_mc_paths=n_mc_paths, asset_type=_asset_type,
+                _calibration_fast_mode=True,
+            )
+        except Exception:
+            t += rebalance_freq
+            continue
+
+        # Map horizon -> Signal for quick lookup
+        sig_map: Dict[int, Signal] = {}
+        for s in sigs:
+            sig_map[s.horizon_days] = s
+
+        # Record (forecast, realized) for each horizon
+        for H in horizons:
+            if t + H >= n_total:
+                continue
+            sig = sig_map.get(H)
+            if sig is None:
+                continue
+
+            realized_ret = float(log_px[t + H] - log_px[t])
+
+            # Direction hit
+            hit = (realized_ret > 0) == (sig.exp_ret > 0)
+
+            # Calibration bucket: discretize p_up into WF_CALIBRATION_BUCKETS bins
+            bucket = min(
+                int(sig.p_up * WF_CALIBRATION_BUCKETS),
+                WF_CALIBRATION_BUCKETS - 1,
+            )
+
+            records.append(WalkForwardRecord(
+                date_idx=t,
+                date=px.index[t],
+                horizon=H,
+                forecast_ret=float(sig.exp_ret),
+                forecast_p_up=float(sig.p_up),
+                forecast_sig=float(sig.vol_mean) if sig.vol_mean > 0 else 0.01,
+                realized_ret=realized_ret,
+                hit=hit,
+                signed_error=realized_ret - float(sig.exp_ret),
+                calibration_bucket=bucket,
+            ))
+
+        t += rebalance_freq
+
+    # ------------------------------------------------------------------
+    # 3. Compute aggregate statistics
+    # ------------------------------------------------------------------
+    result = WalkForwardResult(records=records, symbol=symbol)
+    if not records:
+        return result
+
+    for H in horizons:
+        h_recs = [r for r in records if r.horizon == H]
+        n_h = len(h_recs)
+        result.n_forecasts[H] = n_h
+        if n_h == 0:
+            continue
+        hits = sum(1 for r in h_recs if r.hit)
+        result.hit_rate[H] = hits / n_h
+        errs = np.array([r.signed_error for r in h_recs])
+        result.rmse[H] = float(np.sqrt(np.mean(errs ** 2)))
+        result.mae[H] = float(np.mean(np.abs(errs)))
+        result.mean_signed_error[H] = float(np.mean(errs))
+
+        # Calibration curve: for each bucket, compute (mean_p_up, realized_hit_freq)
+        buckets: List[Dict[str, float]] = []
+        for b in range(WF_CALIBRATION_BUCKETS):
+            b_recs = [r for r in h_recs if r.calibration_bucket == b]
+            if b_recs:
+                mean_p = np.mean([r.forecast_p_up for r in b_recs])
+                hit_freq = np.mean([1.0 if r.realized_ret > 0 else 0.0 for r in b_recs])
+                buckets.append({
+                    "bucket": b,
+                    "mean_forecast_p_up": float(mean_p),
+                    "realized_hit_freq": float(hit_freq),
+                    "n_obs": len(b_recs),
+                })
+            else:
+                buckets.append({
+                    "bucket": b,
+                    "mean_forecast_p_up": (b + 0.5) / WF_CALIBRATION_BUCKETS,
+                    "realized_hit_freq": float("nan"),
+                    "n_obs": 0,
+                })
+        result.calibration_curve[H] = buckets
+
+    return result
+
+
+def walkforward_result_to_dataframe(wf: WalkForwardResult) -> 'pd.DataFrame':
+    """Convert WalkForwardResult to a pandas DataFrame for analysis."""
+    if not wf.records:
+        return pd.DataFrame()
+    rows = []
+    for r in wf.records:
+        rows.append({
+            "date": r.date,
+            "horizon": r.horizon,
+            "forecast_ret": r.forecast_ret,
+            "forecast_p_up": r.forecast_p_up,
+            "forecast_sig": r.forecast_sig,
+            "realized_ret": r.realized_ret,
+            "hit": r.hit,
+            "signed_error": r.signed_error,
+            "calibration_bucket": r.calibration_bucket,
+        })
+    return pd.DataFrame(rows)
+
+
+def save_walkforward_csv(wf: WalkForwardResult, output_dir: str = "src/data/calibration") -> str:
+    """Save walk-forward results to CSV. Returns the output path."""
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, f"walkforward_{wf.symbol}.csv")
+    df = walkforward_result_to_dataframe(wf)
+    if not df.empty:
+        df.to_csv(path, index=False)
+    return path
+
+
+# ─── Story 7.2: Parallel Walk-Forward with Smart Caching ────────────────
+
+class _WFFeatureCache:
+    """Caches computed features for incremental walk-forward reuse.
+
+    Within a retune window, tune_params are constant so we cache them.
+    Features at t+freq share most data with t, but compute_features() is
+    stateless (expanding window), so we cache the last feature dict and
+    skip recomputation when the new window only adds `rebalance_freq` days.
+    """
+    __slots__ = ("_tune_params", "_tune_valid_until", "_last_feats",
+                 "_last_t", "_retune_freq")
+
+    def __init__(self, retune_freq: int = WF_RETUNE_FREQ):
+        self._tune_params: Optional[Dict] = None
+        self._tune_valid_until: int = -1
+        self._last_feats: Optional[Dict] = None
+        self._last_t: int = -1
+        self._retune_freq = retune_freq
+
+    def get_tune_params(self, symbol: str, t: int) -> Dict:
+        """Return cached tune params if within retune window, else reload."""
+        if self._tune_params is not None and t <= self._tune_valid_until:
+            return self._tune_params
+        self._tune_params = _load_tuned_kalman_params(symbol) or {}
+        self._tune_valid_until = t + self._retune_freq
+        return self._tune_params
+
+    def cache_hit(self, t: int, rebalance_freq: int) -> bool:
+        """Check if previous features can be reused (same tune window)."""
+        if self._last_feats is None or self._last_t < 0:
+            return False
+        return (t - self._last_t) == rebalance_freq
+
+    def get_cached_feats(self) -> Optional[Dict]:
+        return self._last_feats
+
+    def store(self, t: int, feats: Dict) -> None:
+        self._last_feats = feats
+        self._last_t = t
+
+
+def run_walk_forward_parallel(
+    symbols: List[str],
+    start_date: str = "2024-01-01",
+    end_date: str = "2026-03-01",
+    rebalance_freq: int = WF_REBALANCE_FREQ,
+    horizons: Optional[List[int]] = None,
+    max_workers: Optional[int] = None,
+    n_mc_paths: int = 5000,
+) -> Dict[str, WalkForwardResult]:
+    """Run walk-forward backtest across multiple assets in parallel.
+
+    Uses ProcessPoolExecutor for CPU-bound work. Each asset is independent.
+
+    Returns:
+        Dict mapping symbol -> WalkForwardResult.
+    """
+    from concurrent.futures import ProcessPoolExecutor
+    import multiprocessing
+
+    if max_workers is None:
+        max_workers = max(1, multiprocessing.cpu_count() - 1)
+
+    def _run_single(sym: str) -> tuple:
+        result = run_walk_forward_backtest(
+            sym, start_date=start_date, end_date=end_date,
+            rebalance_freq=rebalance_freq, horizons=horizons,
+            n_mc_paths=n_mc_paths,
+        )
+        return (sym, result)
+
+    results: Dict[str, WalkForwardResult] = {}
+    with ProcessPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_run_single, s): s for s in symbols}
+        for future in futures:
+            try:
+                sym, wf = future.result()
+                results[sym] = wf
+            except Exception:
+                results[futures[future]] = WalkForwardResult(symbol=futures[future])
+    return results
+
+
+# ─── Story 2.5: Profit-and-Loss Attribution by Horizon ──────────────────
+PNL_BUY_THRESHOLD = 0.55    # P(up) above this -> BUY
+PNL_SELL_THRESHOLD = 0.45   # P(up) below this -> SELL
+PNL_DEFAULT_NOTIONAL = 1e6  # 1M PLN default notional
+
+# ─── Story 3.1: Coherent Multi-Horizon MC ────────────────────────────────
+COHERENT_MC_ENABLED = True  # single MC call for all horizons (default since Story 3.1)
+
+# ─── Story 3.2: Quantile-Based Confidence Intervals ─────────────────────
+QUANTILE_CI_MIN_SAMPLES = 100  # minimum MC samples to use empirical quantiles
+# Below this threshold, fall back to parametric CI (mu +/- z*sig)
+
+# ─── Story 3.3: Two-Day Confirmation State Persistence ──────────────────
+SIGNAL_STATE_DIR = os.path.join(os.path.dirname(__file__), os.pardir, "data", "signal_state")
+SIGNAL_STATE_DEFAULT_P = 0.5  # default p_up when no previous state exists
+
+# ─── Story 3.4: Asset-Class-Aware Per-Step Return Cap ───────────────────
+RETURN_CAP_BY_CLASS: Dict[str, float] = {
+    "equity": 0.30,    # 30% daily max (NYSE circuit breakers)
+    "currency": 0.15,  # 15% daily max (CHF flash crash 2015)
+    "metal": 0.20,     # 20% daily max
+    "crypto": 1.00,    # 100% daily max (genuine crypto volatility)
+    "etf": 0.25,       # 25% daily max (ETFs have NAV arbitrage)
+}
+RETURN_CAP_DEFAULT = 0.30  # conservative default if class unknown
+
+
+def load_signal_state(symbol: str, state_dir: str = "") -> Dict:
+    """Load previous signal state for confirmation logic.
+
+    Returns dict mapping horizon -> {"p_up": float, "label": str, "timestamp": str}.
+    If no state file exists, returns empty dict (first run -> default to HOLD).
+    """
+    _dir = state_dir or SIGNAL_STATE_DIR
+    path = os.path.join(_dir, f"{symbol}.json")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_signal_state(symbol: str, state: Dict, state_dir: str = "") -> str:
+    """Save signal state for next run's confirmation logic.
+
+    Args:
+        symbol: Asset symbol.
+        state: Dict mapping horizon (str) -> {"p_up": float, "label": str, "timestamp": str}.
+        state_dir: Override state directory (for testing).
+    Returns:
+        Path to the saved state file.
+    """
+    _dir = state_dir or SIGNAL_STATE_DIR
+    os.makedirs(_dir, exist_ok=True)
+    path = os.path.join(_dir, f"{symbol}.json")
+    with open(path, "w") as f:
+        json.dump(state, f, indent=2)
+    return path
+
+
+def compute_pnl_attribution(
+    wf_records: list,
+    notional: float = PNL_DEFAULT_NOTIONAL,
+    horizons: Optional[List[int]] = None,
+) -> Dict[int, Dict[str, float]]:
+    """
+    Compute per-horizon P&L attribution from walk-forward records.
+
+    For each forecast:
+        - If forecast_p_up > 0.55:  BUY  -> pnl = notional * (exp(realized_ret) - 1)
+        - If forecast_p_up < 0.45:  SELL -> pnl = notional * (1 - exp(realized_ret))
+        - Otherwise:                HOLD -> pnl = 0
+
+    Returns per-horizon dict:
+        {horizon: {cumulative_pnl, n_trades, hit_rate, sharpe, mean_pnl, std_pnl}}
+
+    Args:
+        wf_records: List of WalkForwardRecord from Story 2.1.
+        notional: Trade notional (default 1M).
+        horizons: Horizons to include (default all found in records).
+
+    Returns:
+        {horizon: {cumulative_pnl, n_trades, hit_rate, sharpe, mean_pnl, std_pnl}}
+    """
+    if horizons is None:
+        horizons = sorted(set(r.horizon for r in wf_records))
+
+    result: Dict[int, Dict[str, float]] = {}
+    for H in horizons:
+        h_recs = [r for r in wf_records if r.horizon == H]
+        if not h_recs:
+            result[H] = {
+                "cumulative_pnl": 0.0, "n_trades": 0, "hit_rate": 0.0,
+                "sharpe": 0.0, "mean_pnl": 0.0, "std_pnl": 0.0,
+            }
+            continue
+
+        pnl_list = []
+        hits = 0
+        n_trades = 0
+        for r in h_recs:
+            if r.forecast_p_up > PNL_BUY_THRESHOLD:
+                pnl = notional * (np.exp(r.realized_ret) - 1.0)
+                n_trades += 1
+                if r.realized_ret > 0:
+                    hits += 1
+            elif r.forecast_p_up < PNL_SELL_THRESHOLD:
+                pnl = notional * (1.0 - np.exp(r.realized_ret))
+                n_trades += 1
+                if r.realized_ret < 0:
+                    hits += 1
+            else:
+                pnl = 0.0
+            pnl_list.append(pnl)
+
+        pnl_arr = np.array(pnl_list)
+        cumulative = float(np.sum(pnl_arr))
+        mean_pnl = float(np.mean(pnl_arr))
+        std_pnl = float(np.std(pnl_arr, ddof=1)) if len(pnl_arr) > 1 else 0.0
+        hit_rate = hits / n_trades if n_trades > 0 else 0.0
+
+        # Sharpe: mean(pnl) / std(pnl) * sqrt(252/H), annualized
+        if std_pnl > 0 and H > 0:
+            sharpe = (mean_pnl / std_pnl) * np.sqrt(252.0 / H)
+        else:
+            sharpe = 0.0
+
+        result[H] = {
+            "cumulative_pnl": cumulative,
+            "n_trades": n_trades,
+            "hit_rate": hit_rate,
+            "sharpe": float(sharpe),
+            "mean_pnl": mean_pnl,
+            "std_pnl": std_pnl,
+        }
+    return result
+
+
 def compute_all_diagnostics(px: pd.Series, feats: Dict[str, pd.Series], enable_oos: bool = False, enable_pit_calibration: bool = False, enable_model_comparison: bool = False) -> Dict:
     """
     Compute comprehensive diagnostics: log-likelihood monitoring, parameter stability,
@@ -5211,355 +6232,29 @@ def infer_current_regime(feats: Dict[str, pd.Series], hmm_result: Optional[Dict]
 # REGIME-CONDITIONAL BAYESIAN MODEL AVERAGING (RC-BMA)
 # =============================================================================
 # Implements: p(r_H | D) = Σ_r P(regime_r | D) · p(r_H | regime_r, D)
-# Regimes must match those in tune.py
+# Story 4.2: Regime functions imported from shared module models.regime
 # =============================================================================
-
-# Regime definitions (must match tune.py)
-REGIME_LOW_VOL_TREND = 0
-REGIME_HIGH_VOL_TREND = 1
-REGIME_LOW_VOL_RANGE = 2
-REGIME_HIGH_VOL_RANGE = 3
-REGIME_CRISIS_JUMP = 4
-
-REGIME_NAMES = {
-    REGIME_LOW_VOL_TREND: "LOW_VOL_TREND",
-    REGIME_HIGH_VOL_TREND: "HIGH_VOL_TREND",
-    REGIME_LOW_VOL_RANGE: "LOW_VOL_RANGE",
-    REGIME_HIGH_VOL_RANGE: "HIGH_VOL_RANGE",
-    REGIME_CRISIS_JUMP: "CRISIS_JUMP",
-}
-
-
-def assign_current_regime(feats: Dict[str, pd.Series], lookback: int = 21) -> int:
-    """
-    Assign current regime using SAME logic as tune.py's assign_regime_labels.
-
-    This ensures regime assignment is deterministic and consistent between tuning
-    and inference. Uses only past data (no look-ahead).
-
-    Classification Logic (matches tune.py):
-    - CRISIS_JUMP (4): vol_relative > 2.0 OR tail_indicator > 4.0
-    - HIGH_VOL_TREND (1): vol_relative > 1.3 AND drift_abs > threshold
-    - HIGH_VOL_RANGE (3): vol_relative > 1.3 AND drift_abs <= threshold
-    - LOW_VOL_TREND (0): vol_relative < 0.85 AND drift_abs > threshold
-    - LOW_VOL_RANGE (2): vol_relative < 0.85 AND drift_abs <= threshold
-    - Normal vol: based on drift threshold
-
-    Args:
-        feats: Feature dictionary with 'ret' and 'vol' series
-        lookback: Rolling window for feature computation (default 21 days)
-
-    Returns:
-        Integer regime index (0-4)
-    """
-    # Extract returns and volatility
-    ret_series = feats.get("ret", pd.Series(dtype=float))
-    vol_series = feats.get("vol", pd.Series(dtype=float))
-
-    if not isinstance(ret_series, pd.Series) or ret_series.empty:
-        return REGIME_LOW_VOL_RANGE  # Default
-    if not isinstance(vol_series, pd.Series) or vol_series.empty:
-        return REGIME_LOW_VOL_RANGE  # Default
-
-    # Current values
-    vol_now = float(vol_series.iloc[-1]) if len(vol_series) > 0 else 0.0
-    ret_now = float(ret_series.iloc[-1]) if len(ret_series) > 0 else 0.0
-
-    # Rolling mean absolute return (drift proxy)
-    if len(ret_series) >= lookback:
-        drift_abs = abs(float(ret_series.tail(lookback).mean()))
-    else:
-        drift_abs = abs(float(ret_series.mean()))
-
-    # Volatility relative to expanding median
-    if len(vol_series) >= lookback:
-        vol_median = float(vol_series.expanding(min_periods=min(lookback, len(vol_series))).median().iloc[-1])
-    else:
-        vol_median = float(vol_series.median())
-
-    vol_relative = vol_now / vol_median if vol_median > 1e-12 else 1.0
-
-    # Tail indicator: |return| / vol
-    tail_indicator = abs(ret_now) / vol_now if vol_now > 1e-12 else 0.0
-
-    # Drift threshold (same as tune.py)
-    drift_threshold = 0.0005  # ~0.05% daily drift threshold
-
-    # Classification logic (MUST match tune.py assign_regime_labels)
-    # Crisis/Jump: extreme volatility or tail events
-    if vol_relative > 2.0 or tail_indicator > 4.0:
-        return REGIME_CRISIS_JUMP
-
-    # High volatility regimes
-    if vol_relative > 1.3:
-        if drift_abs > drift_threshold:
-            return REGIME_HIGH_VOL_TREND
-        else:
-            return REGIME_HIGH_VOL_RANGE
-
-    # Low volatility regimes
-    if vol_relative < 0.85:
-        if drift_abs > drift_threshold:
-            return REGIME_LOW_VOL_TREND
-        else:
-            return REGIME_LOW_VOL_RANGE
-
-    # Normal volatility (between 0.85 and 1.3)
-    if drift_abs > drift_threshold * 1.5:
-        return REGIME_HIGH_VOL_TREND if vol_relative > 1.0 else REGIME_LOW_VOL_TREND
-    else:
-        return REGIME_HIGH_VOL_RANGE if vol_relative > 1.0 else REGIME_LOW_VOL_RANGE
-
-
-def map_regime_label_to_index(regime_label: str, regime_meta: Optional[Dict] = None) -> int:
-    """
-    Map a regime label (string) to a regime index (0-4) matching tune.py definitions.
-
-    Maps from infer_current_regime() output to tune.py regime indices.
-
-    Mapping logic:
-    - "crisis" / "High-vol*" → CRISIS_JUMP (4) if vol_regime > 2.0 else HIGH_VOL_RANGE (3)
-    - "trending" → HIGH_VOL_TREND (1) or LOW_VOL_TREND (0) based on vol_regime
-    - "calm" / "Calm*" → LOW_VOL_RANGE (2) or LOW_VOL_TREND (0) based on drift
-    - "Normal" → LOW_VOL_RANGE (2)
-
-    Args:
-        regime_label: String regime label from infer_current_regime()
-        regime_meta: Optional regime metadata dict with vol_regime, trend_z, etc.
-
-    Returns:
-        Integer regime index (0-4)
-    """
-    label_lower = regime_label.lower() if regime_label else ""
-
-    # Extract vol_regime from metadata if available
-    vol_regime = None
-    trend_z = None
-    if regime_meta is not None:
-        vol_regime = regime_meta.get("vol_regime")
-        trend_z = regime_meta.get("trend_z")
-        # Also check probabilities from HMM
-        probs = regime_meta.get("probabilities", {})
-
-    # Crisis detection (highest priority)
-    if "crisis" in label_lower:
-        return REGIME_CRISIS_JUMP
-
-    # High volatility regimes
-    if "high-vol" in label_lower or "high_vol" in label_lower:
-        # Check if extreme crisis or just high vol trend/range
-        if vol_regime is not None and vol_regime > 2.0:
-            return REGIME_CRISIS_JUMP
-        elif trend_z is not None and abs(trend_z) > 0.5:
-            return REGIME_HIGH_VOL_TREND
-        else:
-            return REGIME_HIGH_VOL_RANGE
-
-    # Trending detection
-    if "trending" in label_lower or "trend" in label_lower:
-        # Determine if low or high vol based on metadata
-        if vol_regime is not None and vol_regime > 1.3:
-            return REGIME_HIGH_VOL_TREND
-        else:
-            return REGIME_LOW_VOL_TREND
-
-    # Calm/Low volatility regimes
-    if "calm" in label_lower or "low" in label_lower:
-        # Check if trending or ranging
-        if trend_z is not None and abs(trend_z) > 0.5:
-            return REGIME_LOW_VOL_TREND
-        else:
-            return REGIME_LOW_VOL_RANGE
-
-    # Normal / default
-    if "normal" in label_lower:
-        return REGIME_LOW_VOL_RANGE
-
-    # HMM-specific labels
-    if label_lower in ("calm", "0"):
-        return REGIME_LOW_VOL_RANGE
-    elif label_lower in ("trending", "1"):
-        return REGIME_LOW_VOL_TREND
-    elif label_lower in ("crisis", "2"):
-        return REGIME_CRISIS_JUMP
-
-    # Default fallback
-    return REGIME_LOW_VOL_RANGE
-
-
-def extract_regime_features(feats: Dict[str, pd.Series]) -> Dict[str, float]:
-    """
-    Extract features for regime likelihood computation.
-
-    Features:
-    - vol_level: EWMA volatility (normalized)
-    - drift_strength: |μ| (absolute drift)
-    - drift_persistence: φ from Kalman
-    - return_autocorr: autocorrelation of returns
-    - tail_indicator: |return| / EWMA_σ (tail measure)
-
-    Args:
-        feats: Feature dictionary from compute_features()
-
-    Returns:
-        Dictionary of regime features
-    """
-    # Volatility level (normalized relative to median)
-    vol_series = feats.get("vol", pd.Series(dtype=float))
-    if isinstance(vol_series, pd.Series) and not vol_series.empty:
-        vol_now = float(vol_series.iloc[-1])
-        vol_median = float(vol_series.median())
-        vol_level = vol_now / vol_median if vol_median > 1e-12 else 1.0
-    else:
-        vol_level = 1.0
-
-    # Drift strength (absolute value of filtered drift)
-    mu_series = feats.get("mu_post", feats.get("mu_kf", feats.get("mu", pd.Series(dtype=float))))
-    if isinstance(mu_series, pd.Series) and not mu_series.empty:
-        drift_strength = abs(float(mu_series.iloc[-1]))
-    else:
-        drift_strength = 0.0
-
-    # Drift persistence (φ from Kalman metadata)
-    km = feats.get("kalman_metadata", {}) or {}
-    phi = km.get("phi_used") or km.get("kalman_phi")
-    if phi is None or not np.isfinite(phi):
-        phi = feats.get("phi_used")
-    drift_persistence = float(phi) if phi is not None and np.isfinite(phi) else 0.95
-
-    # Return autocorrelation
-    ret_series = feats.get("ret", pd.Series(dtype=float))
-    if isinstance(ret_series, pd.Series) and len(ret_series) >= 21:
-        try:
-            return_autocorr = float(ret_series.autocorr(lag=1))
-            if not np.isfinite(return_autocorr):
-                return_autocorr = 0.0
-        except Exception:
-            return_autocorr = 0.0
-    else:
-        return_autocorr = 0.0
-
-    # Tail indicator: |recent return| / σ
-    if isinstance(ret_series, pd.Series) and not ret_series.empty and vol_now > 1e-12:
-        recent_ret = abs(float(ret_series.iloc[-1]))
-        tail_indicator = recent_ret / vol_now
-    else:
-        tail_indicator = 0.0
-
-    return {
-        "vol_level": float(np.clip(vol_level, 0.1, 10.0)),
-        "drift_strength": float(np.clip(drift_strength, 0.0, 0.01)),
-        "drift_persistence": float(np.clip(drift_persistence, -1.0, 1.0)),
-        "return_autocorr": float(np.clip(return_autocorr, -1.0, 1.0)),
-        "tail_indicator": float(np.clip(tail_indicator, 0.0, 10.0)),
-    }
-
-
-def compute_regime_log_likelihoods(features: Dict[str, float]) -> np.ndarray:
-    """
-    Compute log-likelihood scores for each regime given features.
-
-    Uses Gaussian/logistic scoring based on regime characteristics:
-
-    LOW_VOL_TREND (0): low vol, high drift_strength, high persistence
-    HIGH_VOL_TREND (1): high vol, high drift_strength, high persistence
-    LOW_VOL_RANGE (2): low vol, low drift_strength, low persistence
-    HIGH_VOL_RANGE (3): high vol, low drift_strength, low persistence
-    CRISIS_JUMP (4): extreme vol, high tail_indicator
-
-    Args:
-        features: Dictionary from extract_regime_features()
-
-    Returns:
-        Array of log-likelihoods for regimes 0-4
-    """
-    vol = features["vol_level"]
-    drift = features["drift_strength"]
-    persist = features["drift_persistence"]
-    autocorr = features["return_autocorr"]
-    tail = features["tail_indicator"]
-
-    # Define regime scoring functions (Gaussian scoring)
-    # Higher score = more likely regime
-
-    log_L = np.zeros(5)
-
-    # Regime 0: LOW_VOL_TREND - low vol, high drift, high persistence
-    log_L[0] = (
-        -0.5 * ((vol - 0.7) / 0.3) ** 2      # vol centered at 0.7 (below median)
-        - 0.5 * ((drift - 0.002) / 0.001) ** 2  # strong drift
-        - 0.5 * ((persist - 0.98) / 0.02) ** 2  # high persistence
-    )
-
-    # Regime 1: HIGH_VOL_TREND - high vol, high drift, high persistence
-    log_L[1] = (
-        -0.5 * ((vol - 1.5) / 0.4) ** 2      # vol above median
-        - 0.5 * ((drift - 0.003) / 0.002) ** 2  # strong drift
-        - 0.5 * ((persist - 0.95) / 0.03) ** 2  # high persistence
-    )
-
-    # Regime 2: LOW_VOL_RANGE - low vol, low drift, mean reversion
-    log_L[2] = (
-        -0.5 * ((vol - 0.6) / 0.25) ** 2     # low vol
-        - 0.5 * ((drift - 0.0003) / 0.0005) ** 2  # near-zero drift
-        - 0.5 * ((persist - 0.85) / 0.1) ** 2   # moderate persistence (mean reversion)
-    )
-
-    # Regime 3: HIGH_VOL_RANGE - high vol, low drift, choppy
-    log_L[3] = (
-        -0.5 * ((vol - 1.3) / 0.35) ** 2     # elevated vol
-        - 0.5 * ((drift - 0.0005) / 0.001) ** 2  # low drift
-        - 0.5 * ((persist - 0.80) / 0.15) ** 2  # low persistence (whipsaw)
-        - 0.5 * ((autocorr - (-0.1)) / 0.2) ** 2  # slight negative autocorr
-    )
-
-    # Regime 4: CRISIS_JUMP - extreme vol, tail events
-    log_L[4] = (
-        -0.5 * ((vol - 2.5) / 0.5) ** 2      # extreme vol
-        - 0.5 * ((tail - 3.0) / 1.0) ** 2    # high tail indicator
-    )
-
-    return log_L
-
-
-def compute_regime_probabilities(
-    features: Dict[str, float],
-    smoothing_alpha: float = 0.3,
-    prev_probs: Optional[np.ndarray] = None
-) -> np.ndarray:
-    """
-    Compute regime probabilities via softmax of log-likelihoods.
-
-    P_regimes = softmax(logL_r)
-
-    With optional exponential smoothing over time.
-
-    Args:
-        features: Dictionary from extract_regime_features()
-        smoothing_alpha: EMA smoothing factor (0=full smooth, 1=no smooth)
-        prev_probs: Previous regime probabilities for smoothing
-
-    Returns:
-        Array of probabilities for regimes 0-4, summing to 1
-    """
-    log_L = compute_regime_log_likelihoods(features)
-
-    # Softmax for probabilities
-    # Subtract max for numerical stability
-    log_L_shifted = log_L - np.max(log_L)
-    exp_L = np.exp(log_L_shifted)
-    probs = exp_L / np.sum(exp_L)
-
-    # Exponential smoothing if previous probabilities available
-    if prev_probs is not None:
-        prev_probs = np.asarray(prev_probs)
-        if prev_probs.shape == probs.shape:
-            probs = smoothing_alpha * probs + (1.0 - smoothing_alpha) * prev_probs
-            # Renormalize after smoothing
-            probs = probs / np.sum(probs)
-
-    return probs
-
+from models.regime import (
+    REGIME_LOW_VOL_TREND, REGIME_HIGH_VOL_TREND, REGIME_LOW_VOL_RANGE,
+    REGIME_HIGH_VOL_RANGE, REGIME_CRISIS_JUMP, REGIME_NAMES,
+    CUSUM_THRESHOLD, CUSUM_COOLDOWN, CUSUM_ALPHA_ACCEL, CUSUM_ALPHA_NORMAL,
+    _CUSUM_STATE, _get_cusum_state,
+    assign_current_regime, map_regime_label_to_index,
+    extract_regime_features, compute_regime_log_likelihoods,
+    compute_regime_probabilities, compute_regime_probabilities_v2,
+    compute_soft_bma_weights, _logistic,
+    REGIME_TRANSITION_WIDTH_VOL, REGIME_TRANSITION_WIDTH_DRIFT,
+    REGIME_VOL_HIGH_BOUNDARY, REGIME_VOL_LOW_BOUNDARY,
+    REGIME_CRISIS_VOL_THRESHOLD, REGIME_CRISIS_TAIL_THRESHOLD,
+    REGIME_CRISIS_TRANSITION_WIDTH,
+    AdaptiveThresholds, compute_adaptive_thresholds,
+    DRIFT_THRESHOLD_SIGMA, DEFAULT_DRIFT_THRESHOLD,
+    DEFAULT_VOL_HIGH_BOUNDARY, DEFAULT_VOL_LOW_BOUNDARY,
+    CUSUMParams, compute_cusum_params, compute_arl_threshold, decorrelation_time,
+    REGIME_EMA_ALPHA, smooth_regime_probabilities,
+)
+
+# (Regime functions imported from models.regime via Story 4.2 above)
 
 def run_regime_specific_mc(
     regime: int,
@@ -5817,10 +6512,15 @@ def run_unified_mc(
     # v7.8: Elite MC enhancements — dynamic leverage, liquidity stress
     leverage_dynamic_decay: float = 0.0,
     liq_stress_coeff: float = 0.0,
+    # Story 1.4: Dual-frequency drift propagation
+    phi_slow: float = 0.0,
+    mu_slow_0: float = 0.0,
+    # Story 3.4: Asset-class-aware per-step return cap
+    return_cap: float = 0.30,
 ) -> Dict[str, np.ndarray]:
     """Unified MC engine with GJR-GARCH + jumps + Student-t via Numba kernel.
 
-    v7.7: Full Tier 2 + Tier 3 MC integration — all tuned params from
+    v7.7: Full Tier 2 + Tier 3 MC integration -- all tuned params from
     unified Student-t models now flow through to MC simulation:
 
     Tier 2:
@@ -5933,6 +6633,13 @@ def run_unified_mc(
 
         q_std = math.sqrt(q) if q > 0 else 0.0
         h_t = np.full(n_paths, max(sigma2_step, 1e-8), dtype=np.float64)
+        # v7.9: Dynamic GARCH variance cap — prevent Student-t + GARCH explosion
+        _h_dyn_cap = max(25.0 * max(sigma2_step, 1e-8), 0.005)
+
+        # Story 1.4: Dual-frequency drift — split into fast + slow
+        _use_dual_freq = phi_slow > 0.0 and abs(mu_slow_0) > 0.0
+        if _use_dual_freq:
+            _mu_slow_paths = np.full(n_paths, mu_slow_0, dtype=np.float64)
 
         for t_step in range(H_max):
             sigma_t = np.sqrt(np.maximum(h_t, 1e-12))
@@ -5972,6 +6679,11 @@ def run_unified_mc(
                         jump[pidx] = float(np.sum(jsizes))
 
             r_t = mu_paths + e_t + jump
+            # Story 1.4: Add slow drift component to returns
+            if _use_dual_freq:
+                r_t = r_t + _mu_slow_paths
+            # Story 3.4: Asset-class-aware per-step return cap
+            r_t = np.clip(r_t, -return_cap, return_cap)
             if t_step == 0:
                 cum_out[t_step, :] = r_t
             else:
@@ -5980,7 +6692,7 @@ def run_unified_mc(
             # GARCH evolution
             if use_garch:
                 h_t = garch_omega + garch_alpha * (e_t ** 2) + garch_beta * h_t
-                h_t = np.clip(h_t, 1e-12, 1e4)
+                h_t = np.clip(h_t, 1e-12, _h_dyn_cap)
 
             # Drift evolution
             if q_std > 0:
@@ -5988,6 +6700,9 @@ def run_unified_mc(
             else:
                 eta = np.zeros(n_paths, dtype=np.float64)
             mu_paths = phi * mu_paths + eta
+            # Story 1.4: Slow drift deterministic decay
+            if _use_dual_freq:
+                _mu_slow_paths = phi_slow * _mu_slow_paths
 
         return {'returns': cum_out, 'volatility': vol_out}
 
@@ -6096,9 +6811,12 @@ def run_unified_mc(
             # v7.8: Elite MC enhancements
             leverage_dynamic_decay,
             liq_stress_coeff,
+            # Story 1.4: Dual-frequency drift
+            phi_slow,
+            mu_slow_0,
+            # Story 3.4: Asset-class-aware return cap
+            return_cap,
         )
-
-        # Apply initial drift posterior uncertainty:
         # Each path's returns are shifted by (mu_start[p] - mu_now_for_kernel)
         # This preserves the drift posterior spread while using Numba for the loop
         drift_offset = mu_start - mu_now_for_kernel
@@ -6108,8 +6826,13 @@ def run_unified_mc(
         # Pure Python fallback (same logic as kernel, v7.7: all Tier 2+3 params)
         # v7.7: Apply variance_inflation, crps_sigma_shrinkage, and mu_drift
         h0_cal = h0 * variance_inflation * crps_sigma_shrinkage
+        # v7.9: Dynamic GARCH variance cap
+        _h_dyn_cap_py = max(25.0 * h0_cal, 0.005)
         mu_t_arr = mu_start.copy() + mu_drift
         h_t = np.full(n_paths, h0_cal, dtype=np.float64)
+        # Story 1.4: Dual-frequency drift — slow component
+        _use_dual_freq_py = phi_slow > 0.0 and abs(mu_slow_0) > 0.0
+        _mu_slow_arr = np.full(n_paths, mu_slow_0, dtype=np.float64) if _use_dual_freq_py else None
         use_asym = (nu is not None and nu > 2.0 and nu < 100.0 and abs(alpha_asym) > 1e-8)
         use_rp = abs(risk_premium_sensitivity) > 1e-10
         use_kappa_py = kappa_mean_rev > 0.001 and theta_long_var > 1e-12
@@ -6161,6 +6884,11 @@ def run_unified_mc(
                     loc_bias += loc_bias_drift_coeff * sign_mu * np.sqrt(np.abs(mu_t_arr))
 
             r_t = mu_t_arr + rp + loc_bias + e_t + jump
+            # Story 1.4: Add slow drift component
+            if _use_dual_freq_py:
+                r_t = r_t + _mu_slow_arr
+            # Story 3.4: Asset-class-aware per-step return cap
+            r_t = np.clip(r_t, -return_cap, return_cap)
             if t_step == 0:
                 cum_out[t_step, :] = r_t
             else:
@@ -6190,7 +6918,7 @@ def run_unified_mc(
                     p_stress_obs_arr = (1.0 - regime_switch_prob) * p_stress_obs_arr + regime_switch_prob * ind_stress
                     h_t *= (1.0 + p_stress_obs_arr * (math.sqrt(q_stress_ratio) - 1.0))
 
-                h_t = np.clip(h_t, 1e-12, 1e4)
+                h_t = np.clip(h_t, 1e-12, _h_dyn_cap_py)
 
             # v7.7: Drift evolution with MS process noise
             if use_ms_q_py:
@@ -6206,8 +6934,133 @@ def run_unified_mc(
             else:
                 drift_eta = z_drift[t_step] * math.sqrt(q) if q > 0 else np.zeros(n_paths)
                 mu_t_arr = phi * mu_t_arr + drift_eta
+            # Story 1.4: Slow drift deterministic decay
+            if _use_dual_freq_py:
+                _mu_slow_arr = phi_slow * _mu_slow_arr
 
     return {'returns': cum_out, 'volatility': vol_out}
+
+
+# ─── Story 3.6: MC Path Diagnostics and Anomaly Detection ──────────────
+MC_EXTREME_THRESHOLD = 5.0      # |cum_return| > 5.0 ≈ >500% return
+MC_EXTREME_WARN_FRAC = 0.10    # warn + trim when >10% paths are extreme
+MC_TRIM_PERCENTILE = 2.5       # trim at 2.5th/97.5th percentiles
+
+
+class MCDiagnostics:
+    """Lightweight diagnostics container for MC path quality."""
+
+    __slots__ = ("n_paths", "n_nan", "n_extreme", "extreme_frac",
+                 "median", "mean", "trimmed_mean", "mean_median_gap",
+                 "used_trimmed")
+
+    def __init__(self, n_paths: int, n_nan: int, n_extreme: int,
+                 extreme_frac: float, median: float, mean: float,
+                 trimmed_mean: float, mean_median_gap: float,
+                 used_trimmed: bool):
+        self.n_paths = n_paths
+        self.n_nan = n_nan
+        self.n_extreme = n_extreme
+        self.extreme_frac = extreme_frac
+        self.median = median
+        self.mean = mean
+        self.trimmed_mean = trimmed_mean
+        self.mean_median_gap = mean_median_gap
+        self.used_trimmed = used_trimmed
+
+    def to_dict(self) -> Dict[str, float]:
+        return {
+            "n_paths": self.n_paths,
+            "n_nan": self.n_nan,
+            "n_extreme": self.n_extreme,
+            "extreme_frac": round(self.extreme_frac, 6),
+            "median": round(self.median, 8),
+            "mean": round(self.mean, 8),
+            "trimmed_mean": round(self.trimmed_mean, 8),
+            "mean_median_gap": round(self.mean_median_gap, 6),
+            "used_trimmed": self.used_trimmed,
+        }
+
+
+def diagnose_mc_paths(cum_out: np.ndarray, H: int,
+                      asset_name: str = "",
+                      extreme_threshold: float = MC_EXTREME_THRESHOLD,
+                      warn_frac: float = MC_EXTREME_WARN_FRAC) -> MCDiagnostics:
+    """Diagnose MC path quality at horizon H.
+
+    Args:
+        cum_out: (H_max, n_paths) cumulative log-return array
+        H: target horizon (1-indexed)
+        asset_name: for warning messages
+        extreme_threshold: |return| above this is flagged
+        warn_frac: fraction above which trimmed stats are used
+
+    Returns:
+        MCDiagnostics with counts, statistics, and trim flag.
+    """
+    if H < 1 or cum_out.ndim != 2 or H > cum_out.shape[0]:
+        return MCDiagnostics(0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, False)
+
+    final_returns = cum_out[H - 1, :]
+    n_paths = final_returns.shape[0]
+    if n_paths == 0:
+        return MCDiagnostics(0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, False)
+
+    # NaN / Inf detection
+    finite_mask = np.isfinite(final_returns)
+    n_nan = int(np.sum(~finite_mask))
+    clean = final_returns[finite_mask]
+
+    if len(clean) == 0:
+        if n_nan > 0:
+            warnings.warn(
+                f"[MC DIAG] {asset_name} H={H}: ALL {n_paths} paths are NaN/Inf",
+                RuntimeWarning,
+            )
+        return MCDiagnostics(n_paths, n_nan, 0, 0.0, 0.0, 0.0, 0.0, 0.0, False)
+
+    # Extreme path detection
+    n_extreme = int(np.sum(np.abs(clean) > extreme_threshold))
+    extreme_frac = n_extreme / len(clean) if len(clean) > 0 else 0.0
+
+    median_val = float(np.median(clean))
+    mean_val = float(np.mean(clean))
+
+    # Trimmed mean: exclude top/bottom 2.5% when extreme fraction is high
+    used_trimmed = extreme_frac > warn_frac
+    if used_trimmed:
+        lo = np.percentile(clean, MC_TRIM_PERCENTILE)
+        hi = np.percentile(clean, 100.0 - MC_TRIM_PERCENTILE)
+        trimmed = clean[(clean >= lo) & (clean <= hi)]
+        trimmed_mean = float(np.mean(trimmed)) if len(trimmed) > 0 else mean_val
+        warnings.warn(
+            f"[MC DIAG] {asset_name} H={H}: {n_extreme}/{len(clean)} "
+            f"({extreme_frac:.1%}) extreme paths (|r|>{extreme_threshold}). "
+            f"Using trimmed mean={trimmed_mean:.6f} vs raw mean={mean_val:.6f}",
+            RuntimeWarning,
+        )
+    else:
+        trimmed_mean = mean_val
+
+    if n_nan > 0:
+        warnings.warn(
+            f"[MC DIAG] {asset_name} H={H}: {n_nan}/{n_paths} NaN/Inf paths excluded",
+            RuntimeWarning,
+        )
+
+    mean_median_gap = abs(mean_val - median_val) / max(abs(median_val), 1e-6)
+
+    return MCDiagnostics(
+        n_paths=n_paths,
+        n_nan=n_nan,
+        n_extreme=n_extreme,
+        extreme_frac=extreme_frac,
+        median=median_val,
+        mean=mean_val,
+        trimmed_mean=trimmed_mean,
+        mean_median_gap=mean_median_gap,
+        used_trimmed=used_trimmed,
+    )
 
 
 # Temperature must match tune.py's DEFAULT_ENTROPY_LAMBDA = 0.05
@@ -6315,6 +7168,12 @@ def bayesian_model_average_mc(
     tuned_params: Optional[Dict] = None,
     asset_symbol: Optional[str] = None,
     horizons_extract: Optional[List[int]] = None,
+    phi_slow: float = 0.0,
+    mu_slow_0: float = 0.0,
+    # Story 3.4: Asset-class-aware per-step return cap
+    return_cap: float = 0.30,
+    # Story 4.5: Previous smoothed regime probs for EMA smoothing
+    prev_regime_probs: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, Dict[int, float], Dict]:
     """
     Perform Bayesian Model Averaging using CURRENT REGIME's model posterior.
@@ -6429,43 +7288,51 @@ def bayesian_model_average_mc(
     regime_name = REGIME_NAMES.get(current_regime, f"REGIME_{current_regime}")
 
     # ========================================================================
-    # SOFT REGIME PROBABILITIES FOR TRUST AUTHORITY
+    # Story 4.1: SOFT REGIME PROBABILITIES VIA LOGISTIC BOUNDARIES
     # ========================================================================
-    # Hard regime assignment remains for parameter selection.
-    # Soft probabilities are computed for trust modulation to avoid cliffs.
-    #
-    # ARCHITECTURAL INTEGRATION:
-    # - calibrated_trust.py expects regime_probs: Dict[int, float]
-    # - Hard assignment would cause penalty jumps at regime boundaries
-    # - Soft assignment smooths transitions: current=0.7, neighbors share 0.3
-    #
-    # REGIME ADJACENCY (volatility-ordered):
-    #   0: low_vol    ↔ 1: normal
-    #   1: normal     ↔ 2: trending, 3: high_vol
-    #   2: trending   ↔ 1: normal
-    #   3: high_vol   ↔ 1: normal, 4: crisis
-    #   4: crisis     ↔ 3: high_vol
+    # Compute v2 probabilistic regime assignment using logistic transitions.
+    # This replaces the fixed 0.7/0.3 adjacency heuristic.
     # ========================================================================
-    REGIME_ADJACENCY = {
-        0: [1],           # low_vol → normal
-        1: [0, 2, 3],     # normal → low_vol, trending, high_vol
-        2: [1],           # trending → normal
-        3: [1, 4],        # high_vol → normal, crisis
-        4: [3],           # crisis → high_vol
-    }
+    # Extract vol_relative, drift_abs, tail_indicator from feats
+    _vol_series = feats.get("vol", pd.Series(dtype=float))
+    _ret_series = feats.get("ret", pd.Series(dtype=float))
+    _lookback = 21
 
-    # Soft probabilities: 70% current, 30% split among neighbors
-    soft_regime_probs = {i: 0.0 for i in range(5)}
-    soft_regime_probs[current_regime] = 0.70
-
-    neighbors = REGIME_ADJACENCY.get(current_regime, [])
-    if neighbors:
-        neighbor_share = 0.30 / len(neighbors)
-        for n in neighbors:
-            soft_regime_probs[n] = neighbor_share
+    if isinstance(_vol_series, pd.Series) and not _vol_series.empty:
+        _vol_now = float(_vol_series.iloc[-1])
+        if len(_vol_series) >= _lookback:
+            _vol_median = float(_vol_series.expanding(
+                min_periods=min(_lookback, len(_vol_series))).median().iloc[-1])
+        else:
+            _vol_median = float(_vol_series.median())
+        _vol_relative = _vol_now / _vol_median if _vol_median > 1e-12 else 1.0
     else:
-        # No neighbors defined: keep all mass on current
-        soft_regime_probs[current_regime] = 1.0
+        _vol_relative = 1.0
+        _vol_now = 0.0
+
+    if isinstance(_ret_series, pd.Series) and not _ret_series.empty:
+        _drift_abs = abs(float(_ret_series.tail(_lookback).mean())) if len(_ret_series) >= _lookback else abs(float(_ret_series.mean()))
+        _ret_now = float(_ret_series.iloc[-1])
+        _tail_indicator = abs(_ret_now) / _vol_now if _vol_now > 1e-12 else 0.0
+    else:
+        _drift_abs = 0.0
+        _tail_indicator = 0.0
+
+    v2_regime_probs = compute_regime_probabilities_v2(
+        vol_relative=_vol_relative,
+        drift_abs=_drift_abs,
+        tail_indicator=_tail_indicator,
+    )
+
+    # ========================================================================
+    # Story 4.5: EMA SMOOTH REGIME PROBABILITIES
+    # ========================================================================
+    v2_regime_probs = smooth_regime_probabilities(
+        v2_regime_probs, prev_regime_probs,
+    )
+
+    # Soft regime probs dict for trust authority (backward-compatible format)
+    soft_regime_probs = {i: float(v2_regime_probs[i]) for i in range(5)}
 
     # Legacy one-hot array for backward compatibility
     regime_probs_array = np.zeros(5)
@@ -6522,6 +7389,32 @@ def bayesian_model_average_mc(
         model_posterior = global_model_posterior
         models = global_models
         is_fallback = True
+
+    # ========================================================================
+    # Story 4.1: SOFT BMA WEIGHT MIXING ACROSS REGIMES
+    # ========================================================================
+    # Instead of using a single regime's posteriors, mix model weights
+    # across all regimes using v2 probabilistic regime assignment.
+    # This eliminates abrupt weight switches at regime boundaries.
+    # ========================================================================
+    _soft_mixed = False
+    if regime_data and global_model_posterior:
+        soft_model_posterior = compute_soft_bma_weights(
+            regime_probs=v2_regime_probs,
+            regime_data=regime_data,
+            global_model_posterior=global_model_posterior,
+        )
+        if soft_model_posterior:
+            model_posterior = soft_model_posterior
+            _soft_mixed = True
+            # Collect all models from all regimes + global for parameter lookup
+            _all_models = dict(global_models)
+            for _rk in regime_data:
+                _rb = regime_data[_rk]
+                if isinstance(_rb, dict) and 'models' in _rb:
+                    _all_models.update(_rb['models'])
+            if _all_models:
+                models = _all_models
 
     # If still empty after global fallback - cannot proceed
     if not models or not model_posterior:
@@ -6749,16 +7642,14 @@ def bayesian_model_average_mc(
     # ========================================================================
     # p(x | D, r_t) = Σ_m p(x | r_t, m, θ_m) · p(m | r_t)
     #
-    # v7.0: Uses run_unified_mc (GARCH+jumps+Student-t via Numba) instead
-    # of run_regime_specific_mc (constant vol, no jumps). This ensures BMA
-    # samples and display expected return use identical volatility dynamics.
+    # Story 3.5: Importance-weighted sampling replaces the old "append with
+    # floor" approach. Model indices are drawn from Categorical(weights),
+    # so each path is assigned to exactly one model. This eliminates the
+    # MIN_MODEL_SAMPLES=20 floor that caused up to 2.8% representation error.
     #
-    # Implementation:
-    #   For each model m with weight w = p(m | r_t):
-    #     - Draw floor(w * n_paths) samples from p(x | r_t, m, θ_m)
-    #     - Ensure minimum representation (MIN_MODEL_SAMPLES)
+    # Low-weight models may get 0 samples by chance — that is correct
+    # mixture sampling behavior.
     # ========================================================================
-    MIN_MODEL_SAMPLES = 20  # Minimum samples per model to preserve tail awareness
 
     all_samples = []
     all_vol_samples = []
@@ -6768,6 +7659,38 @@ def bayesian_model_average_mc(
     if horizons_extract:
         _hz_all_samples = {h: [] for h in horizons_extract}
         _hz_all_vol = {h: [] for h in horizons_extract}
+
+    # Story 3.5: Importance-weighted model index draw
+    # First pass: collect valid models and their weights
+    _valid_model_names = []
+    _valid_model_weights = []
+    for _m_name, _m_weight in model_posterior.items():
+        _m_params = models.get(_m_name, {})
+        if not _m_params.get('fit_success', True):
+            continue
+        _valid_model_names.append(_m_name)
+        _valid_model_weights.append(float(_m_weight))
+
+    # Normalize weights to sum to 1 (defensive)
+    _w_arr = np.array(_valid_model_weights, dtype=np.float64)
+    _w_sum = _w_arr.sum()
+    if _w_sum > 0:
+        _w_arr = _w_arr / _w_sum
+    elif len(_w_arr) > 0:
+        _w_arr = np.ones_like(_w_arr) / len(_w_arr)
+
+    # Draw model indices from Categorical(weights)
+    _bma_rng = np.random.default_rng(seed)
+    if len(_valid_model_names) > 0:
+        _model_indices = _bma_rng.choice(len(_valid_model_names), size=n_paths, p=_w_arr)
+        _model_counts = np.bincount(_model_indices, minlength=len(_valid_model_names))
+    else:
+        _model_counts = np.array([], dtype=np.int64)
+
+    # Build lookup: model_name -> n_paths_for_this_model
+    _model_n_paths = {}
+    for _idx, _m_name in enumerate(_valid_model_names):
+        _model_n_paths[_m_name] = int(_model_counts[_idx])
 
     for model_name, model_weight in model_posterior.items():
         model_params = models.get(model_name, {})
@@ -6862,6 +7785,30 @@ def bayesian_model_average_mc(
         if phi_m is None or not np.isfinite(phi_m):
             phi_m = 0.95 if 'phi' in model_name else 1.0
 
+        # ================================================================
+        # v7.9: FLOOR phi AT 0 — prevent anti-persistent drift in MC
+        # ================================================================
+        # Negative phi causes drift to oscillate sign each step, which is
+        # statistically possible but produces pathological MC paths:
+        # large initial drift × negative phi → huge opposite return next step.
+        # Floor at 0 converts anti-persistence to instant mean-reversion,
+        # which is the economically sensible interpretation.
+        # ================================================================
+        if phi_m < 0.0:
+            phi_m = 0.0
+
+        # ================================================================
+        # v7.9: FLOOR phi AT 0 — prevent anti-persistent drift in MC
+        # ================================================================
+        # Negative phi causes drift to oscillate sign each step, which is
+        # statistically possible but produces pathological MC paths:
+        # large initial drift × negative phi → huge opposite return next step.
+        # Floor at 0 converts anti-persistence to instant mean-reversion,
+        # which is the economically sensible interpretation.
+        # ================================================================
+        if phi_m < 0.0:
+            phi_m = 0.0
+
         # Validate nu
         if nu_m is not None and (not np.isfinite(nu_m) or nu_m <= 2.0):
             nu_m = None
@@ -6888,8 +7835,15 @@ def bayesian_model_average_mc(
                     if _nu_eff < nu_m:
                         nu_m = _nu_eff
 
-        # Number of samples: proportional to weight but with minimum guarantee
-        n_model_samples = max(MIN_MODEL_SAMPLES, int(model_weight * n_paths))
+        # Story 3.5: Importance-weighted sample count from categorical draw
+        n_model_samples = _model_n_paths.get(model_name, 0)
+        if n_model_samples == 0:
+            # Model received 0 paths from categorical sampling — skip MC
+            model_details[model_name] = {
+                "weight": float(model_weight),
+                "n_samples": 0,
+            }
+            continue
 
         # v7.6: Use run_unified_mc with enriched per-model params
         mc_result = run_unified_mc(
@@ -6941,6 +7895,11 @@ def bayesian_model_average_mc(
             # v7.8: Elite MC enhancements
             leverage_dynamic_decay=leverage_dynamic_decay_m,
             liq_stress_coeff=liq_stress_coeff_m,
+            # Story 1.4: Dual-frequency drift
+            phi_slow=phi_slow,
+            mu_slow_0=mu_slow_0,
+            # Story 3.4: Asset-class-aware return cap
+            return_cap=return_cap,
         )
         # v7.5: Collect samples at multiple horizons for calibration fast mode
         if horizons_extract:
@@ -7129,7 +8088,7 @@ def make_features_views(feats: Dict[str, pd.Series]) -> Dict[str, Dict[str, pd.S
 # =============================================================================
 
 
-def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: int = 3000, phi: float = 0.95, kappa: float = 1e-4, process_noise_q: float = 0.0) -> Dict[str, np.ndarray]:
+def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: int = 3000, phi: float = 0.95, kappa: float = 1e-4, process_noise_q: float = 0.0, return_cap: float = 0.30) -> Dict[str, np.ndarray]:
     """Monte-Carlo forward simulation of cumulative log returns and volatility over 1..H_max.
     - Drift evolves as AR(1): mu_{t+1} = phi * mu_t + eta_t,  eta ~ N(0, q)
     - Volatility evolves via GARCH(1,1) when available; else held constant.
@@ -7358,6 +8317,8 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
     vol_paths = np.zeros((H_max, n_paths), dtype=float)  # Track volatility (sigma_t) at each horizon
     mu_t = np.full(n_paths, mu_now, dtype=float)
     h_t = np.full(n_paths, max(h0, 1e-8), dtype=float)
+    # v7.9: Dynamic GARCH variance cap
+    _h_dyn_cap_sim = max(25.0 * max(h0, 1e-8), 0.005)
 
     rng = np.random.default_rng()
 
@@ -7401,6 +8362,8 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
 
         # Total return: continuous (drift + diffusion) + jumps
         r_t = mu_t + e_t + jump_component
+        # Story 3.4: Asset-class-aware per-step return cap
+        r_t = np.clip(r_t, -return_cap, return_cap)
 
         # Accumulate log return
         if t == 0:
@@ -7412,7 +8375,7 @@ def _simulate_forward_paths(feats: Dict[str, pd.Series], H_max: int, n_paths: in
         # Evolve volatility via GARCH or hold constant on fallback
         if use_garch:
             h_t = omega_paths + alpha_paths * (e_t ** 2) + beta_paths * h_t
-            h_t = np.clip(h_t, 1e-12, 1e4)
+            h_t = np.clip(h_t, 1e-12, _h_dyn_cap_sim)
         # Evolve drift via AR(1) using posterior drift uncertainty only
         eta = rng.normal(loc=0.0, scale=math.sqrt(drift_unc_now), size=n_paths)
         mu_t = phi * mu_t + eta
@@ -7453,18 +8416,80 @@ def composite_edge(
     return float(edge)
 
 
+# Story 5.4 ------------------------------------------------------------------
+# Dynamic labeling thresholds from walk-forward hit rates
+# -------------------------------------------------------------------------
+
+def optimal_threshold(
+    wf_records: list,
+    horizon: int,
+    target_hit_rate: float = 0.55,
+    min_samples: int = 20,
+) -> float:
+    """Find the lowest p_up threshold achieving *target_hit_rate* on walk-forward data.
+
+    Scans p_up in [0.50, 0.75) with 0.01 step.  Returns the first threshold where the
+    subset's hit rate >= target.  Falls back to 0.55 if no threshold qualifies.
+    """
+    import pandas as pd
+
+    if not wf_records:
+        return 0.55
+
+    df = pd.DataFrame([
+        {"forecast_p_up": getattr(r, "forecast_p_up", r.get("forecast_p_up") if isinstance(r, dict) else None),
+         "hit": getattr(r, "hit", r.get("hit") if isinstance(r, dict) else None),
+         "horizon": getattr(r, "horizon", r.get("horizon") if isinstance(r, dict) else None)}
+        for r in wf_records
+    ])
+    df = df[df["horizon"] == horizon].dropna(subset=["forecast_p_up", "hit"])
+
+    if len(df) < min_samples:
+        return 0.55
+
+    for p_thresh in np.arange(0.50, 0.75, 0.01):
+        mask = df["forecast_p_up"] > p_thresh
+        if mask.sum() < min_samples:
+            continue
+        hit_rate = df.loc[mask, "hit"].mean()
+        if hit_rate >= target_hit_rate:
+            return float(round(p_thresh, 2))
+    return 0.55
+
+
+def compute_calibrated_thresholds(
+    wf_records: list,
+    horizons: Optional[List[int]] = None,
+    target_hit_rate: float = 0.55,
+) -> Dict[int, Dict[str, float]]:
+    """Compute per-horizon buy/sell thresholds from walk-forward results.
+
+    Returns ``{horizon: {"buy_thr": float, "sell_thr": float}}``
+    where ``sell_thr = 1 - buy_thr`` (symmetric).
+    """
+    if horizons is None:
+        horizons = [1, 3, 7, 21, 63]
+    out: Dict[int, Dict[str, float]] = {}
+    for h in horizons:
+        buy = optimal_threshold(wf_records, h, target_hit_rate=target_hit_rate)
+        sell = round(1.0 - buy, 2)
+        out[h] = {"buy_thr": buy, "sell_thr": sell}
+    return out
+
+
 def compute_dynamic_thresholds(
     skew: float,
     regime_meta: Dict[str, float],
     sig_H: float,
     med_vol_last: float,
-    H: int
+    H: int,
+    calibrated_thresholds: Optional[Dict[int, Dict[str, float]]] = None,
 ) -> Dict[str, float]:
     """
     Compute dynamic buy/sell thresholds with asymmetry and uncertainty adjustments.
 
-    Level-7 modularization: Separates threshold computation from signal generation
-    for better testability and maintainability.
+    Story 5.4: If *calibrated_thresholds* is provided (from walk-forward hit rates),
+    use those as starting points instead of the static base of 0.58/0.42.
 
     Args:
         skew: Return skewness (asymmetry measure)
@@ -7472,12 +8497,18 @@ def compute_dynamic_thresholds(
         sig_H: Forecast volatility at horizon H
         med_vol_last: Long-run median volatility
         H: Forecast horizon in days
+        calibrated_thresholds: Optional per-horizon thresholds from walk-forward
 
     Returns:
         Dictionary with buy_thr, sell_thr, and uncertainty metrics
     """
-    # Base thresholds
-    base_buy, base_sell = 0.58, 0.42
+    # Story 5.4: Use calibrated thresholds as base if available
+    if calibrated_thresholds and H in calibrated_thresholds:
+        _cal = calibrated_thresholds[H]
+        base_buy = float(_cal.get("buy_thr", 0.58))
+        base_sell = float(_cal.get("sell_thr", 0.42))
+    else:
+        base_buy, base_sell = 0.58, 0.42
 
     # Skew adjustment: shift thresholds based on return asymmetry
     g1 = float(np.clip(skew if np.isfinite(skew) else 0.0, -1.5, 1.5))
@@ -7538,6 +8569,30 @@ def compute_dynamic_thresholds(
         "u_forecast": float(u_sig),
         "skew_adjustment": float(skew_delta),
     }
+
+
+# Story 5.1 ------------------------------------------------------------------
+def compute_adaptive_edge_floor(
+    vol_daily: float,
+    horizon: int,
+    z: float = EDGE_FLOOR_Z,
+    floor_min: float = 0.005,
+    floor_max: float = 0.50,
+) -> float:
+    """Compute volatility-scaled edge floor.
+
+    edge_floor = z * vol_annual / sqrt(H)
+
+    Low-vol assets (currencies) get a smaller floor -> more signals.
+    High-vol assets (crypto) get a larger floor -> higher bar.
+    """
+    if not np.isfinite(vol_daily) or vol_daily <= 0:
+        return float(EDGE_FLOOR)
+    vol_annual = vol_daily * math.sqrt(252)
+    h_safe = max(horizon, 1)
+    raw = z * vol_annual / math.sqrt(h_safe)
+    return float(np.clip(raw, floor_min, floor_max))
+# -----------------------------------------------------------------------------
 
 
 def apply_confirmation_logic(
@@ -7954,11 +9009,15 @@ def label_from_probability(p_up: float, pos_strength: float, buy_thr: float = 0.
     return "HOLD"
 
 
-def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close: float, t_map: bool = True, ci: float = 0.68, tuned_params: Optional[Dict] = None, asset_key: Optional[str] = None, _calibration_fast_mode: bool = False, n_mc_paths: int = 10000, asset_type: str = "equity") -> Tuple[List[Signal], Dict[int, Dict[str, float]]]:
-    """Compute signals using regime‑aware priors, tail‑aware probability mapping, and
-    anti‑snap logic (two‑day confirmation + hysteresis + smoothing) without extra flags.
+def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close: float, t_map: bool = True, ci: float = 0.68, tuned_params: Optional[Dict] = None, asset_key: Optional[str] = None, _calibration_fast_mode: bool = True, n_mc_paths: int = 10000, asset_type: str = "equity") -> Tuple[List[Signal], Dict[int, Dict[str, float]]]:
+    """Compute signals using regime-aware priors, tail-aware probability mapping, and
+    anti-snap logic (two-day confirmation + hysteresis + smoothing) without extra flags.
 
     Uses Bayesian Model Averaging when tuned_params with BMA structure is provided.
+
+    Story 3.1: Coherent multi-horizon MC is now the default (_calibration_fast_mode=True).
+    A single MC call produces all horizons from the same paths, ensuring monotonic
+    variance and coherent cross-horizon signals.
 
     CONTRACT WITH tune.py:
     - tuned_params contains model_posterior and models for each regime
@@ -8144,6 +9203,23 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
     sigs: List[Signal] = []
     thresholds: Dict[int, Dict[str, float]] = {}
 
+    # Story 3.4: Compute per-step return cap from asset class
+    _return_cap = RETURN_CAP_BY_CLASS.get(asset_type, RETURN_CAP_DEFAULT)
+
+    # Story 3.3: Load previous signal state for two-day confirmation
+    _prev_signal_state = load_signal_state(asset_key) if asset_key else {}
+
+    # Story 4.5: Extract previous smoothed regime probabilities
+    _prev_regime_probs_raw = _prev_signal_state.get("regime_probs")
+    _prev_regime_probs = None
+    if _prev_regime_probs_raw is not None:
+        try:
+            _prev_regime_probs = np.array(_prev_regime_probs_raw, dtype=float)
+            if _prev_regime_probs.shape != (5,):
+                _prev_regime_probs = None
+        except (ValueError, TypeError):
+            _prev_regime_probs = None
+
     # Regime-aware smoothing from HMM posterior uncertainty (replaces threshold-based)
     # Use regime persistence and uncertainty from posterior probabilities
     if regime_meta.get("method") == "hmm_posterior":
@@ -8165,6 +9241,45 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
     # v7.5: Multi-horizon BMA cache for calibration fast mode.
     # Call BMA MC once with H_max=max(horizons), extract all horizon samples.
     _bma_horizon_cache = {}  # populated on first iteration when _calibration_fast_mode=True
+
+    # ==================================================================
+    # REGIME DRIFT PRIOR (Story 1.2)
+    # ==================================================================
+    # Compute regime-conditional drift priors from historical data.
+    # These provide Bayesian shrinkage targets for the Kalman posterior drift,
+    # pulling extreme estimates toward regime-appropriate levels.
+    #
+    # The shrinkage operates via precision-weighted averaging:
+    #   tau_kalman = 1 / P_t   (Kalman posterior precision)
+    #   tau_prior  = 1 / se^2  (regime prior precision)
+    #   mu_shrunk  = (tau_kalman * mu_kalman + tau_prior * mu_prior) / (tau_k + tau_p)
+    # ==================================================================
+    _regime_drift_prior = None
+    _regime_drift_se = None
+    try:
+        _ret_s = feats.get("ret")
+        _vol_s_rdp = feats.get("vol")
+        if (isinstance(_ret_s, pd.Series) and isinstance(_vol_s_rdp, pd.Series)
+                and len(_ret_s) >= 300):
+            _rdp_result = _estimate_regime_drift_priors(_ret_s, _vol_s_rdp)
+            if _rdp_result is not None:
+                _regime_drift_prior = _rdp_result.get("current_drift_prior", 0.0)
+                # Compute standard error of regime drift estimate
+                _regime_drifts = _rdp_result.get("regime_drifts", {})
+                _current_regime_hmm = _rdp_result.get("current_regime", "calm")
+                # Use all regime drift values to estimate prior uncertainty
+                _all_drifts = [v for v in _regime_drifts.values() if np.isfinite(v)]
+                if len(_all_drifts) >= 2:
+                    _regime_drift_se = float(np.std(_all_drifts, ddof=1))
+                else:
+                    _regime_drift_se = 0.001  # Weak prior when insufficient data
+                if not np.isfinite(_regime_drift_prior):
+                    _regime_drift_prior = None
+                if _regime_drift_se is not None and (not np.isfinite(_regime_drift_se) or _regime_drift_se <= 0):
+                    _regime_drift_se = 0.001
+    except Exception:
+        _regime_drift_prior = None
+        _regime_drift_se = None
 
     for H in horizons:
         # ========================================================================
@@ -8188,6 +9303,120 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             mu_t_mc = 0.0
         if not np.isfinite(mu_t_mc):
             mu_t_mc = 0.0
+
+        # ==================================================================
+        # REGIME DRIFT PRIOR SHRINKAGE (Story 1.2)
+        # ==================================================================
+        # Apply Bayesian shrinkage toward regime-conditional drift prior.
+        # This pulls extreme Kalman drift estimates toward regime-appropriate
+        # levels, operating BEFORE momentum augmentation (Story 1.1).
+        #
+        # Precision-weighted update:
+        #   tau_k = 1/P_t  (Kalman precision -- tight when filter is confident)
+        #   tau_p = 1/se^2 (prior precision -- tight when regime drift is stable)
+        #   mu_shrunk = (tau_k * mu_kalman + tau_p * mu_prior) / (tau_k + tau_p)
+        #
+        # When P_t is large (uncertain Kalman), shrinkage pulls strongly.
+        # When P_t is small (confident Kalman), drift stays near Kalman estimate.
+        # ==================================================================
+        if _regime_drift_prior is not None and _regime_drift_se is not None:
+            # Kalman posterior precision
+            _P_t_for_shrink = feats.get("var_kf_smoothed", feats.get("var_kf", pd.Series(dtype=float)))
+            if isinstance(_P_t_for_shrink, pd.Series) and not _P_t_for_shrink.empty:
+                _P_t_val = float(_P_t_for_shrink.iloc[-1])
+            else:
+                _P_t_val = 1e-6
+            if not np.isfinite(_P_t_val) or _P_t_val <= 0:
+                _P_t_val = 1e-6
+
+            _tau_kalman = 1.0 / max(_P_t_val, 1e-12)
+            _tau_prior = 1.0 / max(_regime_drift_se ** 2, 1e-12)
+            _tau_total = _tau_kalman + _tau_prior
+
+            mu_t_mc = (_tau_kalman * mu_t_mc + _tau_prior * _regime_drift_prior) / _tau_total
+
+            if not np.isfinite(mu_t_mc):
+                mu_t_mc = 0.0
+
+        # ==================================================================
+        # MOMENTUM-AUGMENTED DRIFT (Story 1.1)
+        # ==================================================================
+        # Blend momentum-derived drift into mu_t_mc using horizon-dependent
+        # weighting. Short horizons trust Kalman; long horizons trust momentum.
+        #
+        # w_mom(H) = min(1.0, H / MOM_CROSSOVER_HORIZON)
+        # mu_augmented = (1 - w_mom) * mu_kalman + w_mom * mom_drift
+        #
+        # mom_drift = (momentum_score / 100) * vol_now * MOM_DRIFT_SCALE
+        # ==================================================================
+        _mu_t_mc_raw = mu_t_mc  # Preserve raw Kalman drift for diagnostics
+
+        # Retrieve momentum features
+        _mom21_s = feats.get("mom21")
+        _mom63_s = feats.get("mom63")
+        _mom126_s = feats.get("mom126")
+        _mom252_s = feats.get("mom252")
+
+        def _safe_last(series, default=0.0):
+            if series is None:
+                return default
+            if isinstance(series, pd.Series) and not series.empty:
+                v = float(series.iloc[-1])
+                return v if np.isfinite(v) else default
+            return default
+
+        _m21 = _safe_last(_mom21_s)
+        _m63 = _safe_last(_mom63_s)
+        _m126 = _safe_last(_mom126_s)
+        _m252 = _safe_last(_mom252_s)
+
+        # Composite momentum: t-stat style, weighted by timeframe
+        # These are already vol-normalized (cum_ret / realized_vol)
+        _mom_weights = []
+        _mom_values = []
+        if abs(_m21) > 0 or _m21 == 0:
+            _mom_weights.append(0.40)
+            _mom_values.append(_m21)
+        if abs(_m63) > 0 or _m63 == 0:
+            _mom_weights.append(0.35)
+            _mom_values.append(_m63)
+        if abs(_m126) > 0 or _m126 == 0:
+            _mom_weights.append(0.25)
+            _mom_values.append(_m126)
+
+        if _mom_values:
+            _tw = sum(_mom_weights)
+            _composite_mom = sum(w * v for w, v in zip(_mom_weights, _mom_values)) / _tw
+        else:
+            _composite_mom = 0.0
+
+        # Determine observation count for safety gate
+        _vol_s = feats.get("vol", pd.Series(dtype=float))
+        _n_obs = len(_vol_s) if isinstance(_vol_s, pd.Series) else 0
+        _vol_now_mom = float(_vol_s.iloc[-1]) if (isinstance(_vol_s, pd.Series) and not _vol_s.empty) else 0.01
+        if not np.isfinite(_vol_now_mom) or _vol_now_mom <= 0:
+            _vol_now_mom = 0.01
+
+        # Convert composite momentum (t-stat, typically [-3, +3]) to daily return units
+        # mom_drift = composite_mom * vol_now * MOM_DRIFT_SCALE
+        # Clamp composite to [-3, +3] to prevent extreme outliers
+        _composite_mom_clamped = float(np.clip(_composite_mom, -3.0, 3.0))
+        _mom_drift = _composite_mom_clamped * _vol_now_mom * MOM_DRIFT_SCALE
+
+        # Horizon-dependent blending weight
+        _w_mom = min(1.0, H / MOM_CROSSOVER_HORIZON)
+
+        # Safety gates: disable momentum augmentation when data is insufficient
+        # or momentum is NaN/zero (no directional information)
+        _mom_enabled = (
+            _n_obs >= MOM_MIN_OBSERVATIONS
+            and np.isfinite(_mom_drift)
+            and abs(_composite_mom_clamped) > 1e-9
+        )
+
+        if _mom_enabled:
+            mu_t_mc = (1.0 - _w_mom) * _mu_t_mc_raw + _w_mom * _mom_drift
+        # else: mu_t_mc stays as raw Kalman drift
 
         # Extract drift posterior variance (P_t) from Kalman filter
         var_kf_series_prob = feats.get("var_kf_smoothed", feats.get("var_kf", pd.Series(dtype=float)))
@@ -8256,6 +9485,11 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
 
         # v7.0: Single unified BMA MC call — returns BOTH return and vol samples
         # v7.5: In _calibration_fast_mode, call once with H_max and cache all horizons
+        # Story 1.4: Compute dual-frequency drift parameters
+        _phi_slow_val = math.exp(-1.0 / MOMENTUM_HALF_LIFE_DAYS) if MOMENTUM_HALF_LIFE_DAYS > 0 else 0.0
+        _mu_slow_0_val = mu_t_mc * MOM_SLOW_FRAC
+        # Adjust fast component: mu_t_mc for the kernel is the fast part only
+        mu_t_mc = mu_t_mc * (1.0 - MOM_SLOW_FRAC)
         if _calibration_fast_mode and _bma_horizon_cache:
             # Reuse cached BMA samples from first iteration
             r_samples = _bma_horizon_cache["samples"].get(H, np.array([0.0]))
@@ -8277,6 +9511,13 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
                 tuned_params=tuned_params,
                 asset_symbol=asset_key,
                 horizons_extract=_bma_hz_extract,
+                # Story 1.4: Dual-frequency drift
+                phi_slow=_phi_slow_val,
+                mu_slow_0=_mu_slow_0_val,
+                # Story 3.4: Asset-class-aware return cap
+                return_cap=_return_cap,
+                # Story 4.5: Previous smoothed regime probs
+                prev_regime_probs=_prev_regime_probs,
             )
             if _calibration_fast_mode:
                 _bma_horizon_cache = {
@@ -8290,7 +9531,15 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
                 vol_samples_bma = _bma_horizon_cache["vol_samples"].get(H, vol_samples_bma)
         r = np.asarray(r_samples, dtype=float)
 
+        # Story 3.6: MC path diagnostics
+        # Wrap 1-D r_samples as (1, n_paths) for diagnose_mc_paths
+        _diag_arr = r.reshape(1, -1) if r.ndim == 1 else r
+        _mc_diag = diagnose_mc_paths(
+            _diag_arr, H=1, asset_name=asset_key or "",
+        )
+
         # v7.0: Use BMA samples for ALL quantities (unified MC)
+        # Story 3.6: Exclude NaN paths
         sim_H = r[np.isfinite(r)]
         if sim_H.size == 0:
             sim_H = np.zeros(3000, dtype=float)
@@ -8415,9 +9664,23 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             evt_fit_method = 'insufficient_data_fallback'
         
         # Use EVT-corrected loss for position sizing
-        E_loss = evt_expected_loss
+        # Story 5.2: Cap EVT inflation to prevent E_loss blow-up
+        if E_loss_empirical > 0:
+            E_loss = min(evt_expected_loss, EVT_MAX_INFLATION * E_loss_empirical)
+        else:
+            E_loss = evt_expected_loss
 
-        EU = p_now * E_gain - (1.0 - p_now) * E_loss
+        # Story 5.2: Asymmetric EU (legacy, for diagnostics)
+        EU_asymmetric = p_now * E_gain - (1.0 - p_now) * E_loss
+
+        # Story 5.2: Balanced EU (symmetric tail treatment for position sizing)
+        _xi_for_gain = float(evt_xi) if evt_xi is not None and np.isfinite(evt_xi) else 0.0
+        _gain_correction = min(1.0 + abs(_xi_for_gain) * EVT_GAIN_FACTOR, EVT_MAX_INFLATION)
+        E_gain_evt = E_gain * _gain_correction
+        EU_balanced = p_now * E_gain_evt - (1.0 - p_now) * E_loss
+
+        # Use balanced EU for trading decisions
+        EU = EU_balanced
 
         epsilon_eu = 1e-12
         max_position_size = 1.0
@@ -8429,6 +9692,17 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
 
         # clip to risk limits
         eu_position_size = float(np.clip(eu_position_size, 0.0, max_position_size))
+
+        # Story 5.6: Kelly Criterion sizing
+        KELLY_CAP = 0.25
+        if E_loss > epsilon_eu and E_gain > 0:
+            _odds = E_gain / E_loss
+            kelly_full = (p_now * _odds - (1.0 - p_now)) / _odds
+            kelly_full = float(np.clip(kelly_full, 0.0, KELLY_CAP))
+            kelly_half = kelly_full / 2.0
+        else:
+            kelly_full = 0.0
+            kelly_half = 0.0
 
         # Expected Utility metrics for logging/Signal
         expected_utility = EU
@@ -8481,8 +9755,12 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             vol_std = float(np.std(vol_H)) if vol_H.size > 1 else 0.0
             vol_ci_low = max(0.0, vol_mean - vol_std)
             vol_ci_high = vol_mean + vol_std
-        # For anti‑snap smoothing we need a previous probability; approximate with itself if unavailable
-        p_prev = p_now
+        # Story 3.3: Load previous p_up from persisted state for real 2-day confirmation.
+        # On first run (no state), fall back to p_now to preserve pre-3.3 behavior.
+        # On subsequent runs, p_prev comes from the previous day's saved state.
+        _h_key = str(H)
+        _prev_h = _prev_signal_state.get(_h_key, {})
+        p_prev = float(_prev_h.get("p_up", p_now))  # first run: p_prev=p_now (backward compat)
         p_s_prev = p_prev
         p_s_now = alpha_p * p_now + (1.0 - alpha_p) * p_prev
 
@@ -8683,10 +9961,19 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
                     "source": "legacy_threshold",
                 }
 
-        # === FINAL POSITION STRENGTH (from Expected Utility ONLY) ===
-        # pos_strength is the ONLY position sizing variable used downstream
-        # NO Kelly, NO mean/variance ratios - r_samples is the ONLY input
-        pos_strength = drift_weight * eu_position_size
+        # === FINAL POSITION STRENGTH ===
+        # Story 5.3: Blend EU-based sizing with forecast-magnitude sizing
+        # EU size (risk-adjusted): EU / max(E_loss, eps), clipped to [0, 1]
+        _size_eu = float(np.clip(eu_position_size, 0.0, 1.0))
+        # Magnitude size (conviction-based): |mu_H| / sig_H info ratio
+        _size_mag = abs(mu_H) / (sig_H + 1e-6) if sig_H > 0 else 0.0
+        _size_mag = float(np.clip(_size_mag, 0.0, 1.0))
+        blended_position_size = SIZE_EU_WEIGHT * _size_eu + SIZE_MAG_WEIGHT * _size_mag
+        blended_position_size = float(np.clip(blended_position_size, 0.0, 1.0))
+        # Story 5.6: Kelly half provides a floor for genuine signals
+        blended_position_size = max(blended_position_size, kelly_half)
+        blended_position_size = float(np.clip(blended_position_size, 0.0, 1.0))
+        pos_strength = drift_weight * blended_position_size
 
         # Logging/diagnostics: p, E_gain, E_loss, EU, pos_strength
         # (These are stored in Signal dataclass for analysis)
@@ -8716,11 +10003,14 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         if _cal_thresholds is not None:
             buy_thr, sell_thr = _cal_thresholds
 
+        # Story 5.1: Adaptive edge floor based on asset volatility
+        _adaptive_edge_floor = compute_adaptive_edge_floor(vol_now, H)
+
         thresholds[int(H)] = {
             "buy_thr": float(buy_thr),
             "sell_thr": float(sell_thr),
             "uncertainty": float(U),
-            "edge_floor": float(EDGE_FLOOR)
+            "edge_floor": float(_adaptive_edge_floor)
         }
 
         # Level-7 Modularization: Use helper function for confirmation logic
@@ -8732,20 +10022,40 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             buy_thr=buy_thr,
             sell_thr=sell_thr,
             edge=edge_now,
-            edge_floor=EDGE_FLOOR
+            edge_floor=_adaptive_edge_floor
         )
 
         # CI bounds for expected log return
-        ci_low = float(mu_H - z_star * sig_H)
-        ci_high = float(mu_H + z_star * sig_H)
+        # Story 3.2: Use quantile-based CIs from MC samples (primary).
+        # Parametric CI (mu +/- z*sig) is ONLY used when n_samples < 100.
+        # Quantile CIs correctly capture asymmetry and heavy tails of BMA distribution.
+        _n_sim = len(sim_H) if sim_H is not None else 0
+        if _n_sim >= QUANTILE_CI_MIN_SAMPLES:
+            # Primary: empirical quantiles from MC posterior predictive
+            _alpha_ci = (1.0 - ci) / 2.0  # ci=0.68 -> alpha=0.16
+            ci_low = float(np.quantile(sim_H, _alpha_ci))
+            ci_high = float(np.quantile(sim_H, 1.0 - _alpha_ci))
+            # 90% CI for risk assessment
+            ci_low_90 = float(np.quantile(sim_H, 0.05))
+            ci_high_90 = float(np.quantile(sim_H, 0.95))
+        else:
+            # Fallback: parametric CI (only when samples < 100)
+            ci_low = float(mu_H - z_star * sig_H)
+            ci_high = float(mu_H + z_star * sig_H)
+            ci_low_90 = float(mu_H - 1.645 * sig_H)
+            ci_high_90 = float(mu_H + 1.645 * sig_H)
 
         # Clamp CI to physical limits (March 2026)
         # Can't predict worse than -99% loss or better than +400% gain
         ci_low = max(ci_low, _CI_LOG_FLOOR)
         ci_high = min(ci_high, _CI_LOG_CAP)
+        ci_low_90 = max(ci_low_90, _CI_LOG_FLOOR)
+        ci_high_90 = min(ci_high_90, _CI_LOG_CAP)
         # Ensure CI ordering after clamping
         if ci_low > ci_high:
             ci_low, ci_high = ci_high, ci_low
+        if ci_low_90 > ci_high_90:
+            ci_low_90, ci_high_90 = ci_high_90, ci_low_90
 
         # Convert expected log‑return to PLN profit for a 1,000,000 PLN notional
         exp_mult = float(np.exp(mu_H))
@@ -8800,17 +10110,30 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
 
         # ========================================================================
         # EXHAUSTION-BASED RISK MODULATION (SOFT ONLY)
+        # Story 5.5: Direction-aware exhaustion modulation
         # ========================================================================
-        # Higher ue_up → reduce long conviction (extended above equilibrium)
-        # Higher ue_down → reduce short conviction (extended below equilibrium)
-        # This does NOT flip signals - only modulates confidence
+        # Long signals (mu_H > 0):
+        #   ue_up (overbought)  -> reduce position (caution)
+        #   ue_down (oversold)  -> increase position (mean-reversion opportunity)
+        # Short signals (mu_H <= 0):
+        #   ue_up (overbought)  -> increase position (mean-reversion opportunity)
+        #   ue_down (oversold)  -> reduce position (caution)
+        # Increase factor (0.3) < decrease factor (0.5) for prudence.
+        # Position always capped at 1.0.
         # ========================================================================
-        if ue_up > 0 and pos_strength > 0:
-            # Extended above equilibrium: reduce long conviction
-            pos_strength *= (1.0 - 0.5 * ue_up)
-        if ue_down > 0 and pos_strength > 0:
-            # Extended below equilibrium: reduce short conviction
-            pos_strength *= (1.0 - 0.5 * ue_down)
+        _exh_reduce = 0.5   # Reduction factor (caution)
+        _exh_boost = 0.3    # Boost factor (mean-reversion, conservative)
+        if mu_H > 0:  # Long signal
+            if ue_up > 0 and pos_strength > 0:
+                pos_strength *= (1.0 - _exh_reduce * ue_up)
+            if ue_down > 0 and pos_strength > 0:
+                pos_strength *= (1.0 + _exh_boost * ue_down)
+        else:  # Short / neutral signal
+            if ue_up > 0 and pos_strength > 0:
+                pos_strength *= (1.0 + _exh_boost * ue_up)
+            if ue_down > 0 and pos_strength > 0:
+                pos_strength *= (1.0 - _exh_reduce * ue_down)
+        pos_strength = min(pos_strength, 1.0)
 
         # =====================================================================
         # RISK TEMPERATURE MODULATION (Expert Panel Solution 1 + 4)
@@ -8958,6 +10281,8 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             exp_ret=float(mu_H),
             ci_low=ci_low,
             ci_high=ci_high,
+            ci_low_90=ci_low_90,
+            ci_high_90=ci_high_90,
             profit_pln=float(profit_pln),
             profit_ci_low_pln=float(profit_ci_low_pln),
             profit_ci_high_pln=float(profit_ci_high_pln),
@@ -9045,7 +10370,76 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
             crps_score=float(tuned_params.get('crps')) if tuned_params and tuned_params.get('crps') is not None else None,
             scoring_weights=tuned_params.get('scoring_weights_used') if tuned_params else None,
             scoring_method=tuned_params.get('scoring_method') if tuned_params else None,
+            # Story 3.6: MC Path Diagnostics
+            mc_diagnostics=_mc_diag.to_dict() if _mc_diag and _mc_diag.n_paths > 0 else None,
+            # Story 5.2: Balanced EU
+            eu_asymmetric=float(EU_asymmetric),
+            eu_balanced=float(EU_balanced),
+            # Story 5.6: Kelly sizing
+            kelly_full=float(kelly_full),
+            kelly_half=float(kelly_half),
         ))
+
+        # Story 3.3: Accumulate state for persistence
+        _prev_signal_state[str(H)] = {
+            "p_up": float(p_now),
+            "label": label,
+        }
+
+    # Story 3.3: Save signal state for next run's two-day confirmation
+    # Story 4.5: Also save smoothed regime probs for EMA continuity
+    if asset_key:
+        try:
+            if regime_probs and isinstance(regime_probs, dict):
+                _prev_signal_state["regime_probs"] = [
+                    float(regime_probs.get(i, 0.2)) for i in range(5)
+                ]
+            save_signal_state(asset_key, _prev_signal_state)
+        except Exception:
+            pass  # non-critical: state persistence is best-effort
+
+    # ── Story 7.5: Signal Output Validation Invariants ───────────────────
+    _n_violations = 0
+    _debug_mode = os.environ.get("SIGNAL_DEBUG", "") == "1"
+    _sig_map: Dict[int, Signal] = {s.horizon_days: s for s in sigs}
+    _prev_vol: Optional[float] = None
+    for _h_idx, _H in enumerate(sorted(_sig_map.keys())):
+        _sig = _sig_map[_H]
+        # 1. Finiteness
+        if not np.isfinite(_sig.exp_ret):
+            _n_violations += 1
+            if _debug_mode:
+                raise AssertionError(f"exp_ret is not finite for H={_H}")
+        if not np.isfinite(_sig.p_up):
+            _n_violations += 1
+            if _debug_mode:
+                raise AssertionError(f"p_up is not finite for H={_H}")
+        # 2. p_up in [0, 1]
+        if not (0.0 <= _sig.p_up <= 1.0):
+            _n_violations += 1
+            if _debug_mode:
+                raise AssertionError(f"p_up={_sig.p_up} out of [0,1] for H={_H}")
+        # 3. CI ordering (allow small tolerance for numerical noise)
+        if _sig.ci_low > _sig.ci_high + 1e-10:
+            _n_violations += 1
+            if _debug_mode:
+                raise AssertionError(f"CI inversion at H={_H}: [{_sig.ci_low}, {_sig.ci_high}]")
+        # 4. Non-negative volatility
+        if hasattr(_sig, 'vol_mean') and _sig.vol_mean < 0:
+            _n_violations += 1
+            if _debug_mode:
+                raise AssertionError(f"Negative vol_mean={_sig.vol_mean} for H={_H}")
+        # 5. Variance monotonicity (allow 50% decrease tolerance)
+        _curr_vol = _sig.vol_mean if hasattr(_sig, 'vol_mean') else 0.0
+        if _prev_vol is not None and _prev_vol > 0 and _curr_vol > 0:
+            if _curr_vol < _prev_vol * 0.5:
+                _n_violations += 1
+                if _debug_mode:
+                    raise AssertionError(
+                        f"vol decreased dramatically from H_prev to H={_H}: "
+                        f"{_curr_vol:.6f} < {_prev_vol * 0.5:.6f}"
+                    )
+        _prev_vol = _curr_vol
 
     return sigs, thresholds
 
@@ -9137,6 +10531,9 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
             enable_model_comp = args.model_comparison
             diagnostics = compute_all_diagnostics(px, feats, enable_oos=enable_oos, enable_pit_calibration=enable_pit, enable_model_comparison=enable_model_comp)
 
+        # Epic 8 enrichment: conviction scoring, Kelly sizing, signal TTL
+        enrichment = _enrich_signal_with_epic8(asset, sigs, tuned_params, feats)
+
         return {
             "status": "success",
             "asset": asset,
@@ -9148,6 +10545,7 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
             "thresholds": thresholds,
             "diagnostics": diagnostics,
             "last_close": last_close,
+            "enrichment": enrichment,
         }
 
     except Exception as e:
@@ -9665,6 +11063,7 @@ def main() -> None:
         thresholds = result["thresholds"]
         diagnostics = result["diagnostics"]
         last_close = result["last_close"]
+        enrichment = result.get("enrichment", {})
 
         # De-duplicate check
         if canon in processed_syms:
@@ -10219,6 +11618,9 @@ def main() -> None:
             "sector": get_sector(canon),
             "crash_risk_score": crash_risk_score,
             "momentum_score": momentum_score,
+            "conviction": enrichment.get("conviction"),
+            "kelly": enrichment.get("kelly"),
+            "signal_ttl": enrichment.get("signal_ttl"),
         })
 
         # Track regime and model for end-of-run summary
@@ -10426,6 +11828,10 @@ def main() -> None:
                     serializable_diagnostics[k] = v
             block["diagnostics"] = serializable_diagnostics
 
+        # Add Epic 8 enrichment data (conviction, Kelly, TTL) to JSON export
+        if enrichment:
+            block["enrichment"] = enrichment
+
         all_blocks.append(block)
 
         # Prepare CSV rows
@@ -10545,6 +11951,73 @@ def main() -> None:
         if os.getenv("DEBUG"):
             Console().print(f"[dim]Regime-model summary error: {rms_e}[/dim]")
 
+    # =========================================================================
+    # EPIC 8 PORTFOLIO-LEVEL ENRICHMENT (April 2026)
+    # =========================================================================
+    # Pair screening and sector rotation run AFTER all individual assets.
+    # Results are added to the payload for JSON export.
+    # =========================================================================
+
+    portfolio_enrichment = {}
+
+    # 8.4: Pair Trading — screen for cointegrated pairs across the universe
+    if PAIR_TRADING_AVAILABLE and len(success_results) >= 4:
+        try:
+            price_dict = {}
+            for r in success_results:
+                if r and r.get("status") == "success" and r.get("px") is not None:
+                    sym = r["canon"]
+                    price_dict[sym] = r["px"].values
+            if len(price_dict) >= 4:
+                symbols = list(price_dict.keys())
+                pairs = screen_pairs(price_dict, symbols, top_n=10)
+                portfolio_enrichment["pairs"] = [
+                    {
+                        "asset_a": p.asset_a,
+                        "asset_b": p.asset_b,
+                        "adf_stat": p.adf_stat,
+                        "pvalue": p.pvalue,
+                        "halflife": p.halflife,
+                        "zscore": p.spread_zscore,
+                        "signal": p.signal,
+                    }
+                    for p in pairs
+                ]
+        except Exception:
+            pass
+
+    # 8.5: Sector Rotation — compute sector-level signals
+    if SECTOR_ROTATION_AVAILABLE and summary_rows:
+        try:
+            from decision.sector_rotation import SectorSignal
+            sector_forecasts = {}
+            for row in summary_rows:
+                sector = row.get("sector", "Other")
+                h_sigs = row.get("horizon_signals", {})
+                # Use 7-day or nearest horizon p_up as forecast proxy
+                for h in [7, 3, 1, 30]:
+                    if h in h_sigs:
+                        p = h_sigs[h].get("p_up", 0.5)
+                        sector_forecasts.setdefault(sector, []).append(p - 0.5)
+                        break
+            if sector_forecasts:
+                sector_signals = []
+                for sector, forecasts in sector_forecasts.items():
+                    avg = sum(forecasts) / len(forecasts) if forecasts else 0
+                    breadth = sum(1 for f in forecasts if f > 0) / max(len(forecasts), 1)
+                    composite = 0.6 * max(-1, min(1, avg * 10)) + 0.4 * (breadth - 0.5) * 2
+                    rec = "OVERWEIGHT" if composite > 0.3 else ("UNDERWEIGHT" if composite < -0.3 else "NEUTRAL")
+                    sector_signals.append({
+                        "sector": sector,
+                        "composite": round(composite, 3),
+                        "breadth": round(breadth, 3),
+                        "recommendation": rec,
+                    })
+                sector_signals.sort(key=lambda x: x["composite"], reverse=True)
+                portfolio_enrichment["sector_rotation"] = sector_signals
+        except Exception:
+            pass
+
     # Build structured failure log for exports
     failure_log = [
         {
@@ -10586,6 +12059,7 @@ def main() -> None:
         "column_descriptions": DETAILED_COLUMN_DESCRIPTIONS,
         "simple_column_descriptions": SIMPLIFIED_COLUMN_DESCRIPTIONS,
         "failed_assets": failure_log,
+        "portfolio_enrichment": portfolio_enrichment,
     }
     try:
         os.makedirs(os.path.dirname(cache_path), exist_ok=True)
@@ -10600,6 +12074,35 @@ def main() -> None:
                 json.dump(payload, f, indent=2)
         except Exception as e:
             Console().print(f"[yellow]Warning:[/yellow] Could not write JSON export: {e}")
+
+    # Epic 7.4: Persist forecasts to SQLite for historical analysis
+    if QUANT_DB_AVAILABLE and all_blocks:
+        try:
+            db_path = os.path.join(os.path.dirname(__file__), os.pardir, "data", "quant.db")
+            db = QuantDB(db_path)
+            from datetime import date as date_type
+            today = date_type.today().isoformat()
+            rows = []
+            for block in all_blocks:
+                sym = block.get("symbol", "")
+                for sig in block.get("signals", []):
+                    rows.append({
+                        "symbol": sym,
+                        "date": today,
+                        "horizon": int(sig.get("horizon_days", 0)),
+                        "forecast_pct": float(sig.get("exp_ret", 0) * 100),
+                        "p_up": float(sig.get("p_up", 0.5)),
+                        "confidence_low": float(sig.get("ci_low", 0)),
+                        "confidence_high": float(sig.get("ci_high", 0)),
+                        "regime": sig.get("regime", ""),
+                        "label": sig.get("label", "HOLD"),
+                        "model": sig.get("bma_method", ""),
+                    })
+            if rows:
+                db.insert_forecasts_batch(rows)
+            db.close()
+        except Exception:
+            pass  # DB persistence is best-effort
 
 
 if __name__ == "__main__":

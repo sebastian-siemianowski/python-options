@@ -55,8 +55,8 @@ class TestLogLikelihoodDiff(unittest.TestCase):
         self.assertIn('kalman_phi_gaussian_unified', self.models)
 
     def test_expected_model_count(self):
-        """Should have 10 models (2 Gaussian + 4 base + 4 unified Student-t)."""
-        self.assertEqual(len(self.models), 10)
+        """Should have 11 models (2 Gaussian + 4 base + 4 unified Student-t + 1 nu_mle)."""
+        self.assertEqual(len(self.models), 11)
 
 
 if __name__ == "__main__":

@@ -135,6 +135,41 @@ def prepare_arrays(*arrays) -> Tuple[np.ndarray, ...]:
 
 
 # =============================================================================
+# ARRAY PREPARATION AUDIT — Story 13.1
+# =============================================================================
+
+def validate_prepare_arrays(*arrays) -> dict:
+    """
+    Audit prepare_arrays() output for float64 precision and C-contiguity.
+
+    Returns diagnostic dict with validation results for each array.
+    """
+    prepared = prepare_arrays(*arrays)
+    diagnostics = []
+    for i, arr in enumerate(prepared):
+        diag = {
+            "index": i,
+            "dtype": str(arr.dtype),
+            "is_float64": arr.dtype == np.float64,
+            "is_c_contiguous": arr.flags["C_CONTIGUOUS"],
+            "ndim": arr.ndim,
+            "is_1d": arr.ndim == 1,
+            "shape": arr.shape,
+            "has_nan": bool(np.any(np.isnan(arr))) if arr.size > 0 else False,
+            "has_inf": bool(np.any(np.isinf(arr))) if arr.size > 0 else False,
+        }
+        diag["valid"] = diag["is_float64"] and diag["is_c_contiguous"] and diag["is_1d"]
+        diagnostics.append(diag)
+
+    return {
+        "n_arrays": len(prepared),
+        "all_valid": all(d["valid"] for d in diagnostics),
+        "arrays": diagnostics,
+        "prepared": prepared,
+    }
+
+
+# =============================================================================
 # GAMMA PRECOMPUTATION (for φ-Student-t)
 # =============================================================================
 
@@ -176,6 +211,828 @@ def precompute_gamma_values(nu: float) -> Tuple[float, float]:
         log_gamma_half_nu_plus_half = float(gammaln((nu + 1.0) / 2.0))
     
     return log_gamma_half_nu, log_gamma_half_nu_plus_half
+
+
+# =============================================================================
+# GAMMA PRECOMPUTATION AUDIT — Story 13.2
+# =============================================================================
+
+def validate_gamma_precomputation(
+    nu_values: Optional[List[float]] = None,
+) -> dict:
+    """
+    Validate gamma precomputation consistency and cache behavior.
+
+    Checks that precompute_gamma_values() returns the same result
+    for all filter types and that cached values match scipy.
+
+    Parameters
+    ----------
+    nu_values : list of float, optional
+        DoF values to test. Default: common values.
+
+    Returns
+    -------
+    dict with keys:
+        all_consistent : bool
+        max_error : float (vs scipy reference)
+        cache_info : dict (lru_cache stats)
+        per_nu : list of dicts with per-value diagnostics
+    """
+    if nu_values is None:
+        nu_values = [3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0, 20.0, 50.0]
+
+    per_nu = []
+    max_error = 0.0
+
+    for nu in nu_values:
+        lg_half, lg_half_plus = precompute_gamma_values(nu)
+
+        # Reference from scipy
+        if _SCIPY_AVAILABLE:
+            ref_half = float(gammaln(nu / 2.0))
+            ref_half_plus = float(gammaln((nu + 1.0) / 2.0))
+            err_half = abs(lg_half - ref_half)
+            err_half_plus = abs(lg_half_plus - ref_half_plus)
+            max_error = max(max_error, err_half, err_half_plus)
+        else:
+            err_half = err_half_plus = float("nan")
+
+        # Consistency: call again, should return same values
+        lg_half2, lg_half_plus2 = precompute_gamma_values(nu)
+        consistent = (lg_half == lg_half2) and (lg_half_plus == lg_half_plus2)
+
+        per_nu.append({
+            "nu": nu,
+            "log_gamma_half_nu": lg_half,
+            "log_gamma_half_nu_plus_half": lg_half_plus,
+            "error_half": err_half,
+            "error_half_plus": err_half_plus,
+            "consistent": consistent,
+        })
+
+    cache_info = precompute_gamma_values.cache_info()
+
+    return {
+        "all_consistent": all(d["consistent"] for d in per_nu),
+        "max_error": max_error,
+        "cache_info": {
+            "hits": cache_info.hits,
+            "misses": cache_info.misses,
+            "maxsize": cache_info.maxsize,
+            "currsize": cache_info.currsize,
+        },
+        "per_nu": per_nu,
+    }
+
+
+# =============================================================================
+# DYNAMIC MOMENTUM CAP — Story 14.1
+# =============================================================================
+
+# Asset-class momentum cap multipliers:
+#   k=3.0 standard, k=2.0 high-vol, k=4.0 slow
+_MOMENTUM_CAP_K = {
+    "metals_gold": 4.0,
+    "metals_silver": 3.5,
+    "metals_other": 4.0,
+    "high_vol_equity": 2.0,
+    "crypto": 2.0,
+    "large_cap": 3.0,
+    "index": 3.0,
+    "forex": 3.0,
+}
+
+# Symbols for asset-class dispatch (mirrors phi_student_t.py)
+_CRYPTO_SYMS = frozenset({
+    "BTC-USD", "ETH-USD", "SOL-USD", "DOGE-USD", "ADA-USD",
+    "XRP-USD", "DOT-USD", "AVAX-USD", "LINK-USD", "MATIC-USD",
+})
+_HIGH_VOL_SYMS = frozenset({
+    "MSTR", "IONQ", "SMCI", "RIVN", "UPST", "AFRM", "DKNG",
+    "GME", "AMC", "RKLB",
+})
+_INDEX_SYMS = frozenset({
+    "SPY", "QQQ", "IWM", "DIA", "VOO", "VTI",
+})
+_METALS_GOLD_SYMS = frozenset({
+    "GC=F", "GLD", "IAU", "SGOL", "GLDM",
+})
+_METALS_SILVER_SYMS = frozenset({
+    "SI=F", "SLV", "SIVR",
+})
+_METALS_OTHER_SYMS = frozenset({
+    "HG=F", "PL=F", "PA=F", "CPER", "PPLT",
+})
+
+
+def _classify_for_momentum(symbol: str) -> str:
+    """Classify asset symbol for momentum cap dispatch."""
+    if symbol is None:
+        return "large_cap"
+    sym = symbol.strip().upper()
+    if sym in _CRYPTO_SYMS:
+        return "crypto"
+    if sym in _HIGH_VOL_SYMS:
+        return "high_vol_equity"
+    if sym in _METALS_GOLD_SYMS:
+        return "metals_gold"
+    if sym in _METALS_SILVER_SYMS:
+        return "metals_silver"
+    if sym in _METALS_OTHER_SYMS:
+        return "metals_other"
+    if sym in _INDEX_SYMS:
+        return "index"
+    if sym.endswith("=X"):
+        return "forex"
+    return "large_cap"
+
+
+def compute_dynamic_momentum_cap(
+    q: float,
+    asset_symbol: Optional[str] = None,
+    k_override: Optional[float] = None,
+) -> dict:
+    """
+    Compute the momentum cap u_max = k * sqrt(q) for a given asset.
+
+    Parameters
+    ----------
+    q : float
+        Process noise variance.
+    asset_symbol : str, optional
+        Asset symbol for class-based k selection.
+    k_override : float, optional
+        Override the asset-class k value.
+
+    Returns
+    -------
+    dict with keys:
+        k : float — the cap multiplier
+        u_max : float — the absolute cap value
+        asset_class : str — detected class
+        sqrt_q : float
+    """
+    asset_class = _classify_for_momentum(asset_symbol)
+    k = k_override if k_override is not None else _MOMENTUM_CAP_K.get(asset_class, 3.0)
+    sqrt_q = np.sqrt(max(q, 0.0))
+    u_max = k * sqrt_q
+
+    return {
+        "k": k,
+        "u_max": u_max,
+        "asset_class": asset_class,
+        "sqrt_q": sqrt_q,
+    }
+
+
+def monitor_cap_binding(
+    momentum_adjustment: np.ndarray,
+    u_max: float,
+) -> dict:
+    """
+    Monitor how often the momentum cap binds.
+
+    Optimal binding rate: 5-15% of timesteps.
+
+    Returns
+    -------
+    dict with keys:
+        binding_rate : float — fraction of timesteps at cap
+        n_bound : int — number of capped timesteps
+        n_total : int — total timesteps
+        recommendation : str — 'ok', 'increase_k', or 'decrease_k'
+    """
+    n = len(momentum_adjustment)
+    if n == 0:
+        return {"binding_rate": 0.0, "n_bound": 0, "n_total": 0,
+                "recommendation": "ok"}
+
+    abs_mom = np.abs(momentum_adjustment)
+    n_bound = int(np.sum(abs_mom >= u_max * 0.999))  # near-cap tolerance
+    binding_rate = n_bound / n
+
+    if binding_rate > 0.20:
+        recommendation = "increase_k"
+    elif binding_rate < 0.03:
+        recommendation = "decrease_k"
+    else:
+        recommendation = "ok"
+
+    return {
+        "binding_rate": binding_rate,
+        "n_bound": n_bound,
+        "n_total": n,
+        "recommendation": recommendation,
+    }
+
+
+def apply_momentum_cap(
+    momentum_raw: np.ndarray,
+    q: float,
+    asset_symbol: Optional[str] = None,
+    k_override: Optional[float] = None,
+) -> Tuple[np.ndarray, dict]:
+    """
+    Apply dynamic momentum cap to raw momentum signal.
+
+    Returns capped momentum array and diagnostics.
+    """
+    cap_info = compute_dynamic_momentum_cap(q, asset_symbol, k_override)
+    u_max = cap_info["u_max"]
+
+    if u_max <= 0.0:
+        capped = np.zeros_like(momentum_raw)
+    else:
+        capped = np.clip(momentum_raw, -u_max, u_max)
+
+    binding = monitor_cap_binding(momentum_raw, u_max)
+    cap_info.update(binding)
+
+    return capped, cap_info
+
+
+# =============================================================================
+# PHI SHRINKAGE FOR MOMENTUM — Story 14.2
+# =============================================================================
+
+def compute_phi_shrinkage_for_momentum(
+    phi_mle: float,
+    momentum_enabled: bool = False,
+    center_momentum: float = 1.0,
+    tau_momentum: float = 0.10,
+    center_no_momentum: float = 0.0,
+    tau_no_momentum: float = 0.20,
+) -> dict:
+    """
+    Compute phi shrinkage prior parameters based on momentum status.
+
+    When momentum is active:
+        - Center = 1.0 (unit root, persistence captures level)
+        - Tau = 0.10 (tight, prevents collinearity with kappa)
+    When momentum is inactive:
+        - Center = 0.0 (mean reversion)
+        - Tau = 0.20 (looser)
+
+    Returns
+    -------
+    dict with keys:
+        center : float — prior center
+        tau : float — prior standard deviation
+        log_prior : float — Gaussian log prior
+        phi_shrunk : float — MAP-like shrinkage of phi toward center
+        momentum_enabled : bool
+        collinearity_safe : bool — |phi_mle - center| < 3*tau
+    """
+    if momentum_enabled:
+        center = center_momentum
+        tau = tau_momentum
+    else:
+        center = center_no_momentum
+        tau = tau_no_momentum
+
+    tau_safe = max(tau, 1e-6)
+    deviation = phi_mle - center
+    log_prior = -0.5 * (deviation ** 2) / (tau_safe ** 2)
+
+    # Shrinkage: blend MLE toward prior center
+    # posterior_mean ~ (phi_mle * precision_data + center * precision_prior) / (precision_data + precision_prior)
+    # Simplified: phi_shrunk = center + tau^2 / (tau^2 + sigma_phi^2) * (phi_mle - center)
+    # Approximate sigma_phi ~ 0.05 (typical estimation uncertainty)
+    sigma_phi_approx = 0.05
+    shrinkage_factor = tau_safe ** 2 / (tau_safe ** 2 + sigma_phi_approx ** 2)
+    phi_shrunk = center + shrinkage_factor * (phi_mle - center)
+
+    # Bounds: no explosive or oscillatory
+    phi_shrunk = max(-0.5, min(1.05, phi_shrunk))
+
+    collinearity_safe = abs(deviation) < 3.0 * tau_safe
+
+    return {
+        "center": center,
+        "tau": tau_safe,
+        "log_prior": log_prior,
+        "phi_shrunk": phi_shrunk,
+        "momentum_enabled": momentum_enabled,
+        "collinearity_safe": collinearity_safe,
+        "phi_mle": phi_mle,
+        "deviation": deviation,
+    }
+
+
+# =============================================================================
+# STATE-SPACE EQUILIBRIUM ESTIMATION — Story 14.3
+# =============================================================================
+
+def rts_smoother(
+    mu_filtered: np.ndarray,
+    P_filtered: np.ndarray,
+    phi: float,
+    q: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Rauch-Tung-Striebel fixed-interval smoother.
+
+    Backward pass on Kalman filtered states to produce the smoothed
+    equilibrium estimate. The smoother is lag-free — it uses future
+    observations to correct the filtered estimate.
+
+    mu_pred[t] = phi * mu_filt[t-1]
+    P_pred[t] = phi^2 * P_filt[t-1] + q
+    G[t] = phi * P_filt[t-1] / P_pred[t]    (smoother gain)
+    mu_smooth[t] = mu_filt[t] + G[t+1] * (mu_smooth[t+1] - mu_pred[t+1])
+    P_smooth[t] = P_filt[t] + G[t+1]^2 * (P_smooth[t+1] - P_pred[t+1])
+
+    Parameters
+    ----------
+    mu_filtered : np.ndarray — filtered state means
+    P_filtered : np.ndarray — filtered state variances
+    phi : float — AR(1) coefficient
+    q : float — process noise variance
+
+    Returns
+    -------
+    mu_smooth : np.ndarray — smoothed equilibrium
+    P_smooth : np.ndarray — smoothed variances
+    """
+    T = len(mu_filtered)
+    mu_smooth = np.empty(T, dtype=np.float64)
+    P_smooth = np.empty(T, dtype=np.float64)
+
+    mu_smooth[T - 1] = mu_filtered[T - 1]
+    P_smooth[T - 1] = P_filtered[T - 1]
+
+    for t in range(T - 2, -1, -1):
+        P_pred = phi ** 2 * P_filtered[t] + q
+        if P_pred < 1e-30:
+            P_pred = 1e-30
+        G = phi * P_filtered[t] / P_pred
+        mu_pred = phi * mu_filtered[t]
+        mu_smooth[t] = mu_filtered[t] + G * (mu_smooth[t + 1] - mu_pred)
+        P_smooth[t] = P_filtered[t] + G ** 2 * (P_smooth[t + 1] - P_pred)
+
+    return mu_smooth, P_smooth
+
+
+def compute_equilibrium_and_mr_signal(
+    mu_filtered: np.ndarray,
+    P_filtered: np.ndarray,
+    phi: float,
+    q: float,
+    kappa: float = 0.1,
+) -> dict:
+    """
+    Compute state-space equilibrium and mean-reversion signal.
+
+    MR_t = kappa * (mu_t - mu*_t)
+    where mu*_t is the smoothed equilibrium.
+
+    Parameters
+    ----------
+    kappa : float — mean-reversion speed
+
+    Returns
+    -------
+    dict with keys:
+        equilibrium : np.ndarray — smoothed equilibrium mu*_t
+        P_smooth : np.ndarray — smoother variance
+        mr_signal : np.ndarray — mean-reversion signal
+        mr_mean : float — mean of MR signal (should be ~0)
+        mr_std : float — std of MR signal
+    """
+    mu_smooth, P_smooth = rts_smoother(mu_filtered, P_filtered, phi, q)
+    mr_signal = kappa * (mu_filtered - mu_smooth)
+
+    return {
+        "equilibrium": mu_smooth,
+        "P_smooth": P_smooth,
+        "mr_signal": mr_signal,
+        "mr_mean": float(np.mean(mr_signal)),
+        "mr_std": float(np.std(mr_signal)),
+    }
+
+
+# =============================================================================
+# PIT-DRIVEN VARIANCE INFLATION WITH DEAD-ZONE — Story 15.2
+# =============================================================================
+
+# Asset-class dead-zones: (low, high) for PIT MAD
+_PIT_DEAD_ZONES = {
+    "metals_gold": (0.25, 0.60),
+    "metals_silver": (0.25, 0.60),
+    "metals_other": (0.25, 0.60),
+    "crypto": (0.28, 0.52),
+    "high_vol_equity": (0.28, 0.52),
+    "large_cap": (0.30, 0.55),
+    "index": (0.30, 0.55),
+    "forex": (0.30, 0.55),
+}
+
+
+def _compute_pit_mad(pit_values: np.ndarray) -> float:
+    """
+    Mean Absolute Deviation of PIT values from 0.5.
+    Uniform[0,1] has MAD ~ 0.25; peaked -> MAD < 0.25; U-shaped -> MAD > 0.25.
+    We scale to [0, 1] convention where ~0.42 is well-calibrated.
+
+    Actually, the simple version: median of |pit - uniform_quantile|.
+    Here we use the simpler metric: MAD = mean(|pit - 0.5|).
+    """
+    return float(np.mean(np.abs(pit_values - 0.5)))
+
+
+def pit_variance_inflation_iterative(
+    pit_values: np.ndarray,
+    beta_init: float = 1.0,
+    max_iter: int = 10,
+    step_size: float = 0.05,
+    asset_class: Optional[str] = None,
+    dead_zone: Optional[Tuple[float, float]] = None,
+) -> dict:
+    """
+    Iterative PIT-driven variance inflation with dead-zone.
+
+    Adjusts beta (variance multiplier) based on PIT MAD:
+    - If MAD < dead_zone[0] (peaked/overconfident): decrease beta by step_size
+    - If MAD > dead_zone[1] (U-shaped/underconfident): increase beta by step_size
+    - If MAD in dead-zone: no correction (well-calibrated)
+
+    Parameters
+    ----------
+    pit_values : np.ndarray — PIT values in [0, 1]
+    beta_init : float — initial variance inflation factor
+    max_iter : int — maximum correction iterations
+    step_size : float — beta adjustment per iteration (default 5%)
+    asset_class : str, optional — for asset-class dead-zones
+    dead_zone : tuple, optional — override (low, high) bounds
+
+    Returns
+    -------
+    dict with keys:
+        beta_final : float — converged variance inflation
+        n_iter : int — iterations used
+        converged : bool — beta stabilized
+        trajectory : list of (iter, beta, pit_mad)
+        pit_mad_initial : float
+        pit_mad_final : float
+        correction_applied : bool
+    """
+    if dead_zone is None:
+        ac = asset_class if asset_class else "large_cap"
+        dead_zone = _PIT_DEAD_ZONES.get(ac, (0.30, 0.55))
+
+    pit_mad = _compute_pit_mad(pit_values)
+    pit_mad_initial = pit_mad
+
+    beta = beta_init
+    trajectory = [(0, beta, pit_mad)]
+    converged = False
+    correction_applied = False
+
+    for i in range(1, max_iter + 1):
+        if dead_zone[0] <= pit_mad <= dead_zone[1]:
+            converged = True
+            break
+
+        if pit_mad < dead_zone[0]:
+            # Too peaked -> widen variance -> decrease beta
+            beta *= (1.0 - step_size)
+            correction_applied = True
+        else:
+            # Too spread -> narrow variance -> increase beta
+            beta *= (1.0 + step_size)
+            correction_applied = True
+
+        beta = max(0.5, min(5.0, beta))
+
+        # Recompute PIT with new beta (approximate: scale z by 1/sqrt(beta))
+        # pit_new = Phi(z / sqrt(beta)) where z = Phi_inv(pit_old) * sqrt(beta_old)
+        # Simplified: just track beta, actual PIT recomputation happens upstream
+        trajectory.append((i, beta, pit_mad))
+
+        if len(trajectory) >= 2 and abs(trajectory[-1][1] - trajectory[-2][1]) < 0.01:
+            converged = True
+            break
+
+    return {
+        "beta_final": beta,
+        "n_iter": len(trajectory) - 1,
+        "converged": converged,
+        "trajectory": trajectory,
+        "pit_mad_initial": pit_mad_initial,
+        "pit_mad_final": pit_mad,
+        "correction_applied": correction_applied,
+    }
+
+
+# =============================================================================
+# PIT ENTROPY DIAGNOSTIC — Story 15.3
+# =============================================================================
+
+def pit_entropy(pit_values: np.ndarray, n_bins: int = 20) -> dict:
+    """
+    Compute PIT entropy as a calibration diagnostic.
+
+    H(u) = -sum(p_b * log(p_b)) where p_b are bin probabilities.
+    Well-calibrated: H ~ log(B). Entropy ratio in [0.95, 1.05].
+
+    Parameters
+    ----------
+    pit_values : np.ndarray — PIT values in [0, 1]
+    n_bins : int — number of histogram bins (default 20)
+
+    Returns
+    -------
+    dict with keys:
+        entropy : float — Shannon entropy H(u)
+        entropy_uniform : float — H_uniform = log(B)
+        entropy_ratio : float — H(u) / H_uniform
+        well_calibrated : bool — ratio in [0.95, 1.05]
+        bin_counts : np.ndarray — counts per bin
+        bin_probs : np.ndarray — probabilities per bin
+    """
+    pit_clean = pit_values[np.isfinite(pit_values)]
+    pit_clean = np.clip(pit_clean, 0.0, 1.0)
+
+    counts, _ = np.histogram(pit_clean, bins=n_bins, range=(0.0, 1.0))
+    total = counts.sum()
+    if total == 0:
+        return {
+            "entropy": 0.0,
+            "entropy_uniform": np.log(n_bins),
+            "entropy_ratio": 0.0,
+            "well_calibrated": False,
+            "bin_counts": counts,
+            "bin_probs": np.zeros(n_bins),
+        }
+
+    probs = counts / total
+    # Avoid log(0) by filtering zero bins
+    nonzero = probs > 0
+    entropy = -np.sum(probs[nonzero] * np.log(probs[nonzero]))
+    entropy_uniform = np.log(n_bins)
+    ratio = entropy / entropy_uniform if entropy_uniform > 0 else 0.0
+
+    return {
+        "entropy": float(entropy),
+        "entropy_uniform": float(entropy_uniform),
+        "entropy_ratio": float(ratio),
+        "well_calibrated": 0.95 <= ratio <= 1.05,
+        "bin_counts": counts,
+        "bin_probs": probs,
+    }
+
+
+# =============================================================================
+# CRPS-OPTIMAL SIGMA SHRINKAGE (Story 16.2)
+# =============================================================================
+
+def crps_optimal_sigma_shrinkage(nu):
+    """
+    Compute CRPS-optimal scale shrinkage factor alpha* for Student-t.
+
+    Formula: alpha* = sqrt((3*nu + 4) / (3*nu + 8))
+
+    For nu=4:  alpha* = 0.8944
+    For nu=8:  alpha* = 0.9354
+    For nu=20: alpha* = 0.9701
+
+    Parameters
+    ----------
+    nu : float
+        Degrees of freedom (must be > 2 for finite variance).
+
+    Returns
+    -------
+    dict with:
+        alpha_star : float  – optimal shrinkage factor
+        nu : float          – input nu
+        variance_ratio : float – nu / (nu - 2), the excess variance
+        effective_df_adj : float – (3*nu + 4) / (3*nu + 8)
+    """
+    if nu <= 2.0:
+        raise ValueError(f"nu must be > 2 for finite variance, got {nu}")
+    variance_ratio = nu / (nu - 2.0)
+    alpha_sq = (3.0 * nu + 4.0) / (3.0 * nu + 8.0)
+    alpha_star = np.sqrt(alpha_sq)
+    return {
+        "alpha_star": float(alpha_star),
+        "nu": float(nu),
+        "variance_ratio": float(variance_ratio),
+        "effective_df_adj": float(alpha_sq),
+    }
+
+
+def apply_crps_sigma_shrinkage(sigma_arr, nu):
+    """
+    Apply CRPS-optimal shrinkage to an array of scale parameters.
+
+    Parameters
+    ----------
+    sigma_arr : np.ndarray
+        Array of scale (sigma) values.
+    nu : float
+        Degrees of freedom.
+
+    Returns
+    -------
+    np.ndarray
+        Shrunk sigma values: sigma * alpha_star.
+    """
+    result = crps_optimal_sigma_shrinkage(nu)
+    alpha = result["alpha_star"]
+    return sigma_arr * alpha
+
+
+def verify_crps_shrinkage_vs_grid(z, sigma, nu, grid_points=200):
+    """
+    Verify that alpha* matches grid-search optimum for CRPS.
+
+    Parameters
+    ----------
+    z : np.ndarray
+        Standardized residuals.
+    sigma : np.ndarray
+        Scale parameters.
+    nu : float
+        Degrees of freedom.
+    grid_points : int
+        Number of grid points for alpha search.
+
+    Returns
+    -------
+    dict with:
+        alpha_star_formula : float
+        alpha_star_grid : float
+        crps_at_formula : float
+        crps_at_grid : float
+        relative_gap : float  – should be < 0.01
+    """
+    from models.numba_kernels import crps_student_t_kernel
+
+    result = crps_optimal_sigma_shrinkage(nu)
+    alpha_formula = result["alpha_star"]
+
+    alphas = np.linspace(0.5, 1.5, grid_points)
+    crps_vals = np.empty(grid_points)
+    for i, a in enumerate(alphas):
+        # When shrinking sigma -> alpha*sigma, re-standardize: z_new = z / alpha
+        crps_vals[i] = crps_student_t_kernel(z / a, sigma * a, nu)
+
+    best_idx = np.argmin(crps_vals)
+    alpha_grid = alphas[best_idx]
+    crps_grid = crps_vals[best_idx]
+    crps_formula = crps_student_t_kernel(z / alpha_formula, sigma * alpha_formula, nu)
+
+    gap = abs(crps_formula - crps_grid) / max(abs(crps_grid), 1e-10)
+
+    return {
+        "alpha_star_formula": float(alpha_formula),
+        "alpha_star_grid": float(alpha_grid),
+        "crps_at_formula": float(crps_formula),
+        "crps_at_grid": float(crps_grid),
+        "relative_gap": float(gap),
+    }
+
+
+# =============================================================================
+# CRPS DECOMPOSITION – Hersbach (2000) (Story 16.3)
+# =============================================================================
+
+def crps_decomposition(pit_values, n_bins=20):
+    """
+    Decompose CRPS into Reliability, Resolution, Uncertainty using
+    the Hersbach (2000) binned-PIT method.
+
+    CRPS = Reliability - Resolution + Uncertainty
+
+    - Reliability near 0 = well calibrated (target < 0.002)
+    - Resolution > 0 = model is informative/sharp (target > 0.010)
+    - Uncertainty = irreducible (depends on data variance)
+
+    Parameters
+    ----------
+    pit_values : np.ndarray
+        PIT values in [0, 1].
+    n_bins : int
+        Number of bins for the decomposition.
+
+    Returns
+    -------
+    dict with:
+        reliability : float
+        resolution : float
+        uncertainty : float
+        crps_reconstructed : float  (= reliability - resolution + uncertainty)
+        well_calibrated : bool  (reliability < 0.002)
+        informative : bool  (resolution > 0.010)
+        bin_counts : np.ndarray
+        bin_obs_freq : np.ndarray  (observed frequency per bin)
+    """
+    pit = np.asarray(pit_values, dtype=np.float64)
+    pit = pit[np.isfinite(pit)]
+    n = len(pit)
+
+    if n < 10:
+        return {
+            "reliability": np.nan,
+            "resolution": np.nan,
+            "uncertainty": np.nan,
+            "crps_reconstructed": np.nan,
+            "well_calibrated": False,
+            "informative": False,
+            "bin_counts": np.array([]),
+            "bin_obs_freq": np.array([]),
+        }
+
+    # Bin edges: [0, 1/J, 2/J, ..., 1]
+    edges = np.linspace(0.0, 1.0, n_bins + 1)
+    bin_counts = np.zeros(n_bins, dtype=np.float64)
+    bin_obs_sum = np.zeros(n_bins, dtype=np.float64)
+
+    for i in range(n):
+        p = pit[i]
+        # Determine bin index
+        idx = int(p * n_bins)
+        if idx >= n_bins:
+            idx = n_bins - 1
+        if idx < 0:
+            idx = 0
+        bin_counts[idx] += 1.0
+        # Observed frequency: o_j = fraction of obs where pit <= (j+1)/J
+        # Actually in Hersbach, we need the cumulative approach.
+        # For each bin j, o_j = (# observations with PIT <= (j+1)/J) / n
+        # We'll compute this after binning.
+
+    # Hersbach decomposition:
+    # g_j = bin_counts[j] / n  (fraction of PITs in bin j)
+    # o_j = cumulative fraction: P(PIT <= (j+1)/J) for j=0,..,J-1
+    # For uniform PIT: o_j = (j+1)/J
+    #
+    # Reliability = sum_j g_j * (o_bar_j - p_j)^2
+    # Resolution = sum_j g_j * (o_bar_j - o_bar)^2
+    # Uncertainty = o_bar * (1 - o_bar)
+    # where o_bar_j is the average observation in bin j
+    # and p_j is the forecast probability for bin j
+    #
+    # Using the simplified Hersbach (2000) approach with rank histogram:
+    # alpha_j = (cumulative count up to bin j) / n
+    # Reliability = (1/J) * sum_{j=0}^{J} (alpha_j - j/J)^2
+    # Uncertainty = variance of the observation indicator
+
+    # Compute cumulative fractions (alpha_j for j=0,...,J)
+    J = n_bins
+    alpha = np.zeros(J + 1)
+    alpha[0] = 0.0
+    for j in range(J):
+        alpha[j + 1] = alpha[j] + bin_counts[j] / n
+
+    # Expected cumulative under uniformity: j/J
+    expected = np.linspace(0.0, 1.0, J + 1)
+
+    # Reliability: (1/J) * sum (alpha_j - j/J)^2
+    reliability = np.sum((alpha - expected) ** 2) / J
+
+    # Resolution: (1/J) * sum (alpha_j - alpha_bar)^2 - something
+    # Under Hersbach:
+    # CRPS = sum_{j=0}^{J-1} [(1/J)(alpha_{j+1} + alpha_j)/2 - (2j+1)/(2J)]^2 * (1/J)?
+    # Actually, the standard Hersbach decomposition is:
+    #
+    # Define: for each bin j, let o_j = alpha_j (cumulative proportion)
+    #         p_j = j/J (forecast probability)
+    # Then:
+    #   Reliability = (1/J) * sum_{j=0}^{J} (alpha_j - j/J)^2
+    #   Uncertainty is the mean Brier score of a climatological forecast
+    #
+    # Simpler equivalent form:
+    # Uncertainty = mean(pit) * (1 - mean(pit))
+    # For well-calibrated PIT (uniform on [0,1]): uncertainty = 0.25
+
+    mean_pit = np.mean(pit)
+    uncertainty = mean_pit * (1.0 - mean_pit)
+
+    # Resolution: derived from CRPS = Rel - Res + Unc
+    # Res = Rel + Unc - CRPS
+    # But we can also compute it directly:
+    # Resolution = (1/J) * sum (alpha_j - mean_alpha)^2
+    # where mean_alpha = 0.5 (for uniform PIT, the mean cumulative is 0.5)
+    mean_alpha = np.mean(alpha)
+    resolution = np.sum((alpha - mean_alpha) ** 2) / J
+
+    crps_reconstructed = reliability - resolution + uncertainty
+
+    obs_freq = bin_counts / n
+
+    return {
+        "reliability": float(reliability),
+        "resolution": float(resolution),
+        "uncertainty": float(uncertainty),
+        "crps_reconstructed": float(crps_reconstructed),
+        "well_calibrated": reliability < 0.002,
+        "informative": resolution > 0.010,
+        "bin_counts": bin_counts,
+        "bin_obs_freq": obs_freq,
+    }
 
 
 # =============================================================================

@@ -89,6 +89,24 @@ except ImportError:
     USE_PYTORCH_FORECASTING = False
 
 # =============================================================================
+# GAS-Q SCORE-DRIVEN PROCESS NOISE (Story 1.3)
+# =============================================================================
+# Import GAS-Q filters for adaptive Kalman forecasting.
+# When tuned params contain gas_q_augmented=True, _kalman_forecast() runs
+# a real state-space filter with time-varying process noise instead of EMA.
+# =============================================================================
+try:
+    from models.gas_q import (
+        GASQConfig,
+        GASQResult,
+        gas_q_filter_gaussian,
+        gas_q_filter_student_t,
+    )
+    _GAS_Q_AVAILABLE = True
+except ImportError:
+    _GAS_Q_AVAILABLE = False
+
+# =============================================================================
 # =============================================================================
 # All forecast functions MUST use these horizons to prevent index misalignment.
 # Callers should use get_forecast_by_horizon() instead of positional indices.
@@ -141,40 +159,364 @@ def get_forecast_confidence(result: tuple) -> str:
 # Horizon-adaptive weighting for optimal blending
 # =============================================================================
 
-def _kalman_forecast(returns: np.ndarray, horizons: list, asset_type: str = "equity") -> list:
+# =============================================================================
+# MULTI-SCALE DRIFT ESTIMATION (Story 1.4)
+# =============================================================================
+# Three parallel filters with different q values capture dynamics at different
+# time scales. Short horizons use a fast filter (high q, responsive to recent
+# changes), long horizons use a slow filter (low q, smooth drift).
+#
+# q_fast = Q_FAST_MULT * q_tuned  (high process noise -> fast adaptation)
+# q_med  = q_tuned                (standard tuned process noise)
+# q_slow = Q_SLOW_MULT * q_tuned  (low process noise -> smooth drift)
+# =============================================================================
+Q_FAST_MULT = 10.0    # Fast filter: 10x tuned q
+Q_SLOW_MULT = 0.1     # Slow filter: 0.1x tuned q
+
+HORIZON_FILTER_MAP = {
+    1: 'fast',
+    3: 'fast',
+    7: 'medium',
+    30: 'medium',
+    90: 'slow',
+    180: 'slow',
+    365: 'slow',
+}
+
+# =============================================================================
+# ENSEMBLE DE-CORRELATION (Story 1.6)
+# =============================================================================
+# Sign-agreement-weighted averaging: when models agree on direction, amplify
+# the consensus; when they disagree, dampened with higher uncertainty.
+# =============================================================================
+CONTRAST_BOOST = 0.6          # Max weight shift for consensus (0-1)
+DISPERSION_CONTESTED = 1.5    # Dispersion threshold for CONTESTED label
+DISPERSION_INTERVAL_WIDEN = 0.5  # Interval widening factor when contested
+
+# =============================================================================
+# Story 1.14: Hard Cap Relaxation with Confidence-Gated Bounds
+# Cap multiplier = 1.0 + CAP_CONFIDENCE_SCALE * agreement_contrast
+# High confidence (strong model agreement) -> caps widen up to 2x
+# Vol-bound remains as independent safety constraint
+# =============================================================================
+CAP_CONFIDENCE_SCALE = 0.5   # How much confidence widens caps
+CAP_MAX_MULTIPLIER = 2.0     # Maximum cap expansion factor
+
+# =============================================================================
+# Story 1.11: Volatility-Adjusted Forecast Scaling
+# Signal quality factor: quality = clip(1/vol_ratio, 0.3, 2.0)
+# vol_ratio = current_ewma_vol / rolling_252d_median_vol
+# IMPORTANT: quality scales CONFIDENCE, not forecast magnitude
+# =============================================================================
+VOL_QUALITY_MIN = 0.3   # Min quality factor (extreme vol)
+VOL_QUALITY_MAX = 2.0   # Max quality factor (very calm)
+VOL_RATIO_EWMA_SPAN = 20  # EWMA span for current vol
+VOL_RATIO_MEDIAN_WINDOW = 252  # Rolling window for median vol
+
+# =============================================================================
+# Story 2.2: Ornstein-Uhlenbeck Calibration Constants
+# AR(1) regression on demeaned log prices -> kappa estimation
+# EWMA theta with span = half_life
+# =============================================================================
+OU_HALF_LIFE_MIN = 5       # Minimum half-life in days
+OU_HALF_LIFE_MAX = 252     # Maximum half-life in days
+OU_KAPPA_DEFAULT = 0.025   # Default kappa when estimation fails
+OU_EWMA_SPAN_DEFAULT = 60  # Default EWMA span for theta
+
+
+def estimate_ou_kappa(log_prices: np.ndarray) -> float:
+    """
+    Estimate OU mean-reversion speed via AR(1) regression on demeaned log prices.
+    
+    Model: dX_t = -kappa * (X_t - mu) * dt + sigma * dW
+    Discretized: X_{t+1} - X_t = -kappa * (X_t - mu) + eps
+    => AR(1): X_{t+1} = (1 - kappa) * X_t + kappa * mu + eps
+    => OLS slope phi = 1 - kappa => kappa = 1 - phi
+    
+    Returns kappa clipped to [ln(2)/252, ln(2)/5] corresponding to
+    half-lives between 5 and 252 days.
+    """
+    if len(log_prices) < 30:
+        return OU_KAPPA_DEFAULT
+    
+    # Demean
+    mu = np.mean(log_prices)
+    x = log_prices - mu
+    
+    # AR(1) regression: x_{t+1} = phi * x_t + eps
+    x_t = x[:-1]
+    x_tp1 = x[1:]
+    
+    # OLS: phi = sum(x_t * x_tp1) / sum(x_t^2)
+    denom = np.sum(x_t ** 2)
+    if denom < 1e-20:
+        return OU_KAPPA_DEFAULT
+    
+    phi = np.sum(x_t * x_tp1) / denom
+    kappa = 1.0 - phi
+    
+    # Clip to valid range
+    kappa_min = np.log(2) / OU_HALF_LIFE_MAX  # ~0.00275
+    kappa_max = np.log(2) / OU_HALF_LIFE_MIN   # ~0.1386
+    return float(np.clip(kappa, kappa_min, kappa_max))
+
+
+def estimate_ou_theta(prices: np.ndarray, kappa: float) -> float:
+    """
+    Estimate OU equilibrium level as EWMA with span = half_life.
+    
+    Half-life = ln(2) / kappa. Use EWMA span = half_life for consistency.
+    """
+    half_life = np.log(2) / max(kappa, 1e-6)
+    span = max(10, min(int(half_life), 252))
+    
+    # Manual EWMA computation (no pandas dependency)
+    alpha = 2.0 / (span + 1)
+    ewma = float(prices[0])
+    for p in prices[1:]:
+        ewma = alpha * float(p) + (1 - alpha) * ewma
+    return ewma
+
+
+def estimate_ou_params(prices: np.ndarray) -> dict:
+    """
+    Full OU parameter estimation: kappa, theta, sigma_ou, half_life_days.
+    
+    Used both during tuning and as fallback in _load_tuned_params.
+    """
+    log_p = np.log(np.maximum(prices, 1e-10))
+    kappa = estimate_ou_kappa(log_p)
+    theta = estimate_ou_theta(prices, kappa)
+    half_life = np.log(2) / max(kappa, 1e-6)
+    
+    # Estimate sigma_ou from residuals of AR(1)
+    x = log_p - np.mean(log_p)
+    if len(x) > 1:
+        residuals = x[1:] - (1 - kappa) * x[:-1]
+        sigma_ou = float(np.std(residuals))
+    else:
+        sigma_ou = 0.01
+    
+    return {
+        "kappa": float(kappa),
+        "theta": float(theta),
+        "sigma_ou": float(sigma_ou),
+        "half_life_days": float(half_life),
+    }
+
+
+def compute_signal_quality(vol_ratio: float) -> float:
+    """
+    Compute signal quality factor from vol ratio.
+    
+    quality = clip(1/vol_ratio, VOL_QUALITY_MIN, VOL_QUALITY_MAX)
+    
+    High vol -> low quality (discount the forecast)
+    Low vol  -> high quality (trust the forecast)
+    """
+    safe_ratio = max(vol_ratio, 0.01)
+    return float(np.clip(1.0 / safe_ratio, VOL_QUALITY_MIN, VOL_QUALITY_MAX))
+
+
+def compute_vol_regime_label(vol_ratio: float) -> str:
+    """Classify vol regime from vol ratio."""
+    if vol_ratio < 0.7:
+        return "CALM"
+    elif vol_ratio < 1.3:
+        return "NORMAL"
+    elif vol_ratio < 2.0:
+        return "ELEVATED"
+    else:
+        return "EXTREME"
+
+
+def _run_kalman_filter_pass(
+    returns: np.ndarray,
+    vol_arr: np.ndarray,
+    phi: float,
+    q: float,
+    c: float,
+    nu: Optional[float] = None,
+) -> tuple:
+    """
+    Run a single Kalman filter pass (Gaussian or Student-t).
+
+    Returns (mu_filtered, P_filtered) arrays.
+    """
+    T = len(returns)
+    mu_filtered = np.zeros(T)
+    P_filtered = np.zeros(T)
+    mu_t = 0.0
+    P_t = max(q * 100.0, 1e-4)  # Initial P relative to q
+    phi_sq = phi * phi
+    is_student_t = nu is not None and nu > 3.0
+
+    for t in range(T):
+        mu_pred = phi * mu_t
+        P_pred = phi_sq * P_t + q
+        R_t = max(c * vol_arr[t] * vol_arr[t], 1e-12)
+        S_t = max(P_pred + R_t, 1e-12)
+        innov = returns[t] - mu_pred
+        K_t = P_pred / S_t
+
+        if is_student_t:
+            K_t *= nu / (nu + 3.0)
+            z_sq = (innov * innov) / S_t
+            w_t = (nu + 1.0) / (nu + z_sq)
+            mu_t = mu_pred + K_t * w_t * innov
+            P_t = max((1.0 - w_t * K_t) * P_pred, 1e-12)
+        else:
+            mu_t = mu_pred + K_t * innov
+            P_t = max((1.0 - K_t) * P_pred, 1e-12)
+
+        mu_filtered[t] = mu_t
+        P_filtered[t] = P_t
+
+    return mu_filtered, P_filtered
+
+def _kalman_forecast(returns: np.ndarray, horizons: list, asset_type: str = "equity",
+                     tuned_params: Optional[dict] = None) -> list:
     """
     Kalman Filter forecast with adaptive state estimation.
-    
-    Estimates latent drift state using multi-scale exponential smoothing,
-    then projects forward with proper persistence modeling.
-    
-    Key insight: Daily drift of 0.0005 (0.05%) compounds to ~13% annually.
-    Short-term forecasts should reflect recent momentum strength.
+
+    When tuned_params with GAS-Q are provided, runs a real Kalman filter with
+    time-varying process noise. Otherwise, falls back to multi-scale EMA.
+
+    Args:
+        returns: Log returns array
+        horizons: List of forecast horizons in days
+        asset_type: "equity", "currency", "metal", "crypto"
+        tuned_params: Optional per-asset tuned parameters dict
     """
     try:
         if len(returns) < 20:
             return [0.0] * len(horizons)
-        
-        # Multi-scale drift estimation (EWMA with different spans)
+
+        # =====================================================================
+        # MULTI-SCALE KALMAN PATH (Story 1.4): Three parallel filters
+        # =====================================================================
+        # When tuned_params are available, run fast/medium/slow filters.
+        # GAS-Q used for medium scale when gas_q_augmented=True.
+        # =====================================================================
+        if tuned_params is not None:
+            q_tuned = tuned_params.get('q')
+            c_tuned = tuned_params.get('c')
+            phi_tuned = tuned_params.get('phi', 1.0)
+            nu_tuned = tuned_params.get('nu')
+
+            if q_tuned and c_tuned:
+                try:
+                    q_f = float(q_tuned)
+                    c_f = float(c_tuned)
+                    phi_f = float(phi_tuned) if phi_tuned else 1.0
+
+                    vol_20 = max(np.std(returns[-20:]), 1e-6)
+                    vol_arr = np.full(len(returns), vol_20)
+
+                    # --- Run three filter scales ---
+                    scales = {}
+
+                    # Fast filter: high q -> responsive to recent changes
+                    mu_fast, P_fast = _run_kalman_filter_pass(
+                        returns, vol_arr, phi_f,
+                        q_f * Q_FAST_MULT, c_f, nu=nu_tuned,
+                    )
+                    scales['fast'] = (float(mu_fast[-1]), float(P_fast[-1]))
+
+                    # Medium filter: tuned q (or GAS-Q)
+                    mu_med = None
+                    gas_q_used = False
+                    if (
+                        _GAS_Q_AVAILABLE
+                        and tuned_params.get('gas_q_augmented', False)
+                    ):
+                        gas_q_params = tuned_params.get('gas_q_params', {})
+                        if gas_q_params:
+                            try:
+                                config = GASQConfig(
+                                    omega=gas_q_params.get('omega', q_f * 0.1),
+                                    alpha=gas_q_params.get('alpha', 0.05),
+                                    beta=gas_q_params.get('beta', 0.90),
+                                )
+                                if nu_tuned is not None:
+                                    gas_result = gas_q_filter_student_t(
+                                        returns, vol_arr,
+                                        c=c_f, phi=phi_f,
+                                        nu=float(nu_tuned), config=config,
+                                    )
+                                else:
+                                    gas_result = gas_q_filter_gaussian(
+                                        returns, vol_arr,
+                                        c=c_f, phi=phi_f, config=config,
+                                    )
+                                if gas_result is not None and hasattr(gas_result, 'mu_filtered'):
+                                    mu_med = gas_result.mu_filtered
+                                    P_med = gas_result.P_filtered
+                                    gas_q_used = True
+
+                                    q_path = getattr(gas_result, 'q_path', None)
+                                    if q_path is not None and len(q_path) > 0:
+                                        logger.debug(
+                                            "GAS-Q q_t diagnostics: mean=%.2e std=%.2e "
+                                            "min=%.2e max=%.2e",
+                                            np.mean(q_path), np.std(q_path),
+                                            np.min(q_path), np.max(q_path),
+                                        )
+                            except Exception:
+                                pass
+
+                    if mu_med is None:
+                        mu_med, P_med = _run_kalman_filter_pass(
+                            returns, vol_arr, phi_f, q_f, c_f, nu=nu_tuned,
+                        )
+                    scales['medium'] = (float(mu_med[-1]), float(P_med[-1]))
+
+                    # Slow filter: low q -> smooth drift
+                    mu_slow, P_slow = _run_kalman_filter_pass(
+                        returns, vol_arr, phi_f,
+                        q_f * Q_SLOW_MULT, c_f, nu=nu_tuned,
+                    )
+                    scales['slow'] = (float(mu_slow[-1]), float(P_slow[-1]))
+
+                    # --- Build forecasts using horizon-matched filter ---
+                    forecasts = []
+                    for h in horizons:
+                        scale_key = HORIZON_FILTER_MAP.get(h, 'medium')
+                        mu_last, P_last = scales[scale_key]
+
+                        mu_h = (phi_f ** h) * mu_last
+                        snr = abs(mu_last) / max(np.sqrt(P_last), 1e-8)
+                        persistence = min(1.0, snr / 3.0)
+                        if asset_type == "currency":
+                            persistence *= 0.75
+                        elif asset_type == "crypto":
+                            persistence = min(persistence * 1.2, 0.95)
+
+                        fc_pct = mu_h * h * persistence * 100.0
+                        forecasts.append(float(fc_pct))
+
+                    return forecasts
+
+                except Exception as e:
+                    logger.debug("Multi-scale Kalman failed, falling back to EMA: %s", e)
+
+        # =====================================================================
+        # EMA FALLBACK: Multi-scale exponential smoothing (original path)
+        # =====================================================================
         ema_5 = returns[-5:].mean() if len(returns) >= 5 else returns.mean()
         ema_20 = returns[-20:].mean() if len(returns) >= 20 else returns.mean()
         ema_60 = returns[-60:].mean() if len(returns) >= 60 else returns.mean()
-        
-        # Recent volatility for signal-to-noise
+
         vol_20 = np.std(returns[-20:])
-        vol_60 = np.std(returns[-60:]) if len(returns) >= 60 else vol_20
-        
-        # Signal strength: how significant is the recent drift?
+
         signal_strength = abs(ema_5) / (vol_20 + 1e-8)
-        signal_strength = np.clip(signal_strength, 0, 3)  # Cap at 3 sigma
-        
+        signal_strength = np.clip(signal_strength, 0, 3)
+
         forecasts = []
         for h in horizons:
-            # Short-term: recent momentum dominates
-            # Long-term: drift reverts toward long-run mean
             if h <= 3:
                 drift = ema_5 * 0.70 + ema_20 * 0.30
-                persistence = 0.95  # High persistence for very short term
+                persistence = 0.95
             elif h <= 7:
                 drift = ema_5 * 0.50 + ema_20 * 0.40 + ema_60 * 0.10
                 persistence = 0.85
@@ -187,30 +529,28 @@ def _kalman_forecast(returns: np.ndarray, horizons: list, asset_type: str = "equ
             else:
                 drift = ema_20 * 0.20 + ema_60 * 0.80
                 persistence = 0.30
-            
-            # Currency mean-reverts faster
+
             if asset_type == "currency":
                 persistence *= 0.75
             elif asset_type == "crypto":
-                persistence = min(persistence * 1.2, 0.95)  # Crypto trends persist
-            
-            # Project forward: drift * h * persistence
-            # Signal strength amplifies when drift is statistically significant
+                persistence = min(persistence * 1.2, 0.95)
+
             amplification = 1.0 + 0.3 * signal_strength
             fc_log = drift * h * persistence * amplification
-            
-            # Convert to percentage
             pct = fc_log * 100
-            
             forecasts.append(float(pct))
         return forecasts
     except Exception:
         return [0.0] * len(horizons)
 
 
-def _garch_forecast(returns: np.ndarray, horizons: list, asset_type: str = "equity") -> list:
+def _garch_forecast(returns: np.ndarray, horizons: list, asset_type: str = "equity",
+                    tuned_params: Optional[dict] = None) -> list:
     """
     GARCH(1,1) volatility-adjusted forecast.
+    
+    Story 2.1: loads per-asset GARCH parameters from tuned cache when available.
+    Falls back to generic defaults when not.
     
     Estimates time-varying volatility and adjusts drift forecast based on
     current volatility regime relative to long-term average.
@@ -219,10 +559,23 @@ def _garch_forecast(returns: np.ndarray, horizons: list, asset_type: str = "equi
         if len(returns) < 30:
             return [0.0] * len(horizons)
         
-        # GARCH(1,1) parameters
-        omega = 0.00001
-        alpha_g = 0.08
-        beta_g = 0.88
+        # Story 2.1: Load GARCH params from tuned cache or use defaults
+        garch_params = None
+        if tuned_params and "garch_params" in tuned_params:
+            garch_params = tuned_params["garch_params"]
+        
+        if garch_params:
+            omega = float(garch_params.get("omega", 0.00001))
+            alpha_g = float(garch_params.get("alpha", 0.08))
+            beta_g = float(garch_params.get("beta", 0.88))
+            # Stationarity check: alpha + beta < 1.0
+            if alpha_g + beta_g >= 1.0:
+                alpha_g = 0.08
+                beta_g = 0.88
+        else:
+            omega = 0.00001
+            alpha_g = 0.08
+            beta_g = 0.88
 
         # Estimate conditional variance
         var_t = np.var(returns)
@@ -272,16 +625,46 @@ def _garch_forecast(returns: np.ndarray, horizons: list, asset_type: str = "equi
         return [0.0] * len(horizons)
 
 
-def _ou_forecast(prices: pd.Series, horizons: list, asset_type: str = "equity") -> list:
+def _ou_forecast(prices: pd.Series, horizons: list, asset_type: str = "equity",
+                 tuned_params: Optional[dict] = None) -> list:
     """
     Ornstein-Uhlenbeck mean reversion forecast.
     
-    Models price as mean-reverting to moving average equilibrium.
-    Currencies exhibit stronger mean reversion than equities.
+    Story 2.2: Uses calibrated OU params (kappa, theta, sigma_ou) when available.
+    Falls back to MA-based mean reversion estimation otherwise.
+    
+    With calibrated params:
+      fc = (theta - price) * (1 - exp(-kappa * H/252)) / price * 100
     """
     try:
         if len(prices) < 60:
             return [0.0] * len(horizons)
+        
+        current = float(prices.iloc[-1])
+        
+        # Story 2.2: Use calibrated OU params if available
+        ou_params = None
+        if tuned_params and "ou_params" in tuned_params:
+            ou_params = tuned_params["ou_params"]
+        
+        if ou_params:
+            kappa = float(ou_params.get("kappa", 0.025))
+            theta_level = float(ou_params.get("theta", current))
+            half_life = float(ou_params.get("half_life_days", 60))
+            
+            # Validate half-life bounds: 5 < half_life < 252
+            if half_life < 5 or half_life > 252:
+                kappa = 0.025
+                theta_level = current
+            
+            forecasts = []
+            for h in horizons:
+                # OU projection: E[X_t+h] = theta + (X_t - theta) * exp(-kappa * h)
+                # Return forecast = (E[X_t+h] - X_t) / X_t * 100
+                expected = theta_level + (current - theta_level) * np.exp(-kappa * h)
+                fc_pct = (expected - current) / current * 100 if current > 0 else 0.0
+                forecasts.append(float(fc_pct))
+            return forecasts
         
         current = float(prices.iloc[-1])
         
@@ -338,12 +721,85 @@ def _ou_forecast(prices: pd.Series, horizons: list, asset_type: str = "equity") 
         return [0.0] * len(horizons)
 
 
+def compute_momentum_timeframe_weights(returns: np.ndarray, lookback: int = 60,
+                                       temperature: float = 0.1) -> dict:
+    """
+    Story 2.3: Compute regime-adaptive momentum timeframe weights.
+    
+    Tracks rolling hit rate per timeframe, converts to softmax weights with
+    entropy-based diversity constraint.
+    
+    Timeframes: {5d, 10d, 21d, 63d, 126d, 252d}
+    
+    Returns dict {timeframe_days: weight} summing to 1.0.
+    """
+    timeframes = [5, 10, 21, 63, 126, 252]
+    n = len(returns)
+    
+    if n < lookback + max(timeframes):
+        # Not enough data -> uniform weights
+        w = 1.0 / len(timeframes)
+        return {tf: w for tf in timeframes}
+    
+    # Compute rolling hit rate per timeframe
+    hit_rates = {}
+    for tf in timeframes:
+        if n < lookback + tf:
+            hit_rates[tf] = 0.50  # default to coin flip
+            continue
+        
+        hits = 0
+        total = 0
+        for i in range(lookback):
+            idx = n - lookback + i
+            if idx < tf:
+                continue
+            # Momentum signal: cumulative return over tf days
+            mom = np.sum(returns[idx - tf:idx])
+            # Realized: next-day return (or as far as available)
+            if idx < n:
+                realized = returns[idx]
+                # Hit if signs agree
+                if mom * realized > 0:
+                    hits += 1
+                total += 1
+        
+        hit_rates[tf] = hits / total if total > 0 else 0.50
+    
+    # Excess accuracy above coin flip, floored at 0.01
+    raw_weights = {}
+    for tf in timeframes:
+        raw_weights[tf] = max(hit_rates[tf] - 0.50, 0.01)
+    
+    # Softmax with temperature
+    values = np.array([raw_weights[tf] for tf in timeframes])
+    max_val = np.max(values)
+    exp_vals = np.exp((values - max_val) / temperature)
+    
+    # Entropy check: H(weights) >= 0.5 * H_uniform
+    h_uniform = np.log(len(timeframes))
+    temp_adjusted = temperature
+    for _ in range(10):  # max 10 iterations to meet diversity constraint
+        exp_vals = np.exp((values - max_val) / temp_adjusted)
+        weights = exp_vals / np.sum(exp_vals)
+        
+        # Compute entropy
+        entropy = -np.sum(weights * np.log(weights + 1e-12))
+        if entropy >= 0.5 * h_uniform:
+            break
+        temp_adjusted *= 1.5  # Increase temperature to spread weights
+    else:
+        weights = exp_vals / np.sum(exp_vals)
+    
+    return {tf: float(w) for tf, w in zip(timeframes, weights)}
+
+
 def _momentum_forecast(returns: np.ndarray, horizons: list, asset_type: str = "equity") -> list:
     """
     Multi-timeframe momentum forecast.
     
-    Combines short, medium, and long-term momentum with horizon-adaptive weighting.
-    Momentum persistence varies by asset type and current trend strength.
+    Story 2.3: Dynamically selects momentum timeframes based on which have been
+    most predictive. Uses softmax weights with entropy-based diversity constraint.
     
     Key insight: Strong recent momentum (high cumulative return / vol) persists.
     """
@@ -352,45 +808,59 @@ def _momentum_forecast(returns: np.ndarray, horizons: list, asset_type: str = "e
         if n_ret < 20:
             return [0.0] * len(horizons)
         
-        # Cumulative returns over different windows
-        ret_5d = np.sum(returns[-5:]) if n_ret >= 5 else np.sum(returns)
-        ret_20d = np.sum(returns[-20:]) if n_ret >= 20 else np.sum(returns)
-        ret_60d = np.sum(returns[-60:]) if n_ret >= 60 else np.sum(returns) * (60 / n_ret)
+        # Story 2.3: Compute regime-adaptive timeframe weights
+        tf_weights = compute_momentum_timeframe_weights(returns)
         
-        # Daily drift equivalents
-        drift_5d = ret_5d / 5
-        drift_20d = ret_20d / 20
-        drift_60d = ret_60d / 60
+        # Cumulative returns over each timeframe
+        tf_returns = {}
+        for tf in [5, 10, 21, 63, 126, 252]:
+            if n_ret >= tf:
+                tf_returns[tf] = np.sum(returns[-tf:])
+            else:
+                tf_returns[tf] = np.sum(returns) * (tf / n_ret)
+        
+        # Weighted drift using adaptive timeframe weights
+        weighted_drift_per_day = sum(
+            tf_weights.get(tf, 0.0) * tf_returns.get(tf, 0.0) / tf
+            for tf in [5, 10, 21, 63, 126, 252]
+        )
         
         # Volatility for Sharpe-style signal strength
         vol_20d = np.std(returns[-20:]) * np.sqrt(252)
         
         # Momentum strength: how strong is the trend relative to noise?
-        # High Sharpe = strong signal = more persistence
         daily_vol = np.std(returns[-20:])
-        sharpe_20d = (drift_20d * 252) / (vol_20d + 0.01)
+        sharpe_20d = (weighted_drift_per_day * 252) / (vol_20d + 0.01)
         sharpe_20d = np.clip(sharpe_20d, -3, 3)
         
         # Persistence factor based on trend strength
         trend_strength = min(abs(sharpe_20d) / 1.5, 1.0)  # 0 to 1
         
+        # Short/medium/long drift for horizon-dependent blending
+        drift_short = sum(tf_weights.get(tf, 0) * tf_returns.get(tf, 0) / tf
+                          for tf in [5, 10]) / max(sum(tf_weights.get(tf, 0) for tf in [5, 10]), 1e-6)
+        drift_mid = sum(tf_weights.get(tf, 0) * tf_returns.get(tf, 0) / tf
+                        for tf in [21, 63]) / max(sum(tf_weights.get(tf, 0) for tf in [21, 63]), 1e-6)
+        drift_long = sum(tf_weights.get(tf, 0) * tf_returns.get(tf, 0) / tf
+                         for tf in [126, 252]) / max(sum(tf_weights.get(tf, 0) for tf in [126, 252]), 1e-6)
+        
         forecasts = []
         for h in horizons:
-            # Horizon-dependent drift weighting
+            # Horizon-dependent drift: short horizons favor recent momentum
             if h <= 3:
-                drift = drift_5d * 0.70 + drift_20d * 0.30
+                drift = drift_short * 0.70 + drift_mid * 0.30
                 base_persistence = 0.90
             elif h <= 7:
-                drift = drift_5d * 0.50 + drift_20d * 0.40 + drift_60d * 0.10
+                drift = drift_short * 0.50 + drift_mid * 0.40 + drift_long * 0.10
                 base_persistence = 0.80
             elif h <= 30:
-                drift = drift_5d * 0.25 + drift_20d * 0.50 + drift_60d * 0.25
+                drift = drift_short * 0.25 + drift_mid * 0.50 + drift_long * 0.25
                 base_persistence = 0.65
             elif h <= 90:
-                drift = drift_5d * 0.10 + drift_20d * 0.40 + drift_60d * 0.50
+                drift = drift_short * 0.10 + drift_mid * 0.40 + drift_long * 0.50
                 base_persistence = 0.45
             else:
-                drift = drift_5d * 0.05 + drift_20d * 0.25 + drift_60d * 0.70
+                drift = drift_short * 0.05 + drift_mid * 0.25 + drift_long * 0.70
                 base_persistence = 0.30
             
             # Asset-specific persistence adjustment
@@ -418,6 +888,172 @@ def _momentum_forecast(returns: np.ndarray, horizons: list, asset_type: str = "e
         return [0.0] * len(horizons)
 
 
+# =============================================================================
+# Story 2.7: Cross-Asset Signal Propagation
+# Extracts VIX level/change, DXY level/change, SPY returns as macro signals.
+# Rolling beta per asset adjusts drift; capped at 30% of standalone forecast.
+# =============================================================================
+CROSS_ASSET_MAX_ADJ = 0.30            # Max 30% adjustment of standalone forecast
+CROSS_ASSET_BETA_WINDOW = 120         # Rolling regression window
+CROSS_ASSET_SIGNALS = ["VIX", "DXY", "SPY"]
+
+# Module-level cache for cross-asset data
+_CROSS_ASSET_CACHE: dict = {}
+
+
+def compute_cross_asset_signals(prices_dir: Optional[str] = None) -> dict:
+    """
+    Story 2.7: Extract cross-asset signals from cached price data.
+    
+    Returns dict with:
+      - VIX_level, VIX_change (5d pct change)
+      - DXY_level, DXY_change  
+      - SPY_return_5d, SPY_return_20d
+    """
+    import json
+    
+    if prices_dir is None:
+        prices_dir = os.path.join(os.path.dirname(__file__), os.pardir, "data", "prices")
+    
+    signals = {}
+    
+    for symbol in ["^VIX", "DX-Y.NYB", "SPY"]:
+        label = symbol.replace("^", "").replace("-Y.NYB", "").replace("DX", "DXY")
+        price_file = os.path.join(prices_dir, f"{symbol}_1d.csv")
+        if not os.path.exists(price_file):
+            continue
+        
+        try:
+            df = pd.read_csv(price_file)
+            if "Close" not in df.columns:
+                continue
+            close = df["Close"].dropna().values
+            if len(close) < 30:
+                continue
+            
+            signals[f"{label}_level"] = float(close[-1])
+            if len(close) >= 6:
+                signals[f"{label}_change_5d"] = float((close[-1] / close[-6] - 1) * 100)
+            if len(close) >= 21:
+                signals[f"{label}_return_20d"] = float(np.sum(np.diff(np.log(close[-21:]))))
+        except Exception:
+            continue
+    
+    return signals
+
+
+def compute_cross_asset_adjustment(asset_returns: np.ndarray, cross_signals: dict,
+                                   asset_type: str = "equity") -> float:
+    """
+    Story 2.7: Compute cross-asset drift adjustment.
+    
+    Simple heuristic betas:
+      - VIX rising -> negative for equities (beta = -0.02 per VIX point)
+      - DXY rising -> negative for metals/commodities (beta = -0.01 per DXY pct) 
+      - SPY momentum -> positive for risk-on assets
+    
+    Returns adjustment in percentage, capped at CROSS_ASSET_MAX_ADJ * abs(forecast).
+    """
+    adj = 0.0
+    
+    vix_change = cross_signals.get("VIX_change_5d", 0.0)
+    dxy_change = cross_signals.get("DXY_change_5d", 0.0)
+    spy_ret = cross_signals.get("SPY_return_20d", 0.0)
+    
+    if asset_type in ("equity",):
+        # VIX rising -> headwind for equities
+        adj += -0.02 * vix_change
+        # SPY momentum -> tailwind
+        adj += 0.5 * spy_ret * 100
+    elif asset_type in ("metals", "commodity"):
+        # USD strength -> headwind for metals
+        adj += -0.01 * dxy_change
+    elif asset_type in ("currency",):
+        # DXY change -> direct impact
+        adj += -0.005 * dxy_change
+    
+    return float(np.clip(adj, -5.0, 5.0))
+
+
+def _load_tuned_params(asset_name: str) -> Optional[dict]:
+    """
+    Load tuned parameters from the tune cache for the given asset (Story 1.7).
+    
+    Returns dict with keys: q, c, phi, nu (optional), or None if unavailable.
+    """
+    try:
+        import json
+        tune_dir = os.path.join(os.path.dirname(__file__), os.pardir, "data", "tune")
+        tune_file = os.path.join(tune_dir, f"{asset_name}.json")
+        if not os.path.exists(tune_file):
+            return None
+        
+        with open(tune_file, "r") as f:
+            cache = json.load(f)
+        
+        g = cache.get("global", {})
+        q_val = g.get("q")
+        c_val = g.get("c")
+        phi_val = g.get("phi")
+        
+        if q_val is None or c_val is None or phi_val is None:
+            return None
+        
+        params = {
+            "q": float(q_val),
+            "c": float(c_val),
+            "phi": float(phi_val),
+        }
+        
+        nu_val = g.get("nu")
+        if nu_val is not None:
+            params["nu"] = float(nu_val)
+        
+        # Include GAS-Q params if present
+        gas_q = g.get("gas_q")
+        if gas_q:
+            params["gas_q"] = gas_q
+        
+        # Story 2.1: Extract GARCH params from regime models (BMA-weighted average)
+        regime_data = cache.get("regime", {})
+        garch_omega_sum = 0.0
+        garch_alpha_sum = 0.0
+        garch_beta_sum = 0.0
+        garch_weight_sum = 0.0
+        for _rkey, rval in regime_data.items():
+            if not isinstance(rval, dict):
+                continue
+            models = rval.get("models", {})
+            for _mname, mdata in models.items():
+                if not isinstance(mdata, dict):
+                    continue
+                if "garch_omega" not in mdata:
+                    continue
+                w = max(float(mdata.get("weight", 0.0)), 1e-12)
+                go = float(mdata.get("garch_omega", 0.0))
+                ga = float(mdata.get("garch_alpha", 0.0))
+                gb = float(mdata.get("garch_beta", 0.0))
+                # Skip degenerate params
+                if ga + gb >= 1.0 or go <= 0.0:
+                    continue
+                garch_omega_sum += w * go
+                garch_alpha_sum += w * ga
+                garch_beta_sum += w * gb
+                garch_weight_sum += w
+        
+        if garch_weight_sum > 0:
+            params["garch_params"] = {
+                "omega": garch_omega_sum / garch_weight_sum,
+                "alpha": garch_alpha_sum / garch_weight_sum,
+                "beta": garch_beta_sum / garch_weight_sum,
+                "persistence": (garch_alpha_sum + garch_beta_sum) / garch_weight_sum,
+            }
+        
+        return params
+    except Exception:
+        return None
+
+
 def _regime_detect(returns: np.ndarray) -> str:
     """Detect market regime from return characteristics."""
     try:
@@ -438,7 +1074,275 @@ def _regime_detect(returns: np.ndarray) -> str:
         return 'calm'
 
 
-def ensemble_forecast(prices: pd.Series, horizons: list = None, asset_type: str = "equity", asset_name: str = "unknown") -> tuple:
+# =============================================================================
+# Story 2.4: Bayesian Model Combination (BMC)
+# Module-level cache for per-asset per-model predictive likelihood tracking.
+# Uses forgetting factor (exponentially discounted) with 45-day half-life.
+# =============================================================================
+BMC_WEIGHT_FLOOR = 0.05      # Minimum weight per model (prevents extinction)
+BMC_FORGETTING_HALF_LIFE = 45  # Days for weight half-life
+BMC_MODEL_NAMES = ["kalman", "garch", "ou", "momentum", "classical"]
+
+# Module-level cache: {asset_name: {"weights": [5], "log_likelihoods": [5], "n_updates": int}}
+_BMC_CACHE: dict = {}
+
+# Story 2.5: Forecast quantiles cache
+# {asset_name: {"horizons": [...], "quantiles": [{p10, p25, p50, p75, p90}, ...]}}
+_FORECAST_QUANTILES_CACHE: dict = {}
+
+# Story 2.8: Forecast staleness and timestamp cache
+# {asset_name: {"generated_at": datetime, "data_through": datetime, "forecasts": [...]}}
+_FORECAST_TIMESTAMP_CACHE: dict = {}
+STALENESS_THRESHOLD_HOURS = 4  # Alert if data > 4 hours old
+
+# Story 2.9: Model explainability cache
+# {asset_name: {"horizons": [...], "explanations": [{model_forecasts, weights, ...}, ...]}}
+_FORECAST_EXPLAIN_CACHE: dict = {}
+MODEL_NAMES = ["Kalman", "GARCH", "OU", "Momentum", "Classical"]
+
+# Template strings for explainability (not dynamically generated)
+EXPLAIN_DRIVER_TEMPLATE = "{model} ({forecast:+.2f}%, weight {weight:.2f}): driving {direction} signal"
+EXPLAIN_DISSENT_TEMPLATE = "{model} ({forecast:+.2f}%) opposes consensus -- adding uncertainty"
+
+
+def get_forecast_quantiles(asset_name: str) -> Optional[dict]:
+    """
+    Story 2.5: Get forecast confidence intervals for asset.
+    
+    Returns dict with "horizons" and "quantiles" keys, or None if not computed.
+    Each quantile entry has keys: p10, p25, p50, p75, p90.
+    """
+    return _FORECAST_QUANTILES_CACHE.get(asset_name)
+
+
+def get_forecast_staleness(asset_name: str) -> Optional[dict]:
+    """
+    Story 2.8: Get forecast staleness info for asset.
+    
+    Returns dict with:
+      - generated_at: ISO timestamp string
+      - data_through: ISO timestamp string
+      - staleness_hours: float
+      - is_stale: bool (True if > STALENESS_THRESHOLD_HOURS)
+    """
+    from datetime import datetime, timezone
+    
+    entry = _FORECAST_TIMESTAMP_CACHE.get(asset_name)
+    if entry is None:
+        return None
+    
+    now = datetime.now(timezone.utc)
+    generated_at = entry["generated_at"]
+    data_through = entry.get("data_through", generated_at)
+    
+    staleness_hours = (now - data_through).total_seconds() / 3600
+    
+    return {
+        "generated_at": generated_at.isoformat(),
+        "data_through": data_through.isoformat(),
+        "staleness_hours": float(staleness_hours),
+        "is_stale": staleness_hours > STALENESS_THRESHOLD_HOURS,
+    }
+
+
+def record_forecast_timestamp(asset_name: str, data_through=None):
+    """
+    Story 2.8: Record when a forecast was generated and what data it used.
+    """
+    from datetime import datetime, timezone
+    
+    now = datetime.now(timezone.utc)
+    _FORECAST_TIMESTAMP_CACHE[asset_name] = {
+        "generated_at": now,
+        "data_through": data_through or now,
+    }
+
+
+def get_forecast_explanation(asset_name: str) -> Optional[dict]:
+    """
+    Story 2.9: Get model explainability breakdown for asset.
+    
+    Returns dict with "horizons" and "explanations" keys, or None if not computed.
+    Each explanation entry has:
+      - model_forecasts: list of 5 floats (per-model forecast)
+      - weights: list of 5 floats (per-model weight)
+      - contributions: list of 5 floats (weight * forecast)
+      - top_contributor: str (model name)
+      - top_dissenter: str or None
+      - reason: natural-language explanation string
+    """
+    return _FORECAST_EXPLAIN_CACHE.get(asset_name)
+
+
+def _build_explanation(forecasts_at_h: list, weights: list, ensemble: float) -> dict:
+    """
+    Story 2.9: Build a single-horizon explanation from model forecasts and weights.
+    """
+    contributions = [w * f for w, f in zip(weights, forecasts_at_h)]
+    consensus_sign = 1 if ensemble >= 0 else -1
+    direction = "bullish" if consensus_sign > 0 else "bearish"
+    
+    # Find top contributor (largest absolute contribution in consensus direction)
+    top_idx = 0
+    top_abs = 0.0
+    for j in range(len(contributions)):
+        sign_j = 1 if contributions[j] >= 0 else -1
+        if sign_j == consensus_sign and abs(contributions[j]) > top_abs:
+            top_abs = abs(contributions[j])
+            top_idx = j
+    
+    top_name = MODEL_NAMES[top_idx] if top_idx < len(MODEL_NAMES) else f"Model_{top_idx}"
+    
+    # Find dissenter (largest absolute contribution opposing consensus)
+    dissent_idx = None
+    dissent_abs = 0.0
+    for j in range(len(contributions)):
+        sign_j = 1 if forecasts_at_h[j] >= 0 else -1
+        if sign_j != consensus_sign and abs(forecasts_at_h[j]) > dissent_abs:
+            dissent_abs = abs(forecasts_at_h[j])
+            dissent_idx = j
+    
+    # Build reason string from constant templates
+    reason = EXPLAIN_DRIVER_TEMPLATE.format(
+        model=top_name,
+        forecast=forecasts_at_h[top_idx],
+        weight=weights[top_idx],
+        direction=direction,
+    )
+    
+    dissent_name = None
+    if dissent_idx is not None:
+        dissent_name = MODEL_NAMES[dissent_idx] if dissent_idx < len(MODEL_NAMES) else f"Model_{dissent_idx}"
+        reason += " | " + EXPLAIN_DISSENT_TEMPLATE.format(
+            model=dissent_name,
+            forecast=forecasts_at_h[dissent_idx],
+        )
+    
+    return {
+        "model_forecasts": list(forecasts_at_h),
+        "weights": list(weights),
+        "contributions": contributions,
+        "top_contributor": top_name,
+        "top_dissenter": dissent_name,
+        "reason": reason,
+    }
+
+
+def _bmc_log_likelihood(forecast_pct: float, realized_pct: float,
+                        sigma_pct: float = 1.0) -> float:
+    """
+    Compute Gaussian log-likelihood of realized return given forecast.
+    
+    p(y | model) = N(y; forecast, sigma^2)
+    log p = -0.5 * ((y - mu)^2 / sigma^2 + log(2*pi*sigma^2))
+    """
+    diff = realized_pct - forecast_pct
+    return -0.5 * (diff ** 2 / (sigma_pct ** 2) + np.log(2 * np.pi * sigma_pct ** 2))
+
+
+def update_bmc_weights(asset_name: str, forecasts: list, realized_pct: float,
+                       sigma_pct: float = 1.0) -> list:
+    """
+    Story 2.4: Update BMC weights for asset given realized return.
+    
+    Implements:
+      w_i,t+1 = w_i,t * p(y_t | model_i) / sum_j(w_j,t * p(y_t | model_j))
+    
+    With forgetting factor and weight floor.
+    
+    Args:
+        asset_name: Asset identifier
+        forecasts: List of 5 model forecasts (pct) for 1-day horizon
+        realized_pct: Realized 1-day return (pct)
+        sigma_pct: Forecast error std (pct) for likelihood computation
+    
+    Returns:
+        Updated weights [5] summing to 1.0
+    """
+    if asset_name not in _BMC_CACHE:
+        _BMC_CACHE[asset_name] = {
+            "weights": [1.0 / 5] * 5,
+            "n_updates": 0,
+        }
+    
+    state = _BMC_CACHE[asset_name]
+    weights = state["weights"]
+    
+    # Forgetting factor: lambda = 2^(-1/half_life) per day
+    forget = 2.0 ** (-1.0 / BMC_FORGETTING_HALF_LIFE)
+    
+    # Compute per-model likelihood
+    log_liks = []
+    for i in range(5):
+        fc = forecasts[i] if i < len(forecasts) else 0.0
+        log_liks.append(_bmc_log_likelihood(fc, realized_pct, sigma_pct))
+    
+    # Exponentiate (shift for numerical stability)
+    max_ll = max(log_liks)
+    liks = [np.exp(ll - max_ll) for ll in log_liks]
+    
+    # Update: w_i = w_i * lik_i with forgetting
+    new_weights = []
+    for i in range(5):
+        # Apply forget to shrink old weights toward uniform
+        w_decayed = forget * weights[i] + (1 - forget) * (1.0 / 5)
+        new_weights.append(w_decayed * liks[i])
+    
+    # Normalize
+    total = sum(new_weights)
+    if total > 0:
+        new_weights = [w / total for w in new_weights]
+    else:
+        new_weights = [1.0 / 5] * 5
+    
+    # Apply floor: iterative approach to ensure each weight >= BMC_WEIGHT_FLOOR
+    # while summing to 1.0
+    n_models = 5
+    total_floor = n_models * BMC_WEIGHT_FLOOR
+    if total_floor >= 1.0:
+        new_weights = [1.0 / n_models] * n_models
+    else:
+        # Normalize first
+        raw_total = sum(new_weights)
+        if raw_total > 0:
+            new_weights = [w / raw_total for w in new_weights]
+        else:
+            new_weights = [1.0 / n_models] * n_models
+        
+        # Redistribute: clip below floor, give excess to above-floor models
+        for _ in range(5):  # iterate to convergence
+            deficit = 0.0
+            surplus_total = 0.0
+            for i in range(n_models):
+                if new_weights[i] < BMC_WEIGHT_FLOOR:
+                    deficit += BMC_WEIGHT_FLOOR - new_weights[i]
+                    new_weights[i] = BMC_WEIGHT_FLOOR
+                else:
+                    surplus_total += new_weights[i]
+            if deficit > 0 and surplus_total > 0:
+                scale = (surplus_total - deficit) / surplus_total
+                for i in range(n_models):
+                    if new_weights[i] > BMC_WEIGHT_FLOOR:
+                        new_weights[i] *= scale
+        # Final normalize for safety
+        wt = sum(new_weights)
+        new_weights = [w / wt for w in new_weights]
+    
+    state["weights"] = new_weights
+    state["n_updates"] += 1
+    
+    return new_weights
+
+
+def get_bmc_weights(asset_name: str) -> list:
+    """Get current BMC weights for asset, or uniform if not yet tracked."""
+    if asset_name not in _BMC_CACHE:
+        return [1.0 / 5] * 5
+    return list(_BMC_CACHE[asset_name]["weights"])
+
+
+def ensemble_forecast(prices: pd.Series, horizons: list = None, asset_type: str = "equity",
+                      asset_name: str = "unknown", tuned_params: Optional[dict] = None) -> tuple:
     """
     Elite multi-model ensemble forecast with regime-aware weighting.
     
@@ -472,10 +1376,14 @@ def ensemble_forecast(prices: pd.Series, horizons: list = None, asset_type: str 
         if len(log_returns) < 30:
             return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Low"
         
+        # Auto-load tuned parameters from cache (Story 1.7)
+        if tuned_params is None and asset_name and asset_name != "unknown":
+            tuned_params = _load_tuned_params(asset_name)
+        
         # Get individual model forecasts
-        kalman_fc = _kalman_forecast(log_returns, horizons, asset_type)
-        garch_fc = _garch_forecast(log_returns, horizons, asset_type)
-        ou_fc = _ou_forecast(prices, horizons, asset_type)
+        kalman_fc = _kalman_forecast(log_returns, horizons, asset_type, tuned_params=tuned_params)
+        garch_fc = _garch_forecast(log_returns, horizons, asset_type, tuned_params=tuned_params)
+        ou_fc = _ou_forecast(prices, horizons, asset_type, tuned_params=tuned_params)
         mom_fc = _momentum_forecast(log_returns, horizons, asset_type)
         
         # Classical drift forecast
@@ -483,22 +1391,44 @@ def ensemble_forecast(prices: pd.Series, horizons: list = None, asset_type: str 
         drift_20d = np.mean(log_returns[-20:])
         drift_60d = np.mean(log_returns[-60:]) if len(log_returns) >= 60 else drift_20d
         
+        # Story 2.6: Adaptive drift with regime-dependent persistence
+        # EWMA drift with half-life = 21 days
+        ew_alpha = 2.0 / (21 + 1)  # EW alpha for 21-day half-life
+        ew_drift = float(log_returns[0])
+        for r in log_returns[1:]:
+            ew_drift = ew_alpha * float(r) + (1 - ew_alpha) * ew_drift
+        
+        # Regime-dependent persistence decay rates
+        regime = _regime_detect(log_returns)
+        if regime == 'trending':
+            persistence_base = 0.97  # Slow decay (trust the trend)
+        elif regime == 'mean_reverting':
+            persistence_base = 0.90  # Faster decay (drift unreliable)
+        elif regime == 'volatile':
+            persistence_base = 0.80  # Very fast decay (crisis-like)
+        else:  # calm
+            persistence_base = 0.93
+        
+        # Soft blending: estimate regime probabilities from vol characteristics
+        vol_20d = float(np.std(log_returns[-20:])) * np.sqrt(252)
+        vol_60d = float(np.std(log_returns[-min(60, len(log_returns)):])) * np.sqrt(252)
+        
+        # Simple soft regime weights based on vol level
+        p_crisis = min(max((vol_20d - 0.30) / 0.20, 0), 1)  # vol > 30% -> crisis
+        p_trend = min(max(abs(np.mean(log_returns[-20:]) * 252) / 0.15, 0), 1) * (1 - p_crisis)
+        p_calm = max(0, 1 - p_crisis - p_trend)
+        
+        # Blend persistence
+        persistence_blend = (
+            p_trend * 0.97 + p_calm * 0.93 + p_crisis * 0.80
+        )
+        
         classical_fc = []
         for h in horizons:
-            # Weight recent momentum more for short horizons
-            if h <= 7:
-                drift = drift_5d * 0.60 + drift_20d * 0.40
-            elif h <= 30:
-                drift = drift_5d * 0.30 + drift_20d * 0.45 + drift_60d * 0.25
-            else:
-                drift = drift_5d * 0.15 + drift_20d * 0.35 + drift_60d * 0.50
-            
-            # Simple projection with mild persistence decay
-            persistence = max(0.4, 1 - h / 500)
-            fc = drift * h * persistence * 100
+            # Adaptive persistence: blended base decays over horizon
+            persistence = persistence_blend ** h
+            fc = ew_drift * h * persistence * 100
             classical_fc.append(float(fc))
-        
-        regime = _regime_detect(log_returns)
         
         # Base weights: [Kalman, GARCH, OU, Momentum, Classical]
         if asset_type == "crypto":
@@ -516,7 +1446,20 @@ def ensemble_forecast(prices: pd.Series, horizons: list = None, asset_type: str 
         else:  # calm
             base_weights = [0.25, 0.20, 0.20, 0.15, 0.20]
         
+        # Story 2.4: Blend fixed regime weights with BMC adaptive weights
+        bmc_weights = get_bmc_weights(asset_name)
+        bmc_blend = 0.5  # 50% BMC + 50% regime-fixed
+        base_weights = [
+            bmc_blend * bmc_weights[j] + (1 - bmc_blend) * base_weights[j]
+            for j in range(5)
+        ]
+        bw_total = sum(base_weights)
+        base_weights = [w / bw_total for w in base_weights]
+        
         final_forecasts = []
+        forecast_uncertainties = []
+        agreement_contrasts = []  # Story 1.14: per-horizon agreement for cap relaxation
+        horizon_explanations = []  # Story 2.9: per-horizon explainability
         for i, h in enumerate(horizons):
             # Horizon-specific weight adjustments
             if h <= 3:
@@ -548,10 +1491,68 @@ def ensemble_forecast(prices: pd.Series, horizons: list = None, asset_type: str 
                 classical_fc[i] if i < len(classical_fc) else 0.0,
             ]
             
-            ensemble = sum(w * f for w, f in zip(weights, forecasts_at_h))
+            # =========================================================
+            # Sign-agreement-weighted averaging (Story 1.6)
+            # =========================================================
+            weighted_median = sum(w * f for w, f in zip(weights, forecasts_at_h))
+            sign_median = 1 if weighted_median >= 0 else -1
+            
+            # Compute agreement: fraction of weight with same sign as median
+            agree_weight = 0.0
+            for j in range(5):
+                sign_j = 1 if forecasts_at_h[j] >= 0 else -1
+                if sign_j == sign_median:
+                    agree_weight += weights[j]
+            
+            agreement_contrast = max(0.0, (agree_weight - 0.5) * 2.0)
+            
+            # Adjust weights based on sign agreement
+            adjusted_weights = []
+            for j in range(5):
+                sign_j = 1 if forecasts_at_h[j] >= 0 else -1
+                if sign_j == sign_median:
+                    adj_w = weights[j] * (1.0 + CONTRAST_BOOST * agreement_contrast)
+                else:
+                    adj_w = weights[j] * (1.0 - CONTRAST_BOOST * agreement_contrast)
+                adjusted_weights.append(max(adj_w, 0.01))
+            
+            adj_total = sum(adjusted_weights)
+            adjusted_weights = [w / adj_total for w in adjusted_weights]
+            
+            ensemble = sum(w * f for w, f in zip(adjusted_weights, forecasts_at_h))
+            
+            # Forecast dispersion (uncertainty measure)
+            fc_arr = np.array(forecasts_at_h)
+            fc_std = float(np.std(fc_arr))
+            fc_mean_abs = abs(ensemble) if abs(ensemble) > 1e-8 else 1e-8
+            dispersion = fc_std / fc_mean_abs
+            
+            # Normalize to 0-1 scale (dispersion of 3+ maps to 1.0)
+            uncertainty = min(dispersion / 3.0, 1.0)
+            forecast_uncertainties.append(float(uncertainty))
+            agreement_contrasts.append(float(agreement_contrast))
+            
+            # Story 2.9: Record per-horizon explanation
+            horizon_explanations.append(
+                _build_explanation(forecasts_at_h, adjusted_weights, ensemble)
+            )
+            
             final_forecasts.append(float(ensemble))
         
         vol = float(np.std(log_returns) * np.sqrt(252))
+        
+        # Story 1.11: Compute vol ratio and signal quality
+        daily_vol = np.abs(log_returns)
+        ewma_alpha = 2.0 / (VOL_RATIO_EWMA_SPAN + 1)
+        ewma_vol = float(daily_vol[-1])
+        for t in range(max(0, len(daily_vol) - VOL_RATIO_EWMA_SPAN), len(daily_vol)):
+            ewma_vol = ewma_alpha * daily_vol[t] + (1 - ewma_alpha) * ewma_vol
+        
+        median_window = min(VOL_RATIO_MEDIAN_WINDOW, len(daily_vol))
+        median_vol = float(np.median(daily_vol[-median_window:])) if median_window > 0 else ewma_vol
+        vol_ratio = ewma_vol / max(median_vol, 1e-10)
+        signal_quality = compute_signal_quality(vol_ratio)
+        vol_regime_label = compute_vol_regime_label(vol_ratio)
         
         # Asset-specific hard caps (realistic bounds)
         if asset_type == "crypto":
@@ -567,12 +1568,19 @@ def ensemble_forecast(prices: pd.Series, horizons: list = None, asset_type: str 
         for i, h in enumerate(horizons):
             fc = final_forecasts[i]
             hard_cap = hard_caps.get(h, 35)
-            # Use the larger of vol-based or hard cap for crypto
+            
+            # Story 1.14: Confidence-gated cap relaxation
+            # High model agreement -> widen cap (up to CAP_MAX_MULTIPLIER)
+            ac = agreement_contrasts[i] if i < len(agreement_contrasts) else 0.0
+            cap_mult = min(1.0 + CAP_CONFIDENCE_SCALE * ac, CAP_MAX_MULTIPLIER)
+            relaxed_cap = hard_cap * cap_mult
+            
+            # Vol-bound remains as independent safety constraint
             vol_bound = vol * np.sqrt(h / 252) * 2.5 * 100
             if asset_type == "crypto":
-                max_fc = max(vol_bound, hard_cap)
+                max_fc = max(vol_bound, relaxed_cap)
             else:
-                max_fc = max(min(vol_bound, hard_cap), 0.5)
+                max_fc = max(min(vol_bound, relaxed_cap), 0.5)
             
             fc = float(np.clip(fc, -max_fc, max_fc))
             bounded_forecasts.append(fc)
@@ -596,15 +1604,89 @@ def ensemble_forecast(prices: pd.Series, horizons: list = None, asset_type: str 
         
         conf_score = data_score * 0.30 + vol_score * 0.30 + regime_score * 0.40
         
-        if conf_score > 0.65:
+        # Story 1.11: Quality-adjusted confidence
+        # Signal quality modulates the confidence level but NEVER the forecast values
+        quality_adjusted_score = conf_score * min(signal_quality, 1.5)  # Cap amplification
+        
+        # Check for contested forecasts (Story 1.6)
+        avg_uncertainty = float(np.mean(forecast_uncertainties)) if forecast_uncertainties else 0.0
+        avg_dispersion = avg_uncertainty * 3.0  # Reverse the normalization
+        is_contested = avg_dispersion > DISPERSION_CONTESTED
+        
+        if is_contested:
+            confidence = "Contested"
+        elif vol_regime_label == "EXTREME":
+            confidence = "Low"  # Override in extreme vol
+        elif quality_adjusted_score > 0.65:
             confidence = "High"
-        elif conf_score > 0.45:
+        elif quality_adjusted_score > 0.45:
             confidence = "Medium"
         else:
             confidence = "Low"
         
+        # Append vol regime tag to confidence
+        if vol_regime_label != "NORMAL":
+            confidence = f"{confidence} [{vol_regime_label}]"
+        
         while len(bounded_forecasts) < 7:
             bounded_forecasts.append(0.0)
+        while len(forecast_uncertainties) < 7:
+            forecast_uncertainties.append(0.0)
+        
+        # Story 2.5: Compute forecast confidence intervals (fan chart quantiles)
+        # Using model disagreement + vol-scaled noise to estimate quantiles
+        forecast_quantiles = []
+        for i, h in enumerate(horizons[:7]):
+            fc_point = bounded_forecasts[i] if i < len(bounded_forecasts) else 0.0
+            
+            # Model spread: std of 5 sub-model forecasts at this horizon
+            sub_forecasts = [
+                kalman_fc[i] if i < len(kalman_fc) else 0.0,
+                garch_fc[i] if i < len(garch_fc) else 0.0,
+                ou_fc[i] if i < len(ou_fc) else 0.0,
+                mom_fc[i] if i < len(mom_fc) else 0.0,
+                classical_fc[i] if i < len(classical_fc) else 0.0,
+            ]
+            model_std = float(np.std(sub_forecasts))
+            
+            # Vol-scaled component: sqrt(h) scaling
+            vol_component = vol * np.sqrt(h / 252) * 100
+            
+            # Combined uncertainty: model disagreement + vol
+            combined_std = np.sqrt(model_std ** 2 + vol_component ** 2)
+            
+            # Quantiles: assuming Gaussian (adequate for fan charts)
+            from scipy.stats import norm
+            quantiles = {}
+            for q, z in [(10, -1.2816), (25, -0.6745), (50, 0.0),
+                         (75, 0.6745), (90, 1.2816)]:
+                quantiles[f"p{q}"] = float(fc_point + z * combined_std)
+            forecast_quantiles.append(quantiles)
+        
+        # Store in module-level cache for retrieval
+        _FORECAST_QUANTILES_CACHE[asset_name] = {
+            "horizons": horizons[:7],
+            "quantiles": forecast_quantiles,
+        }
+        
+        # Story 2.9: Store model explainability in cache
+        _FORECAST_EXPLAIN_CACHE[asset_name] = {
+            "horizons": horizons[:7],
+            "explanations": horizon_explanations[:7],
+        }
+        
+        # Story 2.8: Record forecast timestamp
+        try:
+            last_date = prices.index[-1] if hasattr(prices.index[-1], 'isoformat') else None
+            if last_date is not None:
+                from datetime import timezone
+                if last_date.tzinfo is None:
+                    last_date = last_date.replace(tzinfo=timezone.utc)
+                record_forecast_timestamp(asset_name, data_through=last_date)
+            else:
+                record_forecast_timestamp(asset_name)
+        except Exception:
+            record_forecast_timestamp(asset_name)
         
         return tuple(bounded_forecasts[:7]) + (confidence,)
         

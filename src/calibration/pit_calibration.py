@@ -585,3 +585,76 @@ def _ad_pvalue(z: float) -> float:
         return max(0.0, min(1.0, p))
 
     return 0.0
+
+
+# =============================================================================
+# Story 3.3: CRPS-Optimal GARCH Residual Scaling
+# =============================================================================
+
+def crps_gaussian(mu: np.ndarray, sigma: np.ndarray, y: np.ndarray) -> float:
+    """Closed-form CRPS for Gaussian: CRPS = sigma * [z*(2*Phi(z)-1) + 2*phi(z) - 1/sqrt(pi)]."""
+    from scipy.stats import norm
+    z = (y - mu) / np.maximum(sigma, 1e-20)
+    crps_vals = sigma * (z * (2.0 * norm.cdf(z) - 1.0) + 2.0 * norm.pdf(z) - 1.0 / np.sqrt(np.pi))
+    return float(np.mean(np.abs(crps_vals)))
+
+
+def crps_optimal_garch_scaling(
+    h_t: np.ndarray,
+    residuals: np.ndarray,
+    alpha_grid: np.ndarray = None,
+    holdout_frac: float = 0.2,
+) -> dict:
+    """Story 3.3: Find scaling alpha that minimizes CRPS(alpha * h_t).
+
+    Splits data into train/holdout, grid-searches alpha on train,
+    validates on holdout.
+
+    Parameters
+    ----------
+    h_t : GARCH conditional variance series
+    residuals : forecast residuals (realized - predicted)
+    alpha_grid : grid of scaling factors (default 0.80 to 1.20 step 0.05)
+    holdout_frac : fraction of data for holdout validation
+
+    Returns
+    -------
+    dict with: alpha_opt, crps_train, crps_holdout, crps_unscaled
+    """
+    if alpha_grid is None:
+        alpha_grid = np.arange(0.80, 1.205, 0.05)
+
+    n = len(h_t)
+    n_train = max(10, int(n * (1.0 - holdout_frac)))
+
+    h_train = h_t[:n_train]
+    r_train = residuals[:n_train]
+    h_hold = h_t[n_train:]
+    r_hold = residuals[n_train:]
+
+    mu = np.zeros_like(r_train)
+    mu_hold = np.zeros_like(r_hold)
+
+    # Grid search on training set
+    best_alpha = 1.0
+    best_crps = float('inf')
+    for alpha in alpha_grid:
+        sigma = np.sqrt(np.maximum(alpha * h_train, 1e-20))
+        c = crps_gaussian(mu, sigma, r_train)
+        if c < best_crps:
+            best_crps = c
+            best_alpha = float(alpha)
+
+    # Evaluate on holdout
+    sigma_hold = np.sqrt(np.maximum(best_alpha * h_hold, 1e-20))
+    crps_holdout = crps_gaussian(mu_hold, sigma_hold, r_hold)
+
+    sigma_unscaled = np.sqrt(np.maximum(h_hold, 1e-20))
+    crps_unscaled = crps_gaussian(mu_hold, sigma_unscaled, r_hold)
+
+    return {
+        "alpha_opt": best_alpha,
+        "crps_train": best_crps,
+        "crps_holdout": crps_holdout,
+        "crps_unscaled": crps_unscaled,
+    }

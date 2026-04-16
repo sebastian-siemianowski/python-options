@@ -5,6 +5,7 @@ import type { PriceFile } from '../api';
 import PageHeader from '../components/PageHeader';
 import StatCard from '../components/StatCard';
 import LoadingSpinner from '../components/LoadingSpinner';
+import { CosmicErrorCard } from '../components/CosmicErrorState';
 import { Database, HardDrive, Clock, AlertTriangle, FolderOpen, RefreshCw } from 'lucide-react';
 
 export default function DataPage() {
@@ -36,6 +37,7 @@ export default function DataPage() {
   };
 
   if (statusQ.isLoading) return <LoadingSpinner text="Loading data status..." />;
+  if (statusQ.error) return <CosmicErrorCard title="Unable to load data status" error={statusQ.error as Error} onRetry={() => statusQ.refetch()} />;
 
   const status = statusQ.data;
   const files = pricesQ.data?.files || [];
@@ -53,7 +55,12 @@ export default function DataPage() {
           <button
             onClick={handleRefresh}
             disabled={refreshing}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#16213e] text-sm text-[#42A5F5] hover:bg-[#1a2744] border border-[#2a2a4a] transition disabled:opacity-50"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm transition-all duration-200 disabled:opacity-50 hover-lift press-spring"
+            style={{
+              background: 'var(--violet-8)',
+              color: 'var(--text-violet)',
+              border: '1px solid var(--violet-12)',
+            }}
           >
             <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
             Refresh Data
@@ -64,14 +71,14 @@ export default function DataPage() {
       </PageHeader>
 
       {refreshMsg && (
-        <div className="glass-card p-3 mb-4 border-l-2 border-[#42A5F5]">
-          <p className="text-xs text-[#94a3b8]">{refreshMsg}</p>
+        <div className="glass-card p-3 mb-4" style={{ borderLeft: '2px solid var(--accent-violet)' }}>
+          <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>{refreshMsg}</p>
         </div>
       )}
 
       {/* Stats */}
       {status && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-5 mb-8 fade-up">
           <StatCard title="Total Files" value={status.total_files} icon={<Database className="w-5 h-5" />} color="blue" />
           <StatCard title="Fresh" value={status.fresh_files} subtitle="< 24h old" icon={<Clock className="w-5 h-5" />} color="green" />
           <StatCard title="Stale" value={status.stale_files} subtitle="> 24h old" icon={<AlertTriangle className="w-5 h-5" />} color={status.stale_files > 10 ? 'red' : 'amber'} />
@@ -79,18 +86,18 @@ export default function DataPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 fade-up-delay-1">
         {/* Directories */}
-        <div className="glass-card p-4">
-          <h3 className="text-sm font-medium text-[#94a3b8] mb-3 flex items-center gap-2">
-            <FolderOpen className="w-4 h-4" /> Data Directories
+        <div className="glass-card hover-lift" style={{ padding: '20px' }}>
+          <h3 className="premium-section-label mb-4 flex items-center gap-2">
+            <FolderOpen className="w-4 h-4" style={{ color: 'var(--accent-violet)' }} /> Data Directories
           </h3>
           <div className="space-y-2">
             {Object.entries(dirs).map(([name, info]) => (
               <div key={name} className="flex items-center justify-between text-xs">
-                <span className="text-[#e2e8f0]">{name}</span>
-                <span className={info.exists ? 'text-[#00E676]' : 'text-[#FF1744]'}>
-                  {info.exists ? `${info.file_count} files` : 'missing'}
+                <span style={{ color: 'var(--text-luminous)' }}>{name}</span>
+                <span className={info.exists ? 'status-pill status-pass' : 'status-pill status-fail'}>
+                  {info.exists ? `${info.file_count} files` : 'Missing'}
                 </span>
               </div>
             ))}
@@ -99,24 +106,30 @@ export default function DataPage() {
 
         {/* Price file list */}
         <div className="glass-card md:col-span-2 overflow-hidden">
-          <div className="p-3 border-b border-[#2a2a4a]">
+          <div className="px-4 py-3" style={{ borderBottom: '1px solid var(--violet-6)' }}>
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search symbols..."
-              className="w-full px-3 py-1.5 rounded-lg bg-[#0f0f23] border border-[#2a2a4a] text-sm text-[#e2e8f0] placeholder:text-[#64748b] outline-none focus:border-[#42A5F5]"
+              className="w-full px-3 py-2.5 rounded-xl text-sm outline-none transition-all duration-200 focus-ring"
+              style={{
+                background: 'rgba(10,10,26,0.6)',
+                backdropFilter: 'blur(8px)',
+                border: '1px solid var(--violet-8)',
+                color: 'var(--text-primary)',
+              }}
             />
           </div>
           <div className="overflow-y-auto max-h-[500px]">
-            <table className="w-full text-xs">
-              <thead className="sticky top-0 bg-[#1a1a2e]">
-                <tr className="border-b border-[#2a2a4a]">
-                  <th className="text-left px-3 py-2 text-[#64748b]">Symbol</th>
-                  <th className="text-right px-3 py-2 text-[#64748b]">Rows</th>
-                  <th className="text-right px-3 py-2 text-[#64748b]">Size</th>
-                  <th className="text-right px-3 py-2 text-[#64748b]">Age</th>
-                  <th className="text-right px-3 py-2 text-[#64748b]">Updated</th>
+            <table className="premium-table">
+              <thead className="premium-thead">
+                <tr>
+                  <th className="text-left">Symbol</th>
+                  <th className="text-right">Rows</th>
+                  <th className="text-right">Size</th>
+                  <th className="text-right">Age</th>
+                  <th className="text-right">Updated</th>
                 </tr>
               </thead>
               <tbody>
@@ -133,21 +146,28 @@ export default function DataPage() {
 }
 
 function FileRow({ file }: { file: PriceFile }) {
-  const ageColor = file.age_hours < 24 ? 'text-[#00E676]'
-    : file.age_hours < 72 ? 'text-[#FFB300]'
-    : 'text-[#FF1744]';
+  const ageClass = file.age_hours < 24 ? 'age-badge-fresh'
+    : file.age_hours < 168 ? 'age-badge-stale'
+    : 'age-badge-old';
+
+  const ageLabel = file.age_hours < 1 ? '<1h'
+    : file.age_hours < 24 ? `${Math.round(file.age_hours)}h`
+    : file.age_hours < 168 ? `${Math.round(file.age_hours / 24)}d`
+    : `${Math.round(file.age_hours / 24)}d`;
+
+  const relTime = file.age_hours < 1 ? 'just now'
+    : file.age_hours < 24 ? `${Math.round(file.age_hours)}h ago`
+    : `${Math.round(file.age_hours / 24)}d ago`;
 
   return (
-    <tr className="border-b border-[#2a2a4a]/50 hover:bg-[#16213e]/30 transition">
-      <td className="px-3 py-2 font-medium text-[#e2e8f0]">{file.symbol}</td>
-      <td className="px-3 py-2 text-right text-[#94a3b8]">{file.rows.toLocaleString()}</td>
-      <td className="px-3 py-2 text-right text-[#94a3b8]">{file.size_kb} KB</td>
-      <td className={`px-3 py-2 text-right ${ageColor}`}>
-        {file.age_hours < 1 ? '<1h' : `${Math.round(file.age_hours)}h`}
+    <tr className="premium-row">
+      <td style={{ color: 'var(--text-luminous)', fontWeight: 600 }}>{file.symbol}</td>
+      <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{file.rows.toLocaleString()}</td>
+      <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{file.size_kb} KB</td>
+      <td className="text-right">
+        <span className={`age-badge ${ageClass}`}>{ageLabel}</span>
       </td>
-      <td className="px-3 py-2 text-right text-[#64748b]">
-        {new Date(file.last_modified).toLocaleDateString()}
-      </td>
+      <td className="text-right text-caption">{relTime}</td>
     </tr>
   );
 }

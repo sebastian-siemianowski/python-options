@@ -300,6 +300,14 @@ calibrate: .venv/.deps_installed
 		.venv/bin/python src/tuning/tune_ux.py --assets "$$FAILED_ASSETS" --force $(ARGS); \
 	fi
 
+# Story 2.6: Walk-forward calibration pipeline (EMOS + vol ratios + DIG)
+#   make calibrate-pipeline                        # Calibrate default assets
+#   make calibrate-pipeline CALIBRATE_ASSETS="SPY,QQQ,AAPL"  # Custom assets
+CALIBRATE_ASSETS ?= SPY,QQQ,AAPL,NVDA,TSLA,MSFT,AMZN,GOOGL,META,JPM,GS,XOM
+calibrate-pipeline: .venv/.deps_installed
+	@echo "Running walk-forward calibration pipeline..."
+	.venv/bin/python src/tuning/tune.py --calibrate --assets "$(CALIBRATE_ASSETS)" $(ARGS)
+
 # FX Debt Allocation Engine - EURJPY balance sheet convexity control
 debt: .venv/.deps_installed
 	@mkdir -p src/data/debt
@@ -377,6 +385,16 @@ online-test: .venv/.deps_installed
 tests: .venv/.deps_installed
 	@echo "Running all tests (parallel, multi-process)..."
 	@OFFLINE_MODE=1 TUNING_QUIET=1 .venv/bin/python -m pytest src/tests/ $(ARGS)
+
+# Story 7.3: Profitability regression tests only
+test-profit: .venv/.deps_installed
+	@echo "Running profitability regression tests..."
+	@OFFLINE_MODE=1 TUNING_QUIET=1 .venv/bin/python -m pytest src/tests/test_profitability_regression.py -v $(ARGS)
+
+# Story 8.2: Full pipeline integration test (requires RUN_INTEGRATION=1)
+test-integration: .venv/.deps_installed
+	@echo "Running full pipeline integration tests..."
+	@RUN_INTEGRATION=1 TUNING_QUIET=1 .venv/bin/python -m pytest src/tests/test_full_pipeline.py -v $(ARGS)
 
 # PIT calibration test for unified Student-t model (failing assets only)
 pit: .venv/.deps_installed
@@ -736,6 +754,10 @@ arena-backtest-results: .venv/.deps_installed
 risk: .venv/.deps_installed
 	@.venv/bin/python src/decision/risk_dashboard.py $(ARGS)
 
+# Forecast Scorecard - directional accuracy tracking (Story 1.9)
+scorecard: .venv/.deps_installed
+	@.venv/bin/python src/calibration/forecast_scorecard.py --evaluate $(ARGS)
+
 # Individual temperature modules (for legacy/debugging)
 temp: .venv/.deps_installed
 	@.venv/bin/python src/decision/risk_temperature.py
@@ -808,6 +830,12 @@ web: .venv/.deps_installed
 		echo "⚠  Web dependencies not installed. Installing..."; \
 		$(MAKE) web-install; \
 	fi
+	@echo "Killing any existing web services..."
+	@-pkill -f "uvicorn web.backend.main:app" 2>/dev/null || true
+	@-pkill -f "vite.*src/web/frontend" 2>/dev/null || true
+	@-pkill -f "node.*src/web/frontend" 2>/dev/null || true
+	@-pkill -f "celery.*web.backend" 2>/dev/null || true
+	@sleep 1
 	@echo "╔══════════════════════════════════════════════════════╗"
 	@echo "║         Signal Engine — Web Dashboard               ║"
 	@echo "╚══════════════════════════════════════════════════════╝"

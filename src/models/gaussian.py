@@ -51,6 +51,90 @@ from scipy.optimize import minimize
 from scipy.special import ndtr as _ndtr
 from scipy.stats import norm
 
+
+# ── Story 5.3: Causal EWM location correction ────────────────────────
+def causal_ewm_location_correction(
+    innovations: np.ndarray,
+    ewm_lambda: float = 0.96,
+) -> np.ndarray:
+    """Strictly causal EWM bias correction on innovations.
+
+    At time t, uses only innovations[0..t-1] to estimate running mean bias.
+    Returns correction array of same length as innovations.
+
+    Args:
+        innovations: Array of (return_t - mu_pred_t) residuals.
+        ewm_lambda: Decay factor in (0, 1). 0 disables correction.
+
+    Returns:
+        correction: Array where correction[t] = EWM of innovations[0..t-1].
+    """
+    n = len(innovations)
+    correction = np.zeros(n)
+    if ewm_lambda <= 0 or ewm_lambda >= 1.0:
+        return correction
+
+    alpha = 1.0 - ewm_lambda
+    ewm_state = 0.0
+    for t in range(n):
+        correction[t] = ewm_state  # Lag-1: uses only past info
+        ewm_state = ewm_lambda * ewm_state + alpha * innovations[t]
+
+    return correction
+
+
+# ── Story 5.4: Walk-forward CV with purged gaps ─────────────────────
+def make_purged_cv_folds(
+    n: int,
+    n_folds: int = 5,
+    min_train_frac: float = 0.5,
+    purge_gap: int = 5,
+) -> list:
+    """Generate expanding-window walk-forward CV folds with purged gaps.
+
+    Each fold: (train_start, train_end, test_start, test_end)
+    where test_start = train_end + purge_gap + 1.
+
+    Args:
+        n: Total number of observations.
+        n_folds: Target number of folds (at least 5 for reliable CV).
+        min_train_frac: Minimum training fraction (default 0.5).
+        purge_gap: Number of days gap between train and test (default 5).
+
+    Returns:
+        List of (train_start, train_end, test_start, test_end) tuples.
+    """
+    min_train = max(int(n * min_train_frac), 30)
+
+    # Total observations available after min train
+    remaining = n - min_train
+    if remaining <= 0:
+        return [(0, min_train, min_train, n)] if n > min_train else []
+
+    # Each fold needs purge_gap + at least 20 test points
+    min_fold_size = purge_gap + 20
+    actual_folds = min(n_folds, max(1, remaining // min_fold_size))
+    if actual_folds < 1:
+        actual_folds = 1
+
+    step = max(remaining // actual_folds, min_fold_size)
+
+    folds = []
+    for i in range(actual_folds):
+        train_end = min_train + i * step
+        test_start = train_end + purge_gap + 1
+        test_end = min(train_end + step, n)
+
+        if test_start >= n or test_end <= test_start:
+            continue
+        if test_end - test_start < 10:
+            continue
+
+        folds.append((0, train_end, test_start, test_end))
+
+    return folds
+
+
 # Numba wrappers for JIT-compiled filters (optional performance enhancement)
 try:
     from .numba_wrappers import (
@@ -1311,8 +1395,14 @@ class GaussianDriftModel:
             return DISABLED
 
     @classmethod
-    def _gaussian_stage_1(cls, returns_train, vol_train, n_train, config, phi_mode):
-        """Stage 1: Base params (q, c, φ) via CV MLE with state regularization."""
+    def _gaussian_stage_1(cls, returns_train, vol_train, n_train, config, phi_mode,
+                          n_starts: int = 3):
+        """Stage 1: Base params (q, c, φ) via multi-start CV MLE with state regularization.
+
+        Story 5.1: Multi-start optimization with n_starts canonical starting points
+        spanning the (q, c, phi) parameter space, plus grid-best. Each start runs
+        L-BFGS-B with maxiter=200. Best selected by CV log-likelihood.
+        """
         _returns_r = np.ascontiguousarray(returns_train.flatten(), dtype=np.float64)
         _vol_sq = np.ascontiguousarray((vol_train ** 2).flatten(), dtype=np.float64)
 
@@ -1446,26 +1536,41 @@ class GaussianDriftModel:
                     except Exception:
                         continue
 
-        # L-BFGS-B refinement
+        # L-BFGS-B multi-start refinement (Story 5.1)
+        # Canonical starts spanning the parameter space + grid-best
+        _CANONICAL_STARTS_PHI = [
+            np.array([-6.0, 0.0, 0.0]),        # (q=1e-6, c=1.0, phi=0)
+            np.array([-4.0, -0.301, 0.5]),      # (q=1e-4, c=0.5, phi=0.5)
+            np.array([-5.0, 0.301, -0.3]),       # (q=1e-5, c=2.0, phi=-0.3)
+        ]
+        _CANONICAL_STARTS_NOPHI = [
+            np.array([-6.0, 0.0]),
+            np.array([-4.0, -0.301]),
+            np.array([-5.0, 0.301]),
+        ]
+
         if phi_mode:
             bounds = [(_log_q_min, _log_q_max), (_log_c_min, _log_c_max), (phi_min, phi_max)]
-            starts = [
-                np.array([best_lq, best_lc, best_ph]),
-                np.array([prior_mean, 0.0, 0.0]),
-            ]
+            grid_best_start = np.array([best_lq, best_lc, best_ph])
+            canonical = _CANONICAL_STARTS_PHI[:n_starts]
         else:
             bounds = [(_log_q_min, _log_q_max), (_log_c_min, _log_c_max)]
-            starts = [
-                np.array([best_lq, best_lc]),
-                np.array([prior_mean, 0.0]),
-            ]
+            grid_best_start = np.array([best_lq, best_lc])
+            canonical = _CANONICAL_STARTS_NOPHI[:n_starts]
+
+        starts = [grid_best_start] + canonical
 
         best_result = None
         best_fun = best_val
+        start_results = []
         for x0 in starts:
             try:
-                res = minimize(neg_cv_ll, x0, method='L-BFGS-B', bounds=bounds,
-                               options={'maxiter': 100, 'ftol': 1e-8})
+                # Clip to bounds
+                x0_clipped = np.clip(x0, [b[0] for b in bounds], [b[1] for b in bounds])
+                res = minimize(neg_cv_ll, x0_clipped, method='L-BFGS-B', bounds=bounds,
+                               options={'maxiter': 200, 'ftol': 1e-8})
+                start_results.append({'x0': x0.tolist(), 'fun': float(res.fun),
+                                      'success': bool(res.success)})
                 if res.fun < best_fun:
                     best_fun = res.fun
                     best_result = res
@@ -1487,26 +1592,43 @@ class GaussianDriftModel:
             'c': 10 ** lc,
             'phi': float(np.clip(ph, -0.999, 0.999)),
             'log_q': lq,
+            'n_starts': len(starts),
+            'start_results': start_results,
         }
 
     @staticmethod
     def _gaussian_stage_2_variance_inflation(returns_train, mu_pred_train, S_pred_train, n_train):
-        """Stage 2: Variance inflation β via PIT MAD grid search on training data."""
+        """Stage 2: Variance inflation beta via quantile coverage matching.
+
+        Story 5.2: beta selected by minimizing sum_q (coverage(q,beta) - q)^2
+        over q in {0.50, 0.80, 0.95}. Grid search beta in [0.80, 0.85, ..., 2.0].
+        """
         n_val = max(50, n_train // 3)
         val_start = n_train - n_val
 
-        best_beta, best_mad = 1.0, 1.0
-        for beta in [0.80, 0.85, 0.90, 0.95, 1.0, 1.05, 1.10, 1.15, 1.20, 1.30, 1.50]:
-            S_cal = S_pred_train[val_start:] * beta
+        r_val = returns_train[val_start:]
+        mu_val = mu_pred_train[val_start:]
+        S_val = S_pred_train[val_start:]
+
+        target_quantiles = np.array([0.50, 0.80, 0.95])
+        beta_grid = np.arange(0.80, 2.05, 0.05)
+
+        best_beta, best_loss = 1.0, float('inf')
+        for beta in beta_grid:
+            S_cal = S_val * beta
             sigma = np.sqrt(np.maximum(S_cal, 1e-20))
             sigma = np.maximum(sigma, 1e-10)
-            z = (returns_train[val_start:] - mu_pred_train[val_start:]) / sigma
+            z = (r_val - mu_val) / sigma
             pit = np.clip(_ndtr(z), 0.001, 0.999)
-            hist, _ = np.histogram(pit, bins=10, range=(0, 1))
-            mad = float(np.mean(np.abs(hist / len(pit) - 0.1)))
-            if mad < best_mad:
-                best_mad = mad
-                best_beta = beta
+
+            loss = 0.0
+            for q_target in target_quantiles:
+                coverage = float(np.mean(pit <= q_target))
+                loss += (coverage - q_target) ** 2
+
+            if loss < best_loss:
+                best_loss = loss
+                best_beta = float(beta)
 
         return best_beta
 

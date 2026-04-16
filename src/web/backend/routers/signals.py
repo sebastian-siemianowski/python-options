@@ -2,6 +2,8 @@
 Signals router — signal cache data, high conviction signals, computation trigger.
 """
 
+import asyncio
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Query
@@ -17,6 +19,7 @@ from web.backend.services.signal_service import (
     get_strong_signal_symbols,
     _invalidate_signal_cache,
 )
+from web.backend.ws import manager as ws_manager
 
 router = APIRouter()
 
@@ -60,6 +63,15 @@ async def signal_stats():
 async def refresh_signal_cache():
     """Invalidate the in-memory signal cache, forcing a reload on next request."""
     _invalidate_signal_cache()
+    # Story 6.4: Broadcast signal updates to WebSocket clients
+    rows = get_summary_rows()
+    for row in rows:
+        await ws_manager.broadcast({
+            "type": "signal_update",
+            "symbol": row.get("asset_label", ""),
+            "timestamp": datetime.now().isoformat(),
+            "summary": row,
+        })
     return {"status": "ok", "message": "Signal cache invalidated"}
 
 
