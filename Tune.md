@@ -100,12 +100,12 @@ This is the difference between a reactive and a proactive filter.
 **So that** the filter adapts within 1-3 days of a regime shift instead of 20-50 days.
 
 **Acceptance Criteria**:
-- [ ] Numba kernel `rv_adaptive_q_kernel(vol, q_base, gamma)` computes $q_t = q_{\text{base}} \cdot \exp(\gamma \cdot \Delta\log\sigma_t^2)$
-- [ ] $q_t$ is bounded: $q_{\min} = 10^{-8}$, $q_{\max} = 10^{-2}$ (prevents divergence)
-- [ ] Filter recovery time after synthetic 2x vol shock: < 5 days (vs > 20 days with static q)
-- [ ] BIC improvement on MSTR, BTC-USD, TSLA: $\Delta$BIC < -50 (better fit)
-- [ ] No BIC regression on low-vol assets (SPY, JNJ, PG): $|\Delta$BIC$|$ < 10
-- [ ] Validated on: MSTR, BTC-USD, TSLA, SPY, JNJ, GC=F, UPST
+- [x] Numba kernel `rv_adaptive_q_kernel(vol, q_base, gamma)` computes $q_t = q_{\text{base}} \cdot \exp(\gamma \cdot \Delta\log\sigma_t^2)$
+- [x] $q_t$ is bounded: $q_{\min} = 10^{-8}$, $q_{\max} = 10^{-2}$ (prevents divergence)
+- [x] Filter recovery time after synthetic 2x vol shock: < 5 days (vs > 20 days with static q)
+- [x] BIC improvement on MSTR, BTC-USD, TSLA: $\Delta$BIC < -50 (better fit)
+- [x] No BIC regression on low-vol assets (SPY, JNJ, PG): $|\Delta$BIC$|$ < 10
+- [x] Validated on: MSTR, BTC-USD, TSLA, SPY, JNJ, GC=F, UPST
 
 ### Story 1.2: Joint (q, gamma) Optimization via Profile Likelihood
 
@@ -114,12 +114,12 @@ This is the difference between a reactive and a proactive filter.
 **So that** the RV-linked q adapts to each asset's specific vol-drift coupling.
 
 **Acceptance Criteria**:
-- [ ] `optimize_rv_q_params(returns, vol, c, phi, nu)` returns $(q_{\text{base}}^*, \gamma^*)$ via L-BFGS-B
-- [ ] Grid initialization: $\gamma \in \{0.0, 0.5, 1.0, 2.0, 4.0\}$, $q_{\text{base}} \in \{10^{-7}, 10^{-6}, 10^{-5}\}$
-- [ ] $\gamma^* = 0$ recovers static-q model (backward compatible)
-- [ ] $\gamma^*$ for BTC-USD significantly larger than $\gamma^*$ for SPY (vol-feedback stronger for crypto)
-- [ ] Log-likelihood improvement > 5 nats on 5+ of 50 test assets
-- [ ] Validated on full 50-asset universe
+- [x] `optimize_rv_q_params(returns, vol, c, phi, nu)` returns $(q_{\text{base}}^*, \gamma^*)$ via L-BFGS-B
+- [x] Grid initialization: $\gamma \in \{0.0, 0.5, 1.0, 2.0, 4.0\}$, $q_{\text{base}} \in \{10^{-7}, 10^{-6}, 10^{-5}\}$
+- [x] $\gamma^* = 0$ recovers static-q model (backward compatible)
+- [x] $\gamma^*$ for BTC-USD significantly larger than $\gamma^*$ for SPY (vol-feedback stronger for crypto)
+- [x] Log-likelihood improvement > 5 nats on 5+ of 50 test assets
+- [x] Validated on full 50-asset universe
 
 ### Story 1.3: RV-Q Integration with Existing GAS-Q
 
@@ -128,12 +128,12 @@ This is the difference between a reactive and a proactive filter.
 **So that** the data decides whether reactive (GAS-Q) or proactive (RV-Q) noise is better per asset.
 
 **Acceptance Criteria**:
-- [ ] `model_registry.py` has `rv_q` variants for Gaussian and Student-t families
-- [ ] BMA includes both GAS-Q and RV-Q variants (they compete, not replace)
-- [ ] On 50-asset universe: RV-Q wins BMA on 30%+ of assets (vol-driven assets)
-- [ ] GAS-Q still wins on mean-reverting assets (SPY, QQQ) -- confirms proper competition
-- [ ] Combined BIC (BMA-weighted) improves by > 20 nats on average across universe
-- [ ] No model dominates > 60% of assets (ensures diversity)
+- [x] `model_registry.py` has `rv_q` variants for Gaussian and Student-t families
+- [x] BMA includes both GAS-Q and RV-Q variants (they compete, not replace)
+- [x] On 50-asset universe: RV-Q wins BMA on 30%+ of assets (vol-driven assets)
+- [x] GAS-Q still wins on mean-reverting assets (SPY, QQQ) -- confirms proper competition
+- [x] Combined BIC (BMA-weighted) improves by > 20 nats on average across universe
+- [x] No model dominates > 60% of assets (ensures diversity)
 
 ---
 
@@ -163,12 +163,12 @@ observation model without sacrificing coverage.
 **So that** forecast intervals are tight in trends and wide in crises.
 
 **Acceptance Criteria**:
-- [ ] `fit_regime_c(returns, vol, regime_labels)` returns $\{c_0, c_1, c_2, c_3, c_4\}$ per regime
-- [ ] Numba kernel accepts `c_array[T]` instead of scalar `c` (time-varying)
-- [ ] $c_{\text{crisis}} > c_{\text{trend}}$ for 90%+ of assets (variance decomposition correct)
-- [ ] CRPS improvement: $\Delta$CRPS < -0.001 on average (tighter intervals)
-- [ ] PIT coverage 90% stays within [85%, 95%] (no over/under-coverage)
-- [ ] Validated on: MSTR (crisis-heavy), SPY (trend-heavy), PLTR (regime-switching), GC=F
+- [x] `fit_regime_c(returns, vol, regime_labels)` returns $\{c_0, c_1, c_2, c_3, c_4\}$ per regime
+- [x] Numba kernel accepts `c_array[T]` instead of scalar `c` (time-varying)
+- [x] $c_{\text{crisis}} > c_{\text{trend}}$ for 90%+ of assets (variance decomposition correct)
+- [x] CRPS improvement: $\Delta$CRPS < -0.001 on average (tighter intervals)
+- [x] PIT coverage 90% stays within [85%, 95%] (no over/under-coverage)
+- [x] Validated on: MSTR (crisis-heavy), SPY (trend-heavy), PLTR (regime-switching), GC=F
 
 ### Story 2.2: Garman-Klass Ratio as c Prior
 
@@ -177,12 +177,12 @@ observation model without sacrificing coverage.
 **So that** $c$ estimation starts close to the true noise fraction instead of at $c=1$.
 
 **Acceptance Criteria**:
-- [ ] `gk_c_prior(ohlc_df)` computes $c_{\text{prior}} = \hat{\sigma}^2_{\text{GK}} / \hat{\sigma}^2_{\text{CC}}$
-- [ ] Prior integrated into L-BFGS-B bounds: $c \in [0.5 \cdot c_{\text{prior}}, 2.0 \cdot c_{\text{prior}}]$
-- [ ] Convergence speed: MLE converges in < 50 iterations (vs ~100 without prior)
-- [ ] Final $c^*$ closer to true noise fraction (synthetic DGP test with known $c$)
-- [ ] No accuracy regression on assets without OHLC data (fallback to $c=1.0$ prior)
-- [ ] Validated on: 50-asset universe with OHLC available
+- [x] `gk_c_prior(ohlc_df)` computes $c_{\text{prior}} = \hat{\sigma}^2_{\text{GK}} / \hat{\sigma}^2_{\text{CC}}$
+- [x] Prior integrated into L-BFGS-B bounds: $c \in [0.5 \cdot c_{\text{prior}}, 2.0 \cdot c_{\text{prior}}]$
+- [x] Convergence speed: MLE converges in < 50 iterations (vs ~100 without prior)
+- [x] Final $c^*$ closer to true noise fraction (synthetic DGP test with known $c$)
+- [x] No accuracy regression on assets without OHLC data (fallback to $c=1.0$ prior)
+- [x] Validated on: 50-asset universe with OHLC available
 
 ### Story 2.3: Online c Update via Innovation Variance Monitoring
 
@@ -191,12 +191,12 @@ observation model without sacrificing coverage.
 **So that** $c$ self-corrects daily without requiring weekly full re-tune.
 
 **Acceptance Criteria**:
-- [ ] Numba kernel `online_c_update(v_t, R_t, c_t, eta)` implements exponential smoothing
-- [ ] Learning rate $\eta \in [0.001, 0.05]$ with adaptive decay
-- [ ] Online $c$ tracks regime-conditional $c$ within 10% after 20 observations
-- [ ] No divergence: $c_t \in [0.1, 10.0]$ enforced with clipping
-- [ ] Hit rate improvement > 0.5% on rolling 60-day windows
-- [ ] Validated on: TSLA (fast regime change), GC=F (slow regime), BTC-USD (24/7)
+- [x] Numba kernel `online_c_update(v_t, R_t, c_t, eta)` implements exponential smoothing
+- [x] Learning rate $\eta \in [0.001, 0.05]$ with adaptive decay
+- [x] Online $c$ tracks regime-conditional $c$ within 10% after 20 observations
+- [x] No divergence: $c_t \in [0.1, 10.0]$ enforced with clipping
+- [x] Hit rate improvement > 0.5% on rolling 60-day windows
+- [x] Validated on: TSLA (fast regime change), GC=F (slow regime), BTC-USD (24/7)
 
 ---
 
@@ -228,13 +228,13 @@ But the shrinkage target should be *asset-class dependent*:
 **So that** small-sample estimates don't push all assets toward the same shrinkage target.
 
 **Acceptance Criteria**:
-- [ ] `compute_phi_prior(asset_class, returns)` returns $(\phi_0, \lambda_\phi)$ based on asset class
-- [ ] Prior targets: Indices $\phi_0 = 0.95$, Large Cap $\phi_0 = 0.8$, Small Cap $\phi_0 = 0.3$, Crypto $\phi_0 = 0.7$
-- [ ] Shrinkage strength $\lambda_\phi$ inversely proportional to sample size
-- [ ] $\phi^*$ for SPY closer to 1.0 than current estimate (momentum preserved)
-- [ ] $\phi^*$ for UPST closer to 0.0 than current estimate (mean reversion captured)
-- [ ] Hit rate on directional predictions improves by > 1% on 30+ of 50 assets
-- [ ] Validated on full 50-asset universe
+- [x] `compute_phi_prior(asset_class, returns)` returns $(\phi_0, \lambda_\phi)$ based on asset class
+- [x] Prior targets: Indices $\phi_0 = 0.95$, Large Cap $\phi_0 = 0.8$, Small Cap $\phi_0 = 0.3$, Crypto $\phi_0 = 0.7$
+- [x] Shrinkage strength $\lambda_\phi$ inversely proportional to sample size
+- [x] $\phi^*$ for SPY closer to 1.0 than current estimate (momentum preserved)
+- [x] $\phi^*$ for UPST closer to 0.0 than current estimate (mean reversion captured)
+- [x] Hit rate on directional predictions improves by > 1% on 30+ of 50 assets
+- [x] Validated on full 50-asset universe
 
 ### Story 3.2: Rolling phi with Structural Break Detection
 
@@ -243,12 +243,12 @@ But the shrinkage target should be *asset-class dependent*:
 **So that** the filter doesn't apply 2020's momentum to 2024's mean-reversion regime.
 
 **Acceptance Criteria**:
-- [ ] `rolling_phi_estimate(returns, vol, window=252, step=21)` returns $\phi_t$ series
-- [ ] CUSUM break detector flags $|\Delta\phi| > 0.3$ as structural break
-- [ ] After break: $\phi$ resets to prior and re-estimates with post-break data only
-- [ ] Synthetic test: DGP switches $\phi$ from 0.9 to 0.1 at $t=500$. Filter detects within 30 days.
-- [ ] No false breaks on stable assets (SPY, MSFT): < 1 false break per 2 years
-- [ ] Validated on: TSLA, MSTR, CRWD, SPY, MSFT, GC=F
+- [x] `rolling_phi_estimate(returns, vol, window=252, step=21)` returns $\phi_t$ series
+- [x] CUSUM break detector flags $|\Delta\phi| > 0.3$ as structural break
+- [x] After break: $\phi$ resets to prior and re-estimates with post-break data only
+- [x] Synthetic test: DGP switches $\phi$ from 0.9 to 0.1 at $t=500$. Filter detects within 30 days.
+- [x] No false breaks on stable assets (SPY, MSFT): < 1 false break per 2 years
+- [x] Validated on: TSLA, MSTR, CRWD, SPY, MSFT, GC=F
 
 ### Story 3.3: phi-nu Joint Optimization with Identifiability Guard
 
@@ -257,12 +257,12 @@ But the shrinkage target should be *asset-class dependent*:
 **So that** the optimizer doesn't trade $\phi$ for $\nu$ (both affect tail behavior).
 
 **Acceptance Criteria**:
-- [ ] Hessian condition number at $(\phi^*, \nu^*)$ logged for every fit
-- [ ] Warning if $\kappa(H) > 100$ (near-singular -- parameters trading off)
-- [ ] Regularization: $\|\phi - \phi_0\|^2 / \lambda_\phi + \|\nu - \nu_0\|^2 / \lambda_\nu$
-- [ ] Synthetic test: known $(\phi=0.5, \nu=5)$ recovered within $(0.45-0.55, 4-6)$
-- [ ] No BIC regression on any of 50 test assets
-- [ ] Validated on: UPST, BTC-USD, MSTR, SPY, GC=F, SI=F
+- [x] Hessian condition number at $(\phi^*, \nu^*)$ logged for every fit
+- [x] Warning if $\kappa(H) > 100$ (near-singular -- parameters trading off)
+- [x] Regularization: $\|\phi - \phi_0\|^2 / \lambda_\phi + \|\nu - \nu_0\|^2 / \lambda_\nu$
+- [x] Synthetic test: known $(\phi=0.5, \nu=5)$ recovered within $(0.45-0.55, 4-6)$
+- [x] No BIC regression on any of 50 test assets
+- [x] Validated on: UPST, BTC-USD, MSTR, SPY, GC=F, SI=F
 
 ---
 
@@ -293,12 +293,12 @@ handles correlated models (downweighting redundant ones) and rewards models that
 **So that** stacking weights are based on true predictive performance, not in-sample fit.
 
 **Acceptance Criteria**:
-- [ ] `loo_crps_gaussian(mu, sigma, returns)` computes LOO-CRPS using Gaussian CDF
-- [ ] `loo_crps_student_t(mu, sigma, nu, returns)` computes LOO-CRPS using Student-t CDF
-- [ ] Both Numba-compiled with `@njit(cache=True)` for speed
-- [ ] LOO-CRPS matches `properscoring.crps_gaussian` to within 1e-8 on Gaussian test case
-- [ ] Runtime: < 10ms for 1000-step series (must not bottleneck tuning)
-- [ ] Validated on: SPY (Gaussian-like), MSTR (heavy-tailed), GC=F (trend + jumps)
+- [x] `loo_crps_gaussian(mu, sigma, returns)` computes LOO-CRPS using Gaussian CDF
+- [x] `loo_crps_student_t(mu, sigma, nu, returns)` computes LOO-CRPS using Student-t CDF
+- [x] Both Numba-compiled with `@njit(cache=True)` for speed
+- [x] LOO-CRPS matches `properscoring.crps_gaussian` to within 1e-8 on Gaussian test case
+- [x] Runtime: < 10ms for 1000-step series (must not bottleneck tuning)
+- [x] Validated on: SPY (Gaussian-like), MSTR (heavy-tailed), GC=F (trend + jumps)
 
 ### Story 4.2: CRPS Stacking Optimizer
 
@@ -307,13 +307,13 @@ handles correlated models (downweighting redundant ones) and rewards models that
 **So that** model weights reflect predictive skill, not just BIC ranking.
 
 **Acceptance Criteria**:
-- [ ] `crps_stacking_weights(model_crps_matrix, returns)` returns $w^* \in \Delta^{M-1}$
-- [ ] Uses `scipy.optimize.minimize` with `method='SLSQP'`, simplex constraints
-- [ ] Warm-started from BIC weights (faster convergence)
-- [ ] Stacking weights differ from BIC weights by > 0.05 L1 distance on 60%+ of assets
-- [ ] Combined CRPS under stacking < combined CRPS under BIC on 70%+ of assets
-- [ ] Runtime: < 200ms for 14 models x 1000 timesteps
-- [ ] Validated on full 50-asset universe
+- [x] `crps_stacking_weights(model_crps_matrix, returns)` returns $w^* \in \Delta^{M-1}$
+- [x] Uses `scipy.optimize.minimize` with `method='SLSQP'`, simplex constraints
+- [x] Warm-started from BIC weights (faster convergence)
+- [x] Stacking weights differ from BIC weights by > 0.05 L1 distance on 60%+ of assets
+- [x] Combined CRPS under stacking < combined CRPS under BIC on 70%+ of assets
+- [x] Runtime: < 200ms for 14 models x 1000 timesteps
+- [x] Validated on full 50-asset universe
 
 ### Story 4.3: Temporal Stacking with Exponential Forgetting
 
@@ -322,12 +322,12 @@ handles correlated models (downweighting redundant ones) and rewards models that
 **So that** recent model performance matters more than ancient history.
 
 **Acceptance Criteria**:
-- [ ] `temporal_crps_stacking(model_crps_matrix, returns, lambda_decay=0.995)` with weights $\lambda^{T-t}$
-- [ ] $\lambda = 0.995$ gives half-life of ~138 days (tunable)
-- [ ] Weight turnover: monthly BMA weight change < 0.15 L1 (stable but adaptive)
-- [ ] During regime transitions: weight shift detectable within 30 trading days
-- [ ] Hit rate improvement > 0.5% vs static BIC weights on 50-asset universe
-- [ ] Validated on: TSLA (regime change 2023), BTC-USD (halving cycles), SPY (COVID recovery)
+- [x] `temporal_crps_stacking(model_crps_matrix, returns, lambda_decay=0.995)` with weights $\lambda^{T-t}$
+- [x] $\lambda = 0.995$ gives half-life of ~138 days (tunable)
+- [x] Weight turnover: monthly BMA weight change < 0.15 L1 (stable but adaptive)
+- [x] During regime transitions: weight shift detectable within 30 trading days
+- [x] Hit rate improvement > 0.5% vs static BIC weights on 50-asset universe
+- [x] Validated on: TSLA (regime change 2023), BTC-USD (halving cycles), SPY (COVID recovery)
 
 ---
 
@@ -361,12 +361,12 @@ sign probabilities.
 **So that** the hit rate matches the stated confidence (calibrated decisions).
 
 **Acceptance Criteria**:
-- [ ] `sign_prob_with_uncertainty(mu_t, P_t, sigma_t, model='gaussian')` integrates over $\mu \sim N(\mu_t, P_t)$
-- [ ] For Gaussian: closed form $P(r > 0) = \Phi(\mu_t / \sqrt{P_t + c \cdot \sigma_t^2})$
-- [ ] For Student-t: Monte Carlo integration with 10,000 samples from $\mu$ posterior
-- [ ] ECE (Expected Calibration Error) of sign probabilities < 0.05 on 50-asset universe
-- [ ] Hit rate at 60% confidence threshold > 58% (within 2% of stated)
-- [ ] Validated on: SPY, NVDA, BTC-USD, UPST, GC=F, SI=F
+- [x] `sign_prob_with_uncertainty(mu_t, P_t, sigma_t, model='gaussian')` integrates over $\mu \sim N(\mu_t, P_t)$
+- [x] For Gaussian: closed form $P(r > 0) = \Phi(\mu_t / \sqrt{P_t + c \cdot \sigma_t^2})$
+- [x] For Student-t: Monte Carlo integration with 10,000 samples from $\mu$ posterior
+- [x] ECE (Expected Calibration Error) of sign probabilities < 0.05 on 50-asset universe
+- [x] Hit rate at 60% confidence threshold > 58% (within 2% of stated)
+- [x] Validated on: SPY, NVDA, BTC-USD, UPST, GC=F, SI=F
 
 ### Story 5.2: Asymmetric Sign Probability for Skewed Distributions
 
@@ -375,12 +375,12 @@ sign probabilities.
 **So that** crash risk is weighted more heavily in directional calls.
 
 **Acceptance Criteria**:
-- [ ] `sign_prob_skewed(mu_t, P_t, sigma_t, nu_L, nu_R)` handles asymmetric tails
-- [ ] When $\nu_L < \nu_R$ (heavy left tail): $P(r < 0)$ increases relative to symmetric model
-- [ ] Synthetic skewed DGP: skew-aware sign prob has ECE < 0.04 (vs > 0.08 for symmetric)
-- [ ] Profit factor on downside calls improves by > 10% (correctly avoids false longs)
-- [ ] No regression on upside calls for right-skewed assets
-- [ ] Validated on: MSTR (left-skewed), NVDA (right-skewed), BTC-USD (time-varying skew)
+- [x] `sign_prob_skewed(mu_t, P_t, sigma_t, nu_L, nu_R)` handles asymmetric tails
+- [x] When $\nu_L < \nu_R$ (heavy left tail): $P(r < 0)$ increases relative to symmetric model
+- [x] Synthetic skewed DGP: skew-aware sign prob has ECE < 0.04 (vs > 0.08 for symmetric)
+- [x] Profit factor on downside calls improves by > 10% (correctly avoids false longs)
+- [x] No regression on upside calls for right-skewed assets
+- [x] Validated on: MSTR (left-skewed), NVDA (right-skewed), BTC-USD (time-varying skew)
 
 ### Story 5.3: Multi-Horizon Sign Probability with Drift Accumulation
 
@@ -389,12 +389,12 @@ sign probabilities.
 **So that** longer-horizon predictions properly reflect compounding uncertainty.
 
 **Acceptance Criteria**:
-- [ ] `multi_horizon_sign_prob(mu_t, P_t, phi, sigma_t, c, H)` computes H-step predictive
-- [ ] Drift accumulation: $\mu_{t+H} = \phi^H \cdot \mu_t$ (AR(1) decay)
-- [ ] Variance scaling: $\text{Var}_{t+H} = P_t \cdot \sum_{j=0}^{H-1} \phi^{2j} + H \cdot c \cdot \sigma_t^2$
-- [ ] 1-day hit rate > 7-day hit rate > 30-day hit rate (uncertainty grows correctly)
-- [ ] Coverage at each horizon within [85%, 95%] for 90% PI
-- [ ] Validated on: SPY (all horizons), BTC-USD (high uncertainty growth), GC=F (slow drift)
+- [x] `multi_horizon_sign_prob(mu_t, P_t, phi, sigma_t, c, H)` computes H-step predictive
+- [x] Drift accumulation: $\mu_{t+H} = \phi^H \cdot \mu_t$ (AR(1) decay)
+- [x] Variance scaling: $\text{Var}_{t+H} = P_t \cdot \sum_{j=0}^{H-1} \phi^{2j} + H \cdot c \cdot \sigma_t^2$
+- [x] 1-day hit rate > 7-day hit rate > 30-day hit rate (uncertainty grows correctly)
+- [x] Coverage at each horizon within [85%, 95%] for 90% PI
+- [x] Validated on: SPY (all horizons), BTC-USD (high uncertainty growth), GC=F (slow drift)
 
 ---
 
@@ -425,13 +425,13 @@ Temperature $\tau$ controls the regularization: $\tau \to 0$ gives uniform, $\ta
 **So that** no single model dominates > 80% of the posterior.
 
 **Acceptance Criteria**:
-- [ ] `entropy_regularized_bma(log_likelihoods, n_params, n_obs, tau)` returns regularized $w$
-- [ ] Maximum weight capped at 0.80 (no single-model dominance)
-- [ ] Minimum weight floored at $1/(5M)$ where $M$ = number of models
-- [ ] $\tau$ auto-tuned via LOO-CRPS (data-driven temperature)
-- [ ] Effective number of models $M_{\text{eff}} = \exp(-\sum w \log w) > 3$ for all assets
-- [ ] CRPS improvement over raw BIC weights on 60%+ of 50 assets
-- [ ] Validated on full 50-asset universe
+- [x] `entropy_regularized_bma(log_likelihoods, n_params, n_obs, tau)` returns regularized $w$
+- [x] Maximum weight capped at 0.80 (no single-model dominance)
+- [x] Minimum weight floored at $1/(5M)$ where $M$ = number of models
+- [x] $\tau$ auto-tuned via LOO-CRPS (data-driven temperature)
+- [x] Effective number of models $M_{\text{eff}} = \exp(-\sum w \log w) > 3$ for all assets
+- [x] CRPS improvement over raw BIC weights on 60%+ of 50 assets
+- [x] Validated on full 50-asset universe
 
 ### Story 6.2: Minimum Description Length Model Averaging
 
@@ -440,12 +440,12 @@ Temperature $\tau$ controls the regularization: $\tau \to 0$ gives uniform, $\ta
 **So that** model complexity is penalized more accurately for finite samples.
 
 **Acceptance Criteria**:
-- [ ] `mdl_weights(log_likelihoods, n_params, n_obs)` computes MDL: $-\ell + \frac{k}{2}\log\frac{n}{2\pi} + \frac{1}{2}\log|I(\theta^*)|$
-- [ ] Fisher information $|I(\theta^*)|$ estimated via Hessian at MLE
-- [ ] MDL weights differ from BIC weights for small samples ($n < 200$)
-- [ ] For $n > 500$: MDL $\approx$ BIC (asymptotic equivalence confirmed)
-- [ ] MDL selects simpler models than BIC for small-cap assets with short histories
-- [ ] Validated on: IONQ (short history), RKLB (recent IPO), SPY (long history), MSFT
+- [x] `mdl_weights(log_likelihoods, n_params, n_obs)` computes MDL: $-\ell + \frac{k}{2}\log\frac{n}{2\pi} + \frac{1}{2}\log|I(\theta^*)|$
+- [x] Fisher information $|I(\theta^*)|$ estimated via Hessian at MLE
+- [x] MDL weights differ from BIC weights for small samples ($n < 200$)
+- [x] For $n > 500$: MDL $\approx$ BIC (asymptotic equivalence confirmed)
+- [x] MDL selects simpler models than BIC for small-cap assets with short histories
+- [x] Validated on: IONQ (short history), RKLB (recent IPO), SPY (long history), MSFT
 
 ### Story 6.3: Hierarchical BMA with Asset-Class Grouping
 
@@ -454,13 +454,13 @@ Temperature $\tau$ controls the regularization: $\tau \to 0$ gives uniform, $\ta
 **So that** a small-cap stock with 300 observations borrows strength from 10 similar small-caps.
 
 **Acceptance Criteria**:
-- [ ] `hierarchical_bma(asset_results, asset_classes)` pools information within groups
-- [ ] Group-level prior: $w_{\text{prior}} = \text{mean}(w_{\text{group}})$
-- [ ] Shrinkage proportional to $1/n_{\text{asset}}$ (less data = more borrowing)
-- [ ] BIC improvement on small-cap assets (< 500 obs): $\Delta$BIC < -30
-- [ ] No regression on large-cap assets (they already have enough data)
-- [ ] Asset-class groups: {Large Cap, Mid Cap, Small Cap, Index, Metals, Crypto}
-- [ ] Validated on full 50-asset universe with asset class labels
+- [x] `hierarchical_bma(asset_results, asset_classes)` pools information within groups
+- [x] Group-level prior: $w_{\text{prior}} = \text{mean}(w_{\text{group}})$
+- [x] Shrinkage proportional to $1/n_{\text{asset}}$ (less data = more borrowing)
+- [x] BIC improvement on small-cap assets (< 500 obs): $\Delta$BIC < -30
+- [x] No regression on large-cap assets (they already have enough data)
+- [x] Asset-class groups: {Large Cap, Mid Cap, Small Cap, Index, Metals, Crypto}
+- [x] Validated on full 50-asset universe with asset class labels
 
 ---
 
@@ -494,12 +494,12 @@ where $w_k(r_t)$ depends on the current regime (gap vs no-gap, trending vs rangi
 **So that** the volatility input is optimal across all market conditions.
 
 **Acceptance Criteria**:
-- [ ] `vol_fusion_kernel(open, high, low, close, returns, regime)` returns fused $\hat{\sigma}_t$
-- [ ] Regime weights: Crisis $\to$ YZ-heavy (gap-robust), Trend $\to$ GK-heavy (efficient), Range $\to$ Parkinson-heavy
-- [ ] Fusion vol has lower MSE vs true vol on synthetic GARCH(1,1) DGP than any single estimator
-- [ ] MSE improvement > 10% vs standalone Garman-Klass on crisis periods (COVID, SVB)
-- [ ] No regression during normal periods: MSE within 5% of standalone GK
-- [ ] Validated on: BTC-USD (24/7, no gaps), AAPL (regular gaps), MSTR (extreme gaps)
+- [x] `vol_fusion_kernel(open, high, low, close, returns, regime)` returns fused $\hat{\sigma}_t$
+- [x] Regime weights: Crisis $\to$ YZ-heavy (gap-robust), Trend $\to$ GK-heavy (efficient), Range $\to$ Parkinson-heavy
+- [x] Fusion vol has lower MSE vs true vol on synthetic GARCH(1,1) DGP than any single estimator
+- [x] MSE improvement > 10% vs standalone Garman-Klass on crisis periods (COVID, SVB)
+- [x] No regression during normal periods: MSE within 5% of standalone GK
+- [x] Validated on: BTC-USD (24/7, no gaps), AAPL (regular gaps), MSTR (extreme gaps)
 
 ### Story 7.2: HAR-GK Hybrid Volatility with Adaptive Horizon Weights
 
@@ -508,12 +508,12 @@ where $w_k(r_t)$ depends on the current regime (gap vs no-gap, trending vs rangi
 **So that** multi-horizon memory combines with intraday efficiency.
 
 **Acceptance Criteria**:
-- [ ] `har_gk_hybrid(ohlc_df)` computes HAR with GK at each horizon instead of close-to-close RV
-- [ ] Efficiency gain: 3-5x over standard HAR (close-to-close at each horizon)
-- [ ] Horizon weights $w = (w_d, w_w, w_m)$ estimated via OLS on realized variance
-- [ ] Estimated weights differ from default (0.5, 0.3, 0.2) for volatile assets
-- [ ] CRPS improvement when feeding HAR-GK vol into Kalman filter vs standard GK
-- [ ] Validated on: NVDA (trending vol), TSLA (vol-of-vol), GC=F (slow vol), BTC-USD
+- [x] `har_gk_hybrid(ohlc_df)` computes HAR with GK at each horizon instead of close-to-close RV
+- [x] Efficiency gain: 3-5x over standard HAR (close-to-close at each horizon)
+- [x] Horizon weights $w = (w_d, w_w, w_m)$ estimated via OLS on realized variance
+- [x] Estimated weights differ from default (0.5, 0.3, 0.2) for volatile assets
+- [x] CRPS improvement when feeding HAR-GK vol into Kalman filter vs standard GK
+- [x] Validated on: NVDA (trending vol), TSLA (vol-of-vol), GC=F (slow vol), BTC-USD
 
 ### Story 7.3: Overnight Gap Detector and Vol Adjustment
 
@@ -522,12 +522,12 @@ where $w_k(r_t)$ depends on the current regime (gap vs no-gap, trending vs rangi
 **So that** the Kalman filter doesn't treat a 4% gap as a gradual drift change.
 
 **Acceptance Criteria**:
-- [ ] `detect_overnight_gap(open_t, close_t_minus_1, vol_t)` returns gap flag and magnitude
-- [ ] Gap threshold: $|\text{gap}| > 2\sigma$ where $\sigma$ is trailing 20-day vol
-- [ ] On gap days: $\sigma_t^2 \mathrel{+}= \text{gap}^2 / 4$ (adds gap variance)
-- [ ] Filter state uncertainty $P_t$ increases on gap days (honest uncertainty)
-- [ ] Hit rate on gap-day directional calls improves by > 3% (currently worst regime)
-- [ ] Validated on: UPST (frequent earnings gaps), AFRM, IONQ, CRWD, NVDA (post-earnings)
+- [x] `detect_overnight_gap(open_t, close_t_minus_1, vol_t)` returns gap flag and magnitude
+- [x] Gap threshold: $|\text{gap}| > 2\sigma$ where $\sigma$ is trailing 20-day vol
+- [x] On gap days: $\sigma_t^2 \mathrel{+}= \text{gap}^2 / 4$ (adds gap variance)
+- [x] Filter state uncertainty $P_t$ increases on gap days (honest uncertainty)
+- [x] Hit rate on gap-day directional calls improves by > 3% (currently worst regime)
+- [x] Validated on: UPST (frequent earnings gaps), AFRM, IONQ, CRWD, NVDA (post-earnings)
 
 ---
 
@@ -554,12 +554,12 @@ The fix: replace grid search with golden-section refinement after grid initializ
 **So that** the tail parameter is exact rather than grid-constrained.
 
 **Acceptance Criteria**:
-- [ ] `refine_nu_continuous(returns, vol, q, c, phi, nu_grid_best)` returns $\nu^* \in [2.1, 50]$
-- [ ] Uses golden-section search (no derivatives needed) with tolerance $\Delta\nu < 0.1$
-- [ ] BIC improvement > 5 nats on 80%+ of assets (vs discrete grid)
-- [ ] $\nu^*$ is smooth across assets: similar assets get similar $\nu^*$
-- [ ] Runtime: < 50ms per asset (golden-section converges in ~15 evaluations)
-- [ ] Validated on: BTC-USD, MSTR, UPST (heavy tails), SPY, MSFT (light tails)
+- [x] `refine_nu_continuous(returns, vol, q, c, phi, nu_grid_best)` returns $\nu^* \in [2.1, 50]$
+- [x] Uses golden-section search (no derivatives needed) with tolerance $\Delta\nu < 0.1$
+- [x] BIC improvement > 5 nats on 80%+ of assets (vs discrete grid)
+- [x] $\nu^*$ is smooth across assets: similar assets get similar $\nu^*$
+- [x] Runtime: < 50ms per asset (golden-section converges in ~15 evaluations)
+- [x] Validated on: BTC-USD, MSTR, UPST (heavy tails), SPY, MSFT (light tails)
 
 ### Story 8.2: Time-Varying nu via Regime-Conditional Estimation
 
@@ -568,12 +568,12 @@ The fix: replace grid search with golden-section refinement after grid initializ
 **So that** crisis periods use heavier tails and calm periods use lighter tails.
 
 **Acceptance Criteria**:
-- [ ] `regime_nu_estimates(returns, vol, regime_labels, q, c, phi)` returns $\{\nu_0, ..., \nu_4\}$
-- [ ] $\nu_{\text{CRISIS}} < \nu_{\text{LOW\_VOL\_TREND}}$ for 90%+ of assets
-- [ ] Minimum regime samples for separate $\nu$: 50 (otherwise borrow from global)
-- [ ] BIC improvement > 20 nats on regime-switching assets (TSLA, BTC-USD, MSTR)
-- [ ] PIT uniformity improves in crisis regime (KS p-value > 0.10)
-- [ ] Validated on: TSLA, BTC-USD, MSTR, SPY, GC=F, CRWD, UPST
+- [x] `regime_nu_estimates(returns, vol, regime_labels, q, c, phi)` returns $\{\nu_0, ..., \nu_4\}$
+- [x] $\nu_{\text{CRISIS}} < \nu_{\text{LOW\_VOL\_TREND}}$ for 90%+ of assets
+- [x] Minimum regime samples for separate $\nu$: 50 (otherwise borrow from global)
+- [x] BIC improvement > 20 nats on regime-switching assets (TSLA, BTC-USD, MSTR)
+- [x] PIT uniformity improves in crisis regime (KS p-value > 0.10)
+- [x] Validated on: TSLA, BTC-USD, MSTR, SPY, GC=F, CRWD, UPST
 
 ### Story 8.3: nu-Volatility Coupling (VIX-Conditional Tails)
 
@@ -582,12 +582,12 @@ The fix: replace grid search with golden-section refinement after grid initializ
 **So that** the model anticipates tail fattening before individual asset vol confirms it.
 
 **Acceptance Criteria**:
-- [ ] `vix_conditional_nu(nu_base, vix_current, vix_median=18, kappa=0.15)` returns $\nu_t$
-- [ ] $\nu_t = \max(\nu_{\min}, \nu_{\text{base}} - \kappa \cdot \frac{\text{VIX} - \text{VIX}_{\text{med}}}{\text{VIX}_{\text{med}}})$
-- [ ] When VIX > 30: $\nu_t$ drops by at least 2 from $\nu_{\text{base}}$ (heavier tails)
-- [ ] When VIX < 15: $\nu_t$ unchanged (no unnecessary tail fattening)
-- [ ] PIT coverage during VIX spikes: 90% PI covers 88-92% of observations
-- [ ] Validated on: AAPL, NVDA, MSTR, SPY, QQQ (all coupled to VIX)
+- [x] `vix_conditional_nu(nu_base, vix_current, vix_median=18, kappa=0.15)` returns $\nu_t$
+- [x] $\nu_t = \max(\nu_{\min}, \nu_{\text{base}} - \kappa \cdot \frac{\text{VIX} - \text{VIX}_{\text{med}}}{\text{VIX}_{\text{med}}})$
+- [x] When VIX > 30: $\nu_t$ drops by at least 2 from $\nu_{\text{base}}$ (heavier tails)
+- [x] When VIX < 15: $\nu_t$ unchanged (no unnecessary tail fattening)
+- [x] PIT coverage during VIX spikes: 90% PI covers 88-92% of observations
+- [x] Validated on: AAPL, NVDA, MSTR, SPY, QQQ (all coupled to VIX)
 
 ---
 
@@ -613,12 +613,12 @@ We need *real-time* innovation diagnostics that trigger re-tuning or parameter a
 **So that** autocorrelated innovations trigger automatic re-tuning.
 
 **Acceptance Criteria**:
-- [ ] `innovation_ljung_box(innovations, R, lags=[1, 5, 10, 20])` returns Q-stat and p-values
-- [ ] Q-test p-value < 0.01 at any lag flags the model as "MISSPECIFIED"
-- [ ] Misspecified flag triggers re-tuning with expanded model pool
-- [ ] On well-specified synthetic DGP: false alarm rate < 5%
-- [ ] On misspecified synthetic DGP: detection rate > 90%
-- [ ] Validated on: SPY (should pass), MSTR (likely fail at lag 1), GC=F
+- [x] `innovation_ljung_box(innovations, R, lags=[1, 5, 10, 20])` returns Q-stat and p-values
+- [x] Q-test p-value < 0.01 at any lag flags the model as "MISSPECIFIED"
+- [x] Misspecified flag triggers re-tuning with expanded model pool
+- [x] On well-specified synthetic DGP: false alarm rate < 5%
+- [x] On misspecified synthetic DGP: detection rate > 90%
+- [x] Validated on: SPY (should pass), MSTR (likely fail at lag 1), GC=F
 
 ### Story 9.2: Innovation Variance Ratio Test
 
@@ -627,12 +627,12 @@ We need *real-time* innovation diagnostics that trigger re-tuning or parameter a
 **So that** VR significantly different from 1.0 triggers online $c$ correction.
 
 **Acceptance Criteria**:
-- [ ] `innovation_variance_ratio(innovations, R, window=60)` returns rolling VR
-- [ ] VR > 1.5: $c$ too small (intervals too tight) $\to$ inflate $c$ by VR
-- [ ] VR < 0.7: $c$ too large (intervals too wide) $\to$ deflate $c$ by VR
-- [ ] Online correction: $c_{\text{new}} = c_{\text{old}} \cdot \text{VR}^{0.5}$ (square-root dampening)
-- [ ] CRPS improvement after VR correction > 0.002 on flagged assets
-- [ ] Validated on: UPST (VR likely > 2), SPY (VR likely near 1), BTC-USD
+- [x] `innovation_variance_ratio(innovations, R, window=60)` returns rolling VR
+- [x] VR > 1.5: $c$ too small (intervals too tight) $\to$ inflate $c$ by VR
+- [x] VR < 0.7: $c$ too large (intervals too wide) $\to$ deflate $c$ by VR
+- [x] Online correction: $c_{\text{new}} = c_{\text{old}} \cdot \text{VR}^{0.5}$ (square-root dampening)
+- [x] CRPS improvement after VR correction > 0.002 on flagged assets
+- [x] Validated on: UPST (VR likely > 2), SPY (VR likely near 1), BTC-USD
 
 ### Story 9.3: Cumulative Innovation Sum (CUSUM) for Drift Detection
 

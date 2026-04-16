@@ -311,17 +311,31 @@ class GaussianUnifiedConfig:
         return (abs(self.gas_q_alpha) > 1e-10 or abs(self.gas_q_beta) > 1e-10)
 
     @classmethod
-    def auto_configure(cls, returns: np.ndarray, vol: np.ndarray) -> 'GaussianUnifiedConfig':
-        """Data-driven initial bounds for Gaussian unified model."""
+    def auto_configure(cls, returns: np.ndarray, vol: np.ndarray,
+                       gk_c_prior_value: float = None) -> 'GaussianUnifiedConfig':
+        """Data-driven initial bounds for Gaussian unified model.
+
+        If gk_c_prior_value is provided (from Garman-Klass ratio),
+        it narrows c bounds around the empirical prior for faster
+        convergence and better calibration.
+        """
         config = cls()
         ret_var = float(np.var(returns))
         vol_var_median = float(np.median(vol ** 2))
 
         config.q_min = max(1e-10, 0.001 * vol_var_median)
-        config.c_min = max(0.01, 0.1 * ret_var / (vol_var_median + 1e-12))
-        config.c_max = min(10.0, 10.0 * ret_var / (vol_var_median + 1e-12))
-        if config.c_min >= config.c_max:
-            config.c_min, config.c_max = 0.1, 5.0
+
+        if gk_c_prior_value is not None and gk_c_prior_value > 0:
+            # GK-informed bounds: c in [0.5*prior, 2.0*prior]
+            from calibration.realized_volatility import compute_gk_informed_c_bounds
+            config.c_min, config.c_max = compute_gk_informed_c_bounds(gk_c_prior_value)
+            # Also set initial c to the prior
+            config.c = float(gk_c_prior_value)
+        else:
+            config.c_min = max(0.01, 0.1 * ret_var / (vol_var_median + 1e-12))
+            config.c_max = min(10.0, 10.0 * ret_var / (vol_var_median + 1e-12))
+            if config.c_min >= config.c_max:
+                config.c_min, config.c_max = 0.1, 5.0
 
         return config
 
@@ -676,6 +690,7 @@ class GaussianDriftModel:
         train_frac: float = 0.7,
         asset_symbol: str = None,
         momentum_signal: np.ndarray = None,
+        gk_c_prior_value: float = None,
     ) -> Tuple['GaussianUnifiedConfig', Dict]:
         """
         Staged optimization for unified Gaussian Kalman filter model.
@@ -692,6 +707,7 @@ class GaussianDriftModel:
             phi_mode: If True, estimate φ (AR(1) drift). If False, φ=1 (random walk).
             train_frac: Fraction for train/test split
             asset_symbol: Asset symbol for diagnostics
+            gk_c_prior_value: GK-derived c prior (Story 2.2, optional)
 
         Returns:
             Tuple of (GaussianUnifiedConfig, diagnostics_dict)
@@ -699,7 +715,8 @@ class GaussianDriftModel:
         returns = np.asarray(returns).flatten()
         vol = np.asarray(vol).flatten()
 
-        config = GaussianUnifiedConfig.auto_configure(returns, vol)
+        config = GaussianUnifiedConfig.auto_configure(returns, vol,
+                                                       gk_c_prior_value=gk_c_prior_value)
 
         # ── ASSET-CLASS CALIBRATION PROFILE (March 2026) ──
         # Apply asset-class-specific chi² and PIT-var parameters.
@@ -745,8 +762,21 @@ class GaussianDriftModel:
         returns_train = returns[:n_train]
         vol_train = vol[:n_train]
 
-        # ── STAGE 1: Base params (q, c, φ) ──
-        s1 = cls._gaussian_stage_1(returns_train, vol_train, n_train, config, phi_mode)
+        # ── Story 3.1: Asset-class adaptive phi prior ──
+        _phi_prior_center = None
+        _phi_prior_lambda = None
+        if phi_mode:
+            try:
+                from models.phi_student_t_unified import compute_phi_prior
+                _phi_prior_center, _phi_prior_lambda = compute_phi_prior(
+                    asset_symbol, returns=returns_train, n_samples=n_train)
+            except ImportError:
+                pass
+
+        # ── STAGE 1: Base params (q, c, phi) ──
+        s1 = cls._gaussian_stage_1(returns_train, vol_train, n_train, config, phi_mode,
+                                    phi_prior_center=_phi_prior_center,
+                                    phi_prior_lambda=_phi_prior_lambda)
         if not s1['success']:
             config.q = 1e-6
             config.c = 1.0
@@ -1396,12 +1426,14 @@ class GaussianDriftModel:
 
     @classmethod
     def _gaussian_stage_1(cls, returns_train, vol_train, n_train, config, phi_mode,
-                          n_starts: int = 3):
-        """Stage 1: Base params (q, c, φ) via multi-start CV MLE with state regularization.
+                          n_starts: int = 3, phi_prior_center=None, phi_prior_lambda=None):
+        """Stage 1: Base params (q, c, phi) via multi-start CV MLE with state regularization.
 
         Story 5.1: Multi-start optimization with n_starts canonical starting points
         spanning the (q, c, phi) parameter space, plus grid-best. Each start runs
         L-BFGS-B with maxiter=200. Best selected by CV log-likelihood.
+
+        Story 3.1: phi_prior_center/lambda for asset-class adaptive shrinkage.
         """
         _returns_r = np.ascontiguousarray(returns_train.flatten(), dtype=np.float64)
         _vol_sq = np.ascontiguousarray((vol_train ** 2).flatten(), dtype=np.float64)
@@ -1507,19 +1539,32 @@ class GaussianDriftModel:
             prior_q = -1.0 * ps * (log_q - prior_mean) ** 2
             prior_c = -0.1 * ps * (log_c - _LOG10_C_TARGET) ** 2
 
-            # State regularization: prevent φ→1/q→0 collapse
+            # State regularization: prevent phi->1/q->0 collapse
             phi_near = max(0.0, abs(phi) - 0.95) ** 2
             q_small = max(0.0, -7.0 - log_q) ** 2
             state_reg = -500.0 * (phi_near + q_small)
 
-            val = avg_ll + prior_q + prior_c + state_reg
+            # Story 3.1: Asset-class adaptive phi shrinkage
+            _phi_shrink_val = 0.0
+            if phi_mode and phi_prior_center is not None and phi_prior_lambda is not None:
+                _pc = float(phi_prior_center)
+                _pl = float(phi_prior_lambda)
+                _phi_tau = 1e-3  # PHI_SHRINKAGE_TAU_MIN: strong regularization
+                _phi_shrink_val = _pl * 0.5 * ((phi - _pc) ** 2) / (_phi_tau ** 2) / max(total_obs, 100)
+
+            val = avg_ll + prior_q + prior_c + state_reg - _phi_shrink_val
             return -val if math.isfinite(val) else 1e12
 
         # Grid search
         lq_grid = np.linspace(max(_log_q_min, prior_mean - 1.5),
                               min(_log_q_max, prior_mean + 1.5), 4)
         lc_grid = np.array([_log_c_min, 0.0, _log_c_max * 0.6])
-        phi_grid = np.array([-0.3, 0.0, 0.3]) if phi_mode else np.array([1.0])
+        # Story 3.1: Include prior center in phi grid
+        if phi_mode:
+            _pc_grid = float(np.clip(phi_prior_center, -0.79, 0.98)) if phi_prior_center is not None else 0.0
+            phi_grid = np.unique(np.array([-0.3, 0.0, 0.3, _pc_grid]))
+        else:
+            phi_grid = np.array([1.0])
 
         best_val = 1e20
         best_lq, best_lc, best_ph = prior_mean, 0.0, 0.0

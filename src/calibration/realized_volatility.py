@@ -845,3 +845,768 @@ def get_volatility_augmentation_code(estimator: VolatilityEstimator) -> str:
         VolatilityEstimator.YANG_ZHANG: "YZ",
     }
     return code_map.get(estimator, "?")
+
+
+# =============================================================================
+# GARMAN-KLASS c PRIOR (Story 2.2 — Observation Noise Calibration)
+# =============================================================================
+
+# Bounds for the GK-informed c prior to prevent pathological values
+GK_C_PRIOR_MIN = 0.3   # Floor: c prior never below 0.3
+GK_C_PRIOR_MAX = 5.0   # Cap: c prior never above 5.0
+GK_C_PRIOR_FALLBACK = 1.0  # Neutral prior when OHLC unavailable
+
+# Bounds multipliers for L-BFGS-B integration
+GK_C_BOUNDS_LOWER_MULT = 0.5  # c_min = 0.5 * c_prior
+GK_C_BOUNDS_UPPER_MULT = 2.0  # c_max = 2.0 * c_prior
+
+
+def gk_c_prior(
+    open_: np.ndarray,
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    span: int = DEFAULT_VOL_SPAN,
+    fallback: float = GK_C_PRIOR_FALLBACK,
+) -> float:
+    """
+    Compute empirical c prior from Garman-Klass / close-to-close variance ratio.
+
+    c_prior = sigma^2_GK / sigma^2_CC
+
+    The GK estimator uses OHLC data (7.4x more efficient than close-to-close).
+    When GK variance matches CC variance, c ~ 1.0 (balanced signal/noise).
+    When they diverge, the ratio provides an informative starting point for
+    the observation noise scalar c in Kalman filter estimation.
+
+    Parameters
+    ----------
+    open_, high, low, close : np.ndarray
+        OHLC price arrays (must be same length, positive values).
+    span : int
+        EWM smoothing span for variance estimates.
+    fallback : float
+        Value returned if computation fails (default 1.0 = uninformative).
+
+    Returns
+    -------
+    c_prior : float
+        Empirical prior for c, clipped to [GK_C_PRIOR_MIN, GK_C_PRIOR_MAX].
+    """
+    try:
+        open_ = np.asarray(open_, dtype=np.float64)
+        high = np.asarray(high, dtype=np.float64)
+        low = np.asarray(low, dtype=np.float64)
+        close = np.asarray(close, dtype=np.float64)
+
+        # Need at least span + 5 points for stable EWMA
+        min_len = min(len(open_), len(high), len(low), len(close))
+        if min_len < span + 5:
+            return fallback
+
+        # Validate OHLC consistency
+        valid = (
+            np.isfinite(open_) & np.isfinite(high) & np.isfinite(low) & np.isfinite(close)
+            & (open_ > 0) & (high > 0) & (low > 0) & (close > 0)
+            & (high >= low)
+        )
+        if np.sum(valid) < span + 5:
+            return fallback
+
+        # Compute GK variance (point-in-time)
+        gk_var = _garman_klass_variance(open_, high, low, close)
+
+        # Compute CC variance (close-to-close squared log returns)
+        log_ret = np.log(close[1:] / close[:-1])
+        cc_var = log_ret ** 2  # Pointwise squared return
+
+        # Align lengths (GK has same length as input, CC is 1 shorter)
+        n = min(len(gk_var), len(cc_var))
+        gk_var = gk_var[1 : n + 1]  # Drop first (matches CC alignment)
+        cc_var = cc_var[:n]
+
+        # EWMA smooth both for stability
+        gk_smoothed = _ewma_smooth(gk_var, span=span)
+        cc_smoothed = _ewma_smooth(cc_var, span=span)
+
+        # Use median of the ratio for robustness against outliers
+        # Only use latter half (after EWMA burn-in)
+        burn_in = max(span * 2, 42)
+        if n <= burn_in:
+            return fallback
+
+        gk_tail = gk_smoothed[burn_in:]
+        cc_tail = cc_smoothed[burn_in:]
+
+        # Filter valid ratios
+        valid_ratio = (
+            np.isfinite(gk_tail) & np.isfinite(cc_tail)
+            & (gk_tail > MIN_VARIANCE) & (cc_tail > MIN_VARIANCE)
+        )
+        if np.sum(valid_ratio) < 10:
+            return fallback
+
+        ratio = gk_tail[valid_ratio] / cc_tail[valid_ratio]
+        c_prior = float(np.median(ratio))
+
+        # Clip to safe range
+        c_prior = float(np.clip(c_prior, GK_C_PRIOR_MIN, GK_C_PRIOR_MAX))
+
+        return c_prior
+
+    except Exception:
+        return fallback
+
+
+def compute_gk_informed_c_bounds(
+    c_prior: float,
+    lower_mult: float = GK_C_BOUNDS_LOWER_MULT,
+    upper_mult: float = GK_C_BOUNDS_UPPER_MULT,
+    absolute_min: float = 0.01,
+    absolute_max: float = 10.0,
+) -> Tuple[float, float]:
+    """
+    Compute GK-informed c bounds for L-BFGS-B optimization.
+
+    c_min = max(absolute_min, lower_mult * c_prior)
+    c_max = min(absolute_max, upper_mult * c_prior)
+
+    Parameters
+    ----------
+    c_prior : float
+        GK-derived c prior from gk_c_prior().
+    lower_mult : float
+        Lower multiplier (default 0.5).
+    upper_mult : float
+        Upper multiplier (default 2.0).
+    absolute_min : float
+        Hard floor for c_min.
+    absolute_max : float
+        Hard ceiling for c_max.
+
+    Returns
+    -------
+    (c_min, c_max) : Tuple[float, float]
+    """
+    c_min = max(absolute_min, lower_mult * c_prior)
+    c_max = min(absolute_max, upper_mult * c_prior)
+
+    # Ensure valid range
+    if c_min >= c_max:
+        c_min = max(absolute_min, 0.5 * c_prior)
+        c_max = min(absolute_max, 2.5 * c_prior)
+
+    # Final safety
+    if c_min >= c_max:
+        c_min, c_max = 0.1, 5.0
+
+    return (c_min, c_max)
+
+
+# =============================================================================
+# STORY 7.1: MULTI-ESTIMATOR VOLATILITY FUSION KERNEL
+# =============================================================================
+#
+# Fuses GK, Yang-Zhang, Parkinson, and EWMA with regime-adaptive weights.
+#
+#   sigma_fused^2 = sum_k w_k(regime) * sigma_k^2
+#
+# Regime logic:
+#   - CRISIS_JUMP (4):     YZ-heavy (gap-robust)
+#   - HIGH_VOL_TREND (1):  YZ + GK blend (gaps + efficiency)
+#   - LOW_VOL_TREND (0):   GK-heavy (most efficient)
+#   - LOW_VOL_RANGE (2):   Parkinson-heavy (range is informative)
+#   - HIGH_VOL_RANGE (3):  GK + Parkinson blend
+#
+# =============================================================================
+
+# Regime integer codes (from models.regime)
+_REGIME_LOW_VOL_TREND = 0
+_REGIME_HIGH_VOL_TREND = 1
+_REGIME_LOW_VOL_RANGE = 2
+_REGIME_HIGH_VOL_RANGE = 3
+_REGIME_CRISIS_JUMP = 4
+
+# Regime-dependent weights: [GK, YZ, Parkinson, EWMA]
+# Rows ordered by regime integer code 0..4
+FUSION_REGIME_WEIGHTS = np.array([
+    [0.55, 0.10, 0.20, 0.15],  # 0: LOW_VOL_TREND   -> GK-heavy
+    [0.30, 0.40, 0.15, 0.15],  # 1: HIGH_VOL_TREND  -> YZ + GK
+    [0.20, 0.10, 0.50, 0.20],  # 2: LOW_VOL_RANGE   -> Parkinson-heavy
+    [0.35, 0.20, 0.30, 0.15],  # 3: HIGH_VOL_RANGE  -> GK + Parkinson
+    [0.15, 0.55, 0.15, 0.15],  # 4: CRISIS_JUMP     -> YZ-heavy
+], dtype=np.float64)
+
+# Default weights when no regime is available
+FUSION_DEFAULT_WEIGHTS = np.array([0.40, 0.20, 0.25, 0.15], dtype=np.float64)
+
+
+@dataclass
+class VolFusionResult:
+    """Result of multi-estimator volatility fusion."""
+    volatility: np.ndarray          # Fused volatility time series
+    component_vols: Dict[str, np.ndarray]  # Individual estimator vols
+    regime_weights_used: np.ndarray  # (T, 4) weight matrix applied
+    method: str = "fusion"
+
+
+def vol_fusion_kernel(
+    open_: np.ndarray,
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    returns: np.ndarray,
+    regime: Optional[np.ndarray] = None,
+    span: int = DEFAULT_VOL_SPAN,
+    annualize: bool = False,
+) -> VolFusionResult:
+    """
+    Multi-estimator volatility fusion with regime-adaptive weights.
+
+    Fuses Garman-Klass, Yang-Zhang, Parkinson, and EWMA estimators using
+    regime-dependent weighting. Each estimator has different strengths:
+      - GK: Most efficient under continuous trading (7.4x)
+      - YZ: Robust to overnight gaps (14x, handles earnings/news)
+      - Parkinson: Efficient for ranging markets (5.2x, uses H-L)
+      - EWMA: Robust baseline, always available (1.0x)
+
+    Parameters
+    ----------
+    open_, high, low, close : np.ndarray
+        OHLC price arrays (same length).
+    returns : np.ndarray
+        Log returns array (same length as OHLC).
+    regime : np.ndarray, optional
+        Integer regime labels (0-4). If None, uses default weights.
+    span : int
+        EWMA smoothing span for each component estimator.
+    annualize : bool
+        Whether to annualize the output.
+
+    Returns
+    -------
+    VolFusionResult
+        Fused volatility and diagnostics.
+    """
+    n = len(close)
+
+    # --- Compute each component estimator ---
+    # 1. Garman-Klass
+    gk_var = _garman_klass_variance(open_, high, low, close)
+    gk_var_smooth = _ewma_smooth(gk_var, span)
+
+    # 2. Yang-Zhang (windowed, so has NaN lead-in)
+    yz_var = _yang_zhang_variance(open_, high, low, close, window=span)
+    # Fill NaN lead-in with GK values
+    yz_nan_mask = np.isnan(yz_var)
+    yz_var_filled = np.where(yz_nan_mask, gk_var_smooth, yz_var)
+
+    # 3. Parkinson
+    pk_var = _parkinson_variance(high, low)
+    pk_var_smooth = _ewma_smooth(pk_var, span)
+
+    # 4. EWMA close-to-close
+    ewma_var = _ewma_variance_cc(returns, span)
+
+    # Stack: (T, 4) = [GK, YZ, Parkinson, EWMA]
+    var_stack = np.column_stack([gk_var_smooth, yz_var_filled,
+                                 pk_var_smooth, ewma_var])
+
+    # Replace NaN with MIN_VARIANCE before flooring
+    var_stack = np.where(np.isfinite(var_stack), var_stack, MIN_VARIANCE)
+
+    # Floor all variances
+    var_stack = np.maximum(var_stack, MIN_VARIANCE)
+
+    # --- Regime-adaptive weights ---
+    weights = np.empty((n, 4), dtype=np.float64)
+    if regime is not None:
+        regime_int = np.asarray(regime, dtype=int)
+        for t in range(n):
+            r = regime_int[t]
+            if 0 <= r <= 4:
+                weights[t] = FUSION_REGIME_WEIGHTS[r]
+            else:
+                weights[t] = FUSION_DEFAULT_WEIGHTS
+    else:
+        weights[:] = FUSION_DEFAULT_WEIGHTS
+
+    # --- Fuse ---
+    fused_var = np.sum(weights * var_stack, axis=1)
+    fused_var = np.maximum(fused_var, MIN_VARIANCE)
+    fused_vol = np.sqrt(fused_var)
+
+    if annualize:
+        fused_vol = fused_vol * np.sqrt(ANNUALIZATION_FACTOR)
+
+    # Component vols for diagnostics
+    component_vols = {
+        "garman_klass": np.sqrt(np.maximum(gk_var_smooth, MIN_VARIANCE)),
+        "yang_zhang": np.sqrt(np.maximum(yz_var_filled, MIN_VARIANCE)),
+        "parkinson": np.sqrt(np.maximum(pk_var_smooth, MIN_VARIANCE)),
+        "ewma": np.sqrt(np.maximum(ewma_var, MIN_VARIANCE)),
+    }
+
+    return VolFusionResult(
+        volatility=fused_vol,
+        component_vols=component_vols,
+        regime_weights_used=weights,
+    )
+
+
+# =============================================================================
+# STORY 7.2: HAR-GK HYBRID VOLATILITY WITH ADAPTIVE HORIZON WEIGHTS
+# =============================================================================
+#
+# True HAR-GK: Garman-Klass at EACH horizon (daily, weekly, monthly),
+# with OLS-estimated horizon weights from in-sample realized variance.
+#
+# Unlike standard HAR (Corsi 2009) which uses squared returns at each
+# horizon, this computes GK variance rolling means at 1d, 5d, 22d windows.
+# The GK base gives 7.4x efficiency gain at each horizon.
+#
+# OLS regression:
+#   RV_target(t+1) = w_d * RV_gk_daily(t) + w_w * RV_gk_weekly(t)
+#                   + w_m * RV_gk_monthly(t) + epsilon
+#
+# Weights are constrained: w >= 0, sum(w) = 1 (convex combination).
+# =============================================================================
+
+# HAR-GK constants
+HAR_GK_HORIZON_DAILY = 1
+HAR_GK_HORIZON_WEEKLY = 5
+HAR_GK_HORIZON_MONTHLY = 22
+
+# Default Corsi (2009) weights (used when OLS fails or insufficient data)
+HAR_GK_DEFAULT_WEIGHTS = np.array([0.5, 0.3, 0.2], dtype=np.float64)
+
+# Minimum training samples for OLS weight estimation
+HAR_GK_MIN_OLS_SAMPLES = 60
+
+
+@dataclass
+class HarGkResult:
+    """Result of HAR-GK hybrid volatility estimation."""
+    volatility: np.ndarray          # Fused HAR-GK volatility time series
+    gk_daily: np.ndarray            # GK variance at daily horizon
+    gk_weekly: np.ndarray           # GK variance at weekly horizon (5d rolling)
+    gk_monthly: np.ndarray          # GK variance at monthly horizon (22d rolling)
+    weights: np.ndarray             # (3,) estimated or default weights [w_d, w_w, w_m]
+    weights_method: str             # "ols" or "default"
+    efficiency_vs_cc: float         # Theoretical efficiency gain vs close-to-close HAR
+
+
+def _compute_gk_horizon_components(
+    open_: np.ndarray,
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Compute Garman-Klass variance at daily, weekly, and monthly horizons.
+
+    Returns rolling means of daily GK variance at each horizon window,
+    providing multi-horizon memory with 7.4x efficiency at each level.
+
+    Parameters
+    ----------
+    open_, high, low, close : np.ndarray
+        OHLC price arrays (same length).
+
+    Returns
+    -------
+    (gk_daily, gk_weekly, gk_monthly) : Tuple of np.ndarray
+        GK variance at each horizon. Shape (n,) each.
+    """
+    n = len(close)
+    gk_var = _garman_klass_variance(open_, high, low, close)
+
+    # Daily: point-in-time GK variance
+    gk_daily = np.copy(gk_var)
+
+    # Weekly: 5-day rolling mean of daily GK variance
+    gk_weekly = np.full(n, np.nan)
+    for t in range(HAR_GK_HORIZON_WEEKLY, n):
+        gk_weekly[t] = np.mean(gk_var[t - HAR_GK_HORIZON_WEEKLY + 1 : t + 1])
+    # Fill early values with expanding mean
+    for t in range(1, min(HAR_GK_HORIZON_WEEKLY, n)):
+        gk_weekly[t] = np.mean(gk_var[1 : t + 1]) if t > 0 else gk_var[t]
+
+    # Monthly: 22-day rolling mean of daily GK variance
+    gk_monthly = np.full(n, np.nan)
+    for t in range(HAR_GK_HORIZON_MONTHLY, n):
+        gk_monthly[t] = np.mean(gk_var[t - HAR_GK_HORIZON_MONTHLY + 1 : t + 1])
+    # Fill early values with expanding mean
+    for t in range(1, min(HAR_GK_HORIZON_MONTHLY, n)):
+        gk_monthly[t] = np.mean(gk_var[1 : t + 1]) if t > 0 else gk_var[t]
+
+    # Replace NaN with daily value (graceful fallback)
+    gk_weekly = np.where(np.isfinite(gk_weekly), gk_weekly, gk_daily)
+    gk_monthly = np.where(np.isfinite(gk_monthly), gk_monthly, gk_daily)
+
+    # Floor all components
+    gk_daily = np.maximum(gk_daily, MIN_VARIANCE)
+    gk_weekly = np.maximum(gk_weekly, MIN_VARIANCE)
+    gk_monthly = np.maximum(gk_monthly, MIN_VARIANCE)
+
+    return gk_daily, gk_weekly, gk_monthly
+
+
+def _estimate_har_weights_ols(
+    gk_daily: np.ndarray,
+    gk_weekly: np.ndarray,
+    gk_monthly: np.ndarray,
+    close: np.ndarray,
+) -> Tuple[np.ndarray, bool]:
+    """
+    Estimate HAR horizon weights via constrained OLS.
+
+    Regresses next-day realized variance (squared log return) on the three
+    GK horizon components. Weights are projected onto the simplex
+    (non-negative, sum to 1) for convexity.
+
+    Parameters
+    ----------
+    gk_daily, gk_weekly, gk_monthly : np.ndarray
+        GK variance at each horizon.
+    close : np.ndarray
+        Close prices for computing realized variance target.
+
+    Returns
+    -------
+    (weights, success) : Tuple[np.ndarray, bool]
+        (3,) weight vector and whether OLS succeeded.
+    """
+    n = len(close)
+    if n < HAR_GK_MIN_OLS_SAMPLES + HAR_GK_HORIZON_MONTHLY + 1:
+        return HAR_GK_DEFAULT_WEIGHTS.copy(), False
+
+    # Target: next-day realized variance (squared log return)
+    log_ret = np.log(close[1:] / close[:-1])
+    rv_target = log_ret ** 2  # length n-1
+
+    # Predictors at time t predict RV at t+1
+    # Align: X[t] = [gk_daily[t], gk_weekly[t], gk_monthly[t]], y = rv_target[t] = ret[t+1]^2
+    # So X is from index 0..n-2, y is from index 0..n-2
+    X = np.column_stack([gk_daily[:-1], gk_weekly[:-1], gk_monthly[:-1]])
+    y = rv_target  # length n-1
+
+    # Remove NaN/Inf rows
+    valid = np.all(np.isfinite(X), axis=1) & np.isfinite(y)
+    if np.sum(valid) < HAR_GK_MIN_OLS_SAMPLES:
+        return HAR_GK_DEFAULT_WEIGHTS.copy(), False
+
+    X_valid = X[valid]
+    y_valid = y[valid]
+
+    # OLS: w = (X'X)^{-1} X'y (no intercept, weights are proportions)
+    try:
+        XtX = X_valid.T @ X_valid
+        Xty = X_valid.T @ y_valid
+
+        # Add small ridge for numerical stability
+        XtX += 1e-10 * np.eye(3)
+        w_raw = np.linalg.solve(XtX, Xty)
+    except np.linalg.LinAlgError:
+        return HAR_GK_DEFAULT_WEIGHTS.copy(), False
+
+    # Project onto simplex: non-negative, sum to 1
+    w_proj = np.maximum(w_raw, 0.0)
+    w_sum = np.sum(w_proj)
+    if w_sum < 1e-12:
+        return HAR_GK_DEFAULT_WEIGHTS.copy(), False
+    w_proj = w_proj / w_sum
+
+    return w_proj, True
+
+
+def har_gk_hybrid(
+    open_: np.ndarray,
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    estimate_weights: bool = True,
+    weights: Optional[np.ndarray] = None,
+    annualize: bool = False,
+) -> HarGkResult:
+    """
+    HAR-GK Hybrid Volatility with Adaptive Horizon Weights.
+
+    Computes Garman-Klass variance at three horizons (daily, weekly, monthly)
+    and combines them with either OLS-estimated or fixed weights. This gives
+    the multi-horizon memory of HAR (Corsi 2009) with the 7.4x efficiency
+    of GK at each horizon, yielding 3-5x efficiency over standard
+    close-to-close HAR.
+
+    Formula:
+        sigma^2_HAR-GK(t) = w_d * GK_daily(t) + w_w * GK_weekly(t) + w_m * GK_monthly(t)
+
+    Where:
+        GK_daily = point-in-time GK variance
+        GK_weekly = 5-day rolling mean of GK variance
+        GK_monthly = 22-day rolling mean of GK variance
+
+    Parameters
+    ----------
+    open_, high, low, close : np.ndarray
+        OHLC price arrays (same length).
+    estimate_weights : bool
+        If True, estimate weights via OLS. If False, use default or provided.
+    weights : np.ndarray, optional
+        (3,) weight vector [w_daily, w_weekly, w_monthly]. Overrides OLS.
+    annualize : bool
+        Whether to annualize the output.
+
+    Returns
+    -------
+    HarGkResult
+        Volatility time series, horizon components, and weight information.
+    """
+    n = len(close)
+
+    # Compute GK at each horizon
+    gk_daily, gk_weekly, gk_monthly = _compute_gk_horizon_components(
+        open_, high, low, close,
+    )
+
+    # Determine weights
+    if weights is not None:
+        w = np.asarray(weights, dtype=np.float64)
+        w = np.maximum(w, 0.0)
+        w_sum = np.sum(w)
+        if w_sum > 0:
+            w = w / w_sum
+        else:
+            w = HAR_GK_DEFAULT_WEIGHTS.copy()
+        method = "explicit"
+    elif estimate_weights:
+        w, ols_ok = _estimate_har_weights_ols(
+            gk_daily, gk_weekly, gk_monthly, close,
+        )
+        method = "ols" if ols_ok else "default"
+    else:
+        w = HAR_GK_DEFAULT_WEIGHTS.copy()
+        method = "default"
+
+    # Fuse: weighted combination of horizon components
+    har_gk_var = w[0] * gk_daily + w[1] * gk_weekly + w[2] * gk_monthly
+    har_gk_var = np.maximum(har_gk_var, MIN_VARIANCE)
+
+    # Convert to volatility
+    har_gk_vol = np.sqrt(har_gk_var)
+
+    if annualize:
+        har_gk_vol = har_gk_vol * np.sqrt(ANNUALIZATION_FACTOR)
+
+    # Theoretical efficiency: GK at each horizon gives ~7.4x vs CC
+    # Standard HAR with CC gives ~1x at each horizon
+    # HAR-GK gives ~7.4x / 1x = 7.4x over HAR-CC, but after averaging
+    # the practical gain is ~3-5x due to correlation between horizons
+    efficiency = 5.0  # Conservative practical estimate
+
+    return HarGkResult(
+        volatility=har_gk_vol,
+        gk_daily=gk_daily,
+        gk_weekly=gk_weekly,
+        gk_monthly=gk_monthly,
+        weights=w,
+        weights_method=method,
+        efficiency_vs_cc=efficiency,
+    )
+
+
+# =============================================================================
+# STORY 7.3: OVERNIGHT GAP DETECTOR AND VOL ADJUSTMENT
+# =============================================================================
+#
+# Detects overnight gaps (|log(O_t/C_{t-1})| > 2*sigma) and inflates
+# variance + filter uncertainty on gap days.
+#
+# Why this matters:
+#   - Stocks gap 2-5% on earnings/news (UPST, NVDA, AFRM)
+#   - GK and Parkinson estimators ignore overnight component
+#   - Without gap detection, Kalman filter treats a 4% gap as gradual drift
+#   - This causes: biased mu, too-tight P_t, overconfident signals
+#
+# On gap days:
+#   sigma_t^2 += gap^2 / 4   (gap variance inflation)
+#   P_t *= gap_p_inflate       (honest uncertainty increase)
+# =============================================================================
+
+# Gap detection configuration
+GAP_THRESHOLD_SIGMA = 2.0     # Flag gap if |gap| > 2 * trailing vol
+GAP_TRAILING_WINDOW = 20      # 20-day trailing vol for threshold
+GAP_VAR_FRACTION = 0.25       # Add gap^2 * this to variance (1/4 of gap variance)
+GAP_P_INFLATE_FACTOR = 2.0    # Multiply P_t by this on gap days
+
+
+@dataclass
+class GapDetectionResult:
+    """Result of overnight gap detection."""
+    is_gap: np.ndarray          # (T,) bool: True if gap detected
+    gap_return: np.ndarray      # (T,) float: log(O_t / C_{t-1})
+    gap_magnitude: np.ndarray   # (T,) float: |gap_return|
+    threshold: np.ndarray       # (T,) float: threshold used at each t
+    n_gaps: int                 # Total number of gap days detected
+    gap_fraction: float         # Fraction of days with gaps
+
+
+def detect_overnight_gap(
+    open_: np.ndarray,
+    close: np.ndarray,
+    vol: Optional[np.ndarray] = None,
+    threshold_sigma: float = GAP_THRESHOLD_SIGMA,
+    trailing_window: int = GAP_TRAILING_WINDOW,
+) -> GapDetectionResult:
+    """
+    Detect overnight price gaps.
+
+    A gap is flagged when |log(O_t / C_{t-1})| > threshold_sigma * sigma_t,
+    where sigma_t is the trailing close-to-close volatility.
+
+    Parameters
+    ----------
+    open_ : np.ndarray
+        Open prices, shape (T,).
+    close : np.ndarray
+        Close prices, shape (T,).
+    vol : np.ndarray, optional
+        Pre-computed volatility for threshold. If None, computed from
+        trailing close-to-close returns.
+    threshold_sigma : float
+        Number of sigmas for gap threshold (default 2.0).
+    trailing_window : int
+        Window for trailing vol computation (default 20).
+
+    Returns
+    -------
+    GapDetectionResult
+        Gap flags, magnitudes, and diagnostics.
+    """
+    n = len(close)
+
+    # Overnight gap return: log(O_t / C_{t-1})
+    gap_return = np.zeros(n)
+    if n > 1:
+        # Protect against zero/negative prices
+        safe_close_prev = np.maximum(close[:-1], 1e-10)
+        safe_open = np.maximum(open_[1:], 1e-10)
+        gap_return[1:] = np.log(safe_open / safe_close_prev)
+
+    gap_magnitude = np.abs(gap_return)
+
+    # Compute trailing volatility for threshold
+    if vol is not None:
+        trailing_vol = np.copy(vol)
+    else:
+        # Use trailing standard deviation of close-to-close returns
+        log_ret = np.zeros(n)
+        if n > 1:
+            log_ret[1:] = np.log(close[1:] / np.maximum(close[:-1], 1e-10))
+
+        trailing_vol = np.full(n, np.nan)
+        for t in range(trailing_window, n):
+            window = log_ret[t - trailing_window + 1 : t + 1]
+            trailing_vol[t] = np.std(window)
+        # Fill early values with expanding std
+        for t in range(2, min(trailing_window, n)):
+            trailing_vol[t] = np.std(log_ret[1 : t + 1])
+        # First two points: use a conservative default
+        if n >= 2:
+            trailing_vol[0] = 0.01
+            trailing_vol[1] = 0.01
+
+    # Ensure trailing_vol is finite and positive
+    trailing_vol = np.where(
+        np.isfinite(trailing_vol) & (trailing_vol > 0),
+        trailing_vol,
+        0.01,
+    )
+
+    # Threshold: gap must exceed threshold_sigma * trailing_vol
+    threshold = threshold_sigma * trailing_vol
+
+    # Detect gaps
+    is_gap = gap_magnitude > threshold
+    # First point can never be a gap (no prior close)
+    is_gap[0] = False
+
+    n_gaps = int(np.sum(is_gap))
+    gap_frac = n_gaps / max(n - 1, 1)  # Exclude first point
+
+    return GapDetectionResult(
+        is_gap=is_gap,
+        gap_return=gap_return,
+        gap_magnitude=gap_magnitude,
+        threshold=threshold,
+        n_gaps=n_gaps,
+        gap_fraction=gap_frac,
+    )
+
+
+def adjust_vol_for_gaps(
+    variance: np.ndarray,
+    gap_result: GapDetectionResult,
+    gap_var_fraction: float = GAP_VAR_FRACTION,
+) -> np.ndarray:
+    """
+    Inflate variance on gap days by adding a fraction of the gap variance.
+
+    On gap days:
+        sigma_t^2 += gap_var_fraction * gap_return_t^2
+
+    This accounts for the overnight price movement that range-based
+    estimators (GK, Parkinson) miss entirely.
+
+    Parameters
+    ----------
+    variance : np.ndarray
+        Input variance time series, shape (T,).
+    gap_result : GapDetectionResult
+        Output from detect_overnight_gap().
+    gap_var_fraction : float
+        Fraction of gap^2 to add (default 0.25 = gap^2/4).
+
+    Returns
+    -------
+    np.ndarray
+        Adjusted variance with gap inflation.
+    """
+    adjusted = np.copy(variance)
+    gap_days = gap_result.is_gap
+    adjusted[gap_days] += gap_var_fraction * gap_result.gap_return[gap_days] ** 2
+    adjusted = np.maximum(adjusted, MIN_VARIANCE)
+    return adjusted
+
+
+def adjust_filter_P_for_gaps(
+    P: np.ndarray,
+    gap_result: GapDetectionResult,
+    inflate_factor: float = GAP_P_INFLATE_FACTOR,
+) -> np.ndarray:
+    """
+    Inflate Kalman filter state uncertainty P on gap days.
+
+    On gap days:
+        P_t *= inflate_factor
+
+    This makes the filter honestly uncertain after an overnight gap,
+    preventing overconfident signals following earnings/news events.
+
+    Parameters
+    ----------
+    P : np.ndarray
+        Filter state uncertainty, shape (T,).
+    gap_result : GapDetectionResult
+        Output from detect_overnight_gap().
+    inflate_factor : float
+        Multiplicative inflation factor (default 2.0).
+
+    Returns
+    -------
+    np.ndarray
+        Adjusted P with gap inflation.
+    """
+    adjusted = np.copy(P)
+    adjusted[gap_result.is_gap] *= inflate_factor
+    return adjusted

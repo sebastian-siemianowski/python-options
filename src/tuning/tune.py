@@ -377,12 +377,16 @@ try:
         HAR_WEIGHT_DAILY,
         HAR_WEIGHT_WEEKLY,
         HAR_WEIGHT_MONTHLY,
+        # GK c prior (Story 2.2)
+        gk_c_prior,
     )
     GK_VOLATILITY_AVAILABLE = True
     HAR_VOLATILITY_AVAILABLE = True
+    GK_C_PRIOR_AVAILABLE = True
 except ImportError:
     GK_VOLATILITY_AVAILABLE = False
     HAR_VOLATILITY_AVAILABLE = False
+    GK_C_PRIOR_AVAILABLE = False
 
 # =============================================================================
 # MARKET CONDITIONING LAYER (February 2026)
@@ -544,6 +548,93 @@ except ImportError as e:
     GAS_Q_AVAILABLE = False
     import warnings
     warnings.warn(f"GAS-Q module not available: {e}")
+
+# =============================================================================
+# RV-Q ADAPTIVE PROCESS NOISE (Tune.md Epic 1, Story 1.3)
+# =============================================================================
+# Proactive process noise: q_t = q_base * exp(gamma * delta_log(vol_t^2))
+# Competes with static-q and GAS-Q via BMA. Data decides which wins per asset.
+# =============================================================================
+RV_Q_ENABLED = True
+
+try:
+    from models.rv_adaptive_q import (
+        RVAdaptiveQConfig,
+        RVAdaptiveQResult,
+        rv_adaptive_q_filter_gaussian,
+        rv_adaptive_q_filter_student_t,
+        optimize_rv_q_params,
+    )
+    from models.model_registry import (
+        make_rv_q_gaussian_name,
+        make_rv_q_phi_gaussian_name,
+        make_rv_q_student_t_name,
+        is_rv_q_model,
+    )
+    RV_Q_AVAILABLE = True
+
+    @dataclass
+    class RVQFitResult:
+        """Result of RV-Q parameter optimization."""
+        q_base: float
+        gamma: float
+        log_likelihood: float
+        ll_improvement: float
+        ll_static: float
+        bic: float
+        delta_bic: float
+        fit_success: bool
+        n_obs: int
+        oos_delta_ll: float = 0.0
+
+    def fit_rv_q_gaussian(y, sigma, c, phi, train_frac=0.7):
+        """
+        Fit RV-Q parameters for phi-Gaussian Kalman filter.
+
+        Returns RVQFitResult with optimized (q_base, gamma).
+        """
+        config, diag = optimize_rv_q_params(y, sigma, c, phi, nu=None, train_frac=train_frac)
+        result = rv_adaptive_q_filter_gaussian(y, sigma, c, phi, config)
+
+        return RVQFitResult(
+            q_base=config.q_base,
+            gamma=config.gamma,
+            log_likelihood=result.log_likelihood,
+            ll_improvement=diag.get("delta_ll", 0.0),
+            ll_static=diag.get("ll_static", result.log_likelihood),
+            bic=diag.get("bic_rv", float("inf")),
+            delta_bic=diag.get("delta_bic", 0.0),
+            fit_success=True,
+            n_obs=len(y),
+            oos_delta_ll=diag.get("oos_delta_ll", 0.0),
+        )
+
+    def fit_rv_q_student_t(y, sigma, c, phi, nu, train_frac=0.7):
+        """
+        Fit RV-Q parameters for phi-Student-t Kalman filter.
+
+        Returns RVQFitResult with optimized (q_base, gamma).
+        """
+        config, diag = optimize_rv_q_params(y, sigma, c, phi, nu=nu, train_frac=train_frac)
+        result = rv_adaptive_q_filter_student_t(y, sigma, c, phi, nu, config)
+
+        return RVQFitResult(
+            q_base=config.q_base,
+            gamma=config.gamma,
+            log_likelihood=result.log_likelihood,
+            ll_improvement=diag.get("delta_ll", 0.0),
+            ll_static=diag.get("ll_static", result.log_likelihood),
+            bic=diag.get("bic_rv", float("inf")),
+            delta_bic=diag.get("delta_bic", 0.0),
+            fit_success=True,
+            n_obs=len(y),
+            oos_delta_ll=diag.get("oos_delta_ll", 0.0),
+        )
+
+except ImportError as e:
+    RV_Q_AVAILABLE = False
+    import warnings
+    warnings.warn(f"RV-Q module not available: {e}")
 
 # Import Generalized Hyperbolic (GH) distribution for calibration improvement
 # GH is a fallback model when Student-t fails - captures skewness that t cannot
@@ -1488,22 +1579,33 @@ def apply_cross_asset_phi_pooling(cache: Dict[str, Dict]) -> Dict[str, Dict]:
     """
     Post-processing step: shrink per-asset phi toward cross-asset population median.
 
+    Story 3.1 upgrade: Asset-class stratified pooling. Each asset class
+    (index, large_cap, small_cap, crypto, metals, forex, high_vol) gets its
+    own population median. Assets pool within their class.
+
     Two-pass approach:
-      Pass 1: Collect all asset phi values and sample counts.
-      Pass 2: Compute population prior (median, MAD) and shrink each asset.
+      Pass 1: Collect all asset phi values, sample counts, and asset classes.
+      Pass 2: Compute per-class population prior and shrink within class.
 
     Hierarchical precision-weighted shrinkage formula:
       tau_asset = n_regime_samples (proxy for estimation precision)
       tau_pop   = 1 / phi_pop_std^2
-      phi_shrunk = (tau_asset * phi_mle + tau_pop * phi_pop_median) / (tau_asset + tau_pop)
+      phi_shrunk = (tau_asset * phi_mle + tau_pop * phi_class_median) / (tau_asset + tau_pop)
 
     Assets with many regime samples (high tau_asset) barely shrink.
-    Assets with few samples (low tau_asset) shrink strongly toward population.
+    Assets with few samples (low tau_asset) shrink strongly toward class median.
 
     Modifies cache in-place and returns it.
     """
+    # Try to import asset classification (Story 3.1)
+    try:
+        from models.phi_student_t_unified import _classify_asset_for_phi
+        _HAS_CLASSIFY = True
+    except ImportError:
+        _HAS_CLASSIFY = False
+
     # Pass 1: collect phi values across all assets
-    phi_entries = []  # (asset, phi_mle, n_samples)
+    phi_entries = []  # (asset, phi_mle, n_samples, asset_class)
     for asset, data in cache.items():
         if not isinstance(data, dict):
             continue
@@ -1518,33 +1620,49 @@ def apply_cross_asset_phi_pooling(cache: Dict[str, Dict]) -> Dict[str, Dict]:
             n_samples = max(sum(int(v) for v in regime_counts.values() if isinstance(v, (int, float))), 100)
         elif "data_length" in global_data:
             n_samples = int(global_data["data_length"])
-        phi_entries.append((asset, float(phi_val), n_samples))
+        # Story 3.1: classify asset
+        asset_class = _classify_asset_for_phi(asset) if _HAS_CLASSIFY else 'default'
+        phi_entries.append((asset, float(phi_val), n_samples, asset_class))
 
+    # Compute global fallback population stats
     if len(phi_entries) < PHI_POOL_MIN_ASSETS:
-        # Not enough assets to form cross-asset prior -- use defaults
-        phi_pop_median = DEFAULT_PHI_PRIOR
-        phi_pop_std = DEFAULT_PHI_PRIOR_STD
+        global_phi_median = DEFAULT_PHI_PRIOR
+        global_phi_std = DEFAULT_PHI_PRIOR_STD
     else:
-        # Robust location and scale from cross-asset phi distribution
         all_phi = np.array([e[1] for e in phi_entries])
-        phi_pop_median = float(np.median(all_phi))
-        # MAD-based robust std estimate (1.4826 converts MAD to std for normal)
-        mad = float(np.median(np.abs(all_phi - phi_pop_median)))
-        phi_pop_std = max(mad * 1.4826, 0.05)  # Floor at 0.05 to prevent over-shrinkage
+        global_phi_median = float(np.median(all_phi))
+        mad = float(np.median(np.abs(all_phi - global_phi_median)))
+        global_phi_std = max(mad * 1.4826, 0.05)
 
-    tau_pop = 1.0 / (phi_pop_std ** 2)
+    # Story 3.1: Compute per-class population stats
+    from collections import defaultdict
+    class_entries = defaultdict(list)
+    for asset, phi_mle, n_samples, asset_class in phi_entries:
+        class_entries[asset_class].append(phi_mle)
 
-    # Pass 2: shrink each asset's phi toward population
+    class_stats = {}  # class -> (median, std)
+    for cls_name, phi_list in class_entries.items():
+        if len(phi_list) >= PHI_POOL_MIN_ASSETS:
+            arr = np.array(phi_list)
+            cls_median = float(np.median(arr))
+            cls_mad = float(np.median(np.abs(arr - cls_median)))
+            cls_std = max(cls_mad * 1.4826, 0.05)
+            class_stats[cls_name] = (cls_median, cls_std)
+        else:
+            # Too few assets in this class: fall back to global
+            class_stats[cls_name] = (global_phi_median, global_phi_std)
+
+    # Pass 2: shrink each asset's phi toward its class population
     n_shrunk = 0
-    for asset, phi_mle, n_samples in phi_entries:
+    for asset, phi_mle, n_samples, asset_class in phi_entries:
+        phi_pop_median, phi_pop_std = class_stats.get(asset_class, (global_phi_median, global_phi_std))
+        tau_pop = 1.0 / (phi_pop_std ** 2)
+
         # Precision proportional to sample count
-        # Fisher information for AR(1) coefficient scales as O(n)
         tau_asset = float(n_samples)
         tau_total = tau_asset + tau_pop
 
         phi_shrunk = (tau_asset * phi_mle + tau_pop * phi_pop_median) / tau_total
-
-        # Clamp to valid range
         phi_shrunk = float(np.clip(phi_shrunk, -0.999, 0.999))
 
         # Update cache
@@ -1574,12 +1692,14 @@ def apply_cross_asset_phi_pooling(cache: Dict[str, Dict]) -> Dict[str, Dict]:
                                     m_info["phi_mle_original"] = m_phi
                                     m_info["phi"] = float(np.clip(m_phi_shrunk, -0.999, 0.999))
 
-    # Store population prior in metadata
+    # Store population prior in metadata (now includes per-class info)
     _pool_meta = {
-        "phi_population_median": phi_pop_median,
-        "phi_population_std": phi_pop_std,
+        "phi_population_median": global_phi_median,
+        "phi_population_std": global_phi_std,
         "n_assets_pooled": len(phi_entries),
         "n_assets_shrunk": n_shrunk,
+        "class_stats": {k: {"median": v[0], "std": v[1], "n": len(class_entries[k])}
+                        for k, v in class_stats.items()},
     }
     for asset in cache:
         if isinstance(cache[asset], dict):
@@ -2342,12 +2462,23 @@ def tune_asset_q(
                     prices_array = prices_aligned[:len(returns)]
         
         # Fit all model classes globally
+        # Compute GK c prior from OHLC data (Story 2.2)
+        _gk_c_prior_value = None
+        if GK_C_PRIOR_AVAILABLE:
+            try:
+                _gk_c_prior_value = gk_c_prior(open_, high, low, close)
+                if _gk_c_prior_value is not None and abs(_gk_c_prior_value - 1.0) > 0.01:
+                    _log(f"     GK c prior: {_gk_c_prior_value:.3f}")
+            except Exception:
+                _gk_c_prior_value = None
+
         models = fit_all_models_for_regime(
             returns, vol,
             prior_log_q_mean=prior_log_q_mean,
             prior_lambda=prior_lambda,
             prices=prices_array,  # MR integration (February 2026)
             asset=asset,  # FIX #4: Asset-class adaptive c bounds
+            gk_c_prior_value=_gk_c_prior_value,  # Story 2.2: GK-informed c prior
         )
         
         # Compute model weights using elite CRPS-dominated scoring (February 2026)
@@ -4274,6 +4405,7 @@ def fit_all_models_for_regime(
     prices: np.ndarray = None,  # Added for MR integration (February 2026)
     regime_labels: np.ndarray = None,  # Added for regime-adaptive blending
     asset: str = None,  # FIX #4: Asset symbol for c-bounds detection
+    gk_c_prior_value: float = None,  # Story 2.2: GK-informed c prior
 ) -> Dict[str, Dict]:
     """
     Fit ALL candidate model classes for a single regime's data.
@@ -4566,7 +4698,8 @@ def fit_all_models_for_regime(
                 returns, vol, 
                 nu_base=float(nu_fixed),
                 train_frac=0.7, 
-                asset_symbol=asset
+                asset_symbol=asset,
+                gk_c_prior_value=gk_c_prior_value,
             )
 
             if not diagnostics.get("success", False):
@@ -5002,7 +5135,8 @@ def fit_all_models_for_regime(
         try:
             g_config, g_diag = GaussianDriftModel.optimize_params_unified(
                 returns, vol, phi_mode=phi_mode, train_frac=0.7,
-                asset_symbol=asset, momentum_signal=_gu_momentum_signal)
+                asset_symbol=asset, momentum_signal=_gu_momentum_signal,
+                gk_c_prior_value=gk_c_prior_value)
             if not g_diag.get("success", False):
                 raise ValueError("Gaussian unified: " + str(g_diag.get("error", "?")))
 
@@ -5127,6 +5261,138 @@ def fit_all_models_for_regime(
     # in production). Functionality is now incorporated internally by unified
     # models via Stages 7.x / U-x pipeline.
     # =========================================================================
+
+    # =========================================================================
+    # RV-Q ADAPTIVE PROCESS NOISE MODELS (Tune.md Story 1.3)
+    # =========================================================================
+    # Proactive q: q_t = q_base * exp(gamma * delta_log(vol^2))
+    # Competes with static-q (unified) and GAS-Q via BMA.
+    # Data decides which wins per asset/regime.
+    # =========================================================================
+    if RV_Q_AVAILABLE and RV_Q_ENABLED:
+        try:
+            # Get base parameters from best existing Gaussian model as starting point
+            _rv_c_base = 1.0
+            _rv_phi_base = 0.98
+            for _mname, _mdata in models.items():
+                if _mdata.get("fit_success") and "phi" in _mdata and "c" in _mdata:
+                    _rv_c_base = float(_mdata["c"])
+                    _rv_phi_base = float(_mdata.get("phi", 0.98))
+                    break
+
+            # --- RV-Q phi-Gaussian ---
+            _rv_g_name = make_rv_q_phi_gaussian_name()
+            try:
+                _rv_g_fit = fit_rv_q_gaussian(returns, vol, _rv_c_base, _rv_phi_base)
+                if _rv_g_fit.fit_success:
+                    _rv_g_result = rv_adaptive_q_filter_gaussian(
+                        returns, vol, _rv_c_base, _rv_phi_base,
+                        RVAdaptiveQConfig(q_base=_rv_g_fit.q_base, gamma=_rv_g_fit.gamma)
+                    )
+                    _rv_g_mu = _rv_g_result.mu_filtered
+                    _rv_g_P = _rv_g_result.P_filtered
+                    _rv_g_ll = _rv_g_result.log_likelihood
+                    _rv_g_n_params = 4  # q_base, gamma, c, phi
+                    _rv_g_bic = compute_bic(_rv_g_ll, _rv_g_n_params, n_obs)
+                    _rv_g_aic = compute_aic(_rv_g_ll, _rv_g_n_params)
+                    _rv_g_n_train = int(n_obs * 0.7)
+                    _rv_g_ret_test = returns[_rv_g_n_train:]
+                    _rv_g_mu_test = _rv_g_mu[_rv_g_n_train:]
+                    _rv_g_std_test = np.sqrt(np.maximum(_rv_g_P[_rv_g_n_train:] + (_rv_c_base * vol[_rv_g_n_train:])**2, 1e-20))
+                    _rv_g_hyv = compute_hyvarinen_score_gaussian(_rv_g_ret_test, _rv_g_mu_test, _rv_g_std_test)
+                    _rv_g_crps = compute_crps_gaussian_inline(_rv_g_ret_test, _rv_g_mu_test, _rv_g_std_test)
+                    # PIT via extended metrics (returns dict)
+                    _rv_g_calib = compute_extended_pit_metrics_gaussian(
+                        returns, _rv_g_mu, _rv_g_P, vol, _rv_g_fit.q_base, _rv_c_base, _rv_phi_base)
+                    _rv_g_mad = float(_rv_g_calib.get("histogram_mad", 1.0))
+                    _rv_g_berk_p = float(_rv_g_calib.get("berkowitz_pvalue", 0.0))
+                    _rv_g_berk_lr = float(_rv_g_calib.get("berkowitz_lr", 0.0))
+                    _rv_g_pit_count = int(_rv_g_calib.get("pit_count", 0))
+                    _rv_g_ad_p = float(_rv_g_calib.get("ad_pvalue", float('nan')))
+                    _rv_g_ks = float(_rv_g_calib.get("ks_statistic", 1.0))
+                    _rv_g_pit_p = float(_rv_g_calib.get("pit_ks_pvalue", 0.0))
+                    models[_rv_g_name] = {
+                        "q_base": float(_rv_g_fit.q_base), "gamma": float(_rv_g_fit.gamma),
+                        "q": float(_rv_g_fit.q_base), "c": float(_rv_c_base), "phi": float(_rv_phi_base),
+                        "log_likelihood": float(_rv_g_ll), "mean_log_likelihood": float(_rv_g_ll / max(n_obs, 1)),
+                        "bic": float(_rv_g_bic), "aic": float(_rv_g_aic),
+                        "hyvarinen_score": float(_rv_g_hyv), "crps": float(_rv_g_crps),
+                        "ks_statistic": _rv_g_ks, "pit_ks_pvalue": _rv_g_pit_p,
+                        "ad_pvalue": float(_rv_g_ad_p), "histogram_mad": float(_rv_g_mad),
+                        "berkowitz_pvalue": float(_rv_g_berk_p), "berkowitz_lr": float(_rv_g_berk_lr),
+                        "pit_count": int(_rv_g_pit_count),
+                        "fit_success": True, "n_params": _rv_g_n_params,
+                        "model_type": "rv_q", "rv_q_model": True,
+                        "ll_improvement": float(_rv_g_fit.ll_improvement),
+                        "delta_bic": float(_rv_g_fit.delta_bic),
+                    }
+            except Exception as e:
+                models[_rv_g_name] = {
+                    "fit_success": False, "error": str(e),
+                    "bic": float('inf'), "crps": float('inf'),
+                    "hyvarinen_score": float('-inf'), "model_type": "rv_q",
+                }
+
+            # --- RV-Q Student-t family (nu grid) ---
+            for _rv_nu in STUDENT_T_NU_GRID:
+                _rv_t_name = make_rv_q_student_t_name(_rv_nu)
+                try:
+                    _rv_t_fit = fit_rv_q_student_t(returns, vol, _rv_c_base, _rv_phi_base, float(_rv_nu))
+                    if _rv_t_fit.fit_success:
+                        _rv_t_result = rv_adaptive_q_filter_student_t(
+                            returns, vol, _rv_c_base, _rv_phi_base, float(_rv_nu),
+                            RVAdaptiveQConfig(q_base=_rv_t_fit.q_base, gamma=_rv_t_fit.gamma)
+                        )
+                        _rv_t_mu = _rv_t_result.mu_filtered
+                        _rv_t_P = _rv_t_result.P_filtered
+                        _rv_t_ll = _rv_t_result.log_likelihood
+                        _rv_t_n_params = 5  # q_base, gamma, c, phi, nu
+                        _rv_t_bic = compute_bic(_rv_t_ll, _rv_t_n_params, n_obs)
+                        _rv_t_aic = compute_aic(_rv_t_ll, _rv_t_n_params)
+                        _rv_t_n_train = int(n_obs * 0.7)
+                        _rv_t_ret_test = returns[_rv_t_n_train:]
+                        _rv_t_mu_test = _rv_t_mu[_rv_t_n_train:]
+                        _rv_t_scale_test = np.sqrt(np.maximum(_rv_t_P[_rv_t_n_train:] + (_rv_c_base * vol[_rv_t_n_train:])**2, 1e-20))
+                        _rv_t_hyv = compute_hyvarinen_score_student_t(_rv_t_ret_test, _rv_t_mu_test, _rv_t_scale_test, float(_rv_nu))
+                        _rv_t_crps = compute_crps_student_t_inline(_rv_t_ret_test, _rv_t_mu_test, _rv_t_scale_test, float(_rv_nu))
+                        # PIT via extended metrics (returns dict)
+                        # Convert filtered -> predictive for Student-t PIT
+                        _rv_t_mu_pred, _rv_t_S_pred = reconstruct_predictive_from_filtered_gaussian(
+                            returns, _rv_t_mu, _rv_t_P, vol, _rv_t_fit.q_base, _rv_c_base, _rv_phi_base)
+                        _rv_t_calib = compute_extended_pit_metrics_student_t(
+                            returns, vol, _rv_t_fit.q_base, _rv_c_base, _rv_phi_base, float(_rv_nu),
+                            mu_pred_precomputed=_rv_t_mu_pred, S_pred_precomputed=_rv_t_S_pred)
+                        _rv_t_mad = float(_rv_t_calib.get("histogram_mad", 1.0))
+                        _rv_t_berk_p = float(_rv_t_calib.get("berkowitz_pvalue", 0.0))
+                        _rv_t_berk_lr = float(_rv_t_calib.get("berkowitz_lr", 0.0))
+                        _rv_t_pit_count = int(_rv_t_calib.get("pit_count", 0))
+                        _rv_t_ad_p = float(_rv_t_calib.get("ad_pvalue", float('nan')))
+                        _rv_t_ks = float(_rv_t_calib.get("ks_statistic", 1.0))
+                        _rv_t_pit_p = float(_rv_t_calib.get("pit_ks_pvalue", 0.0))
+                        models[_rv_t_name] = {
+                            "q_base": float(_rv_t_fit.q_base), "gamma": float(_rv_t_fit.gamma),
+                            "q": float(_rv_t_fit.q_base), "c": float(_rv_c_base), "phi": float(_rv_phi_base),
+                            "nu": float(_rv_nu),
+                            "log_likelihood": float(_rv_t_ll), "mean_log_likelihood": float(_rv_t_ll / max(n_obs, 1)),
+                            "bic": float(_rv_t_bic), "aic": float(_rv_t_aic),
+                            "hyvarinen_score": float(_rv_t_hyv), "crps": float(_rv_t_crps),
+                            "ks_statistic": _rv_t_ks, "pit_ks_pvalue": _rv_t_pit_p,
+                            "ad_pvalue": float(_rv_t_ad_p), "histogram_mad": float(_rv_t_mad),
+                            "berkowitz_pvalue": float(_rv_t_berk_p), "berkowitz_lr": float(_rv_t_berk_lr),
+                            "pit_count": int(_rv_t_pit_count),
+                            "fit_success": True, "n_params": _rv_t_n_params,
+                            "model_type": "rv_q", "rv_q_model": True,
+                            "ll_improvement": float(_rv_t_fit.ll_improvement),
+                            "delta_bic": float(_rv_t_fit.delta_bic),
+                        }
+                except Exception as e:
+                    models[_rv_t_name] = {
+                        "fit_success": False, "error": str(e),
+                        "bic": float('inf'), "crps": float('inf'),
+                        "hyvarinen_score": float('-inf'), "model_type": "rv_q",
+                    }
+        except Exception:
+            pass  # RV-Q fitting failed entirely, continue without it
 
     # =========================================================================
     # Phi ACF Lower Bound Enforcement (Story 1.8)
@@ -5326,6 +5592,7 @@ def fit_regime_model_posterior(
             prices=prices_regime,  # MR integration (February 2026)
             regime_labels=regime_labels_regime,
             asset=asset,  # FIX #4: Asset-class adaptive c bounds
+            gk_c_prior_value=gk_c_prior_value,  # Story 2.2
         )
 
         # =====================================================================
@@ -5678,6 +5945,7 @@ def tune_regime_model_averaging(
     bic_weight: float = DEFAULT_BIC_WEIGHT,
     prices: np.ndarray = None,  # Added for MR integration (February 2026)
     asset: str = None,  # FIX #4: Asset symbol for c-bounds detection
+    gk_c_prior_value: float = None,  # Story 2.2: GK-informed c prior
 ) -> Dict:
     """
     Full regime-conditional Bayesian model averaging pipeline.
@@ -5742,6 +6010,7 @@ def tune_regime_model_averaging(
         prices=prices,  # MR integration (February 2026)
         regime_labels=regime_labels,
         asset=asset,  # FIX #4: Asset-class adaptive c bounds
+        gk_c_prior_value=gk_c_prior_value,  # Story 2.2
     )
 
     # Apply global q floor (Story 1.1): use regime-count-weighted average floor
@@ -6242,6 +6511,14 @@ def tune_asset_with_bma(
                 elif len(prices_aligned) >= len(returns):
                     prices_array = prices_aligned[:len(returns)]
         
+        # Compute GK c prior from OHLC data (Story 2.2)
+        _gk_c_prior_bma = None
+        if GK_C_PRIOR_AVAILABLE:
+            try:
+                _gk_c_prior_bma = gk_c_prior(open_, high, low, close)
+            except Exception:
+                _gk_c_prior_bma = None
+
         bma_result = tune_regime_model_averaging(
             returns=returns,
             vol=vol,
@@ -6254,6 +6531,7 @@ def tune_asset_with_bma(
             lambda_regime=lambda_regime,
             prices=prices_array,  # MR integration (February 2026)
             asset=asset,  # FIX #4: Asset-class adaptive c bounds
+            gk_c_prior_value=_gk_c_prior_bma,  # Story 2.2
         )
 
         # Collect diagnostics summary
