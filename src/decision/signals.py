@@ -883,6 +883,31 @@ except ImportError:
         return False
 
 # =============================================================================
+# RV-ADAPTIVE PROCESS NOISE (Tune.md Epic 1)
+# =============================================================================
+# Proactive process noise q_t driven by realized volatility changes.
+#   q_t = q_base * exp(gamma * delta_log(sigma_t^2))
+# Unlike GAS-Q (reactive to errors), RV-Q responds to vol changes immediately.
+# =============================================================================
+try:
+    from models.rv_adaptive_q import (
+        RVAdaptiveQConfig,
+        RVAdaptiveQResult,
+        rv_adaptive_q_filter_gaussian,
+        rv_adaptive_q_filter_student_t,
+    )
+    from models.model_registry import is_rv_q_model
+    RV_Q_AVAILABLE = True
+except ImportError:
+    RV_Q_AVAILABLE = False
+    def rv_adaptive_q_filter_gaussian(*args, **kwargs):
+        return None
+    def rv_adaptive_q_filter_student_t(*args, **kwargs):
+        return None
+    def is_rv_q_model(name):
+        return False
+
+# =============================================================================
 # UNIFIED RISK CONTEXT (February 2026)
 # =============================================================================
 # Integrates all temperature modules (risk, metals, market) with copula-based
@@ -1495,8 +1520,8 @@ def load_and_apply_recalibration(
         if PIT_RECALIBRATION_AVAILABLE and len(raw_pit) >= 50:
             try:
                 recal_result = isotonic_recalibrate(raw_pit)
-                if recal_result.calibrated_pit is not None:
-                    return np.asarray(recal_result.calibrated_pit), True, {
+                if recal_result.recalibrated_pit is not None:
+                    return np.asarray(recal_result.recalibrated_pit), True, {
                         'applied': True,
                         'method': 'pit_recalibration_fallback',
                         'transport_map_error': str(e),
@@ -3160,7 +3185,10 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
     # Handle legacy _momentum suffix for cached compatibility
     base_model_for_noise = _get_base_model_name(best_model)
     
-    if _is_student_t(best_model):
+    # RV-Q models: pass through as-is so dispatch can detect rv_q_ prefix
+    if base_model_for_noise.startswith('rv_q_'):
+        noise_model = base_model_for_noise
+    elif _is_student_t(best_model):
         noise_model = base_model_for_noise  # Use base model name (e.g., phi_student_t_nu_6)
     elif 'phi' in base_model_for_noise:
         noise_model = 'kalman_phi_gaussian'
@@ -3193,6 +3221,11 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
         'noise_model': noise_model,
         'best_model': best_model,
         'is_momentum_model': is_momentum_model,
+
+        # RV-Q specific parameters (q_base, gamma for proactive vol-adaptive noise)
+        'q_base': best_params.get('q_base'),
+        'gamma': best_params.get('gamma'),
+        'rv_q_model': best_params.get('rv_q_model', False),
 
         # Diagnostics from best model (for display compatibility)
         'bic': best_params.get('bic'),
@@ -3701,8 +3734,9 @@ def _kalman_filter_drift(
         tuned_params = _load_tuned_kalman_params(asset_symbol)
     
     noise_model = (tuned_params or {}).get('noise_model', 'gaussian')
-    requires_phi = 'phi' in noise_model or noise_model.startswith('phi_student_t_nu_')
-    is_student_t = noise_model.startswith('phi_student_t_nu_')
+    is_rv_q = noise_model.startswith('rv_q_')
+    requires_phi = 'phi' in noise_model or noise_model.startswith('phi_student_t_nu_') or is_rv_q
+    is_student_t = noise_model.startswith('phi_student_t_nu_') or (is_rv_q and 'student_t' in noise_model)
 
     # =========================================================================
     # PARAMETER EXTRACTION: Batch-tuned parameters from cache
@@ -3833,6 +3867,52 @@ def _kalman_filter_drift(
                     print(f"GAS-Q filter failed, using static q: {gas_e}")
                 gas_q_augmented = False
                 gas_q_result = None
+
+    # =========================================================================
+    # RV-ADAPTIVE PROCESS NOISE DISPATCH (Tune.md Epic 1)
+    # =========================================================================
+    # When the BMA-selected model is an RV-Q variant, dispatch to the
+    # proactive RV-adaptive filter instead of static q or GAS-Q.
+    #   q_t = q_base * exp(gamma * delta_log(sigma_t^2))
+    # Responds to volatility changes immediately (not reactively).
+    # =========================================================================
+    rv_q_result = None
+    if RV_Q_AVAILABLE and is_rv_q and gas_q_result is None and tuned_params is not None:
+        rv_q_base = tuned_params.get('q_base')
+        rv_gamma = tuned_params.get('gamma')
+        if rv_q_base is not None and rv_gamma is not None:
+            try:
+                rv_config = RVAdaptiveQConfig(
+                    q_base=float(rv_q_base),
+                    gamma=float(rv_gamma),
+                )
+                if is_student_t and nu_used is not None:
+                    rv_q_result = rv_adaptive_q_filter_student_t(
+                        y, sigma, obs_scale, phi_used, float(nu_used),
+                        config=rv_config,
+                    )
+                else:
+                    rv_q_result = rv_adaptive_q_filter_gaussian(
+                        y, sigma, obs_scale, phi_used,
+                        config=rv_config,
+                    )
+                if rv_q_result is not None:
+                    mu_filtered = rv_q_result.mu_filtered
+                    P_filtered = rv_q_result.P_filtered
+                    log_likelihood = rv_q_result.log_likelihood
+                    # Recompute innovations from filtered state
+                    for t in range(T):
+                        mu_pred = phi_used * (mu_filtered[t - 1] if t > 0 else 0.0)
+                        innovations[t] = y[t] - mu_pred
+                        R_t = max(obs_scale * (sigma[t] ** 2), 1e-12)
+                        P_pred = (phi_used ** 2) * (P_filtered[t - 1] if t > 0 else 1.0) + rv_q_result.q_path[t]
+                        S_t = max(P_pred + R_t, 1e-12)
+                        innovation_vars[t] = S_t
+                        K_gain[t] = P_pred / S_t
+            except Exception as rv_q_err:
+                if os.getenv("DEBUG"):
+                    print(f"RV-Q filter failed, falling through to standard: {rv_q_err}")
+                rv_q_result = None
 
     # =========================================================================
     # ENHANCED STUDENT-T MODELS (February 2026)
@@ -4158,10 +4238,10 @@ def _kalman_filter_drift(
 
     mu_t = 0.0
     P_t = 1.0
-    log_likelihood_init = 0.0 if gas_q_result is None else log_likelihood
+    log_likelihood_init = 0.0 if gas_q_result is None and rv_q_result is None else log_likelihood
 
-    # Only run static filter if neither GAS-Q nor enhanced models were used
-    if gas_q_result is None and enhanced_result is None:
+    # Only run static filter if neither GAS-Q, RV-Q, nor enhanced models were used
+    if gas_q_result is None and rv_q_result is None and enhanced_result is None:
         log_likelihood = log_likelihood_init
         # P_max bound for innovation weighting (Story 1.5)
         # Estimate steady-state P from q and obs_scale * typical vol^2
@@ -4251,6 +4331,31 @@ def _kalman_filter_drift(
             kalman_gain_recent = float(K_gain[-1])
 
     # =========================================================================
+    # ONLINE c UPDATE (Story 2.3) — Adaptive obs noise between re-tuning
+    # =========================================================================
+    # c_t+1 = c_t + eta * (v_t^2/R_t - 1) with decaying learning rate.
+    # Updates c using the innovations from the filter run above.
+    # The final c_online replaces obs_scale for forecast interval computation.
+    # =========================================================================
+    _online_c_applied = False
+    _online_c_final = obs_scale
+    if ONLINE_C_UPDATE_AVAILABLE and T >= 30:
+        try:
+            _oc_result = run_online_c_update(
+                returns=y,
+                mu_filtered=mu_filtered,
+                vol=sigma,
+                c_init=obs_scale,
+                phi=phi_used,
+            )
+            if _oc_result is not None and _oc_result.c_final > 0 and np.isfinite(_oc_result.c_final):
+                _online_c_final = _oc_result.c_final
+                obs_scale = _online_c_final
+                _online_c_applied = True
+        except Exception:
+            pass
+
+    # =========================================================================
     # TWSC SCALE CORRECTION — REAL MODEL IMPROVEMENT (March 2026)
     # =========================================================================
     # Apply the Tail-Weighted Scale Correction factor from tuning to P_filtered.
@@ -4290,6 +4395,8 @@ def _kalman_filter_drift(
         "kalman_gain_recent": kalman_gain_recent,
         "kalman_heteroskedastic_mode": False,
         "kalman_c_optimal": obs_scale,
+        "online_c_applied": _online_c_applied,
+        "online_c_final": _online_c_final,
         "phi_used": float(phi_used) if phi_used is not None and np.isfinite(phi_used) else None,
         "kalman_noise_model": noise_model,
         "kalman_nu": float(nu_used) if nu_used is not None else None,
@@ -10887,9 +10994,19 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
                 )
                 _signal_meta["sign_prob"] = float(_sp_val)
                 if _sp_nu is not None:
-                    # sign_prob_skewed also returns a float
-                    _sp_skew_val = sign_prob_skewed(_sp_mu, _sp_sigma, nu=float(_sp_nu))
+                    # sign_prob_skewed: (mu_t, P_t, sigma_t, nu_L, nu_R, c)
+                    _sp_skew_val = sign_prob_skewed(_sp_mu, _sp_P, _sp_sigma, nu_L=float(_sp_nu), nu_R=float(_sp_nu), c=_sp_c)
                     _signal_meta["sign_prob_skewed"] = float(_sp_skew_val)
+                # Story 5.3: Multi-horizon sign probabilities
+                _sp_phi = float(_tp_global.get("phi", 0.0))
+                _mh_model = 'student_t' if _sp_nu else 'gaussian'
+                _mh_probs = {}
+                for _h in (1, 3, 7, 30):
+                    _mh_probs[f"H{_h}"] = float(multi_horizon_sign_prob(
+                        _sp_mu, _sp_P, _sp_phi, _sp_sigma, _sp_c, _h,
+                        model=_mh_model, nu=_sp_nu,
+                    ))
+                _signal_meta["multi_horizon_sign_prob"] = _mh_probs
             except Exception:
                 pass
 
@@ -10897,12 +11014,13 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
         if LAPLACE_POSTERIOR_AVAILABLE and tuned_params:
             try:
                 _tp_global = tuned_params.get("global", {})
+                _lp_nu = _tp_global.get("nu")
                 _lp = laplace_posterior(
                     np.asarray(returns_arr) if _has_returns else np.array([0.0]),
                     np.asarray(vol_arr) if _has_vol else np.array([0.01]),
-                    _tp_global.get("q", 1e-5),
-                    _tp_global.get("c", 1.0),
-                    _tp_global.get("phi", 0.0),
+                    np.array([_tp_global.get("c", 1.0), _tp_global.get("phi", 0.0), _tp_global.get("q", 1e-5)]),
+                    family="student_t" if _lp_nu else "gaussian",
+                    nu=float(_lp_nu) if _lp_nu else None,
                 )
                 _signal_meta["laplace_posterior"] = {
                     "mu_mode": float(_lp.mu_mode),
@@ -10981,8 +11099,9 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
             try:
                 _amw = adaptive_momentum_weights(np.asarray(returns_arr))
                 _signal_meta["adaptive_momentum_weights"] = {
-                    "short_weight": float(_amw.short_weight),
-                    "long_weight": float(_amw.long_weight),
+                    "short_weight": float(_amw.weights[0]),
+                    "long_weight": float(_amw.weights[-1]),
+                    "best_horizon": int(_amw.best_horizon),
                 }
             except Exception:
                 pass
@@ -11031,8 +11150,9 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
                     raw_fraction=abs(sigs[0].position_strength),
                 )
                 _signal_meta["regime_position_limit"] = {
-                    "max_position": float(_rpl.max_position) if hasattr(_rpl, 'max_position') else 0.0,
-                    "capped": bool(_rpl.capped) if hasattr(_rpl, 'capped') else False,
+                    "max_fraction": float(_rpl.max_fraction),
+                    "was_limited": bool(_rpl.was_limited),
+                    "limited_fraction": float(_rpl.limited_fraction),
                 }
             except Exception:
                 pass
@@ -11076,8 +11196,8 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
                 _sad_sigma = float(vol_arr.iloc[-1]) if _has_vol else 0.01
                 _sad_nu = _tp_global.get("nu", 10.0)
                 _sad_lambda = _tp_global.get("hansen_lambda", 0.0)
-                # skew_adjusted_direction(mu, sigma, lambda_, nu) -> float
-                _sad_val = skew_adjusted_direction(_sad_mu, _sad_sigma, _sad_lambda, float(_sad_nu))
+                # skew_adjusted_direction(mu, sigma, nu, lambda_) -> SkewAdjustedDirectionResult
+                _sad_val = skew_adjusted_direction(_sad_mu, _sad_sigma, float(_sad_nu), _sad_lambda)
                 _signal_meta["skew_adjusted_direction"] = float(_sad_val)
             except Exception:
                 pass
@@ -11127,11 +11247,16 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
         # Story 25.1: Mean reversion signal strength
         if MR_SIGNAL_STRENGTH_AVAILABLE and _has_returns:
             try:
-                _prices_arr = np.asarray(px) if px is not None else np.exp(np.asarray(returns_arr).cumsum())
-                _mrs = mr_signal_strength(_prices_arr)
+                _tp_global = tuned_params.get("global", {}) if tuned_params else {}
+                _mr_price = float(px.iloc[-1]) if px is not None and len(px) > 0 else 100.0
+                _mr_eq = _tp_global.get("equilibrium", _mr_price)
+                _mr_kappa = _tp_global.get("kappa", 0.1)
+                _mr_sigma = float(vol_arr.iloc[-1]) if _has_vol else 0.02
+                _mrs = mr_signal_strength(_mr_price, _mr_eq, _mr_kappa, _mr_sigma)
                 _signal_meta["mr_signal_strength"] = {
-                    "strength": float(_mrs.strength) if hasattr(_mrs, 'strength') else float(_mrs),
-                    "half_life": float(_mrs.half_life) if hasattr(_mrs, 'half_life') else None,
+                    "z_score": float(_mrs.z_score) if hasattr(_mrs, 'z_score') else 0.0,
+                    "kelly_fraction": float(_mrs.kelly_fraction) if hasattr(_mrs, 'kelly_fraction') else 0.0,
+                    "direction": str(_mrs.direction) if hasattr(_mrs, 'direction') else "neutral",
                 }
             except Exception:
                 pass
@@ -11139,9 +11264,11 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
         # Story 26.1-26.2: Factor augmented signals
         if FACTOR_AUGMENTED_AVAILABLE and _has_returns:
             try:
-                # extract_market_factors needs cross-sectional data (2D array)
-                # Using single asset returns reshaped as (T, 1) for factor extraction
+                # extract_market_factors needs cross-sectional data (2D, N>=5 assets)
+                # Single-asset PCA is mathematically impossible; skip gracefully
                 _ret_2d = np.asarray(returns_arr).reshape(-1, 1)
+                if _ret_2d.shape[1] < 5:
+                    raise ValueError("PCA requires >= 5 assets; single-asset not supported")
                 _emf = extract_market_factors(_ret_2d, n_factors=1)
                 _signal_meta["market_factors"] = {
                     "n_factors": int(_emf.n_factors) if hasattr(_emf, 'n_factors') else 1,

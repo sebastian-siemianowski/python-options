@@ -1131,13 +1131,19 @@ except ImportError:
     CRPS_STACKING_AVAILABLE = False
 
 # =============================================================================
-# ENTROPY-REGULARIZED BMA (Story 6.1)
+# ENTROPY-REGULARIZED BMA (Story 6.1) + MDL WEIGHTS (Story 6.2)
 # =============================================================================
 try:
     from calibration.entropy_bma import entropy_regularized_bma, EntropyBMAResult
     ENTROPY_BMA_AVAILABLE = True
 except ImportError:
     ENTROPY_BMA_AVAILABLE = False
+
+try:
+    from calibration.entropy_bma import mdl_weights
+    MDL_WEIGHTS_AVAILABLE = True
+except ImportError:
+    MDL_WEIGHTS_AVAILABLE = False
 
 # =============================================================================
 # VOL FUSION & HAR-GK HYBRID (Stories 7.1, 7.2, 7.3)
@@ -3003,6 +3009,10 @@ def tune_asset_q(
             "nu": best_params.get("nu"),
             "noise_model": best_model,
             "best_model": best_model,  # Selected by max weight (after calibration veto gate)
+            # RV-Q specific parameters (proactive vol-adaptive noise)
+            "q_base": best_params.get("q_base"),
+            "gamma": best_params.get("gamma"),
+            "rv_q_model": best_params.get("rv_q_model", False),
             # Unified Student-t specific parameters (February 2026 - Elite Architecture)
             "unified_model": best_params.get("unified_model", False),
             "gaussian_unified": best_params.get("gaussian_unified", False),
@@ -6333,6 +6343,8 @@ def tune_regime_model_averaging(
     # =========================================================================
 
     # Story 4.1: LOO-CRPS model evaluation (per-observation scoring)
+    # Uses vectorized Numba functions (arrays in, array out), not scalar-per-step.
+    _crps_arrays = {}  # model_name -> ndarray(T,) for stacking matrix
     if LOO_CRPS_AVAILABLE and global_models:
         try:
             from models.gaussian import kalman_filter_drift_phi
@@ -6344,20 +6356,20 @@ def tune_regime_model_averaging(
                 _mc = _m_info.get("c", 1.0)
                 _mp = _m_info.get("phi", 0.0)
                 _mn = _m_info.get("nu")
-                # Run filter to get per-step mu, sigma
                 _mu_arr, _P_arr, _ = kalman_filter_drift_phi(returns, vol, _mq, _mc, _mp)
                 _sigma_arr = np.sqrt(_P_arr + _mc * vol ** 2)
-                # Compute LOO-CRPS as mean over observations
-                _crps_sum = 0.0
-                _n_valid = 0
-                for _t in range(1, len(returns)):
-                    if _mn is not None:
-                        _crps_sum += loo_crps_student_t(float(_mu_arr[_t]), float(_sigma_arr[_t]), float(_mn), float(returns[_t]))
-                    else:
-                        _crps_sum += loo_crps_gaussian(float(_mu_arr[_t]), float(_sigma_arr[_t]), float(returns[_t]))
-                    _n_valid += 1
-                if _n_valid > 0:
-                    _loo_crps_scores[_m_name] = _crps_sum / _n_valid
+                # Vectorized LOO-CRPS: pass full arrays, get array back
+                if _mn is not None:
+                    _nu_arr = np.full(len(returns), float(_mn))
+                    _crps_per_obs = loo_crps_student_t(_mu_arr, _sigma_arr, _nu_arr, returns)
+                else:
+                    _crps_per_obs = loo_crps_gaussian(_mu_arr, _sigma_arr, returns)
+                # Skip first observation (filter needs burn-in)
+                _valid = _crps_per_obs[1:]
+                _finite_mask = np.isfinite(_valid)
+                if _finite_mask.sum() > 0:
+                    _loo_crps_scores[_m_name] = float(np.mean(_valid[_finite_mask]))
+                    _crps_arrays[_m_name] = _crps_per_obs  # Full array for stacking
             if _loo_crps_scores:
                 for _m_name in global_models:
                     if _m_name in _loo_crps_scores:
@@ -6365,20 +6377,40 @@ def tune_regime_model_averaging(
         except Exception:
             pass
 
-    # Story 4.2-4.3: CRPS stacking weights
-    if CRPS_STACKING_AVAILABLE and global_models:
+    # Story 4.2: CRPS stacking with proper (T, M) matrix
+    # Story 4.3: Temporal CRPS stacking with exponential forgetting
+    if CRPS_STACKING_AVAILABLE and global_models and _crps_arrays:
         try:
-            _model_names_cs = [m for m in global_models if global_models[m].get("fit_success", False)]
-            if len(_model_names_cs) >= 2 and "loo_crps" in global_models.get(_model_names_cs[0], {}):
-                # Build CRPS matrix: rows = observations (proxy: 1 row with LOO scores)
-                _crps_vec = np.array([global_models[m].get("loo_crps", 1.0) for m in _model_names_cs])
-                # Use BIC weights as prior
+            _model_names_cs = [m for m in _crps_arrays if m in global_models]
+            if len(_model_names_cs) >= 2:
+                # Build proper (T, M) CRPS matrix from per-observation arrays
+                _T = len(returns)
+                _M = len(_model_names_cs)
+                _crps_matrix = np.ones((_T, _M))
+                for _i, _m_name in enumerate(_model_names_cs):
+                    _crps_matrix[:, _i] = _crps_arrays[_m_name]
+                # BIC weights as warm start
                 _bic_w = np.array([global_raw_weights.get(m, 1e-10) for m in _model_names_cs])
-                _crps_stack = crps_stacking_weights(_crps_vec.reshape(1, -1), bic_weights=_bic_w)
+                _bic_w = _bic_w / _bic_w.sum()
+
+                # Story 4.2: Static CRPS stacking
+                _crps_stack = crps_stacking_weights(_crps_matrix, bic_weights=_bic_w)
                 _stack_w = _crps_stack.weights if hasattr(_crps_stack, 'weights') else _crps_stack
                 for _i, _m_name in enumerate(_model_names_cs):
-                    if hasattr(_stack_w, '__getitem__'):
-                        global_models[_m_name]["crps_stacking_weight"] = float(_stack_w[_i]) if _i < len(_stack_w) else 0.0
+                    if hasattr(_stack_w, '__getitem__') and _i < len(_stack_w):
+                        global_models[_m_name]["crps_stacking_weight"] = float(_stack_w[_i])
+
+                # Story 4.3: Temporal CRPS stacking (diagnostic)
+                try:
+                    _temp_stack = temporal_crps_stacking(
+                        _crps_matrix, bic_weights=_bic_w, lambda_decay=0.995,
+                    )
+                    _tw = _temp_stack.weights if hasattr(_temp_stack, 'weights') else _temp_stack
+                    for _i, _m_name in enumerate(_model_names_cs):
+                        if hasattr(_tw, '__getitem__') and _i < len(_tw):
+                            global_models[_m_name]["temporal_crps_weight"] = float(_tw[_i])
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -6393,6 +6425,20 @@ def tune_regime_model_averaging(
             for _i, _m_name in enumerate(_ebma_names):
                 if _i < len(_ebma_w):
                     global_models[_m_name]["entropy_bma_weight"] = float(_ebma_w[_i])
+        except Exception:
+            pass
+
+    # Story 6.2: MDL weights (diagnostic comparison to BIC)
+    if MDL_WEIGHTS_AVAILABLE and global_bic:
+        try:
+            _mdl_names = list(global_bic.keys())
+            _mdl_lls = np.array([-0.5 * global_bic[m] for m in _mdl_names])
+            _mdl_nparams = np.array([global_models.get(m, {}).get('n_params', 3) for m in _mdl_names])
+            _mdl = mdl_weights(_mdl_lls, _mdl_nparams, len(returns))
+            _mdl_w = _mdl.weights if hasattr(_mdl, 'weights') else _mdl
+            for _i, _m_name in enumerate(_mdl_names):
+                if _i < len(_mdl_w):
+                    global_models[_m_name]["mdl_weight"] = float(_mdl_w[_i])
         except Exception:
             pass
 
@@ -6685,6 +6731,22 @@ def tune_asset_with_bma(
         returns = returns[:min_len]
         vol = vol[:min_len]
 
+        # Story 7.3: Inflate vol on overnight gap days BEFORE model fitting.
+        # Gaps cause the Kalman filter to over-react (treats gap as drift change).
+        # Inflating obs variance on gap days makes the filter more honest.
+        if VOL_FUSION_AVAILABLE and open_ is not None and len(open_) >= min_len:
+            try:
+                _gap_close = close[:min_len] if close is not None else None
+                _gap_open = open_[:min_len]
+                if _gap_close is not None:
+                    _gap_result = detect_overnight_gap(_gap_open, _gap_close, vol=vol)
+                    if _gap_result.n_gaps > 0:
+                        _gap_var = _gap_result.gap_magnitude ** 2 / 4.0
+                        vol = np.where(_gap_result.is_gap, np.sqrt(vol ** 2 + _gap_var), vol)
+                        _log(f"     Gap vol inflate: {_gap_result.n_gaps} gap days ({100*_gap_result.gap_fraction:.1f}%)")
+            except Exception:
+                pass
+
         # Remove NaN/Inf and stale-price observations (zero-return days)
         # Also filter Volume=0 phantom quotes (February 2026)
         _STALE_RETURN_THRESHOLD = 1e-10
@@ -6944,7 +7006,17 @@ def tune_asset_with_bma(
                 result["diagnostics"]["phi_nu_identifiability"] = {
                     "condition_number": float(_ident.condition_number),
                     "is_critical": bool(_ident.is_critical),
+                    "regularization_applied": bool(_ident.regularization_applied),
                 }
+                # When condition number is critical, write regularized values back
+                # to the model. This prevents unreliable phi/nu from reaching inference.
+                if _ident.regularization_applied and _ident.is_critical:
+                    _gd["phi"] = _ident.phi_regularized
+                    _gd["nu"] = _ident.nu_regularized
+                    result["diagnostics"]["phi_nu_identifiability"]["phi_original"] = float(_diag_phi)
+                    result["diagnostics"]["phi_nu_identifiability"]["nu_original"] = float(_diag_nu)
+                    result["diagnostics"]["phi_nu_identifiability"]["phi_regularized"] = float(_ident.phi_regularized)
+                    result["diagnostics"]["phi_nu_identifiability"]["nu_regularized"] = float(_ident.nu_regularized)
             except Exception:
                 pass
 
@@ -7033,9 +7105,17 @@ def tune_asset_with_bma(
                 _R_diag = _diag_c * vol ** 2
                 _vr = innovation_variance_ratio(_innovations, _R_diag)
                 _cs = innovation_cusum(_innovations, _R_diag)
-                result["diagnostics"]["innovation_variance_ratio"] = float(_vr.ratio)
+                result["diagnostics"]["innovation_variance_ratio"] = float(_vr.current_vr)
                 result["diagnostics"]["innovation_cusum_max"] = float(_cs.max_cusum)
                 result["diagnostics"]["innovation_cusum_alert"] = _cs.alert
+                # Story 9.2: Apply c correction when VR indicates miscalibration.
+                # c_correction is sqrt-dampened: c_new = c_old * VR^0.5
+                if _vr.needs_correction:
+                    _c_corrected = _diag_c * _vr.c_correction
+                    _gd["c"] = float(_c_corrected)
+                    result["diagnostics"]["innovation_c_corrected"] = True
+                    result["diagnostics"]["innovation_c_original"] = float(_diag_c)
+                    result["diagnostics"]["innovation_c_new"] = float(_c_corrected)
             except Exception:
                 pass
 
