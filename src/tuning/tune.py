@@ -6977,9 +6977,16 @@ def tune_asset_with_bma(
                     q=_diag_q, phi=_diag_phi, c_scalar=_diag_c,
                     nu=_diag_nu,
                 )
+                _c_per_regime_dict = {}
+                if hasattr(_rc, 'c_per_regime') and _rc.c_per_regime is not None:
+                    if isinstance(_rc.c_per_regime, np.ndarray):
+                        _c_per_regime_dict = {str(i): float(v) for i, v in enumerate(_rc.c_per_regime)}
+                    elif isinstance(_rc.c_per_regime, dict):
+                        _c_per_regime_dict = {str(k): float(v) for k, v in _rc.c_per_regime.items()}
                 result["diagnostics"]["regime_c"] = {
-                    "c_per_regime": {str(k): float(v) for k, v in _rc.c_per_regime.items()} if hasattr(_rc, 'c_per_regime') else {},
+                    "c_per_regime": _c_per_regime_dict,
                     "delta_bic": float(_rc.delta_bic) if hasattr(_rc, 'delta_bic') else 0.0,
+                    "fit_success": bool(_rc.fit_success) if hasattr(_rc, 'fit_success') else False,
                 }
             except Exception:
                 pass

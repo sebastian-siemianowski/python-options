@@ -1161,19 +1161,22 @@ try:
     from calibration.regime_confidence import (
         regime_confidence_scale,
         RegimeConfidenceResult,
+        RegimeHitRates,
     )
     REGIME_CONFIDENCE_AVAILABLE = True
 except ImportError:
     REGIME_CONFIDENCE_AVAILABLE = False
 
 # =============================================================================
-# ADAPTIVE MOMENTUM & CROSS-ASSET (Stories 12.1, 12.3)
+# ADAPTIVE MOMENTUM & CROSS-ASSET (Stories 12.1, 12.2, 12.3)
 # =============================================================================
 try:
     from calibration.multi_timeframe_fusion import (
         adaptive_momentum_weights,
+        momentum_mr_regime_indicator,
         cross_asset_confirmation,
         AdaptiveMomentumResult,
+        MomentumMRRegime,
         CrossAssetConfirmation,
     )
     MULTI_TIMEFRAME_FUSION_AVAILABLE = True
@@ -1185,6 +1188,7 @@ except ImportError:
 # =============================================================================
 try:
     from calibration.kelly_sizing import (
+        kelly_fraction,
         drawdown_adjusted_kelly,
         auto_tune_kelly_frac,
     )
@@ -7074,7 +7078,7 @@ def run_unified_mc(
                 eps_sc = sigma_t * math.sqrt((nu - 2.0) / nu)
                 eps = hansen_skew_t_rvs(
                     size=n_paths, nu=nu, lambda_=hansen_lambda,
-                    loc=0.0, scale=1.0, random_state=rng
+                    random_state=rng
                 ) * eps_sc
             elif use_cst and cst_nu_normal is not None and cst_nu_normal > 2.0:
                 # Contaminated Student-t: mixture of normal + crisis tails
@@ -11041,12 +11045,12 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
                         _mc_mu, _mc_vol, float(_mc_nu), n_samples=5000,
                     )
                     _signal_meta["mc_importance_sampling"] = {
-                        "ess": float(_mc_is.effective_sample_size) if hasattr(_mc_is, 'effective_sample_size') else 0.0,
-                        "variance_ratio": float(_mc_is.variance_ratio) if hasattr(_mc_is, 'variance_ratio') else 1.0,
+                        "ess": float(_mc_is.ess),
+                        "ess_ratio": float(_mc_is.ess_ratio),
                     }
                     _mc_at = antithetic_mc_sample(_mc_mu, _mc_vol, float(_mc_nu), n_samples=5000)
                     _signal_meta["mc_antithetic"] = {
-                        "variance_reduction": float(_mc_at.variance_reduction) if hasattr(_mc_at, 'variance_reduction') else 0.0,
+                        "var_reduction": float(_mc_at.var_reduction),
                     }
             except Exception:
                 pass
@@ -11078,23 +11082,46 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
                         _model_wts = _model_wts / _model_wts.sum()
                         _ud = decompose_uncertainty(_model_means, _model_stds, _model_wts)
                         _signal_meta["uncertainty_decomposition"] = {
-                            "epistemic": float(_ud.epistemic) if hasattr(_ud, 'epistemic') else 0.0,
-                            "aleatoric": float(_ud.aleatoric) if hasattr(_ud, 'aleatoric') else 0.0,
-                            "total": float(_ud.total) if hasattr(_ud, 'total') else 0.0,
+                            "epistemic": float(_ud.epistemic_var) if hasattr(_ud, 'epistemic_var') else 0.0,
+                            "aleatoric": float(_ud.aleatoric_var) if hasattr(_ud, 'aleatoric_var') else 0.0,
+                            "total": float(_ud.total_var) if hasattr(_ud, 'total_var') else 0.0,
+                            "epistemic_fraction": float(_ud.epistemic_fraction) if hasattr(_ud, 'epistemic_fraction') else 0.0,
                         }
             except Exception:
                 pass
 
-        # Story 15.1: Regime confidence scaling
+        # Story 15.1: Regime confidence scaling (Story 11.3)
         if REGIME_CONFIDENCE_AVAILABLE and sigs and tuned_params:
             try:
-                # regime_confidence_scale needs (confidence, regime, historical_hit_rates)
-                # We skip this if no historical hit rates are available
-                pass  # Requires historical hit rates from calibration -- wired as no-op
+                _s0 = sigs[0]
+                _rc_confidence = float(_s0.p_up)
+                _rc_regime = str(_s0.regime)
+                # Use calibration diagnostics for historical hit rates if available
+                _rc_diag = (tuned_params.get("global", {}) or {}).get("calibration_params", {})
+                _rc_hist_hr_raw = _rc_diag.get("regime_hit_rates")
+                if _rc_hist_hr_raw is not None and isinstance(_rc_hist_hr_raw, dict):
+                    # Convert raw dict to RegimeHitRates dataclass
+                    _rc_hit_rates = RegimeHitRates(
+                        rates=_rc_hist_hr_raw.get("rates", {}),
+                        counts=_rc_hist_hr_raw.get("counts", {}),
+                        global_rate=float(_rc_hist_hr_raw.get("global_rate", 0.5)),
+                        total_count=int(_rc_hist_hr_raw.get("total_count", 0)),
+                    )
+                    _rc_result = regime_confidence_scale(
+                        confidence=_rc_confidence,
+                        regime=_rc_regime,
+                        historical_hit_rates=_rc_hit_rates,
+                    )
+                    if _rc_result is not None:
+                        _signal_meta["regime_confidence"] = {
+                            "adjusted_confidence": float(_rc_result.adjusted_confidence),
+                            "scale_factor": float(_rc_result.scale_factor),
+                            "regime": str(_rc_result.regime),
+                        }
             except Exception:
                 pass
 
-        # Story 16.1-16.2: Multi-timeframe fusion
+        # Story 12.1: Adaptive momentum horizon weights
         if MULTI_TIMEFRAME_FUSION_AVAILABLE and _has_returns:
             try:
                 _amw = adaptive_momentum_weights(np.asarray(returns_arr))
@@ -11106,44 +11133,72 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
             except Exception:
                 pass
 
-        # Story 17.1-17.2: Kelly sizing calibration
-        if KELLY_SIZING_CALIBRATION_AVAILABLE and sigs:
+        # Story 12.2: Momentum vs mean-reversion regime indicator
+        if MULTI_TIMEFRAME_FUSION_AVAILABLE and _has_returns:
+            try:
+                _vol_np = np.asarray(vol_arr) if _has_vol else None
+                _mmr = momentum_mr_regime_indicator(np.asarray(returns_arr), vol=_vol_np)
+                _signal_meta["momentum_mr_regime"] = {
+                    "regime": str(_mmr.regime),
+                    "variance_ratio": float(_mmr.variance_ratio),
+                    "is_momentum": bool(_mmr.is_momentum),
+                    "is_mean_reverting": bool(_mmr.is_mean_reverting),
+                }
+            except Exception:
+                pass
+
+        # Story 13.1-13.2: Kelly sizing calibration
+        if KELLY_SIZING_CALIBRATION_AVAILABLE and sigs and tuned_params:
             try:
                 _s0 = sigs[0]
-                # drawdown_adjusted_kelly(f_kelly, current_dd, max_dd)
+                _tp_global = tuned_params.get("global", {})
+                # Story 13.1: Kelly fraction from BMA predictive distribution
+                _kf_mu = _tp_global.get("mu", 0.0)
+                _kf_sigma = float(vol_arr.iloc[-1]) if _has_vol else 0.02
+                _kf_nu = _tp_global.get("nu")
+                _kf = kelly_fraction(_kf_mu, _kf_sigma, nu=_kf_nu)
+                _signal_meta["kelly_fraction"] = {
+                    "f": float(_kf),
+                    "mu": float(_kf_mu),
+                    "sigma": float(_kf_sigma),
+                    "nu": float(_kf_nu) if _kf_nu is not None else None,
+                }
+                # Story 13.2: drawdown_adjusted_kelly(f_kelly, current_dd, max_dd)
                 _dak = drawdown_adjusted_kelly(
-                    _s0.kelly_full,
+                    _kf,
                     current_dd=0.0,  # No current drawdown available at signal time
                     max_dd=0.10,
                 )
                 _signal_meta["drawdown_adjusted_kelly"] = {
-                    "f_adjusted": float(_dak.f_adjusted) if hasattr(_dak, 'f_adjusted') else float(_dak.kelly_adjusted) if hasattr(_dak, 'kelly_adjusted') else 0.0,
+                    "f_adjusted": float(_dak.f_adjusted),
+                    "dd_dampener": float(_dak.dd_dampener),
+                    "is_flat": bool(_dak.is_flat),
                 }
             except Exception:
                 pass
 
-        # Story 18.1-18.3: Transaction costs
+        # Story 14.1: Transaction costs
         if TRANSACTION_COSTS_AVAILABLE and sigs:
             try:
-                # transaction_cost(price, shares, spread_bps, adv, daily_vol)
                 _last_price = float(px.iloc[-1]) if px is not None and len(px) > 0 else 100.0
                 _last_vol = float(vol_arr.iloc[-1]) if _has_vol else 0.02
                 _tc = transaction_cost(
                     price=_last_price,
-                    shares=abs(sigs[0].position_strength) * 100,  # Notional shares
+                    shares=abs(sigs[0].position_strength) * 100,
                     daily_vol=_last_vol,
                 )
                 _signal_meta["transaction_cost"] = {
-                    "cost_bps": float(_tc.cost_bps) if hasattr(_tc, 'cost_bps') else 0.0,
-                    "cost_total": float(_tc.cost_total) if hasattr(_tc, 'cost_total') else 0.0,
+                    "cost_bps": float(_tc.cost_bps),
+                    "total_cost": float(_tc.total_cost),
+                    "spread_cost": float(_tc.spread_cost),
+                    "impact_cost": float(_tc.impact_cost),
                 }
             except Exception:
                 pass
 
-        # Story 18.4: Regime position limits
+        # Story 15.1: Regime position limits
         if REGIME_POSITION_SIZING_AVAILABLE and sigs:
             try:
-                # regime_position_limit(regime, raw_fraction)
                 _sig_regime = sigs[0].regime if sigs[0].regime else "LOW_VOL_TREND"
                 _rpl = regime_position_limit(
                     regime=str(_sig_regime),
@@ -11153,6 +11208,29 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
                     "max_fraction": float(_rpl.max_fraction),
                     "was_limited": bool(_rpl.was_limited),
                     "limited_fraction": float(_rpl.limited_fraction),
+                }
+            except Exception:
+                pass
+
+        # Story 15.2: Dynamic leverage from forecast confidence
+        if REGIME_POSITION_SIZING_AVAILABLE and sigs:
+            try:
+                _dl_conf = float(sigs[0].p_up)
+                _dl = dynamic_leverage(confidence=_dl_conf)
+                _signal_meta["dynamic_leverage"] = float(_dl)
+            except Exception:
+                pass
+
+        # Story 15.3: Volatility targeting overlay
+        if REGIME_POSITION_SIZING_AVAILABLE and _has_vol:
+            try:
+                _vt_sigma = float(vol_arr.iloc[-1]) * np.sqrt(252)  # annualize
+                _vt = vol_target_weight(sigma_asset=_vt_sigma)
+                _signal_meta["vol_target"] = {
+                    "weight": float(_vt.weight),
+                    "sigma_asset": float(_vt.sigma_asset),
+                    "was_capped": bool(_vt.was_capped),
+                    "was_floored": bool(_vt.was_floored),
                 }
             except Exception:
                 pass
@@ -11198,7 +11276,11 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
                 _sad_lambda = _tp_global.get("hansen_lambda", 0.0)
                 # skew_adjusted_direction(mu, sigma, nu, lambda_) -> SkewAdjustedDirectionResult
                 _sad_val = skew_adjusted_direction(_sad_mu, _sad_sigma, float(_sad_nu), _sad_lambda)
-                _signal_meta["skew_adjusted_direction"] = float(_sad_val)
+                _signal_meta["skew_adjusted_direction"] = {
+                    "prob_positive": float(_sad_val.prob_positive),
+                    "prob_positive_symmetric": float(_sad_val.prob_positive_symmetric),
+                    "skew_adjustment": float(_sad_val.skew_adjustment),
+                }
             except Exception:
                 pass
 
@@ -11254,9 +11336,11 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
                 _mr_sigma = float(vol_arr.iloc[-1]) if _has_vol else 0.02
                 _mrs = mr_signal_strength(_mr_price, _mr_eq, _mr_kappa, _mr_sigma)
                 _signal_meta["mr_signal_strength"] = {
-                    "z_score": float(_mrs.z_score) if hasattr(_mrs, 'z_score') else 0.0,
-                    "kelly_fraction": float(_mrs.kelly_fraction) if hasattr(_mrs, 'kelly_fraction') else 0.0,
-                    "direction": str(_mrs.direction) if hasattr(_mrs, 'direction') else "neutral",
+                    "z_score": float(_mrs.z),
+                    "strength": str(_mrs.strength),
+                    "kelly_fraction": float(_mrs.kelly_fraction),
+                    "direction": int(_mrs.direction),
+                    "distance": float(_mrs.distance),
                 }
             except Exception:
                 pass
@@ -11271,8 +11355,8 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
                     raise ValueError("PCA requires >= 5 assets; single-asset not supported")
                 _emf = extract_market_factors(_ret_2d, n_factors=1)
                 _signal_meta["market_factors"] = {
-                    "n_factors": int(_emf.n_factors) if hasattr(_emf, 'n_factors') else 1,
-                    "explained_variance": float(_emf.explained_variance) if hasattr(_emf, 'explained_variance') else 0.0,
+                    "n_factors": int(_emf.n_factors),
+                    "explained_variance_ratio": float(_emf.cumulative_variance),
                 }
             except Exception:
                 pass
@@ -11321,10 +11405,20 @@ def process_single_asset(args_tuple: Tuple) -> Optional[Dict]:
             try:
                 _forecasts = np.array([s.exp_ret for s in sigs])
                 _ewe = equal_weight_ensemble(_forecasts)
-                _signal_meta["ensemble_equal_weight"] = float(_ewe.mean) if hasattr(_ewe, 'mean') else float(_ewe)
+                _signal_meta["ensemble_equal_weight"] = {
+                    "forecast": float(_ewe.forecast),
+                    "variance": float(_ewe.variance),
+                    "model_spread": float(_ewe.model_spread),
+                    "n_models": int(_ewe.n_models),
+                }
                 if len(_forecasts) >= 3:
                     _te = trimmed_ensemble(_forecasts)
-                    _signal_meta["ensemble_trimmed"] = float(_te.mean) if hasattr(_te, 'mean') else float(_te)
+                    _signal_meta["ensemble_trimmed"] = {
+                        "forecast": float(_te.forecast),
+                        "variance": float(_te.variance),
+                        "n_trimmed": int(_te.n_trimmed),
+                        "model_spread_trimmed": float(_te.model_spread_trimmed),
+                    }
             except Exception:
                 pass
 
