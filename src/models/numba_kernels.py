@@ -3057,7 +3057,7 @@ def student_t_filter_with_lfo_cv_kernel(
         S = P_pred + R
         
         if S > _MIN_VARIANCE:
-            # FIX: Student-t scale = sqrt(S × (ν-2)/ν)
+            # Student-t scale = sqrt(S * (nu-2)/nu) for predictive density
             if nu > 2.0:
                 scale = np.sqrt(S * (nu - 2.0) / nu)
             else:
@@ -3065,7 +3065,7 @@ def student_t_filter_with_lfo_cv_kernel(
             z = innovation / scale
             z_sq = z * z
             
-            # Log-likelihood contribution
+            # Log-likelihood contribution (Student-t predictive density)
             ll_t = log_norm_const - np.log(scale) + neg_exp * np.log(1.0 + z_sq * inv_nu)
             if ll_t < -_MAX_LL_CONTRIB:
                 ll_t = -_MAX_LL_CONTRIB
@@ -3076,10 +3076,15 @@ def student_t_filter_with_lfo_cv_kernel(
                 lfo_sum += ll_t
                 lfo_count += 1
             
-            # Robust Kalman gain
+            # Student-t robust weighting: downweight outliers
+            # w_t = (nu + 1) / (nu + z_sq_S) where z_sq_S = innovation^2 / S
+            z_sq_S = (innovation * innovation) / S
+            w_t = (nu + 1.0) / (nu + z_sq_S)
+            
+            # Robust Kalman gain with Student-t weighting
             K = P_pred / S
-            mu = mu_pred + K * innovation
-            P = (1.0 - K) * P_pred
+            mu = mu_pred + K * w_t * innovation
+            P = (1.0 - w_t * K) * P_pred
         else:
             mu = mu_pred
             P = P_pred

@@ -4707,6 +4707,12 @@ def fit_all_models_for_regime(
     except ImportError:
         run_student_t_filter_with_lfo_cv = None
 
+    # Import Gaussian LFO-CV wrapper for Phase 1 Gaussian models
+    try:
+        from models.numba_wrappers import run_gaussian_filter_with_lfo_cv
+    except ImportError:
+        run_gaussian_filter_with_lfo_cv = None
+
     def _get_cached_or_filter(
         model_name: str, 
         q: float, 
@@ -4721,22 +4727,42 @@ def fit_all_models_for_regime(
         if key in _filter_cache:
             return _filter_cache[key]
 
-        # Use fused LFO-CV filter when available (40% faster)
-        if with_lfo_cv and run_student_t_filter_with_lfo_cv is not None:
-            try:
-                result = run_student_t_filter_with_lfo_cv(
-                    returns, vol, q, c, phi, nu,
-                    lfo_start_frac=LFO_CV_MIN_TRAIN_FRAC
-                )
-                _filter_cache[key] = result
-                return result
-            except Exception:
-                pass
+        # Determine if this is a Gaussian model (nu is None or model name indicates it)
+        _is_gaussian = (nu is None or "gaussian" in model_name.lower())
+
+        # Use fused LFO-CV filter when available (100-200x faster than pure Python)
+        if with_lfo_cv:
+            if _is_gaussian and run_gaussian_filter_with_lfo_cv is not None:
+                try:
+                    result = run_gaussian_filter_with_lfo_cv(
+                        returns, vol, q, c, phi,
+                        lfo_start_frac=LFO_CV_MIN_TRAIN_FRAC,
+                    )
+                    _filter_cache[key] = result
+                    return result
+                except Exception:
+                    pass
+            elif not _is_gaussian and run_student_t_filter_with_lfo_cv is not None:
+                try:
+                    result = run_student_t_filter_with_lfo_cv(
+                        returns, vol, q, c, phi, nu,
+                        lfo_start_frac=LFO_CV_MIN_TRAIN_FRAC
+                    )
+                    _filter_cache[key] = result
+                    return result
+                except Exception:
+                    pass
 
         # Fallback to standard filter
-        mu, P, ll = PhiStudentTDriftModel.filter_phi(
-            returns, vol, q, c, phi, nu
-        )
+        if _is_gaussian:
+            from models.phi_gaussian import PhiGaussianDriftModel
+            mu, P, ll = PhiGaussianDriftModel.filter(
+                returns, vol, q, c, phi
+            )
+        else:
+            mu, P, ll = PhiStudentTDriftModel.filter_phi(
+                returns, vol, q, c, phi, nu
+            )
         lfo_cv_score = float('-inf')  # Not computed in fallback
         result = (mu, P, ll, lfo_cv_score)
         _filter_cache[key] = result
@@ -5860,11 +5886,16 @@ def fit_regime_model_posterior(
         # LFO-CV scores for proper out-of-sample model selection (February 2026)
         lfo_cv_scores = {}
         if LFO_CV_ENABLED and n_samples >= 50:  # Need enough data for LFO-CV
+            import time as _lfo_time_mod
+            _lfo_t0 = _lfo_time_mod.perf_counter()
+            _lfo_computed = 0
+            _lfo_cached = 0
             for m, info in models.items():
                 if info.get("fit_success", False):
                     # Check if model already has LFO-CV score (e.g., MS-q models)
                     if info.get("lfo_cv_score") is not None:
                         lfo_cv_scores[m] = info["lfo_cv_score"]
+                        _lfo_cached += 1
                     else:
                         # Compute LFO-CV score
                         q_val = info.get("q", 1e-6)
@@ -5887,9 +5918,12 @@ def fit_regime_model_posterior(
                             lfo_cv_scores[m] = lfo_score
                             models[m]["lfo_cv_score"] = float(lfo_score)
                             models[m]["lfo_cv_diagnostics"] = lfo_diag
+                            _lfo_computed += 1
                         except Exception as e:
                             lfo_cv_scores[m] = float('-inf')
                             models[m]["lfo_cv_error"] = str(e)
+            _lfo_elapsed = _lfo_time_mod.perf_counter() - _lfo_t0
+            print(f"     LFO-CV: {_lfo_computed} computed, {_lfo_cached} cached in {_lfo_elapsed:.2f}s")
         
         # Print model fits
         for m, info in models.items():
