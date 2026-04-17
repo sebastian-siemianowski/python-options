@@ -432,7 +432,7 @@ DEFAULT_TEMPORAL_ALPHA = 0.3
 
 
 # Story 4.2: Import regime definitions from shared module
-from models.regime import MarketRegime, REGIME_LABELS, MIN_REGIME_SAMPLES
+from models.regime import MarketRegime, REGIME_LABELS, MIN_REGIME_SAMPLES, assign_regime_labels
 
 
 # Minimum sample size for reliable Hyvärinen score computation

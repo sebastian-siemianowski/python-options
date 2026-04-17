@@ -18,7 +18,11 @@ from ingestion.data_utils import fetch_px, _download_prices, get_default_asset_u
 from ingestion.adaptive_quality import adaptive_data_quality
 
 from tuning.tune_modules.config import *  # noqa: F401,F403
+from tuning.tune_modules.config import _computation_cache  # noqa: E402
 from tuning.tune_modules.utilities import *  # noqa: F401,F403
+from tuning.tune_modules.utilities import _log, _is_quiet  # noqa: E402
+from tuning.tune_modules.process_noise import tune_asset_q  # noqa: E402
+from tuning.tune_modules.regime_bma import tune_regime_model_averaging  # noqa: E402
 
 
 __all__ = [
@@ -155,7 +159,7 @@ def tune_asset_with_bma(
                 "use_regime_tuning": False,
                 "regime_fallback": True,
                 "regime_fallback_reason": f"insufficient_data_for_regime_bma",
-                "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "timestamp": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
 
         # Compute returns
@@ -277,7 +281,7 @@ def tune_asset_with_bma(
                 "use_regime_tuning": False,
                 "regime_fallback": True,
                 "regime_fallback_reason": f"insufficient_data_after_cleaning",
-                "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "timestamp": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
 
         # Assign regime labels (with optional computation cache)
@@ -385,7 +389,7 @@ def tune_asset_with_bma(
             "regime": regime_results,  # Now contains model_posterior and models per regime
             "use_regime_tuning": True,
             "regime_counts": regime_counts,
-            "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "timestamp": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
             "hierarchical_tuning": {
                 "lambda_regime": lambda_regime,
                 "temporal_alpha": DEFAULT_TEMPORAL_ALPHA,

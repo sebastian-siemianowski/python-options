@@ -11,6 +11,7 @@ import numpy as np
 
 from tuning.tune_modules.config import *  # noqa: F401,F403
 from tuning.tune_modules.utilities import *  # noqa: F401,F403
+from tuning.tune_modules.utilities import _log, _is_quiet  # noqa: E402
 
 # Ingestion imports needed by tune_asset_q
 from ingestion.data_utils import _download_prices, get_default_asset_universe

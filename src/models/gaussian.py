@@ -743,7 +743,7 @@ class GaussianDriftModel:
                 _HIGH_VOL = {'MSTR', 'AMZE', 'RCAT', 'SMCI', 'RGTI', 'QBTS', 'BKSY',
                              'SPCE', 'ABTC', 'BZAI', 'BNZI', 'AIRI',
                              'ESLT', 'QS', 'QUBT', 'PACB', 'APLM', 'NVTS',
-                             'ACHR', 'GORO', 'USAS', 'APLT', 'ONDS', 'GPUS'}
+                             'ACHR', 'GORO', 'USAS', 'ONDS', 'GPUS'}
                 if _sym in _METALS_GOLD: _gaussian_asset_class = 'metals_gold'
                 elif _sym in _METALS_SILVER: _gaussian_asset_class = 'metals_silver'
                 elif _sym in _METALS_OTHER: _gaussian_asset_class = 'metals_other'

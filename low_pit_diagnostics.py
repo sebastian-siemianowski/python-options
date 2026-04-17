@@ -46,7 +46,7 @@ LOW_PIT_ASSETS = [
     'ESLT', 'ACN', 'DFSC', 'ASTC', 'KGC', 'FOUR', 'ADBE', 'OPXS',
     'TFC', 'NVTS', 'GRND', 'XLE', '000660.KS',
     # Added batch
-    'RGTI', 'PACB', 'QUBT', 'GORO', 'USAS', 'APLT', 'APLM', 'RCAT',
+    'RGTI', 'PACB', 'QUBT', 'GORO', 'USAS', 'APLM', 'RCAT',
     'CVS', 'MDLZ', 'VZ', '8035.T', '005930.KS', 'CNYJPY=X', 'JPYCNY=X',
     'ONDS', 'ACHR', 'HO.PA', 'QCOM', 'MRCY',
 ]

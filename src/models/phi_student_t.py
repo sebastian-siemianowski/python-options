@@ -598,7 +598,7 @@ HIGH_VOL_EQUITY_SYMBOLS = frozenset({
     'SPCE', 'ABTC', 'BZAI', 'BNZI', 'AIRI',
     # March 2026 expansion — micro/small-cap with annualized vol > 50%
     'ESLT', 'QS', 'QUBT', 'PACB', 'APLM', 'NVTS',
-    'ACHR', 'GORO', 'USAS', 'APLT', 'ONDS', 'GPUS',
+    'ACHR', 'GORO', 'USAS', 'ONDS', 'GPUS',
 })
 
 

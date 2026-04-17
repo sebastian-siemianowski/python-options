@@ -15,6 +15,12 @@ from scipy.stats import norm, t as student_t
 
 from tuning.tune_modules.config import *  # noqa: F401,F403
 from tuning.tune_modules.utilities import *  # noqa: F401,F403
+from tuning.tune_modules.utilities import _log  # noqa: E402
+from tuning.tune_modules.pit_diagnostics import (  # noqa: E402
+    reconstruct_predictive_from_filtered_gaussian,
+    compute_extended_pit_metrics_gaussian,
+    compute_extended_pit_metrics_student_t,
+)
 
 
 __all__ = [
