@@ -1,14 +1,14 @@
 {
-  "started_at": "2026-04-17T14:20:29.466250+00:00",
-  "completed_at": "2026-04-17T14:20:29.466264+00:00",
-  "total_duration_seconds": 1.2749806046485901e-05,
+  "started_at": "2026-04-17T22:14:36.959031+00:00",
+  "completed_at": "2026-04-17T22:14:36.959047+00:00",
+  "total_duration_seconds": 1.3667158782482147e-05,
   "phases": {
     "prices": {
       "phase": "prices",
       "status": "success",
-      "started_at": "2026-04-17T14:20:29.466252+00:00",
-      "completed_at": "2026-04-17T14:20:29.466254+00:00",
-      "duration_seconds": 2.4959444999694824e-07,
+      "started_at": "2026-04-17T22:14:36.959034+00:00",
+      "completed_at": "2026-04-17T22:14:36.959036+00:00",
+      "duration_seconds": 2.50060111284256e-07,
       "assets_processed": 10,
       "errors": [],
       "details": {
@@ -19,9 +19,9 @@
     "tune": {
       "phase": "tune",
       "status": "warning",
-      "started_at": "2026-04-17T14:20:29.466256+00:00",
-      "completed_at": "2026-04-17T14:20:29.466259+00:00",
-      "duration_seconds": 1.8333084881305695e-06,
+      "started_at": "2026-04-17T22:14:36.959038+00:00",
+      "completed_at": "2026-04-17T22:14:36.959041+00:00",
+      "duration_seconds": 1.9581057131290436e-06,
       "assets_processed": 10,
       "errors": [
         "fail_0",
@@ -55,9 +55,9 @@
     "signals": {
       "phase": "signals",
       "status": "success",
-      "started_at": "2026-04-17T14:20:29.466261+00:00",
-      "completed_at": "2026-04-17T14:20:29.466263+00:00",
-      "duration_seconds": 2.0908191800117493e-07,
+      "started_at": "2026-04-17T22:14:36.959044+00:00",
+      "completed_at": "2026-04-17T22:14:36.959045+00:00",
+      "duration_seconds": 2.0815059542655945e-07,
       "assets_processed": 10,
       "errors": [],
       "details": {

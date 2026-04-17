@@ -107,10 +107,15 @@ class TestSignalInvariants(unittest.TestCase):
                 os.environ.pop("SIGNAL_DEBUG", None)
 
     def test_invariant_code_present_in_signals(self):
-        """Verify invariant validation block exists in signals.py."""
+        """Verify invariant validation block exists in signals.py or its extracted modules."""
         signals_path = os.path.join(REPO_ROOT, "decision", "signals.py")
         with open(signals_path) as f:
             src = f.read()
+        # After Epic-7 decomposition, latest_signals() lives in signal_generation.py
+        gen_path = os.path.join(REPO_ROOT, "decision", "signal_modules", "signal_generation.py")
+        if os.path.exists(gen_path):
+            with open(gen_path) as f:
+                src += f.read()
         self.assertIn("Story 7.5: Signal Output Validation Invariants", src)
         self.assertIn("_n_violations", src)
         self.assertIn("SIGNAL_DEBUG", src)

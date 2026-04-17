@@ -273,7 +273,7 @@ class TestUnifiedNuStorage(unittest.TestCase):
         """
         import ast
 
-        tune_path = os.path.join(SRC_DIR, 'tuning', 'tune.py')
+        tune_path = os.path.join(SRC_DIR, 'tuning', 'tune_modules', 'model_fitting.py')
         with open(tune_path, 'r') as f:
             source = f.read()
 
