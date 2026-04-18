@@ -274,6 +274,7 @@ export interface Indicators {
   cmf?: { time: string; value: number }[];
   roc?: { time: string; value: number }[];
   bbpctb?: { time: string; value: number }[];
+  composite?: { time: string; value: number }[];
 }
 
 export interface ForecastData {

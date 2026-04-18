@@ -37,7 +37,7 @@ const getMaxEdge = (r: SummaryRow): number => {
 type PickerView = 'all' | 'sector' | 'strong_buy' | 'strong_sell' | 'filter';
 type FilterMode = 'momentum' | 'edge' | 'exp_return' | 'low_risk' | 'kelly' | 'p_up' | 'forecast_up' | 'forecast_down';
 type TimeRange = '1M' | '3M' | '6M' | '1Y' | 'ALL';
-type OverlayKey = 'sma20' | 'sma50' | 'sma200' | 'bb' | 'rsi' | 'forecastMedian' | 'ciUpper' | 'ciLower' | 'priceLine';
+type OverlayKey = 'sma20' | 'sma50' | 'sma200' | 'bb' | 'forecastMedian' | 'ciUpper' | 'ciLower' | 'priceLine';
 
 const TIME_RANGES: { key: TimeRange; label: string; days: number }[] = [
   { key: '1M', label: '1M', days: 30 },
@@ -52,20 +52,19 @@ const OVERLAY_DEFS: { key: OverlayKey; label: string; color: string; group: stri
   { key: 'sma50',          label: 'SMA 50',          color: '#818cf8', group: 'Moving Averages', shortcut: '2' },
   { key: 'sma200',         label: 'SMA 200',         color: '#c084fc', group: 'Moving Averages', shortcut: '3' },
   { key: 'bb',             label: 'Bollinger',        color: 'rgba(139,92,246,0.6)', group: 'Volatility', shortcut: '4' },
-  { key: 'rsi',            label: 'RSI (14)',         color: '#818cf8', group: 'Volatility', shortcut: '5' },
-  { key: 'forecastMedian', label: 'Forecast',         color: '#b49aff', group: 'Forecast', shortcut: '6' },
-  { key: 'ciUpper',        label: 'CI Upper',         color: '#3ee8a5', group: 'Forecast', shortcut: '7' },
-  { key: 'ciLower',        label: 'CI Lower',         color: '#ff6b8a', group: 'Forecast', shortcut: '8' },
+  { key: 'forecastMedian', label: 'Forecast',         color: '#b49aff', group: 'Forecast', shortcut: '5' },
+  { key: 'ciUpper',        label: 'CI Upper',         color: '#3ee8a5', group: 'Forecast', shortcut: '6' },
+  { key: 'ciLower',        label: 'CI Lower',         color: '#ff6b8a', group: 'Forecast', shortcut: '7' },
   { key: 'priceLine',      label: 'Price Line',       color: '#e2e8f0', group: 'Overlays', shortcut: 'p' },
 ];
 
 const DEFAULT_OVERLAYS: Record<OverlayKey, boolean> = {
-  sma20: true, sma50: true, sma200: true, bb: true, rsi: true,
+  sma20: true, sma50: true, sma200: true, bb: true,
   forecastMedian: true, ciUpper: true, ciLower: true, priceLine: true,
 };
 
 /* ── Sub-chart indicator definitions ──────────────────────── */
-type SubIndicatorKey = 'macd' | 'stochastic' | 'adx' | 'atr' | 'obv' | 'cci' | 'mfi' | 'cmf' | 'roc' | 'bbpctb';
+type SubIndicatorKey = 'composite' | 'rsi' | 'macd' | 'stochastic' | 'adx' | 'atr' | 'obv' | 'cci' | 'mfi' | 'cmf' | 'roc' | 'bbpctb';
 
 interface SubIndicatorDef {
   key: SubIndicatorKey;
@@ -75,6 +74,8 @@ interface SubIndicatorDef {
 }
 
 const SUB_INDICATOR_DEFS: SubIndicatorDef[] = [
+  { key: 'composite',  label: 'Composite Signal', color: '#facc15', group: 'Signal' },
+  { key: 'rsi',        label: 'RSI (14)',       color: '#b49aff', group: 'Momentum' },
   { key: 'macd',       label: 'MACD',          color: '#3ee8a5', group: 'Momentum' },
   { key: 'stochastic', label: 'Stochastic',    color: '#f5c542', group: 'Momentum' },
   { key: 'roc',        label: 'ROC (12)',       color: '#ff9f43', group: 'Momentum' },
@@ -88,7 +89,7 @@ const SUB_INDICATOR_DEFS: SubIndicatorDef[] = [
 ];
 
 const DEFAULT_SUB_INDICATORS: Record<SubIndicatorKey, boolean> = {
-  macd: false, stochastic: false, adx: false, atr: false, obv: false,
+  composite: false, rsi: true, macd: false, stochastic: false, adx: false, atr: false, obv: false,
   cci: false, mfi: false, cmf: false, roc: false, bbpctb: false,
 };
 
@@ -391,7 +392,7 @@ function SymbolList({
             key={s}
             data-symbol={s}
             onClick={() => onSelect(s)}
-            className={`w-full text-left px-3 py-1.5 text-xs font-medium transition-all duration-150 flex items-center gap-1.5
+            className={`w-full text-left px-3 py-1.5 text-xs font-medium transition-all duration-150 flex items-center gap-1.5 outline-none
               ${isSelected ? 'bg-[#8b5cf6]/10' : 'hover:bg-[#8b5cf6]/5'}`}
             style={{ color: isSelected ? (accent || '#b49aff') : '#94a3b8' }}
           >
@@ -434,7 +435,7 @@ function SectorSymbolList({
           <div key={sec.name}>
             <button
               onClick={() => toggleSector(sec.name)}
-              className="w-full flex items-center gap-1.5 px-2 py-1.5 hover:bg-[#8b5cf6]/5 transition-colors"
+              className="w-full flex items-center gap-1.5 px-2 py-1.5 hover:bg-[#8b5cf6]/5 transition-colors outline-none"
             >
               {expanded
                 ? <ChevronDown className="w-3 h-3 text-[#7a8ba4]" />
@@ -459,7 +460,7 @@ function SectorSymbolList({
                       key={s}
                       data-symbol={s}
                       onClick={() => onSelect(s)}
-                      className={`w-full text-left pl-7 pr-3 py-1 text-xs transition-all duration-150 flex items-center gap-1.5
+                      className={`w-full text-left pl-7 pr-3 py-1 text-xs transition-all duration-150 flex items-center gap-1.5 outline-none
                         ${isSelected ? 'bg-[#8b5cf6]/10 text-[#b49aff]' : 'text-[#7a8599] hover:text-[#94a3b8] hover:bg-[#8b5cf6]/5'}`}
                     >
                       <span className="flex-1">{s}</span>
@@ -572,7 +573,7 @@ function RankedFilterList({
             <button
               key={f.key}
               onClick={() => setFilterMode(f.key)}
-              className={`px-1.5 py-1 rounded text-[9px] font-semibold transition-all duration-200 ${
+              className={`px-1.5 py-1 rounded text-[9px] font-semibold transition-all duration-200 outline-none ${
                 active ? 'shadow-sm' : 'text-[#6b7a90] hover:text-[#94a3b8] bg-transparent'
               }`}
               style={active ? { background: `${f.color}18`, color: f.color } : {}}
@@ -614,7 +615,7 @@ function RankedFilterList({
               key={ticker}
               data-symbol={ticker}
               onClick={() => onSelect(ticker)}
-              className={`group relative w-full text-left px-2 py-1.5 text-xs transition-all duration-150 overflow-hidden
+              className={`group relative w-full text-left px-2 py-1.5 text-xs transition-all duration-150 overflow-hidden outline-none
                 ${isSelected
                   ? 'bg-[#8b5cf6]/10'
                   : 'hover:bg-[#8b5cf6]/5'
@@ -677,9 +678,7 @@ function RankedFilterList({
    ═══════════════════════════════════════════════════════════════════ */
 function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongBuy: string[]; strongSell: string[] }) {
   const priceChartRef = useRef<HTMLDivElement>(null);
-  const rsiChartRef = useRef<HTMLDivElement>(null);
   const priceChart = useRef<IChartApi | null>(null);
-  const rsiChart = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<any>(null);
   const volumeSeriesRef = useRef<any>(null);
   const [overlays, setOverlays] = useState<Record<OverlayKey, boolean>>(DEFAULT_OVERLAYS);
@@ -720,7 +719,6 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
   const showSMA50 = overlays.sma50;
   const showSMA200 = overlays.sma200;
   const showBollinger = overlays.bb;
-  const showRSI = overlays.rsi;
   const showForecastMedian = overlays.forecastMedian;
   const showCIUpper = overlays.ciUpper;
   const showCILower = overlays.ciLower;
@@ -925,57 +923,6 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
     window.addEventListener('resize', handleResize);
     return () => { window.removeEventListener('resize', handleResize); chart.remove(); priceChart.current = null; };
   }, [ohlcvQ.data, indQ.data, forecastQ.data, showSMA20, showSMA50, showSMA200, showBollinger, showForecastMedian, showCIUpper, showCILower, symbol, strongBuy, strongSell, overlays.priceLine]);
-
-  /* ── RSI chart ───────────────────────────────────────────── */
-  useEffect(() => {
-    if (!rsiChartRef.current || !showRSI || !indQ.data?.indicators?.rsi?.length) return;
-    if (rsiChart.current) { rsiChart.current.remove(); rsiChart.current = null; }
-
-    const chart = createChart(rsiChartRef.current, {
-      layout: {
-        background: { type: ColorType.Solid, color: 'transparent' },
-        textColor: '#7a8ba4',
-        fontFamily: "'Inter', system-ui, sans-serif",
-        fontSize: 10,
-      },
-      grid: {
-        vertLines: { color: 'rgba(42, 42, 74, 0.3)' },
-        horzLines: { color: 'rgba(42, 42, 74, 0.3)' },
-      },
-      width: rsiChartRef.current.clientWidth,
-      height: 100,
-      rightPriceScale: { scaleMargins: { top: 0.08, bottom: 0.08 }, borderColor: 'rgba(42, 42, 74, 0.5)' },
-      timeScale: { borderColor: 'rgba(42, 42, 74, 0.5)', visible: false },
-    });
-    rsiChart.current = chart;
-
-    const rsiSeries = chart.addSeries(LineSeries, { color: '#b49aff', lineWidth: 1.5, crosshairMarkerVisible: false });
-    rsiSeries.setData(indQ.data.indicators.rsi);
-
-    const rsiData = indQ.data.indicators.rsi;
-    if (rsiData.length >= 2) {
-      const times = rsiData.map(d => d.time);
-      const refOpts = { lineWidth: 1 as const, lineStyle: LineStyle.Dotted, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false };
-      chart.addSeries(LineSeries, { color: 'rgba(255,107,138,0.25)', ...refOpts }).setData(times.map(t => ({ time: t, value: 70 })));
-      chart.addSeries(LineSeries, { color: 'rgba(62,232,165,0.25)', ...refOpts }).setData(times.map(t => ({ time: t, value: 30 })));
-      chart.addSeries(LineSeries, { color: 'rgba(100,116,139,0.15)', ...refOpts }).setData(times.map(t => ({ time: t, value: 50 })));
-    }
-
-    chart.timeScale().fitContent();
-
-    // Sync time scales
-    if (priceChart.current) {
-      priceChart.current.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-        if (range && rsiChart.current) rsiChart.current.timeScale().setVisibleLogicalRange(range);
-      });
-    }
-
-    const handleResize = () => {
-      if (rsiChartRef.current) chart.applyOptions({ width: rsiChartRef.current.clientWidth });
-    };
-    window.addEventListener('resize', handleResize);
-    return () => { window.removeEventListener('resize', handleResize); chart.remove(); rsiChart.current = null; };
-  }, [indQ.data, showRSI]);
 
   /* ── Derived data ────────────────────────────────────────── */
   if (ohlcvQ.isLoading) {
@@ -1213,8 +1160,8 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
               </button>
             </div>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            {['Momentum', 'Trend', 'Volatility', 'Volume'].map(group => (
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+            {['Signal', 'Momentum', 'Trend', 'Volatility', 'Volume'].map(group => (
               <div key={group}>
                 <p className="text-[8px] text-[#3a3a5a] uppercase tracking-widest mb-1.5 font-bold">{group}</p>
                 <div className="flex flex-col gap-0.5">
@@ -1277,28 +1224,6 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
       <div className="chart-container rounded-xl overflow-hidden ring-1 ring-[#2a2a4a]/30">
         <div ref={priceChartRef} />
       </div>
-
-      {/* ── RSI Sub-chart ────────────────────────────────────── */}
-      {showRSI && indQ.data?.indicators?.rsi?.length && (
-        <div className="chart-container rounded-xl overflow-hidden ring-1 ring-[#2a2a4a]/30 mt-1">
-          <div className="flex items-center gap-3 px-3 py-1.5">
-            <span className="text-[10px] text-[#7a8ba4] font-semibold">RSI (14)</span>
-            {rsiValue != null && (
-              <span className={`text-[10px] font-bold tabular-nums ${
-                rsiValue > 70 ? 'text-[#ff6b8a]' : rsiValue < 30 ? 'text-[#3ee8a5]' : 'text-[#7a8ba4]'
-              }`}>
-                {rsiValue.toFixed(1)}
-              </span>
-            )}
-            <div className="flex gap-3 ml-auto text-[8px] font-medium">
-              <span className="text-[#ff6b8a]/40">70 Overbought</span>
-              <span className="text-[#7a8ba4]/30">50</span>
-              <span className="text-[#3ee8a5]/40">30 Oversold</span>
-            </div>
-          </div>
-          <div ref={rsiChartRef} />
-        </div>
-      )}
 
       {/* ── Additional Indicator Sub-charts ──────────────────── */}
       {indQ.data?.indicators && SUB_INDICATOR_DEFS.map(d => {
@@ -1410,7 +1335,7 @@ function SubIndicatorPane({
         horzLines: { color: 'rgba(42, 42, 74, 0.3)' },
       },
       width: container.clientWidth,
-      height: 100,
+      height: indicatorKey === 'composite' ? 130 : 100,
       rightPriceScale: { scaleMargins: { top: 0.08, bottom: 0.08 }, borderColor: 'rgba(42, 42, 74, 0.5)' },
       timeScale: { borderColor: 'rgba(42, 42, 74, 0.5)', visible: false },
     });
@@ -1420,6 +1345,38 @@ function SubIndicatorPane({
     const refOpts = { lineWidth: 1 as const, lineStyle: LineStyle.Dotted, ...lineOpts };
 
     switch (indicatorKey) {
+      case 'composite': {
+        const d = indicators.composite;
+        if (!d?.length) break;
+        // Color-coded histogram: green (buy) / red (sell) / muted (neutral)
+        chart.addSeries(HistogramSeries, {
+          ...lineOpts,
+        }).setData(d.map((p: any) => ({
+          time: p.time,
+          value: p.value,
+          color: p.value >= 30 ? 'rgba(62,232,165,0.75)'
+            : p.value >= 10 ? 'rgba(62,232,165,0.35)'
+            : p.value <= -30 ? 'rgba(255,107,138,0.75)'
+            : p.value <= -10 ? 'rgba(255,107,138,0.35)'
+            : 'rgba(122,139,164,0.25)',
+        })));
+        // Buy/Sell zone reference lines
+        const times = d.map((p: any) => p.time);
+        chart.addSeries(LineSeries, { color: 'rgba(62,232,165,0.4)', ...refOpts }).setData(times.map((t: string) => ({ time: t, value: 30 })));
+        chart.addSeries(LineSeries, { color: 'rgba(255,107,138,0.4)', ...refOpts }).setData(times.map((t: string) => ({ time: t, value: -30 })));
+        chart.addSeries(LineSeries, { color: 'rgba(100,116,139,0.15)', ...refOpts }).setData(times.map((t: string) => ({ time: t, value: 0 })));
+        break;
+      }
+      case 'rsi': {
+        const d = indicators.rsi;
+        if (!d?.length) break;
+        chart.addSeries(LineSeries, { color: '#b49aff', lineWidth: 1.5, ...lineOpts }).setData(d);
+        const times = d.map((p: any) => p.time);
+        chart.addSeries(LineSeries, { color: 'rgba(255,107,138,0.25)', ...refOpts }).setData(times.map((t: string) => ({ time: t, value: 70 })));
+        chart.addSeries(LineSeries, { color: 'rgba(62,232,165,0.25)', ...refOpts }).setData(times.map((t: string) => ({ time: t, value: 30 })));
+        chart.addSeries(LineSeries, { color: 'rgba(100,116,139,0.15)', ...refOpts }).setData(times.map((t: string) => ({ time: t, value: 50 })));
+        break;
+      }
       case 'macd': {
         const d = indicators.macd;
         if (!d) break;
@@ -1561,6 +1518,7 @@ function SubIndicatorPane({
   // Header labels per indicator
   const headerInfo = useMemo(() => {
     switch (indicatorKey) {
+      case 'rsi': return { refs: [{ label: '70 Overbought', color: '#ff6b8a40' }, { label: '50', color: '#7a8ba430' }, { label: '30 Oversold', color: '#3ee8a540' }] };
       case 'macd': return { refs: [{ label: 'MACD', color: '#3ee8a5' }, { label: 'Signal', color: '#ff6b8a' }, { label: 'Histogram', color: '#7a8ba4' }] };
       case 'stochastic': return { refs: [{ label: '%K', color: '#f5c542' }, { label: '%D', color: '#ff6b8a' }, { label: '80', color: '#ff6b8a40' }, { label: '20', color: '#3ee8a540' }] };
       case 'adx': return { refs: [{ label: 'ADX', color: '#26A69A' }, { label: '+DI', color: '#3ee8a5' }, { label: '-DI', color: '#ff6b8a' }, { label: '25 Trend', color: '#7a8ba430' }] };
@@ -1571,6 +1529,7 @@ function SubIndicatorPane({
       case 'cmf': return { refs: [{ label: '0', color: '#7a8ba430' }] };
       case 'roc': return { refs: [{ label: '0%', color: '#7a8ba430' }] };
       case 'bbpctb': return { refs: [{ label: '1.0 Upper', color: '#ff6b8a40' }, { label: '0.5', color: '#7a8ba430' }, { label: '0.0 Lower', color: '#3ee8a540' }] };
+      case 'composite': return { refs: [{ label: '+30 Buy', color: '#3ee8a5' }, { label: '0', color: '#7a8ba430' }, { label: '-30 Sell', color: '#ff6b8a' }] };
       default: return { refs: [] };
     }
   }, [indicatorKey]);
