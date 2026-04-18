@@ -88,6 +88,22 @@ export const api = {
 
   // Risk (full dashboard + refresh)
   riskRefresh: () => postApi<{ status: string; summary: RiskSummary }>('/api/risk/refresh'),
+
+  // Indicators
+  indicatorsLeaderboard: (top = 0, family?: string) => {
+    const params = new URLSearchParams();
+    if (top > 0) params.set('top', String(top));
+    if (family) params.set('family', family);
+    return fetchApi<IndicatorsLeaderboard>(`/api/indicators/leaderboard?${params}`);
+  },
+  indicatorsTop10: () => fetchApi<IndicatorStrategy[]>('/api/indicators/top10'),
+  indicatorsFamilies: () => fetchApi<IndicatorFamily[]>('/api/indicators/families'),
+  indicatorsStrategy: (id: number) => fetchApi<IndicatorStrategyDetail>(`/api/indicators/strategy/${id}`),
+  indicatorsHeatmap: (id: number) => fetchApi<IndicatorHeatmap>(`/api/indicators/strategy/${id}/heatmap`),
+  indicatorsRefresh: () => postApi<{ status: string }>('/api/indicators/refresh'),
+  indicatorsRunBacktest: (mode: 'quick' | 'full' = 'full') =>
+    postApi<IndicatorBacktestStart>(`/api/indicators/backtest?mode=${mode}`),
+  indicatorsBacktestStatus: () => fetchApi<IndicatorBacktestStatus>('/api/indicators/backtest/status'),
 };
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -700,4 +716,82 @@ export interface ProfitabilityMetrics {
   crps: number[];
   ece: number[];
   targets: Record<string, number>;
+}
+
+// ── Indicators ──────────────────────────────────────────────────────
+export interface IndicatorStrategy {
+  rank: number;
+  id: number;
+  name: string;
+  family: string;
+  composite: number;
+  sharpe: number | null;
+  sortino: number | null;
+  cagr: number | null;
+  bh_cagr: number | null;
+  cagr_diff: number | null;
+  max_dd: number | null;
+  buy_hit: number | null;
+  sell_hit: number | null;
+  win_rate: number | null;
+  profit_factor: number | null;
+  exposure: number | null;
+  n_trades: number | null;
+  n_assets: number;
+  sharpe_beat_bh: string | null;
+}
+
+export interface IndicatorsLeaderboard {
+  strategies: IndicatorStrategy[];
+  total: number;
+}
+
+export interface IndicatorFamily {
+  name: string;
+  count: number;
+  avg_composite: number;
+  ids: number[];
+}
+
+export interface IndicatorAssetResult {
+  symbol: string;
+  sharpe: number;
+  cagr: number;
+  max_dd: number;
+  total_return: number;
+  win_rate: number | null;
+  n_trades: number;
+}
+
+export interface IndicatorStrategyDetail {
+  id: number;
+  name: string;
+  family: string;
+  aggregate: Record<string, unknown>;
+  per_asset: IndicatorAssetResult[];
+}
+
+export interface IndicatorHeatmap {
+  id: number;
+  name: string;
+  assets: IndicatorAssetResult[];
+}
+
+export interface IndicatorBacktestStart {
+  status: string;
+  mode?: string;
+  started_at?: number;
+  progress?: string;
+}
+
+export interface IndicatorBacktestStatus {
+  running: boolean;
+  pid: number | null;
+  started_at: number | null;
+  finished_at: number | null;
+  exit_code: number | null;
+  progress: string;
+  error: string | null;
+  mode: string | null;
+  elapsed_seconds: number | null;
 }
