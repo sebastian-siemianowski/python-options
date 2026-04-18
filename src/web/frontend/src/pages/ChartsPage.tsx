@@ -142,10 +142,34 @@ export default function ChartsPage() {
     });
   };
 
-  const selectSymbol = (s: string) => {
+  const selectSymbol = useCallback((s: string) => {
     setSymbol(s);
     navigate(`/charts/${s}`);
-  };
+  }, [navigate]);
+
+  // Arrow Up / Down to cycle through the filtered symbol list
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Skip if user is typing in an input
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+      e.preventDefault();
+      const list = filtered.length > 0 ? filtered : symbols;
+      if (list.length === 0) return;
+      const idx = list.indexOf(symbol);
+      let next: number;
+      if (idx === -1) {
+        next = 0;
+      } else if (e.key === 'ArrowDown') {
+        next = idx + 1 >= list.length ? 0 : idx + 1;
+      } else {
+        next = idx - 1 < 0 ? list.length - 1 : idx - 1;
+      }
+      selectSymbol(list[next]);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [symbol, filtered, symbols, selectSymbol]);
 
   return (
     <>
