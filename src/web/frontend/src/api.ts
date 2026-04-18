@@ -254,6 +254,26 @@ export interface Indicators {
   };
   rsi?: { time: string; value: number }[];
   atr?: { time: string; value: number }[];
+  macd?: {
+    macd: { time: string; value: number }[];
+    signal: { time: string; value: number }[];
+    histogram: { time: string; value: number }[];
+  };
+  stochastic?: {
+    k: { time: string; value: number }[];
+    d: { time: string; value: number }[];
+  };
+  adx?: {
+    adx: { time: string; value: number }[];
+    plus_di: { time: string; value: number }[];
+    minus_di: { time: string; value: number }[];
+  };
+  obv?: { time: string; value: number }[];
+  cci?: { time: string; value: number }[];
+  mfi?: { time: string; value: number }[];
+  cmf?: { time: string; value: number }[];
+  roc?: { time: string; value: number }[];
+  bbpctb?: { time: string; value: number }[];
 }
 
 export interface ForecastData {

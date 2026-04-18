@@ -207,6 +207,153 @@ def compute_indicators(symbol: str, tail: int = 365) -> Optional[Dict[str, Any]]
             if not (isinstance(v, float) and math.isnan(v))
         ]
 
+    # MACD (12, 26, 9)
+    if len(close) >= 35:
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd_line = ema12 - ema26
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        histogram = macd_line - signal_line
+        valid = ~(macd_line.isna() | signal_line.isna())
+        result["macd"] = {
+            "macd": [
+                {"time": df.iloc[i]["date"], "value": round(v, 4)}
+                for i, v in enumerate(macd_line) if valid.iloc[i]
+            ],
+            "signal": [
+                {"time": df.iloc[i]["date"], "value": round(v, 4)}
+                for i, v in enumerate(signal_line) if valid.iloc[i]
+            ],
+            "histogram": [
+                {"time": df.iloc[i]["date"], "value": round(v, 4)}
+                for i, v in enumerate(histogram) if valid.iloc[i]
+            ],
+        }
+
+    # Stochastic Oscillator (14, 3, 3)
+    if len(close) >= 17:
+        low14 = low.rolling(14).min()
+        high14 = high.rolling(14).max()
+        raw_k = 100 * (close - low14) / (high14 - low14).replace(0, float("nan"))
+        k_line = raw_k.rolling(3).mean()
+        d_line = k_line.rolling(3).mean()
+        valid = ~(k_line.isna() | d_line.isna())
+        result["stochastic"] = {
+            "k": [
+                {"time": df.iloc[i]["date"], "value": round(v, 2)}
+                for i, v in enumerate(k_line) if valid.iloc[i]
+            ],
+            "d": [
+                {"time": df.iloc[i]["date"], "value": round(v, 2)}
+                for i, v in enumerate(d_line) if valid.iloc[i]
+            ],
+        }
+
+    # ADX (14) with +DI / -DI
+    if len(close) >= 28:
+        tr = pd.concat([
+            high - low,
+            (high - close.shift()).abs(),
+            (low - close.shift()).abs(),
+        ], axis=1).max(axis=1)
+        plus_dm = high.diff().clip(lower=0)
+        minus_dm = (-low.diff()).clip(lower=0)
+        # Zero out when the other is larger
+        plus_dm[plus_dm < minus_dm] = 0
+        minus_dm[minus_dm < plus_dm] = 0
+        atr14 = tr.ewm(span=14, adjust=False).mean()
+        plus_di = 100 * plus_dm.ewm(span=14, adjust=False).mean() / atr14.replace(0, float("nan"))
+        minus_di = 100 * minus_dm.ewm(span=14, adjust=False).mean() / atr14.replace(0, float("nan"))
+        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, float("nan"))
+        adx = dx.ewm(span=14, adjust=False).mean()
+        valid = ~(adx.isna() | plus_di.isna() | minus_di.isna())
+        result["adx"] = {
+            "adx": [
+                {"time": df.iloc[i]["date"], "value": round(v, 2)}
+                for i, v in enumerate(adx) if valid.iloc[i]
+            ],
+            "plus_di": [
+                {"time": df.iloc[i]["date"], "value": round(v, 2)}
+                for i, v in enumerate(plus_di) if valid.iloc[i]
+            ],
+            "minus_di": [
+                {"time": df.iloc[i]["date"], "value": round(v, 2)}
+                for i, v in enumerate(minus_di) if valid.iloc[i]
+            ],
+        }
+
+    # OBV (On-Balance Volume)
+    volume = df["volume"].astype(float)
+    if len(close) >= 2:
+        direction = np.sign(close.diff()).fillna(0)
+        obv = (direction * volume).cumsum()
+        result["obv"] = [
+            {"time": df.iloc[i]["date"], "value": round(float(v), 0)}
+            for i, v in enumerate(obv)
+            if not (isinstance(v, float) and math.isnan(v))
+        ]
+
+    # CCI (20) - Commodity Channel Index
+    if len(close) >= 20:
+        tp = (high + low + close) / 3
+        tp_sma = tp.rolling(20).mean()
+        tp_mad = tp.rolling(20).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
+        cci = (tp - tp_sma) / (0.015 * tp_mad.replace(0, float("nan")))
+        result["cci"] = [
+            {"time": df.iloc[i]["date"], "value": round(v, 2)}
+            for i, v in enumerate(cci)
+            if not (isinstance(v, float) and math.isnan(v))
+        ]
+
+    # MFI (14) - Money Flow Index
+    if len(close) >= 15:
+        tp = (high + low + close) / 3
+        mf = tp * volume
+        tp_diff = tp.diff()
+        pos_mf = mf.where(tp_diff > 0, 0.0).rolling(14).sum()
+        neg_mf = mf.where(tp_diff <= 0, 0.0).rolling(14).sum()
+        mfr = pos_mf / neg_mf.replace(0, float("nan"))
+        mfi = 100 - (100 / (1 + mfr))
+        result["mfi"] = [
+            {"time": df.iloc[i]["date"], "value": round(v, 2)}
+            for i, v in enumerate(mfi)
+            if not (isinstance(v, float) and math.isnan(v))
+        ]
+
+    # CMF (20) - Chaikin Money Flow
+    if len(close) >= 20:
+        mfm = ((close - low) - (high - close)) / (high - low).replace(0, float("nan"))
+        mfv = mfm * volume
+        cmf = mfv.rolling(20).sum() / volume.rolling(20).sum().replace(0, float("nan"))
+        result["cmf"] = [
+            {"time": df.iloc[i]["date"], "value": round(v, 4)}
+            for i, v in enumerate(cmf)
+            if not (isinstance(v, float) and math.isnan(v))
+        ]
+
+    # ROC (12) - Rate of Change
+    if len(close) >= 13:
+        roc = 100 * (close - close.shift(12)) / close.shift(12).replace(0, float("nan"))
+        result["roc"] = [
+            {"time": df.iloc[i]["date"], "value": round(v, 2)}
+            for i, v in enumerate(roc)
+            if not (isinstance(v, float) and math.isnan(v))
+        ]
+
+    # Bollinger %B
+    if len(close) >= 20:
+        sma20_bb = close.rolling(20).mean()
+        std20_bb = close.rolling(20).std()
+        bb_upper = sma20_bb + 2 * std20_bb
+        bb_lower = sma20_bb - 2 * std20_bb
+        bb_width = bb_upper - bb_lower
+        pct_b = (close - bb_lower) / bb_width.replace(0, float("nan"))
+        result["bbpctb"] = [
+            {"time": df.iloc[i]["date"], "value": round(v, 4)}
+            for i, v in enumerate(pct_b)
+            if not (isinstance(v, float) and math.isnan(v))
+        ]
+
     # Trim to requested tail
     for key in result:
         if isinstance(result[key], list):
