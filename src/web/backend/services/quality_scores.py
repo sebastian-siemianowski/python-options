@@ -86,6 +86,7 @@ QUALITY_SCORES = {
     "AAPL": 92,  # Apple - $3T+ ecosystem, massive moat, premium brand
     "MSFT": 95,  # Microsoft - cloud dominance, enterprise lock-in, AI leader
     "NVDA": 90,  # NVIDIA - AI/GPU monopoly, datacenter growth
+    "AMD": 82,   # AMD - CPU/GPU competitor, strong growth, datacenter gains
     "GOOGL": 88, # Alphabet - search monopoly, cloud, YouTube, AI
     "GOOG": 88,  # Alphabet Class C
     "META": 82,  # Meta - social media dominance, ad revenue, Reality Labs risk

@@ -520,6 +520,240 @@ INTRINSIC_VALUES: Dict[str, Optional[float]] = {
     "FNB": 15.0,    # FNB Corp: 10x
     "SBNY": 2.0,    # Signature Bank: collapsed
     "PACW": 8.0,    # PacWest: stressed regional
+
+    # ── Heatmap Coverage (April 2026) ─────────────────────────────
+    # ETFs — NAV-based fair value
+    "AFK": 26.0,       # VanEck Africa Index ETF: EM discount; actual ~$29
+    "AMZD": 8.5,       # iShares Amazon Options ETF: options overlay NAV; actual ~$9.1
+    "ANGL": 27.0,      # VanEck Fallen Angel HY Bond ETF: credit risk NAV; actual ~$29.4
+    "CNXT": 48.0,      # VanEck ChiNext ETF: China tech discount; actual ~$52.6
+    "DURA": 34.0,      # VanEck Durable Dividend ETF: dividend NAV; actual ~$36.9
+    "ESPO": 85.0,      # VanEck Video Gaming eSports ETF: gaming cyclical; actual ~$95.8
+    "GDX": 80.0,       # VanEck Gold Miners ETF: miners lag gold; actual ~$100.3
+    "GDXJ": 105.0,     # VanEck Junior Gold Miners ETF: higher risk; actual ~$133.1
+    "GLIN": 42.0,      # VanEck India Growth Leaders ETF: India growth; actual ~$47
+    "IDX": 13.0,       # VanEck Indonesia Index ETF: EM; actual ~$14.7
+    "ITA": 200.0,      # iShares US Aerospace & Defense ETF: defense boom; actual ~$231.9
+    "MLN": 16.5,       # VanEck Long Muni ETF: bond NAV; actual ~$17.7
+    "MOAT": 92.0,      # VanEck Wide Moat ETF: quality premium; actual ~$102.3
+    "MOO": 75.0,       # VanEck Agribusiness ETF: agri cyclical; actual ~$83.3
+    "MOTG": 36.0,      # VanEck Morningstar Global Wide Moat ETF; actual ~$40
+    "MOTI": 33.0,      # VanEck Morningstar Intl Moat ETF; actual ~$36.9
+    "NLR": 125.0,      # VanEck Uranium+Nuclear Energy ETF: nuclear renaissance; actual ~$146
+    "OIH": 340.0,      # VanEck Oil Services ETF: energy cyclical; actual ~$400.7
+    "PLTI": 13.5,      # iShares Palantir Options ETF: options overlay; actual ~$15.4
+    "PPH": 95.0,       # VanEck Pharmaceutical ETF: pharma steady; actual ~$104.5
+    "REMX": 85.0,      # VanEck Rare Earth/Strategic Metals ETF; actual ~$101.6
+    "SGLP.L": 310.0,   # Invesco Physical Gold ETC: gold-backed; actual ~$345.4
+    "VNQ": 85.0,       # Vanguard Real Estate ETF: REIT NAV; actual ~$96.7
+    "MSTP": 2.2,       # YieldMax MSTR Option Income Strategy ETF; actual ~$2.5
+
+    # ── Precious Metals Miners ────────────────────────────────────
+    "AG": 15.0,        # First Majestic Silver: high cost producer; actual ~$21.5
+    "CDE": 14.0,       # Coeur Mining: gold/silver, turnaround; actual ~$20.4
+    "EXK": 7.0,        # Endeavour Silver: small producer; actual ~$10.2
+    "GORO": 1.0,       # Gold Resource: micro miner; actual ~$1.6
+    "GROY": 2.8,       # Gold Royalty Corp: royalty model; actual ~$3.8
+    "HL": 13.0,        # Hecla Mining: silver/gold; actual ~$19.5
+    "HYMC": 28.0,      # Hycroft Mining: turnaround; actual ~$44.2
+    "IAUX": 1.2,       # i-80 Gold: development stage; actual ~$1.7
+    "IDR": 32.0,       # Idaho Strategic Resources: rare earth; actual ~$43.3
+    "KGC": 25.0,       # Kinross Gold: mid-tier producer; actual ~$34.9
+    "PAAS": 42.0,      # Pan American Silver: diversified; actual ~$59.1
+    "RGLD": 200.0,     # Royal Gold: royalty/streaming, 25x; actual ~$268.1
+    "SLVR": 45.0,      # Silver Tiger Metals: exploration; actual ~$65.1
+    "SVM": 9.0,        # Silvercorp Metals: China ops; actual ~$12.8
+    "USAS": 4.5,       # Americas Gold and Silver: small; actual ~$6.6
+
+    # ── Aerospace & Defense ───────────────────────────────────────
+    "AIR": 85.0,       # AAR Corp: MRO services, 14x; actual ~$105.1
+    "AIR.PA": 155.0,   # Airbus SE: duopoly with Boeing, 18x; actual ~$179.5
+    "AVAV": 155.0,     # AeroVironment: defense drones, 28x; actual ~$191.4
+    "BA.L": 1900.0,    # BAE Systems: UK defense prime, 16x; actual ~2255.5 GBp
+    "BAH": 68.0,       # Booz Allen Hamilton: gov consulting, 15x; actual ~$81.8
+    "BWXT": 190.0,     # BWX Technologies: nuclear defense, 22x; actual ~$235.8
+    "CACI": 420.0,     # CACI International: defense IT, 16x; actual ~$527.2
+    "CW": 580.0,       # Curtiss-Wright: defense industrial, 20x; actual ~$735.7
+    "DCO": 110.0,      # Ducommun: aerostructures, 14x; actual ~$138
+    "DRS": 35.0,       # Leonardo DRS: electronic warfare, 18x; actual ~$44.6
+    "ESLT": 700.0,     # Elbit Systems: Israeli defense, 18x; actual ~$872.6
+    "HAG.DE": 65.0,    # Hensoldt AG: German defense sensors, 18x; actual ~$80.8
+    "HEI": 235.0,      # HEICO Corp: aerospace parts monopoly, 35x; actual ~$291.6
+    "HEIA.AS": 55.0,   # HEICO Class A; actual ~$68.6
+    "HII": 320.0,      # Huntington Ingalls: shipbuilding duopoly, 14x; actual ~$394.8
+    "HO.PA": 220.0,    # Thales SA: French defense/electronics, 16x; actual ~$264.6
+    "HXL": 72.0,       # Hexcel: aerospace composites, 18x; actual ~$88.8
+    "KOG.OL": 300.0,   # Kongsberg Gruppen: Norwegian defense, 18x; actual ~372.5 NOK
+    "KRMN": 65.0,      # Karman Holdings: defense tech; actual ~$83.6
+    "KTOS": 55.0,      # Kratos Defense: drones/hypersonics, 30x; actual ~$71
+    "LDOS": 125.0,     # Leidos: defense IT services, 14x; actual ~$155.2
+    "LHX": 280.0,      # L3Harris Technologies: defense electronics, 16x; actual ~$350.4
+    "LOAR": 52.0,      # Loar Holdings: aerospace components; actual ~$67.5
+    "MOG-A": 260.0,    # Moog Inc: flight controls, 16x; actual ~$322.8
+    "MRCY": 65.0,      # Mercury Systems: defense electronics, 20x; actual ~$84.1
+    "MTX.DE": 280.0,   # MTU Aero Engines: engine MRO, 18x; actual ~346.1 EUR
+    "OSK": 120.0,      # Oshkosh: defense/specialty vehicles, 12x; actual ~$147.9
+    "PKE": 28.0,       # Park Aerospace: composites, 14x; actual ~$34.5
+    "R3NK.DE": 42.0,   # Renk Group: German defense gearboxes, 16x; actual ~55.0 EUR
+    "RHM.DE": 1100.0,  # Rheinmetall AG: German defense leader, 18x; actual ~1495.2 EUR
+    "SAIC": 78.0,      # Science Applications: defense IT, 12x; actual ~$95.4
+    "SARO": 22.0,      # StandardAero: MRO services; actual ~$26.8
+    "TDY": 510.0,      # Teledyne Technologies: defense instruments, 22x; actual ~$635.8
+    "TXT": 75.0,       # Textron: diversified defense, 12x; actual ~$91.6
+    "VSEC": 180.0,     # VSE Corporation: aviation services, 14x; actual ~$226.5
+    "VVX": 52.0,       # V2X Inc: defense services, 12x; actual ~$66.7
+    "EXA.PA": 95.0,    # Exail Technologies: French defense tech; actual ~120.6 EUR
+    "FACC.VI": 11.0,   # FACC AG: aero composites, 12x; actual ~14.7 EUR
+    "FINMY": 26.0,     # Leonardo SpA ADR: Italian defense, 12x; actual ~$33.9
+    "SAABY": 25.0,     # Saab AB ADR: Swedish defense, 16x; actual ~$32.4
+    "SAF": 20.0,       # Safran SA: French engine maker, 18x; actual ~$25.0
+
+    # ── Space & Drones ────────────────────────────────────────────
+    "ASTS": 55.0,      # AST SpaceMobile: satellite broadband, pre-revenue; actual ~$85.5
+    "BKSY": 24.0,      # BlackSky Technology: satellite imagery; actual ~$37.6
+    "FJET": 4.0,       # Starfighters Space: speculative; actual ~$6.3
+    "FLY": 30.0,       # Firefly Aerospace: small launch; actual ~$43.7
+    "HOVR": 1.2,       # New Horizon Aircraft: eVTOL, pre-rev; actual ~$1.8
+    "LUNR": 18.0,      # Intuitive Machines: lunar lander; actual ~$27.6
+    "MNTS": 4.0,       # Momentus: in-space transport, speculative; actual ~$7.5
+    "PL": 25.0,        # Planet Labs: earth observation data; actual ~$38.5
+    "RCAT": 8.0,       # Red Cat Holdings: military drones; actual ~$12.7
+    "RDW": 7.0,        # Redwire Corp: space infrastructure; actual ~$10.3
+    "SATL": 4.5,       # Satellogic: satellite imagery; actual ~$6.9
+    "SIDU": 3.5,       # Sidus Space: small sat; actual ~$5.4
+    "SPCE": 1.5,       # Virgin Galactic: space tourism, cash burn; actual ~$2.9
+    "VOYG": 22.0,      # Voyager Technologies: space tech; actual ~$31.3
+
+    # ── Defense Small-Cap & Niche ─────────────────────────────────
+    "AIRI": 2.2,       # Air Industries Group: defense sub-assemblies; actual ~$3.2
+    "AIRO": 6.0,       # AIRO Group Holdings: defense; actual ~$8.1
+    "AOUT": 7.5,       # American Outdoor Brands: firearms accessories; actual ~$9.6
+    "ASTC": 2.0,       # Astrotech Corp: instruments; actual ~$2.9
+    "ATRO": 60.0,      # Astronics Corp: aerospace lighting/power, 14x; actual ~$77
+    "BYRN": 4.5,       # Byrna Technologies: less-lethal weapons; actual ~$6.7
+    "CDRE": 24.0,      # Cadre Holdings: safety equipment, 14x; actual ~$31.3
+    "CODA": 10.0,      # Coda Octopus: marine tech; actual ~$13.3
+    "CVU": 2.5,        # CPI Aerostructures: small defense; actual ~$3.5
+    "DFSC": 1.3,       # Defsec Technologies: micro-cap defense; actual ~$1.9
+    "ISSC": 16.0,      # Innovative Solutions & Support: avionics; actual ~$22
+    "NPK": 115.0,      # National Presto: defense/housewares, 12x; actual ~$143.7
+    "ONDS": 7.0,       # Ondas Holdings: drones/mesh networks; actual ~$10
+    "OPXS": 8.5,       # Optex Systems: military optics; actual ~$11.5
+    "PEW": 2.0,        # Grabagun Digital: speculative; actual ~$3.0
+    "POWW": 1.4,       # AMMO Inc: ammunition maker; actual ~$2.1
+    "PRZO": 0.4,       # ParaZero Technologies: drone safety; actual ~$0.7
+    "RGR": 34.0,       # Sturm Ruger: firearms, 12x; actual ~$42.2
+    "SIF": 11.0,       # SIFCO Industries: aerospace forgings; actual ~$14.6
+    "SKYH": 8.0,       # Sky Harbour: private aviation hangars; actual ~$11
+    "SPAI": 3.0,       # Safe Pro Group: safety tech; actual ~$4.4
+    "SWBI": 11.0,      # Smith & Wesson: firearms, 10x; actual ~$14.9
+    "TATT": 30.0,      # TAT Technologies: MRO services; actual ~$40.6
+    "UMAC": 9.0,       # Unusual Machines: consumer drones; actual ~$14.1
+    "VTSI": 3.5,       # VirTra: law enforcement simulators; actual ~$4.7
+
+    # ── Large Cap / Blue Chip ─────────────────────────────────────
+    "BABA": 105.0,     # Alibaba: China e-commerce, 10x OE; actual ~$141
+    "BK": 110.0,       # BNY Mellon: custody bank, 12x; actual ~$135.1
+    "C": 105.0,        # Citigroup: global bank, restructuring, 8x; actual ~$132.2
+    "CMCSA": 24.0,     # Comcast: cable/broadband, declining subs, 10x; actual ~$29.6
+    "CVS": 60.0,       # CVS Health: pharmacy/insurance, 8x; actual ~$77.3
+    "DHR": 160.0,      # Danaher: life sciences, 22x; actual ~$194.8
+    "GM": 62.0,        # General Motors: auto cyclical, 6x; actual ~$81.3
+    "ILMN": 105.0,     # Illumina: genomics leader, 25x; actual ~$134.5
+    "MDT": 72.0,       # Medtronic: medical devices, 14x; actual ~$86.2
+    "NVO": 32.0,       # Novo Nordisk: GLP-1 leader, 22x; actual ~$40.5
+    "REGN": 600.0,     # Regeneron: biotech, wide moat, 18x; actual ~$750.6
+    "TGT": 105.0,      # Target: retail, 12x; actual ~$127.8
+
+    # ── Semiconductors / Tech Hardware ────────────────────────────
+    "ANET": 130.0,     # Arista Networks: networking, 28x; actual ~$164.2
+    "AOSL": 25.0,      # Alpha & Omega Semi: power semi, 12x; actual ~$33.9
+    "IFX.DE": 38.0,    # Infineon Technologies: auto/power semi, 16x; actual ~48.9 EUR
+    "MPWR": 1100.0,    # Monolithic Power Systems: analog, 35x; actual ~$1468.4
+    "NBIS": 110.0,     # Nebius Group: AI infra spin-off; actual ~$157.1
+    "POWI": 45.0,      # Power Integrations: power conversion, 22x; actual ~$58.7
+    "SANM": 135.0,     # Sanmina: contract manufacturing, 12x; actual ~$174.1
+    "STM": 34.0,       # STMicroelectronics: auto/industrial semi, 12x; actual ~$44.2
+    "VSH": 20.0,       # Vishay Intertechnology: passives, 10x; actual ~$25.9
+
+    # ── Software / AI / Tech ──────────────────────────────────────
+    "CRWV": 75.0,      # CoreWeave: AI cloud infra, early revenue; actual ~$116.9
+    "GLBE": 25.0,      # Global-E Online: cross-border e-commerce; actual ~$33.9
+    "GLXY": 18.0,      # Galaxy Digital: crypto asset mgr; actual ~$25.8
+    "GRND": 9.0,       # Grindr: dating app, 20x; actual ~$13.2
+    "SDGR": 8.0,       # Schrödinger: drug discovery software; actual ~$12.3
+    "SOUN": 5.0,       # SoundHound AI: voice AI, speculative; actual ~$8.1
+    "SYM": 42.0,       # Symbotic: warehouse robotics, 25x; actual ~$63.2
+    "TEM": 35.0,       # Tempus AI: healthcare AI; actual ~$55.9
+
+    # ── Nuclear / Uranium / Energy ────────────────────────────────
+    "CCJ": 90.0,       # Cameco: uranium producer, 20x; actual ~$120.7
+    "DNN": 2.8,        # Denison Mines: uranium developer; actual ~$3.9
+    "GEV": 750.0,      # GE Vernova: energy spin-off, 25x; actual ~$1002.8
+    "LEU": 140.0,      # Centrus Energy: uranium enrichment; actual ~$203.6
+    "NXE": 9.0,        # NexGen Energy: uranium development; actual ~$12.7
+    "OKLO": 40.0,      # Oklo Inc: advanced nuclear, pre-revenue; actual ~$66.8
+    "SMR": 15.0,       # NuScale Power: SMR, pre-revenue; actual ~$21 (from quality)
+    "UEC": 10.0,       # Uranium Energy Corp: producer; actual ~$15
+    "UUUU": 14.0,      # Energy Fuels: uranium/rare earth; actual ~$20.5
+
+    # ── Mining / Materials / Resources ────────────────────────────
+    "ALB": 145.0,      # Albemarle: lithium, cyclical, 12x; actual ~$197.8
+    "ATI": 125.0,      # ATI Inc: specialty metals, 14x; actual ~$164.7
+    "CRML": 8.0,       # Critical Metals: rare earth exploration; actual ~$12.6
+    "ERMAY": 4.5,      # Eramet SA ADR: mining/metallurgy; actual ~$6.5
+    "GLNCY": 11.0,     # Glencore ADR: commodities trader, 8x; actual ~$14.9
+    "HBM": 18.0,       # Hudbay Minerals: copper/gold, 10x; actual ~$25.9
+    "ILKAF": 3.8,      # Iluka Resources: mineral sands; actual ~$5.4
+    "IVN.TO": 9.0,     # Ivanhoe Mines: copper development; actual ~12.3 CAD
+    "LYSCF": 10.0,     # Lynas Rare Earths: rare earth producer; actual ~$15
+    "MP": 42.0,        # MP Materials: rare earth processing, 20x; actual ~$61
+    "MTRN": 140.0,     # Materion: specialty materials, 16x; actual ~$182
+    "SQM": 65.0,       # SQM: lithium/fertilizer, 10x; actual ~$88.8
+    "TECK": 45.0,      # Teck Resources: copper/zinc, 10x; actual ~$59.4
+    "UAMY": 7.0,       # US Antimony: strategic metals; actual ~$10.6
+
+    # ── Biotech / Pharma ──────────────────────────────────────────
+    "ALNY": 230.0,     # Alnylam Pharma: RNAi therapeutics, 30x; actual ~$309.7
+    "APLM": 9.0,       # Apollomics: oncology biotech; actual ~$13.9
+    "APLS": 30.0,      # Apellis Pharma: complement inhibitor; actual ~$40.9
+    "ATAI": 2.5,       # AtaiBeckley: psychedelic medicine; actual ~$4
+    "BBIO": 55.0,      # BridgeBio Pharma: genetic disease; actual ~$76.8
+    "BEAM": 20.0,      # Beam Therapeutics: base editing; actual ~$31.4
+    "CRSP": 42.0,      # CRISPR Therapeutics: gene editing; actual ~$58
+    "NTLA": 10.0,      # Intellia Therapeutics: gene editing; actual ~$15
+    "NUTX": 70.0,      # Nutex Health: healthcare services; actual ~$105.6
+    "PACB": 1.0,       # PacBio: gene sequencing, cash burn; actual ~$1.7
+    "RXRX": 2.5,       # Recursion Pharma: AI drug discovery; actual ~$3.8
+
+    # ── Auto / EV / Transport ─────────────────────────────────────
+    "BMW3.DE": 68.0,   # BMW Preferred: German auto, 6x; actual ~83.8 EUR
+    "EMBJ": 50.0,      # Embraer SA: regional jets, 14x; actual ~$68
+    "EVEX": 1.8,       # Eve Holding: eVTOL, pre-revenue; actual ~$2.9
+    "EVTL": 1.8,       # Vertical Aerospace: eVTOL, pre-revenue; actual ~$3
+    "VOW3.DE": 75.0,   # Volkswagen Preferred: German auto, 4x; actual ~92.7 EUR
+    "BETA": 12.0,      # Beta Technologies: eVTOL; actual ~$18.1
+
+    # ── Industrials / Misc ────────────────────────────────────────
+    "B": 34.0,         # Barnes Group: industrial diversified, 12x; actual ~$43.3
+    "BAYN.DE": 32.0,   # Bayer AG: pharma/crop, litigation risk, 8x; actual ~41.1 EUR
+    "CAE": 22.0,       # CAE Inc: flight sim/training, 14x; actual ~$26.9
+    "CIFR": 12.0,      # Cipher Mining: bitcoin miner; actual ~$19.4
+    "DPRO": 3.5,       # Draganfly: commercial drones; actual ~$5.9
+    "EH": 7.5,         # EHang Holdings: autonomous air vehicles; actual ~$11.6
+    "FTAI": 190.0,     # FTAI Aviation: engine leasing, 18x; actual ~$259.1
+    "GPUS": 0.08,      # Hyperscale Data: micro-cap; actual ~$0.15
+    "IREN": 32.0,      # Iris Energy: bitcoin/AI data centers; actual ~$48.1
+    "KITT": 0.2,       # Nauticus Robotics: ocean robotics; actual ~$0.4
+    "MSA": 140.0,      # MSA Safety: safety equipment, 20x; actual ~$173.2
+    "NU": 10.0,        # Nu Holdings: Latin American neobank, 20x; actual ~$15.3
+    "THEON.AS": 25.0,  # Theon International: night vision optics; actual ~33.4 EUR
+    "TKA.DE": 6.5,     # thyssenkrupp: German industrial, restructuring; actual ~9.3 EUR
+    "VSAT": 42.0,      # ViaSat: satellite broadband, debt-heavy; actual ~$62.9
+    "VWAV": 4.5,       # Visionwave Holdings: speculative; actual ~$7.1
+    "AZ": 5.5,         # A2Z Cust2Mate Solutions: retail tech; actual ~$8.3
+    "AM": 16.0,        # Dassault Aviation SA: French jets/defense; actual ~$21.3
+    "RKLB": 55.0,      # Rocket Lab USA: small launch + spacecraft, 30x; actual ~$84.8
 }
 
 # Formula description for display
