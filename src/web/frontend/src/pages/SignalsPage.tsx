@@ -1,10 +1,10 @@
+import React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, useMemo, useEffect, useRef, useCallback, Component, type ReactNode, type ErrorInfo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import type { SummaryRow, SectorGroup, StrongSignalEntry, HighConvictionSignal, SignalSummaryData } from '../api';
 import PageHeader from '../components/PageHeader';
-import LoadingSpinner from '../components/LoadingSpinner';
 import { SignalTableSkeleton } from '../components/CosmicSkeleton';
 import { CosmicErrorCard } from '../components/CosmicErrorState';
 import { SignalsEmpty } from '../components/CosmicEmptyState';
@@ -14,6 +14,8 @@ import { SignalStrengthBar, MomentumBadge, CrashRiskHeat, HorizonCell } from '..
 import {
   ArrowUpCircle, ArrowDownCircle, Filter, ChevronDown, ChevronRight,
   TrendingUp, TrendingDown, Search, X, ExternalLink, BarChart3,
+  Target, Shield, ArrowUp, ArrowDown, Clock, DollarSign,
+  Activity, Eye, Layers, ChevronUp,
 } from 'lucide-react';
 import { formatHorizon, responsiveHorizons } from '../utils/horizons';
 
@@ -385,29 +387,33 @@ function SignalsPageInner() {
         />
       </PageHeader>
 
-      {/* Stats bar */}
+      {/* Stats bar — premium glassmorphic cards */}
       {stats && (
         <div className="grid grid-cols-3 md:grid-cols-6 gap-3 mb-6 fade-up">
-          <MiniStat label="Strong Buy" value={stats.strong_buy_signals} color="var(--accent-emerald)" icon={'\u25B2\u25B2'} />
-          <MiniStat label="Buy" value={stats.buy_signals - stats.strong_buy_signals} color="#6ff0c0" icon={'\u25B2'} />
-          <MiniStat label="Hold" value={stats.hold_signals} color="#7a8ba4" icon={'\u2014'} />
-          <MiniStat label="Sell" value={stats.sell_signals - stats.strong_sell_signals} color="#f87171" icon={'\u25BC'} />
-          <MiniStat label="Strong Sell" value={stats.strong_sell_signals} color="var(--accent-rose)" icon={'\u25BC\u25BC'} />
-          <MiniStat label="Exit" value={stats.exit_signals} color="var(--accent-amber)" icon={'\u2298'} />
+          <StatCard label="Strong Buy" value={stats.strong_buy_signals} total={stats.total_assets} color="#10b981" icon={<ArrowUpCircle className="w-4 h-4" />} />
+          <StatCard label="Buy" value={stats.buy_signals - stats.strong_buy_signals} total={stats.total_assets} color="#6ff0c0" icon={<ArrowUp className="w-4 h-4" />} />
+          <StatCard label="Hold" value={stats.hold_signals} total={stats.total_assets} color="#7a8ba4" icon={<Activity className="w-4 h-4" />} />
+          <StatCard label="Sell" value={stats.sell_signals - stats.strong_sell_signals} total={stats.total_assets} color="#f87171" icon={<ArrowDown className="w-4 h-4" />} />
+          <StatCard label="Strong Sell" value={stats.strong_sell_signals} total={stats.total_assets} color="#f43f5e" icon={<ArrowDownCircle className="w-4 h-4" />} />
+          <StatCard label="Exit" value={stats.exit_signals} total={stats.total_assets} color="#f59e0b" icon={<X className="w-4 h-4" />} />
         </div>
       )}
 
-      {/* High Conviction Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-8 fade-up-delay-1">
-        <HighConvictionCard
+      {/* High Conviction Panels — full positions with rich data */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-8 fade-up-delay-1">
+        <HighConvictionPanel
           title="High Conviction BUY"
           signals={buyQ.data?.signals || []}
           color="green"
+          isLoading={buyQ.isLoading}
+          onNavigateChart={(sym) => navigate(`/charts/${sym}`)}
         />
-        <HighConvictionCard
+        <HighConvictionPanel
           title="High Conviction SELL"
           signals={sellQ.data?.signals || []}
           color="red"
+          isLoading={sellQ.isLoading}
+          onNavigateChart={(sym) => navigate(`/charts/${sym}`)}
         />
       </div>
 
@@ -620,14 +626,24 @@ export default function SignalsPage() {
   );
 }
 
-/* ── Mini stat card ──────────────────────────────────────────────── */
-function MiniStat({ label, value, color, icon }: { label: string; value: number; color: string; icon: string }) {
+/* ── Premium stat card with progress bar ─────────────────────────── */
+function StatCard({ label, value, total, color, icon }: { label: string; value: number; total: number; color: string; icon: React.ReactNode }) {
+  const pct = total > 0 ? (value / total) * 100 : 0;
   return (
-    <div className="glass-card px-3 py-2.5 flex items-center gap-2 hover-lift stat-shine">
-      <span className="text-lg font-bold" style={{ color }}>{icon}</span>
-      <div>
-        <p className="text-lg font-bold text-[#e2e8f0] tabular-nums">{value}</p>
-        <p className="text-[10px] text-[var(--text-secondary)]">{label}</p>
+    <div className="glass-card px-3 py-3 hover-lift stat-shine group cursor-default"
+      style={{ borderBottom: `2px solid ${color}20` }}>
+      <div className="flex items-center gap-2 mb-1.5">
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: `${color}15`, color }}>{icon}</div>
+        <div className="flex-1 min-w-0">
+          <p className="text-lg font-bold text-[#e2e8f0] tabular-nums leading-tight">{value}</p>
+        </div>
+      </div>
+      <div className="flex items-center justify-between mb-1">
+        <p className="text-[10px] text-[var(--text-secondary)] font-medium">{label}</p>
+        <p className="text-[9px] tabular-nums" style={{ color: `${color}99` }}>{pct.toFixed(1)}%</p>
+      </div>
+      <div className="w-full h-1 rounded-full bg-white/[0.04] overflow-hidden">
+        <div className="h-full rounded-full transition-all duration-700 ease-out" style={{ width: `${Math.min(pct, 100)}%`, background: color }} />
       </div>
     </div>
   );
@@ -1332,36 +1348,346 @@ function CountBadge({ value, label, color }: { value: number; label: string; col
   );
 }
 
-function HighConvictionCard({
-  title, signals, color,
+/* ── High Conviction Panel — full positions with rich data ────────── */
+type HCSortCol = 'ticker' | 'exp_ret' | 'p_up' | 'strength' | 'sector';
+type HCSortDir = 'asc' | 'desc';
+
+interface GroupedTicker {
+  ticker: string;
+  asset_label: string;
+  sector: string;
+  signals: HighConvictionSignal[];
+  bestReturn: number;
+  avgPUp: number;
+  maxStrength: number;
+}
+
+function HighConvictionPanel({
+  title, signals, color, isLoading, onNavigateChart,
 }: {
-  title: string; signals: HighConvictionSignal[]; color: 'green' | 'red';
+  title: string;
+  signals: HighConvictionSignal[];
+  color: 'green' | 'red';
+  isLoading: boolean;
+  onNavigateChart: (sym: string) => void;
 }) {
-  const Icon = color === 'green' ? ArrowUpCircle : ArrowDownCircle;
-  const accent = color === 'green' ? 'var(--accent-emerald)' : 'var(--accent-rose)';
-  const top5 = signals.slice(0, 5);
+  const [sortCol, setSortCol] = useState<HCSortCol>('exp_ret');
+  const [sortDir, setSortDir] = useState<HCSortDir>('desc');
+  const [expandedTicker, setExpandedTicker] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+
+  const Icon = color === 'green' ? TrendingUp : TrendingDown;
+  const accent = color === 'green' ? '#10b981' : '#f43f5e';
+  const accentSoft = color === 'green' ? '#10b98120' : '#f43f5e20';
+  const accentMid = color === 'green' ? '#10b98160' : '#f43f5e60';
+
+  // Group signals by ticker
+  const grouped = useMemo(() => {
+    const map = new Map<string, GroupedTicker>();
+    for (const s of signals) {
+      const t = s.ticker || 'UNKNOWN';
+      if (!map.has(t)) {
+        map.set(t, {
+          ticker: t,
+          asset_label: s.asset_label || t,
+          sector: s.sector || 'Other',
+          signals: [],
+          bestReturn: -Infinity,
+          avgPUp: 0,
+          maxStrength: 0,
+        });
+      }
+      const g = map.get(t)!;
+      g.signals.push(s);
+      g.bestReturn = Math.max(g.bestReturn, s.expected_return_pct ?? 0);
+      g.maxStrength = Math.max(g.maxStrength, (s as Record<string, unknown>).signal_strength as number ?? 0);
+    }
+    // compute avg p_up
+    for (const g of map.values()) {
+      g.avgPUp = g.signals.reduce((sum, s) => sum + (s.probability_up ?? 0), 0) / g.signals.length;
+      g.signals.sort((a, b) => (a.horizon_days ?? 0) - (b.horizon_days ?? 0));
+    }
+    return Array.from(map.values());
+  }, [signals]);
+
+  // Filter
+  const filtered = useMemo(() => {
+    if (!searchTerm) return grouped;
+    const q = searchTerm.toLowerCase();
+    return grouped.filter(g => g.ticker.toLowerCase().includes(q) || g.asset_label.toLowerCase().includes(q) || g.sector.toLowerCase().includes(q));
+  }, [grouped, searchTerm]);
+
+  // Sort
+  const sorted = useMemo(() => {
+    const arr = [...filtered];
+    const mult = sortDir === 'desc' ? -1 : 1;
+    arr.sort((a, b) => {
+      let cmp = 0;
+      switch (sortCol) {
+        case 'ticker': cmp = a.ticker.localeCompare(b.ticker); break;
+        case 'exp_ret': cmp = a.bestReturn - b.bestReturn; break;
+        case 'p_up': cmp = a.avgPUp - b.avgPUp; break;
+        case 'strength': cmp = a.maxStrength - b.maxStrength; break;
+        case 'sector': cmp = a.sector.localeCompare(b.sector); break;
+      }
+      return cmp * mult;
+    });
+    return arr;
+  }, [filtered, sortCol, sortDir]);
+
+  const handleSort = (col: HCSortCol) => {
+    if (sortCol === col) setSortDir(d => d === 'desc' ? 'asc' : 'desc');
+    else { setSortCol(col); setSortDir('desc'); }
+  };
+
+  const totalSignals = signals.length;
+  const uniqueTickers = grouped.length;
+  const avgReturn = grouped.length > 0 ? grouped.reduce((s, g) => s + g.bestReturn, 0) / grouped.length : 0;
+  const avgProb = grouped.length > 0 ? grouped.reduce((s, g) => s + g.avgPUp, 0) / grouped.length : 0;
+
+  const SortHeader = ({ col, label, w }: { col: HCSortCol; label: string; w?: string }) => (
+    <th
+      className="px-2 py-2 text-left text-[10px] font-semibold uppercase tracking-wider cursor-pointer select-none group"
+      style={{ color: sortCol === col ? accent : 'var(--text-muted)', width: w }}
+      onClick={() => handleSort(col)}
+    >
+      <span className="inline-flex items-center gap-0.5">
+        {label}
+        {sortCol === col ? (
+          sortDir === 'desc' ? <ChevronDown className="w-3 h-3" /> : <ChevronUp className="w-3 h-3" />
+        ) : (
+          <ChevronDown className="w-3 h-3 opacity-0 group-hover:opacity-30 transition-opacity" />
+        )}
+      </span>
+    </th>
+  );
 
   return (
-    <div className={`glass-card p-5 hover-lift ${color === 'green' ? 'glow-green' : 'glow-red'}`}>
-      <div className="flex items-center gap-2.5 mb-4">
-        <div className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ background: `${accent}10` }}>
-          <Icon className="w-4 h-4" style={{ color: accent }} />
+    <div className="glass-card overflow-hidden" style={{ borderTop: `2px solid ${accent}40` }}>
+      {/* Header */}
+      <div className="px-5 py-4" style={{ background: `linear-gradient(135deg, ${accentSoft} 0%, transparent 60%)` }}>
+        <div className="flex items-center gap-3 mb-3">
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: accentSoft, boxShadow: `0 0 20px ${accentSoft}` }}>
+            <Icon className="w-5 h-5" style={{ color: accent }} />
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold" style={{ color: accent }}>{title}</h3>
+            <p className="text-[10px] text-[var(--text-muted)]">{uniqueTickers} positions across {totalSignals} signals</p>
+          </div>
         </div>
-        <h3 className="text-[13px] font-medium" style={{ color: accent }}>{title}</h3>
-        <span className="ml-auto text-[11px] text-[var(--text-secondary)] tabular-nums">{signals.length} signals</span>
+        {/* Summary stats strip */}
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-1.5">
+            <Layers className="w-3 h-3" style={{ color: accentMid }} />
+            <span className="text-[10px] text-[var(--text-secondary)]">Positions</span>
+            <span className="text-[11px] font-bold tabular-nums" style={{ color: accent }}>{uniqueTickers}</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <DollarSign className="w-3 h-3" style={{ color: accentMid }} />
+            <span className="text-[10px] text-[var(--text-secondary)]">Avg Return</span>
+            <span className="text-[11px] font-bold tabular-nums" style={{ color: accent }}>{avgReturn.toFixed(1)}%</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <Target className="w-3 h-3" style={{ color: accentMid }} />
+            <span className="text-[10px] text-[var(--text-secondary)]">Avg P(up)</span>
+            <span className="text-[11px] font-bold tabular-nums" style={{ color: accent }}>{(avgProb * 100).toFixed(0)}%</span>
+          </div>
+          {/* Search */}
+          <div className="ml-auto flex items-center gap-1 px-2 py-1 rounded-lg" style={{ background: 'var(--void-active)' }}>
+            <Search className="w-3 h-3 text-[var(--text-muted)]" />
+            <input
+              type="text"
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+              placeholder="Filter..."
+              className="bg-transparent text-[11px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none w-20"
+            />
+          </div>
+        </div>
       </div>
-      {top5.length === 0 ? (
-        <p className="text-xs text-[#6b7a90]">No signals</p>
+
+      {/* Loading state */}
+      {isLoading ? (
+        <div className="px-5 py-10 flex items-center justify-center gap-2">
+          <div className="w-4 h-4 border-2 border-[var(--void-raised)] rounded-full animate-spin" style={{ borderTopColor: accent }} />
+          <span className="text-[11px] text-[var(--text-muted)]">Loading signals...</span>
+        </div>
+      ) : sorted.length === 0 ? (
+        <div className="px-5 py-10 text-center">
+          <Shield className="w-8 h-8 mx-auto mb-2" style={{ color: `${accent}40` }} />
+          <p className="text-xs text-[var(--text-muted)]">{searchTerm ? 'No matching signals' : 'No active signals'}</p>
+        </div>
       ) : (
-        <div className="space-y-2">
-          {top5.map((s, i) => (
-            <div key={i} className="flex items-center justify-between text-xs py-1 border-b border-white/[0.03] last:border-0">
-              <span className="text-[#f1f5f9] font-semibold tracking-wide">{s.ticker || '\u2014'}</span>
-              <span className="text-[var(--text-secondary)]">{s.horizon_days != null ? formatHorizon(s.horizon_days) : '\u2014'}</span>
-              <span className="font-semibold tabular-nums" style={{ color: accent }}>{s.expected_return_pct != null ? `${s.expected_return_pct.toFixed(1)}%` : '\u2014'}</span>
-              <span className="text-[#6b7a90] tabular-nums">p={s.probability_up != null ? s.probability_up.toFixed(2) : '\u2014'}</span>
-            </div>
-          ))}
+        <div className="overflow-x-auto" style={{ maxHeight: '420px', overflowY: 'auto' }}>
+          <table className="w-full">
+            <thead className="sticky top-0 z-10" style={{ background: 'var(--void-base)' }}>
+              <tr style={{ borderBottom: `1px solid ${accentSoft}` }}>
+                <SortHeader col="ticker" label="Asset" w="140px" />
+                <SortHeader col="sector" label="Sector" />
+                <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Horizons</th>
+                <SortHeader col="exp_ret" label="Best Return" />
+                <SortHeader col="p_up" label="Avg P(up)" />
+                <SortHeader col="strength" label="Strength" />
+                <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((g) => {
+                const isExpanded = expandedTicker === g.ticker;
+                const companyName = g.asset_label.includes('(') ? g.asset_label.split('(')[0].trim() : '';
+                return (
+                  <React.Fragment key={g.ticker}>
+                    <tr
+                      className="border-b border-white/[0.03] hover:bg-white/[0.02] cursor-pointer transition-colors"
+                      onClick={() => setExpandedTicker(isExpanded ? null : g.ticker)}
+                    >
+                      {/* Asset */}
+                      <td className="px-2 py-2.5">
+                        <div className="flex items-center gap-2">
+                          <div className="w-1.5 h-8 rounded-full" style={{ background: `linear-gradient(to bottom, ${accent}, ${accent}30)` }} />
+                          <div>
+                            <span className="text-xs font-bold text-[#e2e8f0]">{g.ticker}</span>
+                            {companyName && <p className="text-[9px] text-[var(--text-muted)] truncate max-w-[110px] leading-tight">{companyName}</p>}
+                          </div>
+                        </div>
+                      </td>
+                      {/* Sector */}
+                      <td className="px-2 py-2.5">
+                        <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ color: accent, background: accentSoft }}>
+                          {g.sector}
+                        </span>
+                      </td>
+                      {/* Horizons pills */}
+                      <td className="px-2 py-2.5">
+                        <div className="flex items-center gap-1">
+                          {g.signals.map((s, i) => (
+                            <span key={i} className="text-[9px] px-1.5 py-0.5 rounded font-medium tabular-nums"
+                              style={{ background: 'var(--void-active)', color: 'var(--text-secondary)' }}>
+                              {formatHorizon(s.horizon_days)}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                      {/* Best Return */}
+                      <td className="px-2 py-2.5 text-right">
+                        <span className="text-xs font-bold tabular-nums" style={{ color: accent }}>
+                          {color === 'green' ? '+' : ''}{g.bestReturn.toFixed(1)}%
+                        </span>
+                      </td>
+                      {/* Avg P(up) */}
+                      <td className="px-2 py-2.5">
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-12 h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+                            <div className="h-full rounded-full" style={{ width: `${g.avgPUp * 100}%`, background: accent }} />
+                          </div>
+                          <span className="text-[10px] font-medium tabular-nums text-[var(--text-secondary)]">{(g.avgPUp * 100).toFixed(0)}%</span>
+                        </div>
+                      </td>
+                      {/* Strength */}
+                      <td className="px-2 py-2.5">
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-10 h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+                            <div className="h-full rounded-full" style={{ width: `${Math.min(g.maxStrength * 200, 100)}%`, background: accent }} />
+                          </div>
+                          <span className="text-[10px] tabular-nums text-[var(--text-muted)]">{g.maxStrength.toFixed(2)}</span>
+                        </div>
+                      </td>
+                      {/* Expand/Chart */}
+                      <td className="px-2 py-2.5">
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); onNavigateChart(g.ticker); }}
+                            className="p-1 rounded hover:bg-white/[0.05] transition-colors"
+                            title="Open chart"
+                          >
+                            <BarChart3 className="w-3.5 h-3.5 text-[var(--text-muted)] hover:text-[var(--accent-violet)]" />
+                          </button>
+                          {isExpanded ? <ChevronUp className="w-3.5 h-3.5" style={{ color: accent }} /> : <ChevronDown className="w-3.5 h-3.5 text-[var(--text-muted)]" />}
+                        </div>
+                      </td>
+                    </tr>
+                    {/* Expanded detail */}
+                    {isExpanded && (
+                      <tr>
+                        <td colSpan={7} style={{ background: `${accentSoft}` }}>
+                          <div className="px-4 py-3">
+                            <div className="flex items-center gap-2 mb-2">
+                              <Eye className="w-3 h-3" style={{ color: accentMid }} />
+                              <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: accent }}>Signal Details by Horizon</span>
+                            </div>
+                            <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${Math.min(g.signals.length, 4)}, 1fr)` }}>
+                              {g.signals.map((s, i) => {
+                                const strength = (s as Record<string, unknown>).signal_strength as number ?? 0;
+                                const conviction = (s as Record<string, unknown>).conviction_probability as number ?? s.probability_up;
+                                const profitPln = s.expected_profit_pln;
+                                return (
+                                  <div key={i} className="rounded-lg p-3" style={{ background: 'var(--void-base)', border: `1px solid ${accentSoft}` }}>
+                                    <div className="flex items-center justify-between mb-2">
+                                      <span className="text-xs font-bold" style={{ color: accent }}>{formatHorizon(s.horizon_days)}</span>
+                                      <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium" style={{ background: accentSoft, color: accent }}>
+                                        {s.signal_type || 'STRONG'}
+                                      </span>
+                                    </div>
+                                    <div className="space-y-1.5">
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-[9px] text-[var(--text-muted)]">Expected Return</span>
+                                        <span className="text-[11px] font-bold tabular-nums" style={{ color: accent }}>
+                                          {s.expected_return_pct != null ? `${s.expected_return_pct >= 0 ? '+' : ''}${s.expected_return_pct.toFixed(2)}%` : '--'}
+                                        </span>
+                                      </div>
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-[9px] text-[var(--text-muted)]">P(up)</span>
+                                        <span className="text-[10px] font-medium tabular-nums text-[var(--text-secondary)]">{(s.probability_up * 100).toFixed(1)}%</span>
+                                      </div>
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-[9px] text-[var(--text-muted)]">P(down)</span>
+                                        <span className="text-[10px] font-medium tabular-nums text-[var(--text-secondary)]">{(s.probability_down * 100).toFixed(1)}%</span>
+                                      </div>
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-[9px] text-[var(--text-muted)]">Strength</span>
+                                        <span className="text-[10px] font-medium tabular-nums text-[var(--text-secondary)]">{strength.toFixed(3)}</span>
+                                      </div>
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-[9px] text-[var(--text-muted)]">Conviction</span>
+                                        <span className="text-[10px] font-medium tabular-nums text-[var(--text-secondary)]">{(conviction * 100).toFixed(1)}%</span>
+                                      </div>
+                                      {profitPln != null && profitPln !== 0 && (
+                                        <div className="flex items-center justify-between pt-1 mt-1" style={{ borderTop: `1px solid ${accentSoft}` }}>
+                                          <span className="text-[9px] text-[var(--text-muted)]">Est. Profit (PLN)</span>
+                                          <span className="text-[10px] font-bold tabular-nums" style={{ color: accent }}>
+                                            {profitPln > 0 ? '+' : ''}{profitPln.toLocaleString('en', { maximumFractionDigits: 0 })}
+                                          </span>
+                                        </div>
+                                      )}
+                                    </div>
+                                    {/* Strength bar */}
+                                    <div className="mt-2">
+                                      <div className="w-full h-1 rounded-full bg-white/[0.06] overflow-hidden">
+                                        <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(strength * 200, 100)}%`, background: accent }} />
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            {/* Generated timestamp */}
+                            {g.signals[0] && (g.signals[0] as Record<string, unknown>).generated_at && (
+                              <div className="flex items-center gap-1 mt-2">
+                                <Clock className="w-3 h-3 text-[var(--text-muted)]" />
+                                <span className="text-[9px] text-[var(--text-muted)]">
+                                  Generated: {new Date(String((g.signals[0] as Record<string, unknown>).generated_at)).toLocaleString()}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
