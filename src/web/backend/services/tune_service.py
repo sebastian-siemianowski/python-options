@@ -58,13 +58,22 @@ def list_tuned_assets() -> List[Dict[str, Any]]:
         model_weights = g.get("model_weights", {})
         top_weight = max(model_weights.values()) if model_weights else 0.0
 
+        # Derive PIT pass/fail from KS p-value (the actual field in tune files)
+        ks_pvalue = g.get("pit_ks_pvalue")
+        ks_stat = g.get("ks_statistic")
+        pit_grade = g.get("pit_calibration_grade")
+        if ks_pvalue is not None:
+            pit_pass = ks_pvalue >= 0.05
+        else:
+            pit_pass = None
+
         results.append({
             "symbol": symbol,
             "best_model": g.get("best_model", "unknown"),
-            "pit_calibration_grade": g.get("pit_calibration_grade", "N/A"),
-            "ad_stat": g.get("ad_stat"),
-            "ad_critical": g.get("ad_critical_5pct"),
-            "ad_pass": g.get("ad_pass"),
+            "pit_calibration_grade": pit_grade,
+            "ad_pass": pit_pass,
+            "ks_pvalue": round(ks_pvalue, 6) if ks_pvalue is not None else None,
+            "ks_stat": round(ks_stat, 6) if ks_stat is not None else None,
             "num_models": len(model_weights),
             "bic": g.get("bic"),
             "phi": g.get("phi"),

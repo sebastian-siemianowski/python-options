@@ -9,10 +9,12 @@ import {
   Settings, CheckCircle, XCircle, AlertCircle, RefreshCw, Play, Square, Terminal,
   Copy, ArrowDown, ArrowRight, Clock, Zap, TrendingUp, BarChart3, Activity,
   ChevronDown, ChevronUp, Search, Filter, Layers, Target, Timer, Award,
+  PieChart, Hash, Eye, Gauge, Shield, Sparkles, X,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  Cell,
 } from 'recharts';
 import { formatModelName, formatModelNameShort } from '../utils/modelNames';
 import {
@@ -24,8 +26,9 @@ import {
 } from '../stores/retuneStore';
 
 type TuneMode = 'retune' | 'tune' | 'calibrate';
-type SortKey = 'symbol' | 'best_model' | 'num_models' | 'ad_pass' | 'bic' | 'phi' | 'nu' | 'n_obs' | 'top_weight' | 'file_size_kb';
+type SortKey = 'symbol' | 'best_model' | 'num_models' | 'ad_pass' | 'bic' | 'phi' | 'nu' | 'n_obs' | 'top_weight' | 'ks_pvalue' | 'file_size_kb';
 type SortDir = 'asc' | 'desc' | null;
+type CardFilter = 'all' | 'pass' | 'fail' | 'unknown' | 'models';
 
 function formatElapsed(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -48,11 +51,37 @@ function useElapsedTime(startedAt: number | null, finishedAt: number | null, run
   return end - startedAt;
 }
 
+/* ══════════════════════════════════════════════════════════════════
+   Model family helpers
+   ══════════════════════════════════════════════════════════════════ */
+
+const MODEL_COLORS: Record<string, { bg: string; bar: string; text: string }> = {
+  kalman:   { bg: 'rgba(59,130,246,0.12)', bar: '#3b82f6', text: '#60a5fa' },
+  phi:      { bg: 'rgba(16,185,129,0.12)', bar: '#10b981', text: '#6ee7b7' },
+  momentum: { bg: 'rgba(245,158,11,0.12)', bar: '#f59e0b', text: '#fbbf24' },
+  default:  { bg: 'rgba(139,92,246,0.12)', bar: '#8b5cf6', text: '#a78bfa' },
+};
+
+function modelFamily(name: string): string {
+  const lower = name.toLowerCase();
+  if (lower.includes('momentum')) return 'momentum';
+  if (lower.includes('kalman') && !lower.includes('phi')) return 'kalman';
+  if (lower.includes('phi') || lower.includes('student')) return 'phi';
+  return 'default';
+}
+
+function familyLabel(f: string): string {
+  return f === 'kalman' ? 'Kalman' : f === 'phi' ? 'Phi/Student-t' : f === 'momentum' ? 'Momentum' : 'Other';
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   Main Component
+   ══════════════════════════════════════════════════════════════════ */
+
 export default function TuningPage() {
   const [search, setSearch] = useState('');
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
-  const [showFailuresOnly, setShowFailuresOnly] = useState(false);
-  const [viewMode, setViewMode] = useState<'grid' | 'table'>('table');
+  const [cardFilter, setCardFilter] = useState<CardFilter>('all');
   const [sortKey, setSortKey] = useState<SortKey>('symbol');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const logEndRef = useRef<HTMLDivElement>(null);
@@ -99,15 +128,25 @@ export default function TuningPage() {
     }
   }, [sortKey]);
 
+  const handleCardClick = useCallback((filter: CardFilter) => {
+    setCardFilter(prev => prev === filter ? 'all' : filter);
+  }, []);
+
   if (listQ.isLoading) return <TuningSkeleton />;
 
   const assets = listQ.data?.assets || [];
   const stats = statsQ.data;
 
+  // Apply card filter + search
   const filtered = assets.filter((a: TuneAsset) => {
-    const matchSearch = a.symbol.toLowerCase().includes(search.toLowerCase());
-    const matchFilter = showFailuresOnly ? a.ad_pass === false : true;
-    return matchSearch && matchFilter;
+    const matchSearch = !search || a.symbol.toLowerCase().includes(search.toLowerCase()) || a.best_model.toLowerCase().includes(search.toLowerCase());
+    if (!matchSearch) return false;
+    switch (cardFilter) {
+      case 'pass': return a.ad_pass === true;
+      case 'fail': return a.ad_pass === false;
+      case 'unknown': return a.ad_pass == null;
+      default: return true;
+    }
   });
 
   const sorted = sortDir ? [...filtered].sort((a: TuneAsset, b: TuneAsset) => {
@@ -123,6 +162,7 @@ export default function TuningPage() {
       case 'nu': av = a.nu; bv = b.nu; break;
       case 'n_obs': av = a.n_obs; bv = b.n_obs; break;
       case 'top_weight': av = a.top_weight; bv = b.top_weight; break;
+      case 'ks_pvalue': av = a.ks_pvalue; bv = b.ks_pvalue; break;
       case 'file_size_kb': av = a.file_size_kb; bv = b.file_size_kb; break;
     }
     if (av == null && bv == null) return 0;
@@ -134,7 +174,7 @@ export default function TuningPage() {
 
   const modelData = stats?.models_distribution
     ? Object.entries(stats.models_distribution)
-        .map(([name, count]) => ({ name: formatModelNameShort(name), fullName: name, count }))
+        .map(([name, count]) => ({ name: formatModelNameShort(name), fullName: name, count: count as number }))
         .sort((a, b) => b.count - a.count)
     : [];
 
@@ -145,6 +185,10 @@ export default function TuningPage() {
   ];
 
   const passRate = stats ? Math.round((stats.pit_pass / Math.max(stats.total, 1)) * 100) : 0;
+
+  // Compute aggregate stats for summary cards
+  const avgBic = assets.length > 0 ? assets.reduce((s: number, a: TuneAsset) => s + (a.bic ?? 0), 0) / assets.filter((a: TuneAsset) => a.bic != null).length : 0;
+  const avgPhi = assets.length > 0 ? assets.reduce((s: number, a: TuneAsset) => s + (a.phi ?? 0), 0) / assets.filter((a: TuneAsset) => a.phi != null).length : 0;
 
   return (
     <>
@@ -169,24 +213,73 @@ export default function TuningPage() {
         {assets.length} assets tuned &middot; BMA model competition with PIT calibration
       </PageHeader>
 
-      {/* ── Summary Cards ─────────────────────────────────────────── */}
+      {/* ── Clickable Summary Cards ──────────────────────────────── */}
       {stats && (
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6 fade-up">
-          <SummaryCard icon={<Layers className="w-4 h-4" />} label="Total Tuned" value={stats.total} color="#b49aff" />
-          <SummaryCard icon={<CheckCircle className="w-4 h-4" />} label="PIT Pass" value={stats.pit_pass} sub={`${passRate}%`} color="var(--accent-emerald)" />
-          <SummaryCard icon={<XCircle className="w-4 h-4" />} label="PIT Fail" value={stats.pit_fail} color="var(--accent-rose)" />
-          <SummaryCard icon={<AlertCircle className="w-4 h-4" />} label="Unknown" value={stats.pit_unknown} color="var(--accent-amber)" />
-          <SummaryCard icon={<BarChart3 className="w-4 h-4" />} label="Model Types" value={modelData.length} color="var(--accent-cyan)" />
+          <SummaryCard
+            icon={<Layers className="w-4 h-4" />}
+            label="Total Tuned" value={stats.total}
+            sub={`Avg BIC: ${avgBic.toFixed(0)}`}
+            color="#b49aff"
+            active={cardFilter === 'all'}
+            onClick={() => handleCardClick('all')}
+          />
+          <SummaryCard
+            icon={<CheckCircle className="w-4 h-4" />}
+            label="PIT Pass" value={stats.pit_pass}
+            sub={`${passRate}% — KS p≥0.05`}
+            color="var(--accent-emerald)"
+            active={cardFilter === 'pass'}
+            onClick={() => handleCardClick('pass')}
+          />
+          <SummaryCard
+            icon={<XCircle className="w-4 h-4" />}
+            label="PIT Fail" value={stats.pit_fail}
+            sub="KS p<0.05"
+            color="var(--accent-rose)"
+            active={cardFilter === 'fail'}
+            onClick={() => handleCardClick('fail')}
+          />
+          <SummaryCard
+            icon={<AlertCircle className="w-4 h-4" />}
+            label="Unknown" value={stats.pit_unknown}
+            sub="No KS data"
+            color="var(--accent-amber)"
+            active={cardFilter === 'unknown'}
+            onClick={() => handleCardClick('unknown')}
+          />
+          <SummaryCard
+            icon={<PieChart className="w-4 h-4" />}
+            label="Model Types" value={modelData.length}
+            sub={`Avg phi: ${avgPhi.toFixed(4)}`}
+            color="var(--accent-cyan)"
+            active={cardFilter === 'models'}
+            onClick={() => handleCardClick('models')}
+          />
         </div>
       )}
 
-      {/* ── Mission Control ───────────────────────────────────────── */}
+      {/* ── Active Filter Indicator ────────────────────────────── */}
+      {cardFilter !== 'all' && cardFilter !== 'models' && (
+        <div className="mb-4 flex items-center gap-2 px-3 py-2 rounded-xl text-xs" style={{
+          background: 'var(--violet-4)', border: '1px solid var(--violet-8)',
+        }}>
+          <Filter className="w-3.5 h-3.5" style={{ color: '#b49aff' }} />
+          <span style={{ color: 'var(--text-secondary)' }}>
+            Showing <strong style={{ color: '#b49aff' }}>{filtered.length}</strong> assets with PIT status: <strong style={{ color: '#b49aff' }}>{cardFilter}</strong>
+          </span>
+          <button onClick={() => setCardFilter('all')} className="ml-auto p-0.5 rounded hover:bg-[var(--violet-8)] transition" style={{ color: '#7a8ba4' }}>
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* ── Mission Control ───────────────────────────────────── */}
       <div className="glass-card p-5 mb-6 fade-up" style={{
         background: 'linear-gradient(135deg, var(--violet-4) 0%, rgba(99,102,241,0.03) 50%, var(--violet-4) 100%)',
       }}>
         <div className="flex items-center justify-between flex-wrap gap-4">
           <div className="flex items-center gap-3 flex-wrap">
-            {/* Mode selector */}
             <div className="flex gap-1 p-0.5 rounded-2xl" style={{ background: 'var(--violet-4)' }}>
               {modeLabels.map(({ id, label }) => (
                 <button key={id}
@@ -203,7 +296,6 @@ export default function TuningPage() {
               ))}
             </div>
 
-            {/* Start/Stop */}
             {retuneStatus === 'running' ? (
               <button onClick={handleStopRetune}
                 className="flex items-center gap-2 px-5 py-2.5 rounded-2xl text-sm font-semibold text-white transition-all"
@@ -226,11 +318,9 @@ export default function TuningPage() {
                 <Play className="w-3.5 h-3.5" /> Start
               </button>
             )}
-
             <StatusBadge status={retuneStatus} />
           </div>
 
-          {/* Live stats during retune */}
           <div className="flex items-center gap-4 text-xs">
             {elapsed != null && (
               <div className="flex items-center gap-1.5" style={{ color: '#b49aff' }}>
@@ -269,7 +359,6 @@ export default function TuningPage() {
           </div>
         </div>
 
-        {/* Progress bar */}
         {retuneStatus === 'running' && retune.totalAssets > 0 && (
           <div className="mt-3">
             <div className="flex items-center justify-between text-[10px] mb-1" style={{ color: '#94a3b8' }}>
@@ -286,173 +375,186 @@ export default function TuningPage() {
         )}
       </div>
 
-      {/* ── Retune Log Panel ──────────────────────────────────────── */}
+      {/* ── Retune Log Panel ──────────────────────────────────── */}
       {showRetunePanel && (
         <RetunePanel status={retuneStatus} logs={retuneLogs} logEndRef={logEndRef}
           onClose={() => setShowPanel(false)} elapsed={elapsed} retune={retune} />
       )}
 
-      {/* ── Main Content Grid ─────────────────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 fade-up-delay-1">
-        {/* Model Distribution */}
-        <ModelDistributionChart data={modelData} />
+      {/* ── Model Distribution (when "Model Types" card is active) */}
+      {(cardFilter === 'models' || cardFilter === 'all') && modelData.length > 0 && (
+        <ModelDistributionChart data={modelData} expanded={cardFilter === 'models'} />
+      )}
 
-        {/* Asset Table */}
-        <div className="glass-card lg:col-span-3 overflow-hidden">
-          {/* Controls bar */}
-          <div className="px-3 py-2.5 flex items-center gap-2" style={{ borderBottom: '1px solid var(--violet-8)' }}>
-            <div className="relative flex-1">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: '#7a8ba4' }} />
-              <input type="text" value={search} onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search assets..."
-                className="w-full pl-8 pr-3 py-2 rounded-lg text-sm outline-none transition-all focus-ring"
-                style={{ background: 'rgba(10,10,26,0.6)', border: '1px solid var(--violet-8)', color: 'var(--text-primary)' }}
-              />
-            </div>
-            <button onClick={() => setShowFailuresOnly(!showFailuresOnly)}
-              className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all"
-              style={{
-                background: showFailuresOnly ? 'var(--rose-15)' : 'transparent',
-                color: showFailuresOnly ? 'var(--accent-rose)' : '#7a8ba4',
-                border: `1px solid ${showFailuresOnly ? 'rgba(255,107,138,0.2)' : 'var(--violet-6)'}`,
-              }}
-            >
-              {showFailuresOnly ? 'Failures Only' : 'All'}
-            </button>
-            <div className="flex gap-0.5">
-              {(['grid', 'table'] as const).map(m => (
-                <button key={m} onClick={() => setViewMode(m)}
-                  className="px-2 py-1 rounded text-[11px] font-medium transition-all"
-                  style={{ background: viewMode === m ? 'var(--violet-12)' : 'transparent', color: viewMode === m ? '#b49aff' : '#7a8ba4' }}
-                >
-                  {m === 'grid' ? 'Grid' : 'Table'}
-                </button>
-              ))}
-            </div>
-            <span className="text-[10px] font-mono" style={{ color: '#7a8ba4' }}>{sorted.length} assets</span>
+      {/* ── Asset Table ───────────────────────────────────────── */}
+      <div className="glass-card overflow-hidden fade-up-delay-1">
+        <div className="px-3 py-2.5 flex items-center gap-2" style={{ borderBottom: '1px solid var(--violet-8)' }}>
+          <div className="relative flex-1 max-w-sm">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: '#7a8ba4' }} />
+            <input type="text" value={search} onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search symbol or model..."
+              className="w-full pl-8 pr-3 py-2 rounded-lg text-sm outline-none transition-all focus-ring"
+              style={{ background: 'rgba(10,10,26,0.6)', border: '1px solid var(--violet-8)', color: 'var(--text-primary)' }}
+            />
           </div>
+          <span className="text-[11px] font-mono px-2 py-1 rounded" style={{ color: '#b49aff', background: 'var(--violet-6)' }}>
+            {sorted.length} / {assets.length}
+          </span>
+        </div>
 
-          {/* Health bar */}
-          {stats && (
-            <div className="px-3 py-1.5 flex items-center gap-2 text-[10px]" style={{ background: 'var(--violet-2)' }}>
-              <div className="flex-1 h-2 rounded-md overflow-hidden flex" style={{ background: 'var(--violet-4)' }}>
-                <div style={{ flex: stats.pit_pass, background: 'linear-gradient(90deg, var(--accent-emerald), #6ff0c0)' }} />
-                <div style={{ flex: stats.pit_fail, background: 'linear-gradient(90deg, var(--accent-rose), #ff5577)' }} />
-                <div style={{ flex: stats.pit_unknown, background: 'rgba(100,116,139,0.3)' }} />
-              </div>
-              <span style={{ color: 'var(--accent-emerald)' }}>{stats.pit_pass} pass</span>
-              <span style={{ color: 'var(--accent-rose)' }}>{stats.pit_fail} fail</span>
-              <span style={{ color: '#7a8ba4' }}>{stats.pit_unknown} unk</span>
+        {/* Health bar */}
+        {stats && (
+          <div className="px-3 py-1.5 flex items-center gap-2 text-[10px]" style={{ background: 'var(--violet-2)' }}>
+            <div className="flex-1 h-2 rounded-md overflow-hidden flex" style={{ background: 'var(--violet-4)' }}>
+              <div style={{ flex: stats.pit_pass, background: 'linear-gradient(90deg, var(--accent-emerald), #6ff0c0)' }} />
+              <div style={{ flex: stats.pit_fail, background: 'linear-gradient(90deg, var(--accent-rose), #ff5577)' }} />
+              <div style={{ flex: stats.pit_unknown, background: 'rgba(100,116,139,0.3)' }} />
             </div>
-          )}
+            <span style={{ color: 'var(--accent-emerald)' }}>{stats.pit_pass} pass</span>
+            <span style={{ color: 'var(--accent-rose)' }}>{stats.pit_fail} fail</span>
+            <span style={{ color: '#7a8ba4' }}>{stats.pit_unknown} unk</span>
+          </div>
+        )}
 
-          {viewMode === 'grid' ? (
-            <div className="p-3 overflow-y-auto max-h-[500px]">
-              <div className="flex flex-wrap gap-1.5">
-                {sorted.slice(0, 300).map((a: TuneAsset) => {
-                  const isPassing = a.ad_pass === true;
-                  const isFailing = a.ad_pass === false;
-                  const isSelected = selectedSymbol === a.symbol;
-                  return (
-                    <button key={a.symbol}
-                      onClick={() => setSelectedSymbol(a.symbol)}
-                      title={`${a.symbol} - ${formatModelName(a.best_model)} - PIT: ${a.ad_pass == null ? 'Unknown' : a.ad_pass ? 'Pass' : 'Fail'}${a.bic ? ` - BIC: ${a.bic.toFixed(0)}` : ''}`}
-                      className="transition-all duration-150"
-                      style={{
-                        width: 32, height: 32, borderRadius: 6,
-                        fontSize: 7, fontWeight: 600, lineHeight: '32px', textAlign: 'center',
-                        color: isPassing ? 'var(--accent-emerald)' : isFailing ? 'var(--accent-rose)' : '#7a8ba4',
-                        background: isPassing ? 'var(--emerald-15)' : isFailing ? 'rgba(255,107,138,0.2)' : 'rgba(100,116,139,0.08)',
-                        boxShadow: isSelected ? '0 0 0 2px var(--accent-violet), 0 0 8px var(--violet-30)' : isPassing ? '0 0 4px var(--emerald-30)' : isFailing ? '0 0 6px var(--rose-30)' : 'none',
-                        transform: isSelected ? 'scale(1.15)' : undefined,
-                      }}
-                    >
-                      {a.symbol.slice(0, 3)}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ) : (
-            <div className="overflow-y-auto max-h-[500px]">
-              <table className="premium-table w-full text-xs">
-                <thead className="sticky top-0" style={{ background: 'rgba(10,10,26,0.95)', zIndex: 10 }}>
-                  <tr style={{ borderBottom: '1px solid var(--violet-8)' }}>
-                    <SortHeader label="Symbol" sortKey="symbol" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="left" />
-                    <SortHeader label="Best Model" sortKey="best_model" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="left" />
-                    <SortHeader label="BIC" sortKey="bic" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="right" />
-                    <SortHeader label="Models" sortKey="num_models" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="center" />
-                    <SortHeader label="PIT" sortKey="ad_pass" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="center" />
-                    <SortHeader label="phi" sortKey="phi" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="right" />
-                    <SortHeader label="nu" sortKey="nu" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="right" />
-                    <SortHeader label="Top W%" sortKey="top_weight" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="right" />
-                    <SortHeader label="Obs" sortKey="n_obs" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="right" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {sorted.slice(0, 300).map((a: TuneAsset) => (
-                    <tr key={a.symbol}
-                      onClick={() => setSelectedSymbol(a.symbol)}
-                      className="cursor-pointer transition-colors duration-150 hover:bg-[rgba(139,92,246,0.06)]"
-                      style={{
-                        borderBottom: '1px solid var(--violet-4)',
-                        background: selectedSymbol === a.symbol ? 'var(--violet-6)' : undefined,
-                      }}
-                    >
-                      <td className="px-3 py-2 font-semibold" style={{ color: 'var(--text-luminous)' }}>{a.symbol}</td>
-                      <td className="px-3 py-2" style={{ color: 'var(--text-secondary)' }}>{formatModelNameShort(a.best_model)}</td>
-                      <td className="px-3 py-2 text-right font-mono" style={{ color: a.bic ? '#b49aff' : 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                        {a.bic ? a.bic.toFixed(0) : '--'}
-                      </td>
-                      <td className="px-3 py-2 text-center" style={{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>{a.num_models}</td>
-                      <td className="px-3 py-2 text-center"><PitBadge asset={a} /></td>
-                      <td className="px-3 py-2 text-right font-mono" style={{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
-                        {a.phi != null ? a.phi.toFixed(4) : '--'}
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono" style={{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
-                        {a.nu != null ? a.nu.toFixed(1) : '--'}
-                      </td>
-                      <td className="px-3 py-2 text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                        <span className="font-mono text-[10px]" style={{ color: (a.top_weight ?? 0) > 0.5 ? 'var(--accent-emerald)' : 'var(--text-secondary)' }}>
-                          {a.top_weight != null ? `${(a.top_weight * 100).toFixed(1)}%` : '--'}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono" style={{ color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                        {a.n_obs ?? '--'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+        <div className="overflow-y-auto max-h-[600px]">
+          <table className="premium-table w-full text-xs">
+            <thead className="sticky top-0" style={{ background: 'rgba(10,10,26,0.95)', zIndex: 10 }}>
+              <tr style={{ borderBottom: '1px solid var(--violet-8)' }}>
+                <SortHeader label="Symbol" sortKey="symbol" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="left" />
+                <SortHeader label="Best Model" sortKey="best_model" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="left" />
+                <SortHeader label="BIC" sortKey="bic" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="right" />
+                <SortHeader label="PIT" sortKey="ad_pass" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="center" />
+                <SortHeader label="KS p-val" sortKey="ks_pvalue" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="right" />
+                <SortHeader label="Grade" sortKey="ad_pass" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="center" />
+                <SortHeader label="phi" sortKey="phi" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="right" />
+                <SortHeader label="nu" sortKey="nu" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="right" />
+                <SortHeader label="Top W%" sortKey="top_weight" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="right" />
+                <SortHeader label="Models" sortKey="num_models" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="center" />
+                <SortHeader label="Obs" sortKey="n_obs" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="right" />
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.slice(0, 500).map((a: TuneAsset) => (
+                <tr key={a.symbol}
+                  onClick={() => setSelectedSymbol(a.symbol)}
+                  className="cursor-pointer transition-colors duration-150 hover:bg-[rgba(139,92,246,0.06)]"
+                  style={{
+                    borderBottom: '1px solid var(--violet-4)',
+                    background: selectedSymbol === a.symbol ? 'var(--violet-6)' : undefined,
+                  }}
+                >
+                  <td className="px-3 py-2 font-semibold" style={{ color: 'var(--text-luminous)' }}>{a.symbol}</td>
+                  <td className="px-3 py-2">
+                    <span className="px-1.5 py-0.5 rounded text-[10px] font-medium" style={{
+                      background: MODEL_COLORS[modelFamily(a.best_model)]?.bg ?? MODEL_COLORS.default.bg,
+                      color: MODEL_COLORS[modelFamily(a.best_model)]?.text ?? MODEL_COLORS.default.text,
+                    }}>
+                      {formatModelNameShort(a.best_model)}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono" style={{ color: a.bic ? '#b49aff' : 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                    {a.bic ? a.bic.toFixed(0) : '--'}
+                  </td>
+                  <td className="px-3 py-2 text-center"><PitBadge asset={a} /></td>
+                  <td className="px-3 py-2 text-right font-mono" style={{
+                    color: a.ks_pvalue != null ? (a.ks_pvalue >= 0.05 ? 'var(--accent-emerald)' : 'var(--accent-rose)') : 'var(--text-muted)',
+                    fontVariantNumeric: 'tabular-nums',
+                  }}>
+                    {a.ks_pvalue != null ? a.ks_pvalue.toFixed(4) : '--'}
+                  </td>
+                  <td className="px-3 py-2 text-center">
+                    <GradeBadge grade={a.pit_calibration_grade} />
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono" style={{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
+                    {a.phi != null ? a.phi.toFixed(4) : '--'}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono" style={{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
+                    {a.nu != null ? a.nu.toFixed(1) : '--'}
+                  </td>
+                  <td className="px-3 py-2 text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                    <TopWeightBar value={a.top_weight} />
+                  </td>
+                  <td className="px-3 py-2 text-center" style={{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>{a.num_models}</td>
+                  <td className="px-3 py-2 text-right font-mono" style={{ color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                    {a.n_obs ?? '--'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 
-      {/* ── Detail Panel ──────────────────────────────────────────── */}
+      {/* ── Detail Panel ──────────────────────────────────────── */}
       {selectedSymbol && detailQ.data?.data && (
-        <DetailPanel symbol={selectedSymbol} data={detailQ.data.data} onViewDiagnostics={() => navigate('/diagnostics')} />
+        <DetailPanel symbol={selectedSymbol} data={detailQ.data.data} onViewDiagnostics={() => navigate('/diagnostics')} onClose={() => setSelectedSymbol(null)} />
       )}
     </>
   );
 }
 
 /* ══════════════════════════════════════════════════════════════════
-   Summary Card
+   Summary Card (Clickable)
    ══════════════════════════════════════════════════════════════════ */
 
-function SummaryCard({ icon, label, value, sub, color }: { icon: React.ReactNode; label: string; value: number; sub?: string; color: string }) {
+function SummaryCard({ icon, label, value, sub, color, active, onClick }: {
+  icon: React.ReactNode; label: string; value: number; sub?: string; color: string;
+  active?: boolean; onClick?: () => void;
+}) {
   return (
-    <div className="glass-card p-4 flex items-center gap-3" style={{
+    <button onClick={onClick} className="glass-card p-4 flex items-center gap-3 text-left transition-all duration-200 hover:scale-[1.02] w-full" style={{
       borderLeft: `3px solid ${color}`,
-      background: 'linear-gradient(135deg, var(--violet-3), rgba(99,102,241,0.02))',
+      background: active
+        ? `linear-gradient(135deg, ${color}15, ${color}08)`
+        : 'linear-gradient(135deg, var(--violet-3), rgba(99,102,241,0.02))',
+      boxShadow: active ? `0 0 12px ${color}25, inset 0 0 20px ${color}08` : undefined,
+      outline: active ? `1px solid ${color}40` : undefined,
     }}>
       <div className="p-2 rounded-lg" style={{ background: `${color}15`, color }}>{icon}</div>
       <div>
         <div className="text-xl font-bold font-mono" style={{ color, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
-        <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{label} {sub && <span style={{ color }}>{sub}</span>}</div>
+        <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{label}</div>
+        {sub && <div className="text-[9px] mt-0.5" style={{ color: `${color}99` }}>{sub}</div>}
+      </div>
+    </button>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   Top Weight Bar
+   ══════════════════════════════════════════════════════════════════ */
+
+function TopWeightBar({ value }: { value: number | null }) {
+  if (value == null) return <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>--</span>;
+  const pct = value * 100;
+  const color = pct > 50 ? 'var(--accent-emerald)' : pct > 25 ? 'var(--accent-amber)' : 'var(--text-secondary)';
+  return (
+    <div className="flex items-center gap-1.5 justify-end">
+      <span className="font-mono text-[10px]" style={{ color }}>{pct.toFixed(1)}%</span>
+      <div className="w-10 h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--violet-6)' }}>
+        <div className="h-full rounded-full" style={{ width: `${Math.min(pct, 100)}%`, background: color }} />
       </div>
     </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   Grade Badge
+   ══════════════════════════════════════════════════════════════════ */
+
+function GradeBadge({ grade }: { grade: string | null }) {
+  if (!grade) return <span className="text-[9px]" style={{ color: '#7a8ba4' }}>--</span>;
+  const colors: Record<string, { bg: string; text: string }> = {
+    'A': { bg: 'var(--emerald-12)', text: 'var(--accent-emerald)' },
+    'B': { bg: 'rgba(59,130,246,0.12)', text: '#60a5fa' },
+    'C': { bg: 'var(--amber-12)', text: 'var(--accent-amber)' },
+    'D': { bg: 'var(--rose-12)', text: 'var(--accent-rose)' },
+  };
+  const c = colors[grade] ?? { bg: 'var(--violet-6)', text: '#94a3b8' };
+  return (
+    <span className="px-1.5 py-0.5 rounded text-[9px] font-bold" style={{ background: c.bg, color: c.text }}>
+      {grade}
+    </span>
   );
 }
 
@@ -589,90 +691,121 @@ function logColor(type: string): string {
 }
 
 /* ══════════════════════════════════════════════════════════════════
-   Model Distribution Chart
+   Model Distribution Chart — Premium Redesign
    ══════════════════════════════════════════════════════════════════ */
 
-const MODEL_FAMILY_COLORS: Record<string, string> = {
-  kalman: 'linear-gradient(135deg, #1e3a5f 0%, #1e40af 100%)',
-  phi: 'linear-gradient(135deg, #064e3b 0%, #065f46 100%)',
-  momentum: 'linear-gradient(135deg, #78350f 0%, #92400e 100%)',
-  default: 'linear-gradient(135deg, #581c87 0%, #7c3aed 100%)',
-};
-
-function modelFamily(name: string): string {
-  const lower = name.toLowerCase();
-  if (lower.includes('kalman') && !lower.includes('phi')) return 'kalman';
-  if (lower.includes('phi') || lower.includes('student')) return 'phi';
-  if (lower.includes('momentum')) return 'momentum';
-  return 'default';
-}
-
-const ModelDistributionChart = memo(function ModelDistributionChart({ data }: {
+const ModelDistributionChart = memo(function ModelDistributionChart({ data, expanded }: {
   data: { name: string; fullName?: string; count: number }[];
+  expanded?: boolean;
 }) {
-  const [mode, setMode] = useState<'treemap' | 'bar'>('treemap');
-  const [hovered, setHovered] = useState<string | null>(null);
   const total = useMemo(() => data.reduce((s, d) => s + d.count, 0), [data]);
 
-  return (
-    <div className="glass-card p-5 lg:col-span-1">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Model Distribution</h3>
-        <div className="flex gap-0.5">
-          {(['treemap', 'bar'] as const).map(m => (
-            <button key={m} onClick={() => setMode(m)}
-              className="px-2 py-0.5 rounded text-[10px] font-medium transition-all"
-              style={{ background: mode === m ? 'var(--violet-12)' : 'transparent', color: mode === m ? '#b49aff' : '#7a8ba4' }}>
-              {m === 'treemap' ? 'Map' : 'Bar'}
-            </button>
-          ))}
-        </div>
-      </div>
+  // Group by family
+  const families = useMemo(() => {
+    const fam: Record<string, { count: number; models: typeof data }> = {};
+    data.forEach(d => {
+      const f = modelFamily(d.fullName ?? d.name);
+      if (!fam[f]) fam[f] = { count: 0, models: [] };
+      fam[f].count += d.count;
+      fam[f].models.push(d);
+    });
+    return Object.entries(fam).sort((a, b) => b[1].count - a[1].count);
+  }, [data]);
 
-      {mode === 'treemap' ? (
-        <div className="flex flex-wrap gap-1" style={{ minHeight: 200 }}>
-          {data.map((d, i) => {
+  if (!expanded) {
+    // Compact horizontal bar summary
+    return (
+      <div className="glass-card p-4 mb-6 fade-up" style={{
+        background: 'linear-gradient(135deg, var(--violet-3), rgba(99,102,241,0.02))',
+      }}>
+        <div className="flex items-center gap-3 mb-3">
+          <PieChart className="w-4 h-4" style={{ color: 'var(--accent-cyan)' }} />
+          <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Model Distribution</span>
+          <span className="text-[10px] font-mono" style={{ color: '#7a8ba4' }}>{data.length} types &middot; {total} total</span>
+        </div>
+        <div className="flex gap-0.5 h-5 rounded-lg overflow-hidden mb-2">
+          {data.slice(0, 12).map((d) => {
             const frac = d.count / (total || 1);
-            const family = modelFamily(d.fullName ?? d.name);
-            const bg = MODEL_FAMILY_COLORS[family] || MODEL_FAMILY_COLORS.default;
-            const isHovered = hovered === d.name;
-            const isDimmed = hovered !== null && !isHovered;
-            const w = Math.max(44, frac * 280);
-            const h = Math.max(32, frac * 200);
+            const colors = MODEL_COLORS[modelFamily(d.fullName ?? d.name)] ?? MODEL_COLORS.default;
             return (
-              <div key={d.name}
-                onMouseEnter={() => setHovered(d.name)}
-                onMouseLeave={() => setHovered(null)}
-                className="rounded-md flex flex-col items-center justify-center transition-all duration-200 cursor-default"
-                style={{
-                  width: w, height: h, background: bg,
-                  border: '1px solid var(--violet-10)',
-                  opacity: isDimmed ? 0.4 : 1,
-                  boxShadow: isHovered ? '0 0 12px var(--violet-25)' : undefined,
-                  transform: isHovered ? 'scale(1.03)' : undefined,
-                }}
-              >
-                {w > 50 && (
-                  <span className="text-[8px] font-medium truncate px-1" style={{ color: 'rgba(255,255,255,0.8)', maxWidth: w - 8 }}>
-                    {d.name}
-                  </span>
-                )}
-                <span className="text-[10px] font-bold" style={{ color: 'rgba(255,255,255,0.95)', fontFamily: 'monospace' }}>{d.count}</span>
+              <div key={d.name} title={`${d.name}: ${d.count} (${(frac * 100).toFixed(1)}%)`}
+                className="transition-all duration-200 hover:brightness-125 cursor-default"
+                style={{ flex: d.count, background: colors.bar, minWidth: frac > 0.02 ? 2 : 0 }}
+              />
+            );
+          })}
+        </div>
+        <div className="flex flex-wrap gap-x-3 gap-y-1">
+          {families.map(([f, { count }]) => {
+            const colors = MODEL_COLORS[f] ?? MODEL_COLORS.default;
+            return (
+              <div key={f} className="flex items-center gap-1.5 text-[10px]">
+                <div className="w-2 h-2 rounded-sm" style={{ background: colors.bar }} />
+                <span style={{ color: colors.text }}>{familyLabel(f)}</span>
+                <span className="font-mono" style={{ color: '#7a8ba4' }}>{count}</span>
               </div>
             );
           })}
         </div>
-      ) : (
-        <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={data} layout="vertical">
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--violet-6)" />
-            <XAxis type="number" tick={{ fill: '#7a8ba4', fontSize: 11 }} />
-            <YAxis type="category" dataKey="name" width={100} tick={{ fill: '#94a3b8', fontSize: 10 }} />
-            <Tooltip contentStyle={{ background: 'rgba(15,15,35,0.95)', border: '1px solid var(--violet-15)', borderRadius: 8, color: '#e2e8f0' }} />
-            <Bar dataKey="count" fill="var(--accent-violet)" radius={[0, 4, 4, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-      )}
+      </div>
+    );
+  }
+
+  // Expanded view with family cards + bar chart
+  return (
+    <div className="glass-card p-5 mb-6 fade-up" style={{
+      background: 'linear-gradient(135deg, var(--violet-3), rgba(99,102,241,0.02))',
+    }}>
+      <div className="flex items-center gap-3 mb-4">
+        <PieChart className="w-4 h-4" style={{ color: 'var(--accent-cyan)' }} />
+        <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Model Distribution</span>
+        <span className="text-[10px] font-mono" style={{ color: '#7a8ba4' }}>{data.length} types &middot; {total} total</span>
+      </div>
+
+      {/* Family summary cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+        {families.map(([f, { count, models }]) => {
+          const colors = MODEL_COLORS[f] ?? MODEL_COLORS.default;
+          const pct = ((count / total) * 100).toFixed(1);
+          return (
+            <div key={f} className="p-3 rounded-xl" style={{ background: colors.bg, border: `1px solid ${colors.bar}30` }}>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold" style={{ color: colors.text }}>{familyLabel(f)}</span>
+                <span className="font-mono text-lg font-bold" style={{ color: colors.text }}>{count}</span>
+              </div>
+              <div className="h-1 rounded-full overflow-hidden mb-1.5" style={{ background: `${colors.bar}20` }}>
+                <div className="h-full rounded-full" style={{ width: `${pct}%`, background: colors.bar }} />
+              </div>
+              <div className="text-[9px]" style={{ color: `${colors.text}99` }}>
+                {pct}% &middot; {models.length} variants
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Individual model bars */}
+      <div className="space-y-1">
+        {data.map((d) => {
+          const frac = d.count / (total || 1);
+          const colors = MODEL_COLORS[modelFamily(d.fullName ?? d.name)] ?? MODEL_COLORS.default;
+          return (
+            <div key={d.name} className="flex items-center gap-2 group">
+              <span className="w-36 text-[10px] font-medium truncate text-right" style={{ color: colors.text }} title={d.fullName ?? d.name}>
+                {d.name}
+              </span>
+              <div className="flex-1 h-3 rounded-sm overflow-hidden" style={{ background: 'var(--violet-4)' }}>
+                <div className="h-full rounded-sm transition-all duration-300 group-hover:brightness-125" style={{
+                  width: `${Math.max(frac * 100, 0.5)}%`,
+                  background: `linear-gradient(90deg, ${colors.bar}, ${colors.bar}aa)`,
+                }} />
+              </div>
+              <span className="w-8 text-right font-mono text-[10px] font-bold" style={{ color: colors.text }}>{d.count}</span>
+              <span className="w-10 text-right font-mono text-[9px]" style={{ color: '#7a8ba4' }}>{(frac * 100).toFixed(1)}%</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 });
@@ -681,19 +814,17 @@ const ModelDistributionChart = memo(function ModelDistributionChart({ data }: {
    Detail Panel
    ══════════════════════════════════════════════════════════════════ */
 
-function DetailPanel({ symbol, data, onViewDiagnostics }: {
-  symbol: string; data: Record<string, unknown>; onViewDiagnostics: () => void;
+function DetailPanel({ symbol, data, onViewDiagnostics, onClose }: {
+  symbol: string; data: Record<string, unknown>; onViewDiagnostics: () => void; onClose: () => void;
 }) {
   const g = (data.global ?? data) as Record<string, unknown>;
   const best = g.best_model as string | undefined;
   const regime = data.regime as Record<string, unknown> | string | undefined;
-  const pitPass = g.ad_pass as boolean | undefined;
   const modelWeights = g.model_weights as Record<string, number> | undefined;
   const modelComparison = g.model_comparison as Record<string, { ll?: number; bic?: number; aic?: number; fit_success?: boolean }> | undefined;
   const regimeCounts = data.regime_counts as Record<string, number> | undefined;
-  const diag = data.diagnostics as Record<string, unknown> | undefined;
 
-  // Build competing models from model_weights + model_comparison
+  // Build competing models
   const models = useMemo(() => {
     if (!modelWeights) return [];
     return Object.entries(modelWeights)
@@ -712,6 +843,8 @@ function DetailPanel({ symbol, data, onViewDiagnostics }: {
   const nObs = g.n_obs as number | undefined;
   const ksP = g.pit_ks_pvalue as number | undefined;
   const ksStat = g.ks_statistic as number | undefined;
+  const pitGrade = g.pit_calibration_grade as string | undefined;
+  const pitPass = ksP != null ? ksP >= 0.05 : null;
 
   const params = [
     { label: 'BIC', value: bic?.toFixed(0), color: '#b49aff' },
@@ -728,7 +861,6 @@ function DetailPanel({ symbol, data, onViewDiagnostics }: {
     <div className="glass-card p-5 mt-6 fade-up" style={{
       background: 'linear-gradient(135deg, var(--violet-3), rgba(99,102,241,0.02))',
     }}>
-      {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
           <h3 className="text-xl font-bold" style={{
@@ -741,6 +873,7 @@ function DetailPanel({ symbol, data, onViewDiagnostics }: {
               PIT {pitPass ? 'Pass' : 'Fail'}
             </span>
           )}
+          {pitGrade && <GradeBadge grade={pitGrade} />}
           {regimeCounts && (
             <div className="flex gap-1">
               {Object.entries(regimeCounts).map(([r, cnt]) => (
@@ -751,15 +884,19 @@ function DetailPanel({ symbol, data, onViewDiagnostics }: {
             </div>
           )}
         </div>
-        <button onClick={onViewDiagnostics}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-all hover:scale-[1.02]"
-          style={{ color: '#b49aff', background: 'var(--violet-8)', border: '1px solid var(--violet-12)' }}
-        >
-          Diagnostics <ArrowRight className="w-3 h-3" />
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={onViewDiagnostics}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-all hover:scale-[1.02]"
+            style={{ color: '#b49aff', background: 'var(--violet-8)', border: '1px solid var(--violet-12)' }}
+          >
+            Diagnostics <ArrowRight className="w-3 h-3" />
+          </button>
+          <button onClick={onClose} className="p-1.5 rounded-lg transition hover:bg-[var(--violet-8)]" style={{ color: '#7a8ba4' }}>
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
-      {/* Key parameters */}
       {best && (
         <div className="mb-4">
           <span className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Best Model</span>
@@ -778,7 +915,6 @@ function DetailPanel({ symbol, data, onViewDiagnostics }: {
         </div>
       )}
 
-      {/* BMA Weights Table */}
       {models.length > 0 && (
         <div className="overflow-x-auto">
           <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)' }}>BMA Model Weights ({models.length} competing)</div>
@@ -829,7 +965,6 @@ function DetailPanel({ symbol, data, onViewDiagnostics }: {
         </div>
       )}
 
-      {/* Fallback raw JSON if no structured data */}
       {models.length === 0 && (
         <div>
           <h4 className="text-xs font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>Raw Parameters</h4>

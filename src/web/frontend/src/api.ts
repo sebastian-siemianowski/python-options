@@ -358,10 +358,10 @@ export interface ChartImage {
 export interface TuneAsset {
   symbol: string;
   best_model: string;
-  pit_calibration_grade: string;
-  ad_stat: number | null;
-  ad_critical: number | null;
+  pit_calibration_grade: string | null;
   ad_pass: boolean | null;
+  ks_pvalue: number | null;
+  ks_stat: number | null;
   num_models: number;
   bic: number | null;
   phi: number | null;
