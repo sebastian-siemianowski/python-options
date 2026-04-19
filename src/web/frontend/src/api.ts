@@ -30,6 +30,7 @@ export const api = {
   strongSignals: () => fetchApi<StrongSignalsData>('/api/signals/strong-signals'),
   highConviction: (type: 'buy' | 'sell') =>
     fetchApi<{ signals: HighConvictionSignal[]; count: number }>(`/api/signals/high-conviction/${type}`),
+  qualityScores: () => fetchApi<QualityScoresData>('/api/signals/quality-scores'),
 
   // Risk
   riskDashboard: () => fetchApi<RiskDashboard>('/api/risk/dashboard'),
@@ -107,6 +108,28 @@ export const api = {
 };
 
 // ── Types ───────────────────────────────────────────────────────────
+
+export interface QualityFormulaComponent {
+  name: string;
+  weight: number;
+  desc: string;
+}
+export interface QualityFormulaTier {
+  range: string;
+  label: string;
+  desc: string;
+}
+export interface QualityFormula {
+  title: string;
+  description: string;
+  components: QualityFormulaComponent[];
+  tiers: QualityFormulaTier[];
+  non_company_notes: Record<string, string>;
+}
+export interface QualityScoresData {
+  scores: Record<string, number>;
+  formula: QualityFormula;
+}
 
 export interface OverviewData {
   signals: SignalStats;

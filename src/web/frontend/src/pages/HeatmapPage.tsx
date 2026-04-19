@@ -6,7 +6,7 @@
  * Click any asset row to expand inline zone charts (1M/3M/6M/12M).
  */
 import { useQuery } from '@tanstack/react-query';
-import { api, type SectorGroup, type SummaryRow, type HorizonSignal } from '../api';
+import { api, type SectorGroup, type SummaryRow, type HorizonSignal, type QualityScoresData } from '../api';
 import PageHeader from '../components/PageHeader';
 import { DashboardSkeleton } from '../components/CosmicSkeleton';
 import { CosmicErrorCard } from '../components/CosmicErrorState';
@@ -21,7 +21,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   ChevronDown, ChevronRight, ChevronUp, Search, X, Filter,
   TrendingUp, TrendingDown, Minus, Maximize2, Minimize2,
-  ExternalLink, Loader2, ArrowUpDown,
+  ExternalLink, Loader2, ArrowUpDown, Info,
 } from 'lucide-react';
 
 /* ── Constants ──────────────────────────────────────────────────── */
@@ -31,13 +31,17 @@ const FILTER_KEY = 'heatmap_v2_filter';
 type SignalFilter = 'all' | 'strong_buy' | 'buy' | 'hold' | 'sell' | 'strong_sell';
 
 /** Sorting state for heatmap columns */
-type SortKey = 'momentum' | number;  // number = horizon key
+type SortKey = 'momentum' | 'quality' | number;  // number = horizon key
 type SortDir = 'asc' | 'desc';
 interface SortState { key: SortKey; dir: SortDir; }
 
 /** Get the sortable value for a given asset row and sort key */
-function getSortValue(row: SummaryRow, key: SortKey): number {
+function getSortValue(row: SummaryRow, key: SortKey, qualityScores?: Record<string, number>): number {
   if (key === 'momentum') return row.momentum_score ?? 0;
+  if (key === 'quality') {
+    const ticker = row.asset_label.includes('(') ? row.asset_label.split('(').pop()!.replace(')', '').trim() : row.asset_label;
+    return qualityScores?.[ticker] ?? 50;
+  }
   const sig = row.horizon_signals[key] || row.horizon_signals[String(key)];
   return sig?.exp_ret ?? 0;
 }
@@ -408,6 +412,26 @@ function HeatTooltip({ info }: { info: TooltipInfo }) {
   );
 }
 
+/** Quality score color based on 0-100 tier */
+function qualityColor(score: number): string {
+  if (score >= 90) return 'var(--accent-emerald)';
+  if (score >= 80) return 'rgba(62,232,165,0.85)';
+  if (score >= 70) return 'rgba(62,232,165,0.65)';
+  if (score >= 60) return 'rgba(139,152,246,0.75)';
+  if (score >= 50) return 'var(--text-muted)';
+  if (score >= 40) return 'rgba(255,180,107,0.75)';
+  if (score >= 30) return 'rgba(255,138,107,0.75)';
+  if (score >= 20) return 'rgba(255,107,138,0.75)';
+  return 'var(--accent-rose)';
+}
+
+function qualityBg(score: number): string {
+  if (score >= 80) return 'rgba(6,78,59,0.25)';
+  if (score >= 60) return 'rgba(30,27,75,0.25)';
+  if (score >= 40) return 'rgba(60,40,10,0.2)';
+  return 'rgba(76,5,25,0.2)';
+}
+
 /* ── Color Scale Legend ─────────────────────────────────────────── */
 function ColorScaleLegend() {
   return (
@@ -447,6 +471,11 @@ export default function HeatmapPage() {
     queryFn: api.signalSummary,
     staleTime: 120_000,
   });
+  const qualityQ = useQuery({
+    queryKey: ['qualityScores'],
+    queryFn: api.qualityScores,
+    staleTime: 300_000,
+  });
 
   /* State */
   const [search, setSearch] = useState('');
@@ -467,6 +496,7 @@ export default function HeatmapPage() {
   const [isFullWidth, setIsFullWidth] = useState(false);
   const [expandedAsset, setExpandedAsset] = useState<string | null>(null);
   const [sort, setSort] = useState<SortState | null>(null);
+  const [showFormula, setShowFormula] = useState(false);
 
   /* Persist state */
   useEffect(() => {
@@ -478,6 +508,8 @@ export default function HeatmapPage() {
 
   const sectors = sectorQ.data?.sectors ?? [];
   const horizons = summaryQ.data?.horizons ?? [];
+  const qualityScores = qualityQ.data?.scores ?? {};
+  const qualityFormula = qualityQ.data?.formula ?? null;
 
   /* Filter + search + sort */
   const filteredSectors = useMemo(() => {
@@ -492,14 +524,14 @@ export default function HeatmapPage() {
       }
       if (sort) {
         assets = [...assets].sort((a, b) => {
-          const va = getSortValue(a, sort.key);
-          const vb = getSortValue(b, sort.key);
+          const va = getSortValue(a, sort.key, qualityScores);
+          const vb = getSortValue(b, sort.key, qualityScores);
           return sort.dir === 'desc' ? vb - va : va - vb;
         });
       }
       return { ...s, assets, asset_count: assets.length };
     }).filter(s => s.assets.length > 0);
-  }, [sectors, search, filter, sort]);
+  }, [sectors, search, filter, sort, qualityScores]);
 
   /* Flatten for keyboard navigation */
   const flatRows = useMemo(() => {
@@ -645,6 +677,60 @@ export default function HeatmapPage() {
       <div className="mb-4 fade-up-delay-1">
         <SummaryStrip sectors={sectors} />
       </div>
+
+      {/* Quality Score Formula Explanation */}
+      {qualityFormula && (
+        <div className="mb-4 fade-up-delay-1">
+          <button
+            onClick={() => setShowFormula(f => !f)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-colors"
+            style={{ background: 'var(--violet-8)', color: 'var(--text-violet)', border: '1px solid var(--violet-12)' }}
+          >
+            <Info className="w-3.5 h-3.5" />
+            {qualityFormula.title}
+            {showFormula ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+          </button>
+          {showFormula && (
+            <div
+              className="mt-2 rounded-xl p-4"
+              style={{
+                background: 'linear-gradient(160deg, rgba(13,5,30,0.95) 0%, rgba(10,18,42,0.95) 100%)',
+                border: '1px solid var(--violet-15)',
+                boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
+              }}
+            >
+              <p className="text-[11px] mb-3" style={{ color: 'var(--text-secondary)' }}>
+                {qualityFormula.description}
+              </p>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mb-3">
+                {qualityFormula.components.map(c => (
+                  <div key={c.name} className="rounded-lg p-2" style={{ background: 'var(--violet-4)', border: '1px solid var(--violet-8)' }}>
+                    <div className="flex items-center justify-between mb-0.5">
+                      <span className="text-[10px] font-semibold" style={{ color: 'var(--text-violet)' }}>{c.name}</span>
+                      <span className="text-[10px] font-bold tabular-nums" style={{ color: 'var(--accent-violet)' }}>{(c.weight * 100).toFixed(0)}%</span>
+                    </div>
+                    <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>{c.desc}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {qualityFormula.tiers.map(t => (
+                  <span key={t.range} className="px-2 py-0.5 rounded text-[9px] font-medium" style={{ background: 'var(--violet-6)', color: 'var(--text-secondary)' }}>
+                    <strong style={{ color: 'var(--text-primary)' }}>{t.range}</strong> {t.label} — {t.desc}
+                  </span>
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(qualityFormula.non_company_notes).map(([k, v]) => (
+                  <span key={k} className="text-[9px]" style={{ color: 'var(--text-muted)' }}>
+                    <strong style={{ color: 'var(--text-secondary)' }}>{k}:</strong> {v}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Controls bar */}
       <div className="mb-4 flex items-center gap-3 flex-wrap fade-up-delay-2">
@@ -814,6 +900,37 @@ export default function HeatmapPage() {
                       </th>
                     );
                   })()}
+                  {(() => {
+                    const isActive = sort?.key === 'quality';
+                    return (
+                      <th
+                        className="text-center px-2 py-3 font-semibold text-[11px] cursor-pointer select-none group/sort"
+                        style={{
+                          color: isActive ? 'var(--accent-violet)' : 'var(--text-muted)',
+                          background: isActive ? 'var(--violet-4)' : 'var(--void)',
+                          borderBottom: '1px solid var(--violet-10)',
+                          minWidth: 52,
+                          transition: 'color 0.15s, background 0.15s',
+                        }}
+                        onClick={() => setSort(prev =>
+                          prev?.key === 'quality'
+                            ? prev.dir === 'desc' ? { key: 'quality', dir: 'asc' } : null
+                            : { key: 'quality', dir: 'desc' }
+                        )}
+                        title="Sort by Quality Score"
+                      >
+                        <div className="flex items-center justify-center gap-0.5">
+                          Quality
+                          {isActive
+                            ? (sort.dir === 'desc'
+                                ? <ChevronDown className="w-3 h-3" />
+                                : <ChevronUp className="w-3 h-3" />)
+                            : <ArrowUpDown className="w-2.5 h-2.5 opacity-0 group-hover/sort:opacity-40 transition-opacity" />
+                          }
+                        </div>
+                      </th>
+                    );
+                  })()}
                 </tr>
               </thead>
               {filteredSectors.map(sector => {
@@ -836,7 +953,7 @@ export default function HeatmapPage() {
                     >
                       <td
                         className="px-4 py-2.5 whitespace-nowrap"
-                        colSpan={horizons.length + 2}
+                        colSpan={horizons.length + 3}
                         style={{ borderBottom: '1px solid var(--violet-6)' }}
                       >
                         <div className="flex items-center gap-3">
@@ -1011,13 +1128,42 @@ export default function HeatmapPage() {
                                 {mom > 0 ? '+' : ''}{Math.round(mom)}%
                               </span>
                             </td>
+
+                            {/* Quality score column */}
+                            {(() => {
+                              const ticker = asset.asset_label.includes('(') ? asset.asset_label.split('(').pop()!.replace(')', '').trim() : asset.asset_label;
+                              const qs = qualityScores[ticker] ?? 50;
+                              return (
+                                <td className="text-center px-1 py-[2px]">
+                                  <div
+                                    className="rounded-[4px] mx-auto"
+                                    style={{
+                                      background: qualityBg(qs),
+                                      height: 26,
+                                      width: 42,
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      border: '1px solid var(--violet-3)',
+                                    }}
+                                  >
+                                    <span
+                                      className="text-[10px] tabular-nums font-bold"
+                                      style={{ color: qualityColor(qs) }}
+                                    >
+                                      {qs}
+                                    </span>
+                                  </div>
+                                </td>
+                              );
+                            })()}
                           </tr>
 
                           {/* Expanded zone charts row */}
                           {expandedAsset === asset.asset_label && (
                             <ExpandedAssetRow
                               assetLabel={asset.asset_label}
-                              colSpan={horizons.length + 2}
+                              colSpan={horizons.length + 3}
                               onClose={() => setExpandedAsset(null)}
                               asset={asset}
                               horizons={horizons}
