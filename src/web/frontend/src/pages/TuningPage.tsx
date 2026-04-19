@@ -66,9 +66,6 @@ function modelFamily(name: string): string {
   return 'default';
 }
 
-function familyLabel(f: string): string {
-  return f === 'kalman' ? 'Kalman' : f === 'phi' ? 'Phi/Student-t' : f === 'momentum' ? 'Momentum' : 'Other';
-}
 
 /* ══════════════════════════════════════════════════════════════════
    Main Component
@@ -702,23 +699,6 @@ const ModelDistributionChart = memo(function ModelDistributionChart({ data, expa
   const [hoveredModel, setHoveredModel] = useState<string | null>(null);
   const total = useMemo(() => data.reduce((s, d) => s + d.count, 0), [data]);
 
-  // Group by family
-  const families = useMemo(() => {
-    const fam: Record<string, { count: number; models: typeof data; pitPass: number; pitFail: number; bics: number[] }> = {};
-    data.forEach(d => {
-      const f = modelFamily(d.fullName ?? d.name);
-      if (!fam[f]) fam[f] = { count: 0, models: [], pitPass: 0, pitFail: 0, bics: [] };
-      fam[f].count += d.count;
-      fam[f].models.push(d);
-      if (d.analytics) {
-        fam[f].pitPass += d.analytics.pit_pass;
-        fam[f].pitFail += d.analytics.pit_fail;
-        if (d.analytics.avg_bic != null) fam[f].bics.push(d.analytics.avg_bic);
-      }
-    });
-    return Object.entries(fam).sort((a, b) => b[1].count - a[1].count);
-  }, [data]);
-
   // Best BIC model for highlighting
   const bestBicModel = useMemo(() => {
     let best: string | null = null;
@@ -738,54 +718,107 @@ const ModelDistributionChart = memo(function ModelDistributionChart({ data, expa
   }, [data, hoveredModel]);
 
   if (!expanded) {
-    // Compact view — stacked bar + family legend with key metrics
+    // Compact view — all individual models with full names
+    const globalPitPass = data.reduce((s, d) => s + (d.analytics?.pit_pass ?? 0), 0);
+    const globalPitFail = data.reduce((s, d) => s + (d.analytics?.pit_fail ?? 0), 0);
+    const globalPitRate = (globalPitPass + globalPitFail) > 0 ? Math.round((globalPitPass / (globalPitPass + globalPitFail)) * 100) : null;
+    const allBics = data.filter(d => d.analytics?.avg_bic != null).map(d => d.analytics!.avg_bic!);
+    const globalAvgBic = allBics.length > 0 ? allBics.reduce((a, b) => a + b, 0) / allBics.length : null;
+    const maxCount = data.length > 0 ? data[0].count : 1;
+
     return (
-      <div className="glass-card p-4 mb-6 fade-up" style={{
+      <div className="glass-card p-5 mb-6 fade-up" style={{
         background: 'linear-gradient(135deg, var(--violet-3), rgba(99,102,241,0.02))',
       }}>
-        <div className="flex items-center justify-between mb-3">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-3">
-            <PieChart className="w-4 h-4" style={{ color: 'var(--accent-cyan)' }} />
-            <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Model Distribution</span>
-            <span className="text-[10px] font-mono" style={{ color: '#7a8ba4' }}>{data.length} types &middot; {total} assets</span>
+            <div className="p-1.5 rounded-lg" style={{ background: 'rgba(34,211,238,0.1)' }}>
+              <PieChart className="w-4 h-4" style={{ color: 'var(--accent-cyan)' }} />
+            </div>
+            <div>
+              <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Model Distribution</span>
+              <span className="text-[10px] font-mono ml-2" style={{ color: '#7a8ba4' }}>{data.length} models across {total} assets</span>
+            </div>
           </div>
           <div className="flex items-center gap-3 text-[10px]">
-            {families.map(([f, { count, pitPass, pitFail }]) => {
-              const colors = MODEL_COLORS[f] ?? MODEL_COLORS.default;
-              const pitTotal = pitPass + pitFail;
-              const pitRate = pitTotal > 0 ? Math.round((pitPass / pitTotal) * 100) : null;
-              return (
-                <div key={f} className="flex items-center gap-1.5">
-                  <div className="w-2 h-2 rounded-sm" style={{ background: colors.bar }} />
-                  <span style={{ color: colors.text }}>{familyLabel(f)}</span>
-                  <span className="font-mono" style={{ color: '#7a8ba4' }}>{count}</span>
-                  {pitRate != null && (
-                    <span className="font-mono" style={{ color: pitRate >= 90 ? 'var(--accent-emerald)' : pitRate >= 70 ? 'var(--accent-amber)' : 'var(--accent-rose)' }}>
-                      {pitRate}%
-                    </span>
-                  )}
-                </div>
-              );
-            })}
+            {globalPitRate != null && (
+              <span className="px-2 py-1 rounded-md font-mono font-medium" style={{
+                background: globalPitRate >= 90 ? 'rgba(16,185,129,0.1)' : 'rgba(245,158,11,0.1)',
+                color: globalPitRate >= 90 ? 'var(--accent-emerald)' : 'var(--accent-amber)',
+                border: `1px solid ${globalPitRate >= 90 ? 'rgba(16,185,129,0.2)' : 'rgba(245,158,11,0.2)'}`,
+              }}>
+                PIT {globalPitRate}%
+              </span>
+            )}
+            {globalAvgBic != null && (
+              <span className="px-2 py-1 rounded-md font-mono" style={{
+                background: 'rgba(139,92,246,0.08)', color: '#b49aff', border: '1px solid rgba(139,92,246,0.15)',
+              }}>
+                Avg BIC {globalAvgBic.toFixed(0)}
+              </span>
+            )}
           </div>
         </div>
-        <div className="flex gap-0.5 h-6 rounded-lg overflow-hidden">
+
+        {/* All models — individual rows with full names */}
+        <div className="space-y-1.5">
           {data.map((d) => {
             const frac = d.count / (total || 1);
+            const barPct = (d.count / maxCount) * 100;
             const colors = MODEL_COLORS[modelFamily(d.fullName ?? d.name)] ?? MODEL_COLORS.default;
             const isBest = (d.fullName ?? d.name) === bestBicModel;
+            const a = d.analytics;
+            const pitTotal = a ? a.pit_pass + a.pit_fail : 0;
+            const pitRate = pitTotal > 0 ? Math.round((a!.pit_pass / pitTotal) * 100) : null;
             return (
-              <div key={d.name}
-                title={`${d.name}: ${d.count} assets (${(frac * 100).toFixed(1)}%)${d.analytics?.avg_bic != null ? ` | Avg BIC: ${d.analytics.avg_bic.toFixed(0)}` : ''}${d.analytics?.pit_pass_rate != null ? ` | PIT: ${(d.analytics.pit_pass_rate * 100).toFixed(0)}%` : ''}`}
-                className="transition-all duration-200 hover:brightness-125 cursor-default relative"
-                style={{
-                  flex: d.count,
-                  background: isBest ? `linear-gradient(180deg, ${colors.bar}, ${colors.bar}cc)` : colors.bar,
-                  minWidth: frac > 0.02 ? 2 : 0,
-                  borderRight: '1px solid rgba(0,0,0,0.2)',
-                  boxShadow: isBest ? `0 0 8px ${colors.bar}60` : undefined,
-                }}
-              />
+              <div key={d.fullName ?? d.name} className="flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-150 hover:scale-[1.005] group" style={{
+                background: isBest ? `linear-gradient(135deg, rgba(16,185,129,0.06), ${colors.bg})` : colors.bg,
+                border: `1px solid ${isBest ? 'rgba(16,185,129,0.25)' : `${colors.bar}15`}`,
+                boxShadow: isBest ? '0 0 12px rgba(16,185,129,0.06)' : undefined,
+              }}>
+                {/* Rank + model name */}
+                <div className="flex items-center gap-2 min-w-0" style={{ flex: '0 0 280px' }}>
+                  {isBest && <Target className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--accent-emerald)' }} />}
+                  <span className="text-[11px] font-semibold truncate" style={{ color: colors.text }}>
+                    {formatModelName(d.fullName ?? d.name)}
+                  </span>
+                </div>
+
+                {/* Share bar */}
+                <div className="flex items-center gap-2 flex-1 min-w-0">
+                  <div className="flex-1 h-2 rounded-sm overflow-hidden" style={{ background: `${colors.bar}12` }}>
+                    <div className="h-full rounded-sm transition-all duration-500" style={{
+                      width: `${Math.max(barPct, 2)}%`,
+                      background: `linear-gradient(90deg, ${colors.bar}, ${colors.bar}88)`,
+                    }} />
+                  </div>
+                </div>
+
+                {/* Asset count + share */}
+                <div className="flex items-baseline gap-1" style={{ flex: '0 0 70px' }}>
+                  <span className="text-xs font-mono font-bold" style={{ color: colors.text }}>{d.count}</span>
+                  <span className="text-[9px] font-mono" style={{ color: '#7a8ba4' }}>({(frac * 100).toFixed(1)}%)</span>
+                </div>
+
+                {/* PIT rate */}
+                <div style={{ flex: '0 0 50px' }} className="text-right">
+                  {pitRate != null ? (
+                    <span className="text-[10px] font-mono font-semibold" style={{
+                      color: pitRate >= 90 ? 'var(--accent-emerald)' : pitRate >= 70 ? 'var(--accent-amber)' : 'var(--accent-rose)',
+                    }}>PIT {pitRate}%</span>
+                  ) : (
+                    <span className="text-[10px] font-mono" style={{ color: '#7a8ba4' }}>--</span>
+                  )}
+                </div>
+
+                {/* Avg BIC */}
+                <div style={{ flex: '0 0 65px' }} className="text-right">
+                  <span className="text-[10px] font-mono" style={{ color: a?.avg_bic != null ? '#b49aff' : '#7a8ba4' }}>
+                    {a?.avg_bic != null ? a.avg_bic.toFixed(0) : '--'}
+                  </span>
+                </div>
+              </div>
             );
           })}
         </div>
@@ -794,55 +827,47 @@ const ModelDistributionChart = memo(function ModelDistributionChart({ data, expa
   }
 
   // ── Expanded: Full analytics dashboard ──────────────────────────
+  const globalPitPassExp = data.reduce((s, d) => s + (d.analytics?.pit_pass ?? 0), 0);
+  const globalPitFailExp = data.reduce((s, d) => s + (d.analytics?.pit_fail ?? 0), 0);
+  const globalPitRateExp = (globalPitPassExp + globalPitFailExp) > 0 ? Math.round((globalPitPassExp / (globalPitPassExp + globalPitFailExp)) * 100) : null;
+
   return (
     <div className="glass-card p-5 mb-6 fade-up" style={{
-      background: 'linear-gradient(135deg, var(--violet-3), rgba(99,102,241,0.02))',
+      background: 'linear-gradient(135deg, var(--violet-3), rgba(99,102,241,0.03))',
+      boxShadow: '0 4px 24px rgba(99,102,241,0.06)',
     }}>
+      {/* Header with global stats */}
       <div className="flex items-center justify-between mb-5">
         <div className="flex items-center gap-3">
-          <PieChart className="w-4 h-4" style={{ color: 'var(--accent-cyan)' }} />
-          <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Model Analytics</span>
-          <span className="text-[10px] font-mono" style={{ color: '#7a8ba4' }}>{data.length} models &middot; {total} assets</span>
+          <div className="p-2 rounded-xl" style={{ background: 'rgba(34,211,238,0.1)', boxShadow: '0 0 12px rgba(34,211,238,0.08)' }}>
+            <Layers className="w-5 h-5" style={{ color: 'var(--accent-cyan)' }} />
+          </div>
+          <div>
+            <h3 className="text-base font-bold" style={{ color: 'var(--text-primary)' }}>Model Analytics Dashboard</h3>
+            <span className="text-[10px] font-mono" style={{ color: '#7a8ba4' }}>{data.length} competing models across {total} assets</span>
+          </div>
         </div>
-      </div>
-
-      {/* Family summary cards with richer data */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
-        {families.map(([f, { count, models, pitPass, pitFail, bics }]) => {
-          const colors = MODEL_COLORS[f] ?? MODEL_COLORS.default;
-          const pct = ((count / total) * 100).toFixed(1);
-          const pitTotal = pitPass + pitFail;
-          const pitRate = pitTotal > 0 ? Math.round((pitPass / pitTotal) * 100) : null;
-          const avgBic = bics.length > 0 ? bics.reduce((a, b) => a + b, 0) / bics.length : null;
-          return (
-            <div key={f} className="p-3 rounded-xl transition-all duration-200 hover:scale-[1.01]" style={{
-              background: colors.bg, border: `1px solid ${colors.bar}30`,
+        <div className="flex items-center gap-2">
+          {globalPitRateExp != null && (
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg" style={{
+              background: globalPitRateExp >= 90 ? 'rgba(16,185,129,0.08)' : 'rgba(245,158,11,0.08)',
+              border: `1px solid ${globalPitRateExp >= 90 ? 'rgba(16,185,129,0.2)' : 'rgba(245,158,11,0.2)'}`,
             }}>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold" style={{ color: colors.text }}>{familyLabel(f)}</span>
-                <span className="font-mono text-lg font-bold" style={{ color: colors.text }}>{count}</span>
-              </div>
-              <div className="h-1.5 rounded-full overflow-hidden mb-2" style={{ background: `${colors.bar}20` }}>
-                <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: colors.bar }} />
-              </div>
-              <div className="grid grid-cols-2 gap-1 text-[9px]">
-                <div style={{ color: `${colors.text}99` }}>{pct}% &middot; {models.length} variants</div>
-                {pitRate != null && (
-                  <div className="text-right font-mono" style={{
-                    color: pitRate >= 90 ? 'var(--accent-emerald)' : pitRate >= 70 ? 'var(--accent-amber)' : 'var(--accent-rose)',
-                  }}>
-                    PIT {pitRate}%
-                  </div>
-                )}
-                {avgBic != null && (
-                  <div className="font-mono col-span-2" style={{ color: '#7a8ba4' }}>
-                    Avg BIC: {avgBic.toFixed(0)}
-                  </div>
-                )}
-              </div>
+              <CheckCircle className="w-3.5 h-3.5" style={{ color: globalPitRateExp >= 90 ? 'var(--accent-emerald)' : 'var(--accent-amber)' }} />
+              <span className="text-xs font-mono font-semibold" style={{
+                color: globalPitRateExp >= 90 ? 'var(--accent-emerald)' : 'var(--accent-amber)',
+              }}>PIT {globalPitRateExp}%</span>
             </div>
-          );
-        })}
+          )}
+          {bestBicModel && (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg" style={{
+              background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.15)',
+            }}>
+              <Award className="w-3.5 h-3.5" style={{ color: 'var(--accent-emerald)' }} />
+              <span className="text-[10px] font-medium" style={{ color: 'var(--accent-emerald)' }}>Best: {formatModelName(bestBicModel)}</span>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Full model analytics table */}
@@ -884,13 +909,13 @@ const ModelDistributionChart = memo(function ModelDistributionChart({ data, expa
                     borderLeft: isBest ? '2px solid var(--accent-emerald)' : '2px solid transparent',
                   }}
                 >
-                  {/* Model name */}
+                  {/* Model name — full name */}
                   <td className="px-3 py-2">
                     <div className="flex items-center gap-2">
                       <span className="px-1.5 py-0.5 rounded text-[10px] font-medium" style={{
                         background: colors.bg, color: colors.text,
                       }}>
-                        {d.name}
+                        {formatModelName(d.fullName ?? d.name)}
                       </span>
                       {isBest && <Target className="w-3 h-3" style={{ color: 'var(--accent-emerald)' }} />}
                     </div>
@@ -1014,14 +1039,15 @@ const ModelDistributionChart = memo(function ModelDistributionChart({ data, expa
               <td className="px-2 py-2 text-center font-mono font-bold text-[10px]" style={{ color: '#b49aff' }}>{total}</td>
               <td colSpan={9} className="px-2 py-2">
                 <div className="flex items-center gap-4 text-[9px]">
-                  {families.map(([f, { count }]) => {
-                    const colors = MODEL_COLORS[f] ?? MODEL_COLORS.default;
+                  {data.slice(0, 5).map((d) => {
+                    const colors = MODEL_COLORS[modelFamily(d.fullName ?? d.name)] ?? MODEL_COLORS.default;
                     return (
-                      <span key={f} style={{ color: colors.text }}>
-                        {familyLabel(f)}: <strong>{count}</strong> ({((count / total) * 100).toFixed(0)}%)
+                      <span key={d.fullName ?? d.name} style={{ color: colors.text }}>
+                        {formatModelName(d.fullName ?? d.name)}: <strong>{d.count}</strong> ({((d.count / total) * 100).toFixed(0)}%)
                       </span>
                     );
                   })}
+                  {data.length > 5 && <span style={{ color: '#7a8ba4' }}>+{data.length - 5} more</span>}
                 </div>
               </td>
             </tr>
@@ -1029,37 +1055,80 @@ const ModelDistributionChart = memo(function ModelDistributionChart({ data, expa
         </table>
       </div>
 
-      {/* Hover detail card */}
-      {hoveredAnalytics && hoveredModel && (
-        <div className="mt-4 p-4 rounded-xl transition-all duration-200" style={{
-          background: 'rgba(10,10,26,0.5)', border: '1px solid var(--violet-8)',
-        }}>
-          <div className="flex items-center gap-2 mb-3">
-            <Eye className="w-3.5 h-3.5" style={{ color: 'var(--accent-cyan)' }} />
-            <span className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
-              {formatModelName(hoveredModel)}
-            </span>
-            <span className="text-[10px] font-mono" style={{ color: '#7a8ba4' }}>{hoveredAnalytics.count} assets</span>
-          </div>
-          <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
-            {[
-              { label: 'Avg BIC', value: hoveredAnalytics.avg_bic?.toFixed(0), color: '#b49aff' },
-              { label: 'Best BIC', value: hoveredAnalytics.best_bic?.toFixed(0), color: 'var(--accent-cyan)' },
-              { label: 'Worst BIC', value: hoveredAnalytics.worst_bic?.toFixed(0), color: 'var(--accent-rose)' },
-              { label: 'Median KS p', value: hoveredAnalytics.median_ks_pvalue?.toFixed(4), color: hoveredAnalytics.median_ks_pvalue != null && hoveredAnalytics.median_ks_pvalue >= 0.05 ? 'var(--accent-emerald)' : 'var(--accent-rose)' },
-              { label: 'PIT Pass', value: hoveredAnalytics.pit_pass_rate != null ? `${(hoveredAnalytics.pit_pass_rate * 100).toFixed(0)}% (${hoveredAnalytics.pit_pass}/${hoveredAnalytics.pit_pass + hoveredAnalytics.pit_fail})` : null, color: hoveredAnalytics.pit_pass_rate != null && hoveredAnalytics.pit_pass_rate >= 0.9 ? 'var(--accent-emerald)' : 'var(--accent-amber)' },
-              { label: 'Avg Obs', value: hoveredAnalytics.avg_n_obs?.toFixed(0), color: '#94a3b8' },
-            ].map(p => (
-              <div key={p.label} className="p-2 rounded-lg text-center" style={{ background: 'var(--violet-4)' }}>
-                <div className="text-[8px] uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>{p.label}</div>
-                <div className="text-[11px] font-mono font-medium" style={{ color: p.value ? p.color : 'var(--text-muted)' }}>
-                  {p.value ?? '--'}
+      {/* Hover detail card — premium deep-dive */}
+      {hoveredAnalytics && hoveredModel && (() => {
+        const hColors = MODEL_COLORS[modelFamily(hoveredModel)] ?? MODEL_COLORS.default;
+        const hPitTotal = hoveredAnalytics.pit_pass + hoveredAnalytics.pit_fail;
+        const hPitRate = hPitTotal > 0 ? (hoveredAnalytics.pit_pass / hPitTotal) * 100 : null;
+        return (
+          <div className="mt-4 p-4 rounded-xl transition-all duration-200 relative overflow-hidden" style={{
+            background: `linear-gradient(135deg, rgba(10,10,26,0.6), ${hColors.bg})`,
+            border: `1px solid ${hColors.bar}30`,
+            boxShadow: `0 4px 20px ${hColors.bar}08`,
+          }}>
+            <div className="absolute -bottom-10 -right-10 w-32 h-32 rounded-full blur-3xl" style={{ background: `${hColors.bar}06` }} />
+            <div className="relative">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <Eye className="w-4 h-4" style={{ color: hColors.text }} />
+                  <span className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>
+                    {formatModelName(hoveredModel)}
+                  </span>
+                  <span className="px-2 py-0.5 rounded-md text-[10px] font-mono font-medium" style={{
+                    background: hColors.bg, color: hColors.text, border: `1px solid ${hColors.bar}30`,
+                  }}>
+                    {hoveredAnalytics.count} assets
+                  </span>
                 </div>
+                {hPitRate != null && (
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-16 h-2 rounded-full overflow-hidden" style={{ background: 'rgba(0,0,0,0.3)' }}>
+                      <div className="h-full rounded-full" style={{
+                        width: `${hPitRate}%`,
+                        background: hPitRate >= 90 ? 'var(--accent-emerald)' : hPitRate >= 70 ? 'var(--accent-amber)' : 'var(--accent-rose)',
+                      }} />
+                    </div>
+                    <span className="text-[10px] font-mono font-semibold" style={{
+                      color: hPitRate >= 90 ? 'var(--accent-emerald)' : hPitRate >= 70 ? 'var(--accent-amber)' : 'var(--accent-rose)',
+                    }}>PIT {hPitRate.toFixed(0)}%</span>
+                  </div>
+                )}
               </div>
-            ))}
+              <div className="grid grid-cols-4 md:grid-cols-8 gap-2">
+                {[
+                  { label: 'Avg BIC', value: hoveredAnalytics.avg_bic?.toFixed(0), color: '#b49aff' },
+                  { label: 'Best BIC', value: hoveredAnalytics.best_bic?.toFixed(0), color: 'var(--accent-cyan)' },
+                  { label: 'Worst BIC', value: hoveredAnalytics.worst_bic?.toFixed(0), color: 'var(--accent-rose)' },
+                  { label: 'Median BIC', value: hoveredAnalytics.median_bic?.toFixed(0), color: '#94a3b8' },
+                  { label: 'Avg KS p', value: hoveredAnalytics.avg_ks_pvalue?.toFixed(4), color: hoveredAnalytics.avg_ks_pvalue != null && hoveredAnalytics.avg_ks_pvalue >= 0.05 ? 'var(--accent-emerald)' : 'var(--accent-rose)' },
+                  { label: 'PIT Pass', value: hPitTotal > 0 ? `${hoveredAnalytics.pit_pass}/${hPitTotal}` : null, color: hPitRate != null && hPitRate >= 90 ? 'var(--accent-emerald)' : 'var(--accent-amber)' },
+                  { label: 'Avg Weight', value: hoveredAnalytics.avg_weight != null ? `${(hoveredAnalytics.avg_weight * 100).toFixed(1)}%` : null, color: hColors.text },
+                  { label: 'Avg Obs', value: hoveredAnalytics.avg_n_obs?.toFixed(0), color: '#94a3b8' },
+                ].map(p => (
+                  <div key={p.label} className="p-2 rounded-lg text-center" style={{ background: 'rgba(0,0,0,0.2)' }}>
+                    <div className="text-[7px] uppercase tracking-widest mb-1" style={{ color: '#7a8ba4' }}>{p.label}</div>
+                    <div className="text-[11px] font-mono font-bold" style={{ color: p.value ? p.color : 'var(--text-muted)' }}>
+                      {p.value ?? '--'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {hoveredAnalytics.top_symbols && hoveredAnalytics.top_symbols.length > 0 && (
+                <div className="mt-2.5 flex items-center gap-1.5 flex-wrap">
+                  <span className="text-[9px] uppercase tracking-wider" style={{ color: '#7a8ba4' }}>Top:</span>
+                  {hoveredAnalytics.top_symbols.slice(0, 6).map(s => (
+                    <span key={s} className="px-1.5 py-0.5 rounded text-[9px] font-mono font-medium" style={{
+                      background: 'rgba(0,0,0,0.25)', color: 'var(--text-secondary)', border: '1px solid rgba(255,255,255,0.05)',
+                    }}>
+                      {s}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 });
