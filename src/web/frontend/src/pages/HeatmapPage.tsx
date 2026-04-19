@@ -12,6 +12,7 @@ import { DashboardSkeleton } from '../components/CosmicSkeleton';
 import { CosmicErrorCard } from '../components/CosmicErrorState';
 import { DashboardEmpty } from '../components/CosmicEmptyState';
 import BuySellZoneCharts from '../components/BuySellZoneCharts';
+import MiniPriceChart from '../components/MiniPriceChart';
 import { formatHorizon } from '../utils/horizons';
 import React, {
   useState, useMemo, useCallback, useEffect, useRef,
@@ -85,6 +86,11 @@ function ExpandedAssetRow({
   const forecastQ = useQuery({
     queryKey: ['forecast', ticker],
     queryFn: () => api.chartForecast(ticker),
+    staleTime: 120_000,
+  });
+  const indQ = useQuery({
+    queryKey: ['indicators', ticker, 365],
+    queryFn: () => api.chartIndicators(ticker, 365),
     staleTime: 120_000,
   });
 
@@ -172,11 +178,11 @@ function ExpandedAssetRow({
               })}
             </div>
 
-            {/* Zone charts */}
+            {/* Main price chart with SMA / Bollinger / Forecast */}
             {ohlcvLoading && (
               <div className="flex items-center justify-center py-10 gap-2">
                 <Loader2 className="w-4 h-4 animate-spin" style={{ color: 'var(--accent-violet)' }} />
-                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Loading zone charts...</span>
+                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Loading chart...</span>
               </div>
             )}
             {!ohlcvLoading && !hasOhlcv && (
@@ -184,13 +190,25 @@ function ExpandedAssetRow({
                 <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>No chart data available for {ticker}</span>
               </div>
             )}
-            {!ohlcvLoading && hasOhlcv && hasForecast && (
-              <BuySellZoneCharts
+            {!ohlcvLoading && hasOhlcv && (
+              <MiniPriceChart
                 ohlcv={ohlcvQ.data!.data}
-                forecasts={forecastQ.data!.forecasts}
-                symbol={ticker}
-                compact
+                indicators={indQ.data?.indicators ?? null}
+                forecast={forecastQ.data ?? null}
+                height={340}
               />
+            )}
+
+            {/* Zone charts */}
+            {!ohlcvLoading && hasOhlcv && hasForecast && (
+              <div className="mt-3">
+                <BuySellZoneCharts
+                  ohlcv={ohlcvQ.data!.data}
+                  forecasts={forecastQ.data!.forecasts}
+                  symbol={ticker}
+                  compact
+                />
+              </div>
             )}
           </div>
         </div>
