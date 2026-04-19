@@ -80,10 +80,14 @@ def get_price_data(symbol: str, tail: int = 500) -> Optional[List[Dict[str, Any]
         List of {date, open, high, low, close, volume} dicts
     """
     # Try common filename patterns
+    # Note: currency symbols use =X (e.g. EURUSD=X) but files use _X (EURUSD_X.csv)
+    sanitized = symbol.replace('=', '_').replace('-', '_')
     for pattern in [f"{symbol}_1d.csv", f"{symbol.upper()}_1d.csv",
                     f"{symbol}.csv", f"{symbol.upper()}.csv",
                     f"{symbol.replace('-', '_')}_1d.csv",
-                    f"{symbol.replace('-', '_')}.csv"]:
+                    f"{symbol.replace('-', '_')}.csv",
+                    f"{sanitized}_1d.csv", f"{sanitized.upper()}_1d.csv",
+                    f"{sanitized}.csv", f"{sanitized.upper()}.csv"]:
         filepath = os.path.join(PRICES_DIR, pattern)
         if os.path.isfile(filepath):
             break
