@@ -77,7 +77,7 @@ export const api = {
   taskStatus: (taskId: string) => fetchApi<TaskStatusResponse>(`/api/tasks/status/${taskId}`),
 
   // Cache refresh (invalidate in-memory server cache)
-  refreshTuneCache: () => postApi<{ status: string }>('/api/tuning/refresh-cache', {}),
+  refreshTuneCache: () => postApi<{ status: string }>('/api/tune/refresh-cache', {}),
   refreshSignalCache: () => postApi<{ status: string }>('/api/signals/refresh-cache', {}),
 
   // Diagnostics
@@ -363,6 +363,11 @@ export interface TuneAsset {
   ad_critical: number | null;
   ad_pass: boolean | null;
   num_models: number;
+  bic: number | null;
+  phi: number | null;
+  nu: number | null;
+  n_obs: number | null;
+  top_weight: number | null;
   cache_version: string;
   last_tuned: string;
   file_size_kb: number;

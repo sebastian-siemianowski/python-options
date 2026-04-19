@@ -3,10 +3,13 @@ import { useState, useRef, useEffect, useCallback, useSyncExternalStore, useMemo
 import { api } from '../api';
 import type { TuneAsset } from '../api';
 import PageHeader from '../components/PageHeader';
-import StatCard from '../components/StatCard';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { TuningSkeleton } from '../components/CosmicSkeleton';
-import { Settings, CheckCircle, XCircle, AlertCircle, RefreshCw, Play, Square, Terminal, Copy, ArrowDown, ArrowRight } from 'lucide-react';
+import {
+  Settings, CheckCircle, XCircle, AlertCircle, RefreshCw, Play, Square, Terminal,
+  Copy, ArrowDown, ArrowRight, Clock, Zap, TrendingUp, BarChart3, Activity,
+  ChevronDown, ChevronUp, Search, Filter, Layers, Target, Timer, Award,
+} from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -21,12 +24,37 @@ import {
 } from '../stores/retuneStore';
 
 type TuneMode = 'retune' | 'tune' | 'calibrate';
+type SortKey = 'symbol' | 'best_model' | 'num_models' | 'ad_pass' | 'bic' | 'phi' | 'nu' | 'n_obs' | 'top_weight' | 'file_size_kb';
+type SortDir = 'asc' | 'desc' | null;
+
+function formatElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  const h = Math.floor(m / 60);
+  if (h > 0) return `${h}h ${m % 60}m ${s % 60}s`;
+  if (m > 0) return `${m}m ${s % 60}s`;
+  return `${s}s`;
+}
+
+function useElapsedTime(startedAt: number | null, finishedAt: number | null, running: boolean) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!running || !startedAt) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [running, startedAt]);
+  if (!startedAt) return null;
+  const end = finishedAt ?? (running ? now : startedAt);
+  return end - startedAt;
+}
 
 export default function TuningPage() {
   const [search, setSearch] = useState('');
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [showFailuresOnly, setShowFailuresOnly] = useState(false);
-  const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
+  const [viewMode, setViewMode] = useState<'grid' | 'table'>('table');
+  const [sortKey, setSortKey] = useState<SortKey>('symbol');
+  const [sortDir, setSortDir] = useState<SortDir>('asc');
   const logEndRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -37,6 +65,8 @@ export default function TuningPage() {
   const retuneMode = retune.mode;
   const showRetunePanel = retune.showPanel;
 
+  const elapsed = useElapsedTime(retune.startedAt, retune.finishedAt, retuneStatus === 'running');
+
   const listQ = useQuery({ queryKey: ['tuneList'], queryFn: api.tuneList });
   const statsQ = useQuery({ queryKey: ['tuneStats'], queryFn: api.tuneStats });
   const detailQ = useQuery({
@@ -46,8 +76,8 @@ export default function TuningPage() {
   });
 
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [retuneLogs]);
+    if (showRetunePanel) logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [retuneLogs, showRetunePanel]);
 
   const handleStartRetune = useCallback(() => {
     storeStartRetune(() => {
@@ -60,16 +90,47 @@ export default function TuningPage() {
     storeStopRetune();
   }, []);
 
+  const handleSort = useCallback((key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir(d => d === 'asc' ? 'desc' : d === 'desc' ? null : 'asc');
+    } else {
+      setSortKey(key);
+      setSortDir('desc');
+    }
+  }, [sortKey]);
+
   if (listQ.isLoading) return <TuningSkeleton />;
 
   const assets = listQ.data?.assets || [];
   const stats = statsQ.data;
 
-  const filtered = assets.filter((a) => {
+  const filtered = assets.filter((a: TuneAsset) => {
     const matchSearch = a.symbol.toLowerCase().includes(search.toLowerCase());
     const matchFilter = showFailuresOnly ? a.ad_pass === false : true;
     return matchSearch && matchFilter;
   });
+
+  const sorted = sortDir ? [...filtered].sort((a: TuneAsset, b: TuneAsset) => {
+    let av: number | string | boolean | null = null;
+    let bv: number | string | boolean | null = null;
+    switch (sortKey) {
+      case 'symbol': av = a.symbol; bv = b.symbol; break;
+      case 'best_model': av = a.best_model; bv = b.best_model; break;
+      case 'num_models': av = a.num_models; bv = b.num_models; break;
+      case 'ad_pass': av = a.ad_pass === true ? 1 : a.ad_pass === false ? -1 : 0; bv = b.ad_pass === true ? 1 : b.ad_pass === false ? -1 : 0; break;
+      case 'bic': av = a.bic; bv = b.bic; break;
+      case 'phi': av = a.phi; bv = b.phi; break;
+      case 'nu': av = a.nu; bv = b.nu; break;
+      case 'n_obs': av = a.n_obs; bv = b.n_obs; break;
+      case 'top_weight': av = a.top_weight; bv = b.top_weight; break;
+      case 'file_size_kb': av = a.file_size_kb; bv = b.file_size_kb; break;
+    }
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    const cmp = typeof av === 'string' ? av.localeCompare(bv as string) : (av as number) - (bv as number);
+    return sortDir === 'asc' ? cmp : -cmp;
+  }) : filtered;
 
   const modelData = stats?.models_distribution
     ? Object.entries(stats.models_distribution)
@@ -77,189 +138,204 @@ export default function TuningPage() {
         .sort((a, b) => b.count - a.count)
     : [];
 
-  const modeLabels: { id: TuneMode; label: string }[] = [
-    { id: 'retune', label: 'Full Retune' },
-    { id: 'tune', label: 'Tune Only' },
-    { id: 'calibrate', label: 'Calibrate Failed' },
+  const modeLabels: { id: TuneMode; label: string; desc: string }[] = [
+    { id: 'retune', label: 'Full Retune', desc: 'Re-estimate all models' },
+    { id: 'tune', label: 'Tune Only', desc: 'Fit new assets only' },
+    { id: 'calibrate', label: 'Calibrate', desc: 'Fix failing PIT only' },
   ];
+
+  const passRate = stats ? Math.round((stats.pit_pass / Math.max(stats.total, 1)) * 100) : 0;
 
   return (
     <>
       <PageHeader
         title="Model Tuning"
         action={
-          <div className="flex items-center gap-2">
-            <button
-              onClick={async () => {
-                await api.refreshTuneCache();
-                queryClient.invalidateQueries({ queryKey: ['tuneList'] });
-                queryClient.invalidateQueries({ queryKey: ['tuneStats'] });
-              }}
-              disabled={listQ.isFetching}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm transition disabled:opacity-50"
-              style={{
-                background: 'var(--violet-8)',
-                color: '#b49aff',
-                border: '1px solid var(--violet-12)',
-              }}
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${listQ.isFetching ? 'animate-spin' : ''}`} />
-              Reload
-            </button>
-          </div>
+          <button
+            onClick={async () => {
+              await api.refreshTuneCache();
+              queryClient.invalidateQueries({ queryKey: ['tuneList'] });
+              queryClient.invalidateQueries({ queryKey: ['tuneStats'] });
+            }}
+            disabled={listQ.isFetching}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm transition disabled:opacity-50"
+            style={{ background: 'var(--violet-8)', color: '#b49aff', border: '1px solid var(--violet-12)' }}
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${listQ.isFetching ? 'animate-spin' : ''}`} />
+            Reload
+          </button>
         }
       >
-        {assets.length} assets tuned -- BMA model competition with PIT calibration
+        {assets.length} assets tuned &middot; BMA model competition with PIT calibration
       </PageHeader>
 
-      {/* ── Mission Control Panel (Story 6.1) ─────────────────────── */}
-      <div className="glass-card p-6 mb-6 fade-up" style={{
-        background: 'linear-gradient(135deg, var(--violet-4) 0%, rgba(99,102,241,0.02) 50%, var(--violet-4) 100%)',
-        backdropFilter: 'blur(32px)',
+      {/* ── Summary Cards ─────────────────────────────────────────── */}
+      {stats && (
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6 fade-up">
+          <SummaryCard icon={<Layers className="w-4 h-4" />} label="Total Tuned" value={stats.total} color="#b49aff" />
+          <SummaryCard icon={<CheckCircle className="w-4 h-4" />} label="PIT Pass" value={stats.pit_pass} sub={`${passRate}%`} color="var(--accent-emerald)" />
+          <SummaryCard icon={<XCircle className="w-4 h-4" />} label="PIT Fail" value={stats.pit_fail} color="var(--accent-rose)" />
+          <SummaryCard icon={<AlertCircle className="w-4 h-4" />} label="Unknown" value={stats.pit_unknown} color="var(--accent-amber)" />
+          <SummaryCard icon={<BarChart3 className="w-4 h-4" />} label="Model Types" value={modelData.length} color="var(--accent-cyan)" />
+        </div>
+      )}
+
+      {/* ── Mission Control ───────────────────────────────────────── */}
+      <div className="glass-card p-5 mb-6 fade-up" style={{
+        background: 'linear-gradient(135deg, var(--violet-4) 0%, rgba(99,102,241,0.03) 50%, var(--violet-4) 100%)',
       }}>
-        <div className="flex items-center gap-4 flex-wrap">
-          {/* Mode selector - segmented pills */}
-          <div className="flex gap-1 p-0.5 rounded-2xl" style={{ background: 'var(--violet-4)' }}>
-            {modeLabels.map(({ id, label }) => (
-              <button key={id}
-                onClick={() => setRetuneMode(id)}
-                disabled={retuneStatus === 'running'}
-                className="px-4 py-2 rounded-2xl text-[13px] font-medium transition-all duration-200 disabled:opacity-50"
-                style={retuneMode === id ? {
-                  background: 'var(--violet-20)',
-                  color: '#b49aff',
-                  border: '1px solid var(--violet-20)',
-                  boxShadow: '0 0 8px var(--violet-10)',
-                } : {
-                  background: 'transparent',
-                  color: '#94a3b8',
-                  border: '1px solid transparent',
+        <div className="flex items-center justify-between flex-wrap gap-4">
+          <div className="flex items-center gap-3 flex-wrap">
+            {/* Mode selector */}
+            <div className="flex gap-1 p-0.5 rounded-2xl" style={{ background: 'var(--violet-4)' }}>
+              {modeLabels.map(({ id, label }) => (
+                <button key={id}
+                  onClick={() => setRetuneMode(id)}
+                  disabled={retuneStatus === 'running'}
+                  className="px-4 py-2 rounded-2xl text-[13px] font-medium transition-all duration-200 disabled:opacity-50"
+                  style={retuneMode === id ? {
+                    background: 'var(--violet-20)', color: '#b49aff',
+                    border: '1px solid var(--violet-20)', boxShadow: '0 0 8px var(--violet-10)',
+                  } : { background: 'transparent', color: '#94a3b8', border: '1px solid transparent' }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {/* Start/Stop */}
+            {retuneStatus === 'running' ? (
+              <button onClick={handleStopRetune}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-2xl text-sm font-semibold text-white transition-all"
+                style={{
+                  background: 'linear-gradient(135deg, var(--accent-rose) 0%, #e11d48 100%)',
+                  boxShadow: '0 0 0 3px var(--rose-15), 0 4px 16px rgba(255,107,138,0.2)',
+                  animation: 'pulse 1.5s ease-in-out infinite',
                 }}
               >
-                {label}
+                <Square className="w-3.5 h-3.5" /> Stop
               </button>
-            ))}
+            ) : (
+              <button onClick={handleStartRetune}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-2xl text-sm font-semibold text-white transition-all hover:scale-[1.02]"
+                style={{
+                  background: 'linear-gradient(135deg, var(--accent-violet) 0%, var(--accent-indigo) 100%)',
+                  boxShadow: '0 4px 16px var(--violet-25)',
+                }}
+              >
+                <Play className="w-3.5 h-3.5" /> Start
+              </button>
+            )}
+
+            <StatusBadge status={retuneStatus} />
           </div>
 
-          {/* Start/Stop button */}
-          {retuneStatus === 'running' ? (
-            <button onClick={handleStopRetune}
-              className="flex items-center gap-2 px-6 py-3 rounded-3xl text-sm font-semibold text-white transition-all duration-200"
-              style={{
-                background: 'linear-gradient(135deg, var(--accent-rose) 0%, #e11d48 100%)',
-                minWidth: 160, height: 48,
-                boxShadow: '0 0 0 4px var(--rose-15), 0 4px 20px rgba(255,107,138,0.2)',
-                animation: 'pulse 1.5s ease-in-out infinite',
-              }}
-            >
-              <Square className="w-4 h-4" /> Stop
-            </button>
-          ) : (
-            <button onClick={handleStartRetune}
-              className="flex items-center gap-2 px-6 py-3 rounded-3xl text-sm font-semibold text-white transition-all duration-200 hover:scale-[1.02]"
-              style={{
-                background: 'linear-gradient(135deg, var(--accent-violet) 0%, var(--accent-indigo) 100%)',
-                minWidth: 160, height: 48,
-                boxShadow: '0 4px 20px var(--violet-25)',
-              }}
-            >
-              <Play className="w-4 h-4" /> Start Retune
-            </button>
-          )}
-
-          {/* Status badge */}
-          <StatusBadge status={retuneStatus} />
-
-          {/* Console toggle */}
-          {retuneLogs.length > 0 && (
-            <button
-              onClick={() => setShowPanel(!showRetunePanel)}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm transition-all duration-200"
-              style={{
-                background: showRetunePanel ? 'var(--violet-15)' : 'var(--violet-6)',
-                color: showRetunePanel ? '#b49aff' : '#94a3b8',
-                border: `1px solid ${showRetunePanel ? 'var(--violet-25)' : 'var(--violet-8)'}`,
-              }}
-            >
-              <Terminal className="w-3.5 h-3.5" />
-            </button>
-          )}
+          {/* Live stats during retune */}
+          <div className="flex items-center gap-4 text-xs">
+            {elapsed != null && (
+              <div className="flex items-center gap-1.5" style={{ color: '#b49aff' }}>
+                <Timer className="w-3.5 h-3.5" />
+                <span className="font-mono font-medium">{formatElapsed(elapsed)}</span>
+              </div>
+            )}
+            {retuneStatus === 'running' && retune.totalAssets > 0 && (
+              <>
+                <div className="flex items-center gap-1.5" style={{ color: 'var(--accent-emerald)' }}>
+                  <CheckCircle className="w-3 h-3" /> {retune.successCount}
+                </div>
+                {retune.failCount > 0 && (
+                  <div className="flex items-center gap-1.5" style={{ color: 'var(--accent-rose)' }}>
+                    <XCircle className="w-3 h-3" /> {retune.failCount}
+                  </div>
+                )}
+                {retune.currentAsset && (
+                  <span className="font-mono font-semibold" style={{ color: '#b49aff' }}>{retune.currentAsset}</span>
+                )}
+              </>
+            )}
+            {retuneLogs.length > 0 && (
+              <button
+                onClick={() => setShowPanel(!showRetunePanel)}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] transition-all"
+                style={{
+                  background: showRetunePanel ? 'var(--violet-15)' : 'var(--violet-6)',
+                  color: showRetunePanel ? '#b49aff' : '#94a3b8',
+                  border: `1px solid ${showRetunePanel ? 'var(--violet-25)' : 'var(--violet-8)'}`,
+                }}
+              >
+                <Terminal className="w-3 h-3" /> Log
+              </button>
+            )}
+          </div>
         </div>
+
+        {/* Progress bar */}
+        {retuneStatus === 'running' && retune.totalAssets > 0 && (
+          <div className="mt-3">
+            <div className="flex items-center justify-between text-[10px] mb-1" style={{ color: '#94a3b8' }}>
+              <span>{retune.currentPhase || 'Processing...'}</span>
+              <span className="font-mono">{retune.totalAssets} assets processed</span>
+            </div>
+            <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--violet-6)' }}>
+              <div className="h-full rounded-full transition-all duration-700 ease-out" style={{
+                width: `${Math.min((retune.totalAssets / Math.max(assets.length, 1)) * 100, 100)}%`,
+                background: 'linear-gradient(90deg, var(--accent-violet), var(--accent-cyan))',
+              }} />
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Retune progress panel */}
+      {/* ── Retune Log Panel ──────────────────────────────────────── */}
       {showRetunePanel && (
-        <RetunePanel
-          status={retuneStatus}
-          logs={retuneLogs}
-          logEndRef={logEndRef}
-          onClose={() => setShowPanel(false)}
-        />
+        <RetunePanel status={retuneStatus} logs={retuneLogs} logEndRef={logEndRef}
+          onClose={() => setShowPanel(false)} elapsed={elapsed} retune={retune} />
       )}
 
-      {/* ── Stats cards ───────────────────────────────────────────── */}
-      {stats && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6 fade-up">
-          <StatCard title="Total Tuned" value={stats.total} icon={<Settings className="w-5 h-5" />} color="blue" />
-          <StatCard title="PIT Pass" value={stats.pit_pass} icon={<CheckCircle className="w-5 h-5" />} color="green" />
-          <StatCard title="PIT Fail" value={stats.pit_fail} icon={<XCircle className="w-5 h-5" />} color="red" />
-          <StatCard title="Unknown" value={stats.pit_unknown} icon={<AlertCircle className="w-5 h-5" />} color="amber" />
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 fade-up-delay-1">
-        {/* ── Model Distribution (Story 6.2) ──────────────────────── */}
+      {/* ── Main Content Grid ─────────────────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 fade-up-delay-1">
+        {/* Model Distribution */}
         <ModelDistributionChart data={modelData} />
 
-        {/* ── Asset Health Grid / Table (Story 6.3) ───────────────── */}
-        <div className="glass-card md:col-span-2 overflow-hidden">
+        {/* Asset Table */}
+        <div className="glass-card lg:col-span-3 overflow-hidden">
+          {/* Controls bar */}
           <div className="px-3 py-2.5 flex items-center gap-2" style={{ borderBottom: '1px solid var(--violet-8)' }}>
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search assets..."
-              className="flex-1 px-3 py-2 rounded-lg text-sm outline-none transition-all duration-200 focus-ring"
-              style={{
-                background: 'rgba(10,10,26,0.6)',
-                border: '1px solid var(--violet-8)',
-                color: 'var(--text-primary)',
-                backdropFilter: 'blur(8px)',
-              }}
-            />
-            {/* Failures only toggle */}
-            <button
-              onClick={() => setShowFailuresOnly(!showFailuresOnly)}
-              className="px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all duration-200"
+            <div className="relative flex-1">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: '#7a8ba4' }} />
+              <input type="text" value={search} onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search assets..."
+                className="w-full pl-8 pr-3 py-2 rounded-lg text-sm outline-none transition-all focus-ring"
+                style={{ background: 'rgba(10,10,26,0.6)', border: '1px solid var(--violet-8)', color: 'var(--text-primary)' }}
+              />
+            </div>
+            <button onClick={() => setShowFailuresOnly(!showFailuresOnly)}
+              className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all"
               style={{
                 background: showFailuresOnly ? 'var(--rose-15)' : 'transparent',
                 color: showFailuresOnly ? 'var(--accent-rose)' : '#7a8ba4',
                 border: `1px solid ${showFailuresOnly ? 'rgba(255,107,138,0.2)' : 'var(--violet-6)'}`,
               }}
             >
-              {showFailuresOnly ? 'Failures' : 'All'}
+              {showFailuresOnly ? 'Failures Only' : 'All'}
             </button>
-            {/* View mode toggle */}
             <div className="flex gap-0.5">
               {(['grid', 'table'] as const).map(m => (
-                <button key={m}
-                  onClick={() => setViewMode(m)}
-                  className="px-2 py-1 rounded text-[11px] font-medium transition-all duration-150"
-                  style={{
-                    background: viewMode === m ? 'var(--violet-12)' : 'transparent',
-                    color: viewMode === m ? '#b49aff' : '#7a8ba4',
-                  }}
+                <button key={m} onClick={() => setViewMode(m)}
+                  className="px-2 py-1 rounded text-[11px] font-medium transition-all"
+                  style={{ background: viewMode === m ? 'var(--violet-12)' : 'transparent', color: viewMode === m ? '#b49aff' : '#7a8ba4' }}
                 >
-                  {m === 'grid' ? 'Stars' : 'Table'}
+                  {m === 'grid' ? 'Grid' : 'Table'}
                 </button>
               ))}
             </div>
+            <span className="text-[10px] font-mono" style={{ color: '#7a8ba4' }}>{sorted.length} assets</span>
           </div>
 
-          {/* Summary bar (Story 6.3 AC-4) */}
+          {/* Health bar */}
           {stats && (
             <div className="px-3 py-1.5 flex items-center gap-2 text-[10px]" style={{ background: 'var(--violet-2)' }}>
-              <div className="flex-1 h-2.5 rounded-md overflow-hidden flex" style={{ background: 'var(--violet-4)' }}>
+              <div className="flex-1 h-2 rounded-md overflow-hidden flex" style={{ background: 'var(--violet-4)' }}>
                 <div style={{ flex: stats.pit_pass, background: 'linear-gradient(90deg, var(--accent-emerald), #6ff0c0)' }} />
                 <div style={{ flex: stats.pit_fail, background: 'linear-gradient(90deg, var(--accent-rose), #ff5577)' }} />
                 <div style={{ flex: stats.pit_unknown, background: 'rgba(100,116,139,0.3)' }} />
@@ -271,37 +347,24 @@ export default function TuningPage() {
           )}
 
           {viewMode === 'grid' ? (
-            /* Star Map Grid (Story 6.3) */
-            <div className="p-3 overflow-y-auto max-h-[400px]">
+            <div className="p-3 overflow-y-auto max-h-[500px]">
               <div className="flex flex-wrap gap-1.5">
-                {filtered.slice(0, 200).map(a => {
+                {sorted.slice(0, 300).map((a: TuneAsset) => {
                   const isPassing = a.ad_pass === true;
                   const isFailing = a.ad_pass === false;
                   const isSelected = selectedSymbol === a.symbol;
                   return (
                     <button key={a.symbol}
                       onClick={() => setSelectedSymbol(a.symbol)}
-                      title={`${a.symbol} - ${formatModelName(a.best_model)} - PIT: ${a.ad_pass == null ? 'Unknown' : a.ad_pass ? 'Pass' : 'Fail'}`}
+                      title={`${a.symbol} - ${formatModelName(a.best_model)} - PIT: ${a.ad_pass == null ? 'Unknown' : a.ad_pass ? 'Pass' : 'Fail'}${a.bic ? ` - BIC: ${a.bic.toFixed(0)}` : ''}`}
                       className="transition-all duration-150"
                       style={{
-                        width: 28, height: 28, borderRadius: 6,
-                        fontSize: 7, fontWeight: 600, lineHeight: '28px', textAlign: 'center',
+                        width: 32, height: 32, borderRadius: 6,
+                        fontSize: 7, fontWeight: 600, lineHeight: '32px', textAlign: 'center',
                         color: isPassing ? 'var(--accent-emerald)' : isFailing ? 'var(--accent-rose)' : '#7a8ba4',
-                        background: isPassing
-                          ? 'var(--emerald-15)'
-                          : isFailing
-                          ? 'rgba(255,107,138,0.2)'
-                          : 'rgba(100,116,139,0.08)',
-                        boxShadow: isSelected
-                          ? '0 0 0 2px var(--accent-violet), 0 0 8px var(--violet-30)'
-                          : isPassing
-                          ? '0 0 4px var(--emerald-30)'
-                          : isFailing
-                          ? '0 0 6px var(--rose-30)'
-                          : 'none',
-                        opacity: showFailuresOnly && !isFailing ? 0.15 : 1,
-                        transform: isSelected ? 'scale(1.2)' : undefined,
-                        animation: isFailing ? 'pulse 2s ease-in-out infinite' : undefined,
+                        background: isPassing ? 'var(--emerald-15)' : isFailing ? 'rgba(255,107,138,0.2)' : 'rgba(100,116,139,0.08)',
+                        boxShadow: isSelected ? '0 0 0 2px var(--accent-violet), 0 0 8px var(--violet-30)' : isPassing ? '0 0 4px var(--emerald-30)' : isFailing ? '0 0 6px var(--rose-30)' : 'none',
+                        transform: isSelected ? 'scale(1.15)' : undefined,
                       }}
                     >
                       {a.symbol.slice(0, 3)}
@@ -311,33 +374,52 @@ export default function TuningPage() {
               </div>
             </div>
           ) : (
-            /* Table View */
-            <div className="overflow-y-auto max-h-[400px]">
+            <div className="overflow-y-auto max-h-[500px]">
               <table className="premium-table w-full text-xs">
-                <thead>
+                <thead className="sticky top-0" style={{ background: 'rgba(10,10,26,0.95)', zIndex: 10 }}>
                   <tr style={{ borderBottom: '1px solid var(--violet-8)' }}>
-                    <th className="text-left px-3 py-2" style={{ color: 'var(--text-muted)' }}>Symbol</th>
-                    <th className="text-left px-3 py-2" style={{ color: 'var(--text-muted)' }}>Best Model</th>
-                    <th className="text-center px-3 py-2" style={{ color: 'var(--text-muted)' }}>Models</th>
-                    <th className="text-center px-3 py-2" style={{ color: 'var(--text-muted)' }}>PIT</th>
-                    <th className="text-right px-3 py-2" style={{ color: 'var(--text-muted)' }}>Size</th>
+                    <SortHeader label="Symbol" sortKey="symbol" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="left" />
+                    <SortHeader label="Best Model" sortKey="best_model" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="left" />
+                    <SortHeader label="BIC" sortKey="bic" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="right" />
+                    <SortHeader label="Models" sortKey="num_models" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="center" />
+                    <SortHeader label="PIT" sortKey="ad_pass" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="center" />
+                    <SortHeader label="phi" sortKey="phi" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="right" />
+                    <SortHeader label="nu" sortKey="nu" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="right" />
+                    <SortHeader label="Top W%" sortKey="top_weight" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="right" />
+                    <SortHeader label="Obs" sortKey="n_obs" currentKey={sortKey} dir={sortDir} onSort={handleSort} align="right" />
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.slice(0, 100).map(a => (
+                  {sorted.slice(0, 300).map((a: TuneAsset) => (
                     <tr key={a.symbol}
                       onClick={() => setSelectedSymbol(a.symbol)}
-                      className="cursor-pointer transition-colors duration-150"
+                      className="cursor-pointer transition-colors duration-150 hover:bg-[rgba(139,92,246,0.06)]"
                       style={{
                         borderBottom: '1px solid var(--violet-4)',
                         background: selectedSymbol === a.symbol ? 'var(--violet-6)' : undefined,
                       }}
                     >
-                      <td className="px-3 py-2 font-medium" style={{ color: 'var(--text-luminous)' }}>{a.symbol}</td>
-                      <td className="px-3 py-2" style={{ color: 'var(--text-secondary)' }}>{formatModelName(a.best_model)}</td>
+                      <td className="px-3 py-2 font-semibold" style={{ color: 'var(--text-luminous)' }}>{a.symbol}</td>
+                      <td className="px-3 py-2" style={{ color: 'var(--text-secondary)' }}>{formatModelNameShort(a.best_model)}</td>
+                      <td className="px-3 py-2 text-right font-mono" style={{ color: a.bic ? '#b49aff' : 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                        {a.bic ? a.bic.toFixed(0) : '--'}
+                      </td>
                       <td className="px-3 py-2 text-center" style={{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>{a.num_models}</td>
                       <td className="px-3 py-2 text-center"><PitBadge asset={a} /></td>
-                      <td className="px-3 py-2 text-right" style={{ color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>{a.file_size_kb}KB</td>
+                      <td className="px-3 py-2 text-right font-mono" style={{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
+                        {a.phi != null ? a.phi.toFixed(4) : '--'}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono" style={{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
+                        {a.nu != null ? a.nu.toFixed(1) : '--'}
+                      </td>
+                      <td className="px-3 py-2 text-right" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                        <span className="font-mono text-[10px]" style={{ color: (a.top_weight ?? 0) > 0.5 ? 'var(--accent-emerald)' : 'var(--text-secondary)' }}>
+                          {a.top_weight != null ? `${(a.top_weight * 100).toFixed(1)}%` : '--'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono" style={{ color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                        {a.n_obs ?? '--'}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -347,7 +429,7 @@ export default function TuningPage() {
         </div>
       </div>
 
-      {/* ── Detail Panel (Story 6.4) ──────────────────────────────── */}
+      {/* ── Detail Panel ──────────────────────────────────────────── */}
       {selectedSymbol && detailQ.data?.data && (
         <DetailPanel symbol={selectedSymbol} data={detailQ.data.data} onViewDiagnostics={() => navigate('/diagnostics')} />
       )}
@@ -356,42 +438,80 @@ export default function TuningPage() {
 }
 
 /* ══════════════════════════════════════════════════════════════════
-   Story 6.1: Status Badge
+   Summary Card
+   ══════════════════════════════════════════════════════════════════ */
+
+function SummaryCard({ icon, label, value, sub, color }: { icon: React.ReactNode; label: string; value: number; sub?: string; color: string }) {
+  return (
+    <div className="glass-card p-4 flex items-center gap-3" style={{
+      borderLeft: `3px solid ${color}`,
+      background: 'linear-gradient(135deg, var(--violet-3), rgba(99,102,241,0.02))',
+    }}>
+      <div className="p-2 rounded-lg" style={{ background: `${color}15`, color }}>{icon}</div>
+      <div>
+        <div className="text-xl font-bold font-mono" style={{ color, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+        <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{label} {sub && <span style={{ color }}>{sub}</span>}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   Sort Header
+   ══════════════════════════════════════════════════════════════════ */
+
+function SortHeader({ label, sortKey: sk, currentKey, dir, onSort, align }: {
+  label: string; sortKey: SortKey; currentKey: SortKey; dir: SortDir;
+  onSort: (k: SortKey) => void; align: 'left' | 'center' | 'right';
+}) {
+  const active = currentKey === sk && dir != null;
+  return (
+    <th className={`px-3 py-2 text-${align} cursor-pointer select-none transition-colors hover:text-[#b49aff]`}
+      style={{ color: active ? '#b49aff' : 'var(--text-muted)' }}
+      onClick={() => onSort(sk)}
+    >
+      <span className="inline-flex items-center gap-1">
+        {label}
+        {active && dir === 'asc' && <ChevronUp className="w-3 h-3" />}
+        {active && dir === 'desc' && <ChevronDown className="w-3 h-3" />}
+      </span>
+    </th>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   Status Badge
    ══════════════════════════════════════════════════════════════════ */
 
 function StatusBadge({ status }: { status: RetuneStatus }) {
   const config = {
-    idle: { label: 'Idle', bg: 'rgba(100,116,139,0.12)', color: '#94a3b8' },
-    running: { label: 'Running', bg: 'var(--amber-12)', color: 'var(--accent-amber)' },
-    completed: { label: 'Completed', bg: 'var(--emerald-12)', color: 'var(--accent-emerald)' },
-    failed: { label: 'Failed', bg: 'var(--rose-12)', color: 'var(--accent-rose)' },
-  }[status] ?? { label: status, bg: 'rgba(100,116,139,0.12)', color: '#94a3b8' };
+    idle: { label: 'Ready', bg: 'rgba(100,116,139,0.12)', color: '#94a3b8', dot: false },
+    running: { label: 'Running', bg: 'var(--amber-12)', color: 'var(--accent-amber)', dot: true },
+    completed: { label: 'Completed', bg: 'var(--emerald-12)', color: 'var(--accent-emerald)', dot: false },
+    failed: { label: 'Failed', bg: 'var(--rose-12)', color: 'var(--accent-rose)', dot: false },
+  }[status] ?? { label: status, bg: 'rgba(100,116,139,0.12)', color: '#94a3b8', dot: false };
 
   return (
-    <span className="px-3 py-1 rounded-full text-[11px] font-medium" style={{
-      background: config.bg, color: config.color,
-    }}>
+    <span className="flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-medium" style={{ background: config.bg, color: config.color }}>
+      {config.dot && <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: config.color }} />}
       {config.label}
     </span>
   );
 }
 
 /* ══════════════════════════════════════════════════════════════════
-   Story 6.1: Retune Panel (Cosmified Log Terminal)
+   Retune Panel
    ══════════════════════════════════════════════════════════════════ */
 
-function RetunePanel({
-  status, logs, logEndRef, onClose,
-}: {
-  status: RetuneStatus;
-  logs: RetuneLogEntry[];
-  logEndRef: React.RefObject<HTMLDivElement | null>;
-  onClose: () => void;
+function RetunePanel({ status, logs, logEndRef, onClose, elapsed, retune }: {
+  status: RetuneStatus; logs: RetuneLogEntry[];
+  logEndRef: React.RefObject<HTMLDivElement | null>; onClose: () => void;
+  elapsed: number | null;
+  retune: ReturnType<typeof getRetuneSnapshot>;
 }) {
   const [autoScroll, setAutoScroll] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const progressCount = logs.filter(l => l.type === 'progress').length;
-  const currentAsset = [...logs].reverse().find(l => l.type === 'progress')?.message?.match(/\b([A-Z]{1,5})\b/)?.[1];
 
   const handleCopyLog = useCallback(() => {
     const text = logs.map(l => l.message).join('\n');
@@ -401,66 +521,51 @@ function RetunePanel({
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
-    setAutoScroll(atBottom);
+    setAutoScroll(el.scrollHeight - el.scrollTop - el.clientHeight < 30);
   }, []);
 
   useEffect(() => {
     if (autoScroll) logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs, autoScroll, logEndRef]);
 
-  const statusColor = status === 'running' ? '#b49aff' : status === 'completed' ? 'var(--accent-emerald)' : status === 'failed' ? 'var(--accent-rose)' : '#7a8ba4';
-
   return (
     <div className="glass-card mb-6 overflow-hidden">
       <div className="px-4 py-2.5 flex items-center justify-between" style={{ borderBottom: '1px solid var(--violet-8)' }}>
         <div className="flex items-center gap-3">
-          <Terminal className="w-4 h-4" style={{ color: statusColor }} />
-          <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Retune Output</span>
+          <Terminal className="w-4 h-4" style={{ color: status === 'running' ? '#b49aff' : status === 'completed' ? 'var(--accent-emerald)' : status === 'failed' ? 'var(--accent-rose)' : '#7a8ba4' }} />
+          <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Console</span>
           {status === 'running' && (
             <div className="flex items-center gap-2 text-xs">
               <RefreshCw className="w-3 h-3 animate-spin" style={{ color: '#b49aff' }} />
-              <span style={{ color: '#b49aff' }}>{progressCount} assets</span>
-              {currentAsset && <span className="font-semibold" style={{ color: '#b49aff' }}>{currentAsset}</span>}
+              <span style={{ color: '#b49aff' }}>{progressCount} processed</span>
+              {retune.currentAsset && <span className="font-mono font-semibold" style={{ color: '#b49aff' }}>{retune.currentAsset}</span>}
             </div>
           )}
-          {status === 'completed' && <span className="text-xs" style={{ color: 'var(--accent-emerald)' }}>Done ({progressCount})</span>}
-          {status === 'failed' && <span className="text-xs" style={{ color: 'var(--accent-rose)' }}>Failed</span>}
+          {status === 'completed' && <span className="text-xs" style={{ color: 'var(--accent-emerald)' }}>Done &middot; {retune.successCount} ok, {retune.failCount} fail{elapsed ? ` in ${formatElapsed(elapsed)}` : ''}</span>}
+          {status === 'failed' && <span className="text-xs" style={{ color: 'var(--accent-rose)' }}>Failed{elapsed ? ` after ${formatElapsed(elapsed)}` : ''}</span>}
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={handleCopyLog} className="p-1 rounded transition" title="Copy log"
-            style={{ color: '#7a8ba4' }}>
+          <button onClick={handleCopyLog} className="p-1 rounded transition hover:bg-[var(--violet-8)]" title="Copy log" style={{ color: '#7a8ba4' }}>
             <Copy className="w-3.5 h-3.5" />
           </button>
-          <button onClick={onClose} className="text-sm transition" style={{ color: '#7a8ba4' }}>x</button>
+          <button onClick={onClose} className="p-1 rounded transition hover:bg-[var(--violet-8)]" style={{ color: '#7a8ba4' }}>
+            <XCircle className="w-3.5 h-3.5" />
+          </button>
         </div>
       </div>
 
-      {/* Progress bar */}
-      {status === 'running' && (
-        <div className="px-4 py-1.5">
-          <div className="h-1 rounded-full overflow-hidden" style={{ background: 'var(--violet-6)' }}>
-            <div className="h-full rounded-full transition-all duration-500" style={{
-              width: `${Math.min((progressCount / 147) * 100, 100)}%`,
-              background: 'linear-gradient(90deg, var(--accent-violet), var(--accent-cyan))',
-            }} />
-          </div>
-        </div>
-      )}
-
-      {/* Log terminal */}
       <div ref={scrollRef} onScroll={handleScroll}
-        className="p-3 overflow-y-auto max-h-[240px] font-mono text-[11px]"
-        style={{ background: 'rgba(10,10,26,0.8)', borderRadius: '0 0 12px 12px', position: 'relative' }}>
+        className="p-3 overflow-y-auto max-h-[280px] font-mono text-[11px]"
+        style={{ background: 'rgba(10,10,26,0.8)' }}>
         {logs.map((entry, i) => (
           <div key={i} className={`py-0.5 ${logColor(entry.type)}`}
-            style={{ borderLeft: entry.type === 'progress' ? '2px solid var(--accent-emerald)' : entry.type === 'error' || entry.type === 'failed' ? '2px solid var(--accent-rose)' : '2px solid transparent', paddingLeft: 8 }}>{entry.message}</div>
+            style={{ borderLeft: entry.type === 'progress' ? '2px solid var(--accent-emerald)' : entry.type === 'error' || entry.type === 'failed' ? '2px solid var(--accent-rose)' : entry.type === 'phase' ? '2px solid var(--accent-cyan)' : '2px solid transparent', paddingLeft: 8 }}>
+            {entry.message}
+          </div>
         ))}
         <div ref={logEndRef} />
-        {/* Resume auto-scroll floating button */}
         {!autoScroll && (
-          <button
-            onClick={() => { setAutoScroll(true); logEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }}
+          <button onClick={() => { setAutoScroll(true); logEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }}
             className="sticky bottom-2 left-full ml-auto px-3 py-1 rounded-full text-[10px] font-medium flex items-center gap-1 transition"
             style={{ background: 'var(--violet-15)', color: '#b49aff', border: '1px solid var(--violet-20)' }}
           >
@@ -484,7 +589,7 @@ function logColor(type: string): string {
 }
 
 /* ══════════════════════════════════════════════════════════════════
-   Story 6.2: Model Distribution (Treemap + Bar toggle)
+   Model Distribution Chart
    ══════════════════════════════════════════════════════════════════ */
 
 const MODEL_FAMILY_COLORS: Record<string, string> = {
@@ -510,17 +615,14 @@ const ModelDistributionChart = memo(function ModelDistributionChart({ data }: {
   const total = useMemo(() => data.reduce((s, d) => s + d.count, 0), [data]);
 
   return (
-    <div className="glass-card p-5 md:col-span-1">
+    <div className="glass-card p-5 lg:col-span-1">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Model Distribution</h3>
         <div className="flex gap-0.5">
           {(['treemap', 'bar'] as const).map(m => (
             <button key={m} onClick={() => setMode(m)}
-              className="px-2 py-0.5 rounded text-[10px] font-medium transition-all duration-150"
-              style={{
-                background: mode === m ? 'var(--violet-12)' : 'transparent',
-                color: mode === m ? '#b49aff' : '#7a8ba4',
-              }}>
+              className="px-2 py-0.5 rounded text-[10px] font-medium transition-all"
+              style={{ background: mode === m ? 'var(--violet-12)' : 'transparent', color: mode === m ? '#b49aff' : '#7a8ba4' }}>
               {m === 'treemap' ? 'Map' : 'Bar'}
             </button>
           ))}
@@ -535,34 +637,27 @@ const ModelDistributionChart = memo(function ModelDistributionChart({ data }: {
             const bg = MODEL_FAMILY_COLORS[family] || MODEL_FAMILY_COLORS.default;
             const isHovered = hovered === d.name;
             const isDimmed = hovered !== null && !isHovered;
-            // Width proportional to fraction, minimum 40px
-            const w = Math.max(40, frac * 280);
-            const h = Math.max(28, frac * 200);
+            const w = Math.max(44, frac * 280);
+            const h = Math.max(32, frac * 200);
             return (
               <div key={d.name}
                 onMouseEnter={() => setHovered(d.name)}
                 onMouseLeave={() => setHovered(null)}
                 className="rounded-md flex flex-col items-center justify-center transition-all duration-200 cursor-default"
                 style={{
-                  width: w, height: h,
-                  background: bg,
+                  width: w, height: h, background: bg,
                   border: '1px solid var(--violet-10)',
                   opacity: isDimmed ? 0.4 : 1,
                   boxShadow: isHovered ? '0 0 12px var(--violet-25)' : undefined,
                   transform: isHovered ? 'scale(1.03)' : undefined,
-                  animationDelay: `${i * 50}ms`,
                 }}
               >
                 {w > 50 && (
-                  <span className="text-[8px] font-medium truncate px-1" style={{
-                    color: 'rgba(255,255,255,0.8)', maxWidth: w - 8,
-                  }}>
+                  <span className="text-[8px] font-medium truncate px-1" style={{ color: 'rgba(255,255,255,0.8)', maxWidth: w - 8 }}>
                     {d.name}
                   </span>
                 )}
-                <span className="text-[10px] font-bold" style={{ color: 'rgba(255,255,255,0.95)', fontFamily: 'monospace' }}>
-                  {d.count}
-                </span>
+                <span className="text-[10px] font-bold" style={{ color: 'rgba(255,255,255,0.95)', fontFamily: 'monospace' }}>{d.count}</span>
               </div>
             );
           })}
@@ -573,15 +668,7 @@ const ModelDistributionChart = memo(function ModelDistributionChart({ data }: {
             <CartesianGrid strokeDasharray="3 3" stroke="var(--violet-6)" />
             <XAxis type="number" tick={{ fill: '#7a8ba4', fontSize: 11 }} />
             <YAxis type="category" dataKey="name" width={100} tick={{ fill: '#94a3b8', fontSize: 10 }} />
-            <Tooltip
-              contentStyle={{
-                background: 'rgba(15,15,35,0.95)',
-                border: '1px solid var(--violet-15)',
-                borderRadius: 8,
-                color: '#e2e8f0',
-                backdropFilter: 'blur(12px)',
-              }}
-            />
+            <Tooltip contentStyle={{ background: 'rgba(15,15,35,0.95)', border: '1px solid var(--violet-15)', borderRadius: 8, color: '#e2e8f0' }} />
             <Bar dataKey="count" fill="var(--accent-violet)" radius={[0, 4, 4, 0]} />
           </BarChart>
         </ResponsiveContainer>
@@ -591,124 +678,147 @@ const ModelDistributionChart = memo(function ModelDistributionChart({ data }: {
 });
 
 /* ══════════════════════════════════════════════════════════════════
-   Story 6.4: Detail Panel (Cosmified)
+   Detail Panel
    ══════════════════════════════════════════════════════════════════ */
 
-function DetailPanel({ symbol, data, onViewDiagnostics }: { symbol: string; data: Record<string, unknown>; onViewDiagnostics: () => void }) {
-  const best = data.best_model as string | undefined;
-  const regime = data.regime as string | undefined;
-  const pitPass = data.ad_pass as boolean | undefined;
-  const models = data.competing_models as Array<{
-    name: string; bic?: number; crps?: number; hyv?: number; pit_p?: number; bma_weight?: number; nu?: number;
-  }> | undefined;
-  const kalman = data.kalman_state as Record<string, number> | undefined;
+function DetailPanel({ symbol, data, onViewDiagnostics }: {
+  symbol: string; data: Record<string, unknown>; onViewDiagnostics: () => void;
+}) {
+  const g = (data.global ?? data) as Record<string, unknown>;
+  const best = g.best_model as string | undefined;
+  const regime = data.regime as Record<string, unknown> | string | undefined;
+  const pitPass = g.ad_pass as boolean | undefined;
+  const modelWeights = g.model_weights as Record<string, number> | undefined;
+  const modelComparison = g.model_comparison as Record<string, { ll?: number; bic?: number; aic?: number; fit_success?: boolean }> | undefined;
+  const regimeCounts = data.regime_counts as Record<string, number> | undefined;
+  const diag = data.diagnostics as Record<string, unknown> | undefined;
+
+  // Build competing models from model_weights + model_comparison
+  const models = useMemo(() => {
+    if (!modelWeights) return [];
+    return Object.entries(modelWeights)
+      .map(([name, weight]) => {
+        const mc = modelComparison?.[name];
+        return { name, weight, bic: mc?.bic, ll: mc?.ll, aic: mc?.aic };
+      })
+      .sort((a, b) => b.weight - a.weight);
+  }, [modelWeights, modelComparison]);
+
+  const bic = g.bic as number | undefined;
+  const phi = g.phi as number | undefined;
+  const nu = g.nu as number | undefined;
+  const q = g.q as number | undefined;
+  const c = g.c as number | undefined;
+  const nObs = g.n_obs as number | undefined;
+  const ksP = g.pit_ks_pvalue as number | undefined;
+  const ksStat = g.ks_statistic as number | undefined;
+
+  const params = [
+    { label: 'BIC', value: bic?.toFixed(0), color: '#b49aff' },
+    { label: 'phi', value: phi?.toFixed(4), color: 'var(--accent-cyan)' },
+    { label: 'nu', value: nu?.toFixed(1), color: 'var(--accent-amber)' },
+    { label: 'q', value: q != null ? q.toExponential(2) : undefined, color: '#94a3b8' },
+    { label: 'c', value: c?.toFixed(4), color: '#94a3b8' },
+    { label: 'N obs', value: nObs?.toString(), color: '#94a3b8' },
+    { label: 'KS stat', value: ksStat?.toFixed(4), color: ksP != null ? (ksP >= 0.05 ? 'var(--accent-emerald)' : 'var(--accent-rose)') : '#94a3b8' },
+    { label: 'KS p-val', value: ksP?.toFixed(4), color: ksP != null ? (ksP >= 0.05 ? 'var(--accent-emerald)' : 'var(--accent-rose)') : '#94a3b8' },
+  ].filter(p => p.value != null);
 
   return (
     <div className="glass-card p-5 mt-6 fade-up" style={{
       background: 'linear-gradient(135deg, var(--violet-3), rgba(99,102,241,0.02))',
     }}>
       {/* Header */}
-      <div className="flex items-center gap-3 mb-4">
-        <h3 className="text-xl font-bold" style={{
-          background: 'linear-gradient(135deg, #b49aff, #818cf8)',
-          WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
-        }}>
-          {symbol}
-        </h3>
-        {regime && (
-          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium"
-            style={{ background: 'var(--violet-12)', color: '#b49aff' }}>
-            {regime}
-          </span>
-        )}
-        {pitPass != null && (
-          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium"
-            style={{
-              background: pitPass ? 'var(--emerald-12)' : 'var(--rose-12)',
-              color: pitPass ? 'var(--accent-emerald)' : 'var(--accent-rose)',
-            }}>
-            PIT {pitPass ? 'Pass' : 'Fail'}
-          </span>
-        )}
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-3">
+          <h3 className="text-xl font-bold" style={{
+            background: 'linear-gradient(135deg, #b49aff, #818cf8)',
+            WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
+          }}>{symbol}</h3>
+          {pitPass != null && (
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-medium"
+              style={{ background: pitPass ? 'var(--emerald-12)' : 'var(--rose-12)', color: pitPass ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}>
+              PIT {pitPass ? 'Pass' : 'Fail'}
+            </span>
+          )}
+          {regimeCounts && (
+            <div className="flex gap-1">
+              {Object.entries(regimeCounts).map(([r, cnt]) => (
+                <span key={r} className="px-1.5 py-0.5 rounded text-[9px] font-mono" style={{ background: 'var(--violet-6)', color: '#94a3b8' }}>
+                  R{r}:{cnt}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+        <button onClick={onViewDiagnostics}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-all hover:scale-[1.02]"
+          style={{ color: '#b49aff', background: 'var(--violet-8)', border: '1px solid var(--violet-12)' }}
+        >
+          Diagnostics <ArrowRight className="w-3 h-3" />
+        </button>
       </div>
 
-      {/* Best model */}
+      {/* Key parameters */}
       {best && (
-        <div className="mb-4 flex items-center justify-between">
-          <div>
-            <span className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Best Model</span>
-            <div className="text-sm font-semibold mt-0.5" style={{ color: '#b49aff' }}>{formatModelName(best)}</div>
-          </div>
-          <button
-            onClick={onViewDiagnostics}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-all duration-200 hover:scale-[1.02]"
-            style={{
-              color: '#b49aff',
-              background: 'var(--violet-8)',
-              border: '1px solid var(--violet-12)',
-            }}
-          >
-            View in Diagnostics <ArrowRight className="w-3 h-3" />
-          </button>
+        <div className="mb-4">
+          <span className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Best Model</span>
+          <div className="text-sm font-semibold mt-0.5" style={{ color: '#b49aff' }}>{formatModelName(best)}</div>
         </div>
       )}
 
-      {/* Competing models table */}
-      {models && models.length > 0 ? (
-        <div className="overflow-x-auto mb-4">
+      {params.length > 0 && (
+        <div className="grid grid-cols-4 md:grid-cols-8 gap-2 mb-4">
+          {params.map(p => (
+            <div key={p.label} className="p-2 rounded-lg text-center" style={{ background: 'var(--violet-4)' }}>
+              <div className="text-[9px] uppercase tracking-wider mb-0.5" style={{ color: 'var(--text-muted)' }}>{p.label}</div>
+              <div className="text-sm font-mono font-medium" style={{ color: p.color, fontVariantNumeric: 'tabular-nums' }}>{p.value}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* BMA Weights Table */}
+      {models.length > 0 && (
+        <div className="overflow-x-auto">
+          <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: 'var(--text-muted)' }}>BMA Model Weights ({models.length} competing)</div>
           <table className="w-full text-xs">
             <thead>
               <tr style={{ borderBottom: '1px solid var(--violet-8)' }}>
                 <th className="text-left px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>Model</th>
+                <th className="text-right px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>BMA Weight</th>
                 <th className="text-right px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>BIC</th>
-                <th className="text-right px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>CRPS</th>
-                <th className="text-right px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>Hyv</th>
-                <th className="text-right px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>PIT p</th>
-                <th className="text-right px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>BMA %</th>
+                <th className="text-right px-2 py-1.5" style={{ color: 'var(--text-muted)' }}>Log-Lik</th>
+                <th className="px-2 py-1.5" style={{ color: 'var(--text-muted)', width: 120 }}>Weight</th>
               </tr>
             </thead>
             <tbody>
-              {models.map((m, i) => {
+              {models.slice(0, 20).map((m) => {
                 const isWinner = m.name === best;
                 return (
-                  <tr key={i} style={{
+                  <tr key={m.name} style={{
                     borderBottom: '1px solid var(--violet-4)',
                     background: isWinner ? 'var(--emerald-6)' : undefined,
                     borderLeft: isWinner ? '2px solid var(--accent-emerald)' : '2px solid transparent',
                   }}>
-                    <td className="px-2 py-1.5 font-medium" style={{ color: 'var(--text-primary)' }}>
-                      {formatModelName(m.name)}
+                    <td className="px-2 py-1.5 font-medium" style={{ color: isWinner ? 'var(--accent-emerald)' : 'var(--text-primary)' }}>
+                      {formatModelName(m.name)} {isWinner && <Award className="w-3 h-3 inline ml-1" style={{ color: 'var(--accent-emerald)' }} />}
+                    </td>
+                    <td className="px-2 py-1.5 text-right font-mono" style={{ color: m.weight > 0.1 ? '#b49aff' : 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
+                      {(m.weight * 100).toFixed(2)}%
                     </td>
                     <td className="px-2 py-1.5 text-right font-mono" style={{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
                       {m.bic?.toFixed(0) ?? '--'}
                     </td>
-                    <td className="px-2 py-1.5 text-right font-mono" style={{
-                      color: m.crps != null ? (m.crps < 0.02 ? 'var(--accent-emerald)' : m.crps < 0.03 ? 'var(--accent-amber)' : 'var(--accent-rose)') : 'var(--text-muted)',
-                      fontVariantNumeric: 'tabular-nums',
-                    }}>
-                      {m.crps?.toFixed(4) ?? '--'}
+                    <td className="px-2 py-1.5 text-right font-mono" style={{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
+                      {m.ll?.toFixed(0) ?? '--'}
                     </td>
-                    <td className="px-2 py-1.5 text-right font-mono" style={{
-                      color: m.hyv != null ? (m.hyv < 500 ? 'var(--accent-emerald)' : m.hyv < 1000 ? 'var(--accent-amber)' : 'var(--accent-rose)') : 'var(--text-muted)',
-                      fontVariantNumeric: 'tabular-nums',
-                    }}>
-                      {m.hyv?.toFixed(0) ?? '--'}
-                    </td>
-                    <td className="px-2 py-1.5 text-right font-mono" style={{
-                      color: m.pit_p != null ? (m.pit_p >= 0.05 ? 'var(--accent-emerald)' : 'var(--accent-rose)') : 'var(--text-muted)',
-                      fontVariantNumeric: 'tabular-nums',
-                    }}>
-                      {m.pit_p?.toFixed(3) ?? '--'}
-                    </td>
-                    <td className="px-2 py-1.5 text-right" style={{ position: 'relative' }}>
-                      <div className="flex items-center justify-end gap-1">
-                        <div className="h-1 rounded-full" style={{
-                          width: `${Math.min((m.bma_weight ?? 0) * 100, 80)}px`,
-                          background: 'linear-gradient(90deg, var(--accent-violet), var(--text-violet))',
+                    <td className="px-2 py-1.5">
+                      <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--violet-6)' }}>
+                        <div className="h-full rounded-full" style={{
+                          width: `${Math.min(m.weight * 100, 100)}%`,
+                          background: isWinner ? 'linear-gradient(90deg, var(--accent-emerald), #6ff0c0)' : 'linear-gradient(90deg, var(--accent-violet), #818cf8)',
                         }} />
-                        <span className="font-mono text-[10px]" style={{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>
-                          {m.bma_weight != null ? `${(m.bma_weight * 100).toFixed(1)}%` : '--'}
-                        </span>
                       </div>
                     </td>
                   </tr>
@@ -717,8 +827,10 @@ function DetailPanel({ symbol, data, onViewDiagnostics }: { symbol: string; data
             </tbody>
           </table>
         </div>
-      ) : (
-        /* Raw JSON fallback for assets without structured competing_models */
+      )}
+
+      {/* Fallback raw JSON if no structured data */}
+      {models.length === 0 && (
         <div>
           <h4 className="text-xs font-medium mb-2" style={{ color: 'var(--text-secondary)' }}>Raw Parameters</h4>
           <pre className="text-xs overflow-x-auto max-h-[300px] whitespace-pre-wrap p-3 rounded-xl font-mono"
@@ -727,32 +839,28 @@ function DetailPanel({ symbol, data, onViewDiagnostics }: { symbol: string; data
           </pre>
         </div>
       )}
-
-      {/* Kalman state grid */}
-      {kalman && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
-          {Object.entries(kalman).slice(0, 8).map(([key, val]) => (
-            <div key={key} className="p-2 rounded-lg" style={{ background: 'var(--violet-4)' }}>
-              <div className="text-[9px] uppercase tracking-wider mb-0.5" style={{ color: 'var(--text-muted)' }}>{key}</div>
-              <div className="text-sm font-mono font-medium" style={{ color: 'var(--text-luminous)', fontVariantNumeric: 'tabular-nums' }}>
-                {typeof val === 'number' ? val.toFixed(6) : String(val)}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
 
 /* ══════════════════════════════════════════════════════════════════
-   Helper: PIT Badge
+   PIT Badge
    ══════════════════════════════════════════════════════════════════ */
 
 function PitBadge({ asset }: { asset: TuneAsset }) {
   if (asset.ad_pass === true)
-    return <span className="inline-block w-2 h-2 rounded-full" style={{ background: 'var(--accent-emerald)', boxShadow: '0 0 4px rgba(62,232,165,0.4)' }} />;
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-medium"
+        style={{ background: 'var(--emerald-12)', color: 'var(--accent-emerald)' }}>
+        <CheckCircle className="w-2.5 h-2.5" /> Pass
+      </span>
+    );
   if (asset.ad_pass === false)
-    return <span className="inline-block w-2 h-2 rounded-full" style={{ background: 'var(--accent-rose)', boxShadow: '0 0 4px rgba(255,107,138,0.4)' }} />;
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-medium"
+        style={{ background: 'var(--rose-12)', color: 'var(--accent-rose)' }}>
+        <XCircle className="w-2.5 h-2.5" /> Fail
+      </span>
+    );
   return <span className="inline-block w-2 h-2 rounded-full" style={{ background: '#7a8ba4' }} />;
 }

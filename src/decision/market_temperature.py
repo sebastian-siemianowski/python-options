@@ -360,7 +360,7 @@ def _run_kalman_filter_pass(
         K_t = P_pred / S_t
 
         if is_student_t:
-            K_t *= nu / (nu + 3.0)
+            K_t *= (nu + 1.0) / (nu + 3.0)
             z_sq = (innov * innov) / S_t
             w_t = (nu + 1.0) / (nu + z_sq)
             mu_t = mu_pred + K_t * w_t * innov
@@ -484,7 +484,13 @@ def _kalman_forecast(returns: np.ndarray, horizons: list, asset_type: str = "equ
                         scale_key = HORIZON_FILTER_MAP.get(h, 'medium')
                         mu_last, P_last = scales[scale_key]
 
-                        mu_h = (phi_f ** h) * mu_last
+                        # Cumulative expected return: geometric sum of decaying daily drifts
+                        # E[sum_{i=1}^{h} phi^i * mu] = mu * phi * (1 - phi^h) / (1 - phi)
+                        if abs(1.0 - phi_f) < 1e-10:
+                            cum_drift = mu_last * h  # phi ≈ 1: no decay
+                        else:
+                            cum_drift = mu_last * phi_f * (1.0 - phi_f ** h) / (1.0 - phi_f)
+
                         snr = abs(mu_last) / max(np.sqrt(P_last), 1e-8)
                         persistence = min(1.0, snr / 3.0)
                         if asset_type == "currency":
@@ -492,7 +498,7 @@ def _kalman_forecast(returns: np.ndarray, horizons: list, asset_type: str = "equ
                         elif asset_type == "crypto":
                             persistence = min(persistence * 1.2, 0.95)
 
-                        fc_pct = mu_h * h * persistence * 100.0
+                        fc_pct = cum_drift * persistence * 100.0
                         forecasts.append(float(fc_pct))
 
                     return forecasts
@@ -536,8 +542,12 @@ def _kalman_forecast(returns: np.ndarray, horizons: list, asset_type: str = "equ
                 persistence = min(persistence * 1.2, 0.95)
 
             amplification = 1.0 + 0.3 * signal_strength
-            fc_log = drift * h * persistence * amplification
-            pct = fc_log * 100
+            # Geometric sum of decaying daily drifts
+            if abs(1.0 - persistence) < 1e-10:
+                cum_drift = drift * h
+            else:
+                cum_drift = drift * persistence * (1.0 - persistence ** h) / (1.0 - persistence)
+            pct = cum_drift * amplification * 100
             forecasts.append(float(pct))
         return forecasts
     except Exception:
@@ -605,18 +615,23 @@ def _garch_forecast(returns: np.ndarray, horizons: list, asset_type: str = "equi
             else:
                 drift = drift_5d * 0.10 + drift_20d * 0.30 + drift_60d * 0.60
             
-            # Volatility adjustment: high vol reduces confidence, not magnitude
-            vol_adj = 1.0 / np.sqrt(vol_ratio) if vol_ratio > 1.0 else 1.0
+            # Volatility adjustment: symmetric — high vol dampens, low vol boosts
+            vol_adj = 1.0 / np.sqrt(vol_ratio)
             vol_adj = np.clip(vol_adj, 0.5, 1.5)
             
-            # Decay based on asset type
+            # Cumulative return with persistence decay (geometric sum)
             if asset_type == "currency":
-                decay = np.exp(-h / 60.0)
+                persistence_g = np.exp(-1.0 / 60.0)   # daily decay rate
             else:
-                decay = np.exp(-h / 180.0)
+                persistence_g = np.exp(-1.0 / 180.0)  # daily decay rate
             
-            # Project forward
-            fc = drift * h * vol_adj * decay
+            # E[sum_{i=1}^{h} p^i * drift] = drift * p * (1 - p^h) / (1 - p)
+            if abs(1.0 - persistence_g) < 1e-10:
+                cum_drift = drift * h
+            else:
+                cum_drift = drift * persistence_g * (1.0 - persistence_g ** h) / (1.0 - persistence_g)
+            
+            fc = cum_drift * vol_adj
             pct = fc * 100
             
             forecasts.append(float(pct))
@@ -708,12 +723,13 @@ def _ou_forecast(prices: pd.Series, horizons: list, asset_type: str = "equity",
             else:
                 target_dev = dev_100 * 0.2 + dev_200 * 0.8
 
-            # OU: expected deviation shrinks exponentially toward zero
-            expected_dev = target_dev * np.exp(-theta * h)
+            # OU: current deviation shrinks exponentially toward zero
+            # Expected remaining deviation after h days of mean reversion
+            expected_remaining_dev = target_dev * np.exp(-theta * h)
             
-            # Forecast = price change from current deviation to expected
-            # If above MA (positive dev), expect negative return
-            fc_pct = -(target_dev - expected_dev) * 100
+            # Forecast = change in deviation = where we end up minus where we are now
+            # If above MA (positive target_dev), expected_remaining < target_dev, so return is negative
+            fc_pct = (expected_remaining_dev - target_dev) * 100
 
             forecasts.append(float(fc_pct))
         return forecasts
@@ -874,9 +890,13 @@ def _momentum_forecast(returns: np.ndarray, horizons: list, asset_type: str = "e
             # Boost persistence for strong trends
             persistence = persistence + (1 - persistence) * trend_strength * 0.3
             
-            # Project forward
-            fc = drift * h * persistence
-            pct = fc * 100
+            # Project forward: geometric sum of decaying daily drifts
+            # E[sum_{i=1}^{h} p^i * drift] = drift * p * (1 - p^h) / (1 - p)
+            if abs(1.0 - persistence) < 1e-10:
+                cum_drift = drift * h
+            else:
+                cum_drift = drift * persistence * (1.0 - persistence ** h) / (1.0 - persistence)
+            pct = cum_drift * 100
             
             # Volatility-scaled sanity bound (3 sigma)
             vol_bound = daily_vol * np.sqrt(h) * 3.0 * 100
@@ -1425,9 +1445,13 @@ def ensemble_forecast(prices: pd.Series, horizons: list = None, asset_type: str 
         
         classical_fc = []
         for h in horizons:
-            # Adaptive persistence: blended base decays over horizon
-            persistence = persistence_blend ** h
-            fc = ew_drift * h * persistence * 100
+            # Cumulative expected return: geometric sum of decaying daily drifts
+            # E[sum_{i=1}^{h} p^i * drift] = drift * p * (1 - p^h) / (1 - p)
+            if abs(1.0 - persistence_blend) < 1e-10:
+                cum_drift = ew_drift * h  # No decay
+            else:
+                cum_drift = ew_drift * persistence_blend * (1.0 - persistence_blend ** h) / (1.0 - persistence_blend)
+            fc = cum_drift * 100
             classical_fc.append(float(fc))
         
         # Base weights: [Kalman, GARCH, OU, Momentum, Classical]
@@ -1542,14 +1566,16 @@ def ensemble_forecast(prices: pd.Series, horizons: list = None, asset_type: str 
         vol = float(np.std(log_returns) * np.sqrt(252))
         
         # Story 1.11: Compute vol ratio and signal quality
-        daily_vol = np.abs(log_returns)
+        # Use squared returns for EWMA variance, then take sqrt for vol
+        daily_var = log_returns ** 2
         ewma_alpha = 2.0 / (VOL_RATIO_EWMA_SPAN + 1)
-        ewma_vol = float(daily_vol[-1])
-        for t in range(max(0, len(daily_vol) - VOL_RATIO_EWMA_SPAN), len(daily_vol)):
-            ewma_vol = ewma_alpha * daily_vol[t] + (1 - ewma_alpha) * ewma_vol
+        ewma_var = float(daily_var[-1])
+        for t in range(max(0, len(daily_var) - VOL_RATIO_EWMA_SPAN), len(daily_var)):
+            ewma_var = ewma_alpha * daily_var[t] + (1 - ewma_alpha) * ewma_var
+        ewma_vol = np.sqrt(max(ewma_var, 1e-20))
         
-        median_window = min(VOL_RATIO_MEDIAN_WINDOW, len(daily_vol))
-        median_vol = float(np.median(daily_vol[-median_window:])) if median_window > 0 else ewma_vol
+        median_window = min(VOL_RATIO_MEDIAN_WINDOW, len(daily_var))
+        median_vol = float(np.sqrt(np.median(daily_var[-median_window:]))) if median_window > 0 else ewma_vol
         vol_ratio = ewma_vol / max(median_vol, 1e-10)
         signal_quality = compute_signal_quality(vol_ratio)
         vol_regime_label = compute_vol_regime_label(vol_ratio)

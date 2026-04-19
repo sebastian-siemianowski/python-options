@@ -54,6 +54,10 @@ def list_tuned_assets() -> List[Dict[str, Any]]:
         g = data.get("global", {})
         meta = data.get("meta", {})
 
+        # Extract key parameters for the asset list
+        model_weights = g.get("model_weights", {})
+        top_weight = max(model_weights.values()) if model_weights else 0.0
+
         results.append({
             "symbol": symbol,
             "best_model": g.get("best_model", "unknown"),
@@ -61,7 +65,12 @@ def list_tuned_assets() -> List[Dict[str, Any]]:
             "ad_stat": g.get("ad_stat"),
             "ad_critical": g.get("ad_critical_5pct"),
             "ad_pass": g.get("ad_pass"),
-            "num_models": len(g.get("model_weights", {})),
+            "num_models": len(model_weights),
+            "bic": g.get("bic"),
+            "phi": g.get("phi"),
+            "nu": g.get("nu"),
+            "n_obs": g.get("n_obs"),
+            "top_weight": round(top_weight, 4),
             "cache_version": meta.get("cache_version", "unknown"),
             "last_tuned": meta.get("timestamp", "unknown"),
             "file_size_kb": round(os.path.getsize(filepath) / 1024, 1),
