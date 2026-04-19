@@ -18,9 +18,9 @@ import React, {
 } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  ChevronDown, ChevronRight, Search, X, Filter,
+  ChevronDown, ChevronRight, ChevronUp, Search, X, Filter,
   TrendingUp, TrendingDown, Minus, Maximize2, Minimize2,
-  ExternalLink, Loader2,
+  ExternalLink, Loader2, ArrowUpDown,
 } from 'lucide-react';
 
 /* ── Constants ──────────────────────────────────────────────────── */
@@ -28,6 +28,29 @@ const COLLAPSE_KEY = 'heatmap_v2_collapse';
 const FILTER_KEY = 'heatmap_v2_filter';
 
 type SignalFilter = 'all' | 'strong_buy' | 'buy' | 'hold' | 'sell' | 'strong_sell';
+
+/** Sorting state for heatmap columns */
+type SortKey = 'momentum' | number;  // number = horizon key
+type SortDir = 'asc' | 'desc';
+interface SortState { key: SortKey; dir: SortDir; }
+
+/** Get the sortable value for a given asset row and sort key */
+function getSortValue(row: SummaryRow, key: SortKey): number {
+  if (key === 'momentum') return row.momentum_score ?? 0;
+  const sig = row.horizon_signals[key] || row.horizon_signals[String(key)];
+  return sig?.exp_ret ?? 0;
+}
+
+/** Signal label badge colors */
+function getSignalBadge(label: string): { text: string; bg: string; fg: string } | null {
+  const norm = (label || '').toUpperCase().replace(/[\s-]/g, '_');
+  if (norm.includes('STRONG_BUY')) return { text: 'Strong Buy', bg: 'rgba(6,78,59,0.6)', fg: 'var(--accent-emerald)' };
+  if (norm.includes('BUY')) return { text: 'Buy', bg: 'rgba(6,78,59,0.4)', fg: 'rgba(62,232,165,0.85)' };
+  if (norm.includes('STRONG_SELL')) return { text: 'Strong Sell', bg: 'rgba(76,5,25,0.6)', fg: 'var(--accent-rose)' };
+  if (norm.includes('SELL')) return { text: 'Sell', bg: 'rgba(76,5,25,0.4)', fg: 'rgba(255,107,138,0.85)' };
+  if (norm.includes('HOLD')) return { text: 'Hold', bg: 'var(--violet-8)', fg: 'var(--text-muted)' };
+  return null;
+}
 
 const FILTER_OPTIONS: { value: SignalFilter; label: string; color: string }[] = [
   { value: 'all', label: 'All Signals', color: 'var(--text-secondary)' },
@@ -425,6 +448,7 @@ export default function HeatmapPage() {
   const [flashCell, setFlashCell] = useState<string | null>(null);
   const [isFullWidth, setIsFullWidth] = useState(false);
   const [expandedAsset, setExpandedAsset] = useState<string | null>(null);
+  const [sort, setSort] = useState<SortState | null>(null);
 
   /* Persist state */
   useEffect(() => {
@@ -437,7 +461,7 @@ export default function HeatmapPage() {
   const sectors = sectorQ.data?.sectors ?? [];
   const horizons = summaryQ.data?.horizons ?? [];
 
-  /* Filter + search */
+  /* Filter + search + sort */
   const filteredSectors = useMemo(() => {
     const q = search.toLowerCase().trim();
     return sectors.map(s => {
@@ -448,9 +472,16 @@ export default function HeatmapPage() {
       if (q) {
         assets = assets.filter(a => a.asset_label.toLowerCase().includes(q) || (a.sector || '').toLowerCase().includes(q));
       }
+      if (sort) {
+        assets = [...assets].sort((a, b) => {
+          const va = getSortValue(a, sort.key);
+          const vb = getSortValue(b, sort.key);
+          return sort.dir === 'desc' ? vb - va : va - vb;
+        });
+      }
       return { ...s, assets, asset_count: assets.length };
     }).filter(s => s.assets.length > 0);
-  }, [sectors, search, filter]);
+  }, [sectors, search, filter, sort]);
 
   /* Flatten for keyboard navigation */
   const flatRows = useMemo(() => {
@@ -699,30 +730,72 @@ export default function HeatmapPage() {
                       background: 'var(--void)',
                       position: 'sticky', left: 0, zIndex: 20,
                       borderBottom: '1px solid var(--violet-10)',
-                      width: 200,
+                      width: 220,
                     }}>
                     Asset
                   </th>
-                  {horizons.map(h => (
-                    <th key={h} className="text-center px-1 py-3 font-semibold text-[10px]"
-                      style={{
-                        color: 'var(--text-muted)',
-                        background: 'var(--void)',
-                        borderBottom: '1px solid var(--violet-10)',
-                        minWidth: 56,
-                      }}>
-                      {formatHorizon(h)}
-                    </th>
-                  ))}
-                  <th className="text-center px-2 py-3 font-semibold text-[11px]"
-                    style={{
-                      color: 'var(--text-muted)',
-                      background: 'var(--void)',
-                      borderBottom: '1px solid var(--violet-10)',
-                      minWidth: 56,
-                    }}>
-                    Mom
-                  </th>
+                  {horizons.map(h => {
+                    const isActive = sort?.key === h;
+                    return (
+                      <th key={h}
+                        className="text-center px-1 py-3 font-semibold text-[10px] cursor-pointer select-none group/sort"
+                        style={{
+                          color: isActive ? 'var(--accent-violet)' : 'var(--text-muted)',
+                          background: isActive ? 'var(--violet-4)' : 'var(--void)',
+                          borderBottom: '1px solid var(--violet-10)',
+                          minWidth: 56,
+                          transition: 'color 0.15s, background 0.15s',
+                        }}
+                        onClick={() => setSort(prev =>
+                          prev?.key === h
+                            ? prev.dir === 'desc' ? { key: h, dir: 'asc' } : null
+                            : { key: h, dir: 'desc' }
+                        )}
+                        title={`Sort by ${formatHorizon(h)}`}
+                      >
+                        <div className="flex items-center justify-center gap-0.5">
+                          {formatHorizon(h)}
+                          {isActive
+                            ? (sort.dir === 'desc'
+                                ? <ChevronDown className="w-3 h-3" />
+                                : <ChevronUp className="w-3 h-3" />)
+                            : <ArrowUpDown className="w-2.5 h-2.5 opacity-0 group-hover/sort:opacity-40 transition-opacity" />
+                          }
+                        </div>
+                      </th>
+                    );
+                  })}
+                  {(() => {
+                    const isActive = sort?.key === 'momentum';
+                    return (
+                      <th
+                        className="text-center px-2 py-3 font-semibold text-[11px] cursor-pointer select-none group/sort"
+                        style={{
+                          color: isActive ? 'var(--accent-violet)' : 'var(--text-muted)',
+                          background: isActive ? 'var(--violet-4)' : 'var(--void)',
+                          borderBottom: '1px solid var(--violet-10)',
+                          minWidth: 56,
+                          transition: 'color 0.15s, background 0.15s',
+                        }}
+                        onClick={() => setSort(prev =>
+                          prev?.key === 'momentum'
+                            ? prev.dir === 'desc' ? { key: 'momentum', dir: 'asc' } : null
+                            : { key: 'momentum', dir: 'desc' }
+                        )}
+                        title="Sort by Momentum"
+                      >
+                        <div className="flex items-center justify-center gap-0.5">
+                          Mom
+                          {isActive
+                            ? (sort.dir === 'desc'
+                                ? <ChevronDown className="w-3 h-3" />
+                                : <ChevronUp className="w-3 h-3" />)
+                            : <ArrowUpDown className="w-2.5 h-2.5 opacity-0 group-hover/sort:opacity-40 transition-opacity" />
+                          }
+                        </div>
+                      </th>
+                    );
+                  })()}
                 </tr>
               </thead>
               {filteredSectors.map(sector => {
@@ -838,6 +911,18 @@ export default function HeatmapPage() {
                                 >
                                   {asset.asset_label}
                                 </span>
+                                {(() => {
+                                  const badge = getSignalBadge(asset.nearest_label);
+                                  if (!badge) return null;
+                                  return (
+                                    <span
+                                      className="px-1.5 py-[1px] rounded text-[8px] font-semibold uppercase tracking-wide whitespace-nowrap"
+                                      style={{ background: badge.bg, color: badge.fg }}
+                                    >
+                                      {badge.text}
+                                    </span>
+                                  );
+                                })()}
                               </div>
                             </td>
 
