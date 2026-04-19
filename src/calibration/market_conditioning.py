@@ -202,7 +202,7 @@ class MarketDataCache:
             
             # Fetch SPY
             try:
-                spy = yf.download(MARKET_PROXY_TICKER, start=start_date, end=end_date, progress=False)
+                spy = yf.download(MARKET_PROXY_TICKER, start=start_date, end=end_date, progress=False, auto_adjust=True)
                 if not spy.empty:
                     self._spy_data = spy
                     logger.debug(f"Fetched {len(spy)} days of SPY data")
@@ -212,7 +212,7 @@ class MarketDataCache:
             
             # Fetch VIX
             try:
-                vix = yf.download(VIX_TICKER, start=start_date, end=end_date, progress=False)
+                vix = yf.download(VIX_TICKER, start=start_date, end=end_date, progress=False, auto_adjust=True)
                 if not vix.empty:
                     self._vix_data = vix
                     logger.debug(f"Fetched {len(vix)} days of VIX data")

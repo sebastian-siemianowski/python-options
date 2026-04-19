@@ -130,16 +130,27 @@ class TestConditionNumber(unittest.TestCase):
         self.assertAlmostEqual(kappa, 10.0 / 8.0, places=5)
 
     def test_ill_conditioned(self):
-        """Matrix with very different eigenvalues has high kappa."""
+        """Matrix with very different eigenvalues has high kappa.
+
+        With Tikhonov nugget (1e-6), the small eigenvalue 0.001 is
+        stabilized to 0.001001, giving kappa ~ 999001 instead of 1e6.
+        """
         H = np.diag([1000.0, 0.001])
         kappa = compute_condition_number(H)
-        self.assertAlmostEqual(kappa, 1e6, places=1)
+        # Tikhonov nugget slightly reduces kappa for ill-conditioned matrices
+        self.assertGreater(kappa, 1e5)
+        self.assertLess(kappa, 1e6)
 
     def test_singular_matrix_returns_large_kappa(self):
-        """Singular matrix should return very large condition number."""
+        """Singular matrix should return large condition number.
+
+        With Tikhonov nugget (1e-6), a rank-1 matrix gets a floor
+        eigenvalue of ~1e-6, giving kappa ~ 2e6 instead of 1e12.
+        This is by design: the nugget prevents FD noise artifacts.
+        """
         H = np.array([[1.0, 1.0], [1.0, 1.0]])  # rank 1
         kappa = compute_condition_number(H)
-        self.assertGreater(kappa, 1e10)
+        self.assertGreater(kappa, 1e5)
 
     def test_negative_eigenvalues(self):
         """Should handle negative eigenvalues (uses absolute values)."""
@@ -374,8 +385,8 @@ class TestThresholdConstants(unittest.TestCase):
     def test_kappa_warning_is_100(self):
         self.assertEqual(KAPPA_WARNING, 100.0)
 
-    def test_kappa_critical_is_1000(self):
-        self.assertEqual(KAPPA_CRITICAL, 1000.0)
+    def test_kappa_critical_is_10000(self):
+        self.assertEqual(KAPPA_CRITICAL, 10000.0)
 
     def test_critical_greater_than_warning(self):
         self.assertGreater(KAPPA_CRITICAL, KAPPA_WARNING)

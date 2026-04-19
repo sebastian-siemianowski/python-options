@@ -286,7 +286,7 @@ def fit_regime_model_posterior(
                             lfo_cv_scores[m] = float('-inf')
                             models[m]["lfo_cv_error"] = str(e)
             _lfo_elapsed = _lfo_time_mod.perf_counter() - _lfo_t0
-            print(f"     LFO-CV: {_lfo_computed} computed, {_lfo_cached} cached in {_lfo_elapsed:.2f}s")
+            _log(f"     LFO-CV: {_lfo_computed} computed, {_lfo_cached} cached in {_lfo_elapsed:.2f}s")
         
         # Print model fits
         for m, info in models.items():
