@@ -103,6 +103,13 @@ async def quality_scores():
     return get_all_quality_scores()
 
 
+@router.get("/intrinsic-values")
+async def intrinsic_values():
+    """Buffett/Munger intrinsic value estimates with current prices and valuation gaps."""
+    from web.backend.services.intrinsic_values import get_all_intrinsic_data
+    return get_all_intrinsic_data()
+
+
 @router.get("/asset/{symbol}")
 async def signal_for_asset(symbol: str):
     """Get signals for a specific asset."""

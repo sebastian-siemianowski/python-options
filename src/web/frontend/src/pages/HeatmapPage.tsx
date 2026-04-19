@@ -6,7 +6,7 @@
  * Click any asset row to expand inline zone charts (1M/3M/6M/12M).
  */
 import { useQuery } from '@tanstack/react-query';
-import { api, type SectorGroup, type SummaryRow, type HorizonSignal, type QualityScoresData } from '../api';
+import { api, type SectorGroup, type SummaryRow, type HorizonSignal, type QualityScoresData, type IntrinsicValuesData, type IntrinsicValuation } from '../api';
 import PageHeader from '../components/PageHeader';
 import { DashboardSkeleton } from '../components/CosmicSkeleton';
 import { CosmicErrorCard } from '../components/CosmicErrorState';
@@ -31,16 +31,23 @@ const FILTER_KEY = 'heatmap_v2_filter';
 type SignalFilter = 'all' | 'strong_buy' | 'buy' | 'hold' | 'sell' | 'strong_sell';
 
 /** Sorting state for heatmap columns */
-type SortKey = 'momentum' | 'quality' | number;  // number = horizon key
+type SortKey = 'momentum' | 'quality' | 'price' | 'intrinsic' | 'gap' | number;  // number = horizon key
 type SortDir = 'asc' | 'desc';
 interface SortState { key: SortKey; dir: SortDir; }
 
 /** Get the sortable value for a given asset row and sort key */
-function getSortValue(row: SummaryRow, key: SortKey, qualityScores?: Record<string, number>): number {
+function getSortValue(row: SummaryRow, key: SortKey, qualityScores?: Record<string, number>, valuations?: Record<string, IntrinsicValuation>): number {
   if (key === 'momentum') return row.momentum_score ?? 0;
   if (key === 'quality') {
     const ticker = row.asset_label.includes('(') ? row.asset_label.split('(').pop()!.replace(')', '').trim() : row.asset_label;
     return qualityScores?.[ticker] ?? 50;
+  }
+  if (key === 'price' || key === 'intrinsic' || key === 'gap') {
+    const ticker = extractTicker(row.asset_label);
+    const v = valuations?.[ticker];
+    if (key === 'price') return v?.price ?? 0;
+    if (key === 'intrinsic') return v?.intrinsic_value ?? 0;
+    return v?.gap_pct ?? 0;
   }
   const sig = row.horizon_signals[key] || row.horizon_signals[String(key)];
   return sig?.exp_ret ?? 0;
@@ -476,6 +483,11 @@ export default function HeatmapPage() {
     queryFn: api.qualityScores,
     staleTime: 300_000,
   });
+  const intrinsicQ = useQuery({
+    queryKey: ['intrinsicValues'],
+    queryFn: api.intrinsicValues,
+    staleTime: 300_000,
+  });
 
   /* State */
   const [search, setSearch] = useState('');
@@ -497,6 +509,7 @@ export default function HeatmapPage() {
   const [expandedAsset, setExpandedAsset] = useState<string | null>(null);
   const [sort, setSort] = useState<SortState | null>(null);
   const [showFormula, setShowFormula] = useState(false);
+  const [showIntrinsicFormula, setShowIntrinsicFormula] = useState(false);
 
   /* Persist state */
   useEffect(() => {
@@ -510,6 +523,8 @@ export default function HeatmapPage() {
   const horizons = summaryQ.data?.horizons ?? [];
   const qualityScores = qualityQ.data?.scores ?? {};
   const qualityFormula = qualityQ.data?.formula ?? null;
+  const valuations = intrinsicQ.data?.valuations ?? {};
+  const intrinsicFormula = intrinsicQ.data?.formula ?? null;
 
   /* Filter + search + sort */
   const filteredSectors = useMemo(() => {
@@ -524,14 +539,14 @@ export default function HeatmapPage() {
       }
       if (sort) {
         assets = [...assets].sort((a, b) => {
-          const va = getSortValue(a, sort.key, qualityScores);
-          const vb = getSortValue(b, sort.key, qualityScores);
+          const va = getSortValue(a, sort.key, qualityScores, valuations);
+          const vb = getSortValue(b, sort.key, qualityScores, valuations);
           return sort.dir === 'desc' ? vb - va : va - vb;
         });
       }
       return { ...s, assets, asset_count: assets.length };
     }).filter(s => s.assets.length > 0);
-  }, [sectors, search, filter, sort, qualityScores]);
+  }, [sectors, search, filter, sort, qualityScores, valuations]);
 
   /* Flatten for keyboard navigation */
   const flatRows = useMemo(() => {
@@ -726,6 +741,58 @@ export default function HeatmapPage() {
                     <strong style={{ color: 'var(--text-secondary)' }}>{k}:</strong> {v}
                   </span>
                 ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Intrinsic Value Formula Explanation */}
+      {intrinsicFormula && (
+        <div className="mb-4 fade-up-delay-1">
+          <button
+            onClick={() => setShowIntrinsicFormula(f => !f)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-colors"
+            style={{ background: 'var(--violet-8)', color: 'var(--text-violet)', border: '1px solid var(--violet-12)' }}
+          >
+            <Info className="w-3.5 h-3.5" />
+            {intrinsicFormula.title}
+            {showIntrinsicFormula ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+          </button>
+          {showIntrinsicFormula && (
+            <div
+              className="mt-2 rounded-xl p-4"
+              style={{
+                background: 'linear-gradient(160deg, rgba(13,5,30,0.95) 0%, rgba(10,18,42,0.95) 100%)',
+                border: '1px solid var(--violet-15)',
+                boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
+              }}
+            >
+              <p className="text-[11px] mb-3" style={{ color: 'var(--text-secondary)' }}>
+                {intrinsicFormula.description}
+              </p>
+              <div className="space-y-1.5 mb-3">
+                {intrinsicFormula.methodology.map(m => (
+                  <div key={m.step} className="rounded-lg p-2" style={{ background: 'var(--violet-4)', border: '1px solid var(--violet-8)' }}>
+                    <span className="text-[10px] font-semibold" style={{ color: 'var(--text-violet)' }}>{m.step}</span>
+                    <span className="text-[9px] ml-2" style={{ color: 'var(--text-muted)' }}>{m.desc}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-2 mb-2">
+                {Object.entries(intrinsicFormula.non_company_methods).map(([k, v]) => (
+                  <span key={k} className="text-[9px]" style={{ color: 'var(--text-muted)' }}>
+                    <strong style={{ color: 'var(--text-secondary)' }}>{k}:</strong> {v}
+                  </span>
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-3 mt-2 pt-2" style={{ borderTop: '1px solid var(--violet-8)' }}>
+                <span className="text-[9px]" style={{ color: 'var(--accent-emerald)' }}>
+                  <strong>+%</strong> = {intrinsicFormula.interpretation.positive_pct}
+                </span>
+                <span className="text-[9px]" style={{ color: 'var(--accent-rose)' }}>
+                  <strong>−%</strong> = {intrinsicFormula.interpretation.negative_pct}
+                </span>
               </div>
             </div>
           )}
@@ -931,6 +998,102 @@ export default function HeatmapPage() {
                       </th>
                     );
                   })()}
+                  {/* Price column header */}
+                  {(() => {
+                    const isActive = sort?.key === 'price';
+                    return (
+                      <th
+                        className="text-center px-2 py-3 font-semibold text-[11px] cursor-pointer select-none group/sort"
+                        style={{
+                          color: isActive ? 'var(--accent-violet)' : 'var(--text-muted)',
+                          background: isActive ? 'var(--violet-4)' : 'var(--void)',
+                          borderBottom: '1px solid var(--violet-10)',
+                          minWidth: 64,
+                          transition: 'color 0.15s, background 0.15s',
+                        }}
+                        onClick={() => setSort(prev =>
+                          prev?.key === 'price'
+                            ? prev.dir === 'desc' ? { key: 'price', dir: 'asc' } : null
+                            : { key: 'price', dir: 'desc' }
+                        )}
+                        title="Sort by Current Price"
+                      >
+                        <div className="flex items-center justify-center gap-0.5">
+                          Price
+                          {isActive
+                            ? (sort.dir === 'desc'
+                                ? <ChevronDown className="w-3 h-3" />
+                                : <ChevronUp className="w-3 h-3" />)
+                            : <ArrowUpDown className="w-2.5 h-2.5 opacity-0 group-hover/sort:opacity-40 transition-opacity" />
+                          }
+                        </div>
+                      </th>
+                    );
+                  })()}
+                  {/* Intrinsic Value column header */}
+                  {(() => {
+                    const isActive = sort?.key === 'intrinsic';
+                    return (
+                      <th
+                        className="text-center px-2 py-3 font-semibold text-[11px] cursor-pointer select-none group/sort"
+                        style={{
+                          color: isActive ? 'var(--accent-violet)' : 'var(--text-muted)',
+                          background: isActive ? 'var(--violet-4)' : 'var(--void)',
+                          borderBottom: '1px solid var(--violet-10)',
+                          minWidth: 64,
+                          transition: 'color 0.15s, background 0.15s',
+                        }}
+                        onClick={() => setSort(prev =>
+                          prev?.key === 'intrinsic'
+                            ? prev.dir === 'desc' ? { key: 'intrinsic', dir: 'asc' } : null
+                            : { key: 'intrinsic', dir: 'desc' }
+                        )}
+                        title="Sort by Intrinsic Value (Buffett/Munger DCF)"
+                      >
+                        <div className="flex items-center justify-center gap-0.5">
+                          Intrinsic
+                          {isActive
+                            ? (sort.dir === 'desc'
+                                ? <ChevronDown className="w-3 h-3" />
+                                : <ChevronUp className="w-3 h-3" />)
+                            : <ArrowUpDown className="w-2.5 h-2.5 opacity-0 group-hover/sort:opacity-40 transition-opacity" />
+                          }
+                        </div>
+                      </th>
+                    );
+                  })()}
+                  {/* Below/Above intrinsic column header */}
+                  {(() => {
+                    const isActive = sort?.key === 'gap';
+                    return (
+                      <th
+                        className="text-center px-2 py-3 font-semibold text-[11px] cursor-pointer select-none group/sort"
+                        style={{
+                          color: isActive ? 'var(--accent-violet)' : 'var(--text-muted)',
+                          background: isActive ? 'var(--violet-4)' : 'var(--void)',
+                          borderBottom: '1px solid var(--violet-10)',
+                          minWidth: 64,
+                          transition: 'color 0.15s, background 0.15s',
+                        }}
+                        onClick={() => setSort(prev =>
+                          prev?.key === 'gap'
+                            ? prev.dir === 'desc' ? { key: 'gap', dir: 'asc' } : null
+                            : { key: 'gap', dir: 'desc' }
+                        )}
+                        title="Sort by Below/Above Intrinsic Value %"
+                      >
+                        <div className="flex items-center justify-center gap-0.5">
+                          B/A IV
+                          {isActive
+                            ? (sort.dir === 'desc'
+                                ? <ChevronDown className="w-3 h-3" />
+                                : <ChevronUp className="w-3 h-3" />)
+                            : <ArrowUpDown className="w-2.5 h-2.5 opacity-0 group-hover/sort:opacity-40 transition-opacity" />
+                          }
+                        </div>
+                      </th>
+                    );
+                  })()}
                 </tr>
               </thead>
               {filteredSectors.map(sector => {
@@ -953,7 +1116,7 @@ export default function HeatmapPage() {
                     >
                       <td
                         className="px-4 py-2.5 whitespace-nowrap"
-                        colSpan={horizons.length + 3}
+                        colSpan={horizons.length + 6}
                         style={{ borderBottom: '1px solid var(--violet-6)' }}
                       >
                         <div className="flex items-center gap-3">
@@ -1157,13 +1320,74 @@ export default function HeatmapPage() {
                                 </td>
                               );
                             })()}
+
+                            {/* Price / Intrinsic / Below-Above columns */}
+                            {(() => {
+                              const ticker = extractTicker(asset.asset_label);
+                              const v = valuations[ticker];
+                              const price = v?.price;
+                              const iv = v?.intrinsic_value;
+                              const gap = v?.gap_pct;
+                              const fmtPrice = (val: number | null | undefined) => {
+                                if (val == null) return '\u2014';
+                                if (val >= 10000) return val.toLocaleString('en-US', { maximumFractionDigits: 0 });
+                                if (val >= 100) return val.toFixed(1);
+                                if (val >= 1) return val.toFixed(2);
+                                return val.toFixed(4);
+                              };
+                              const gapColor = gap == null ? 'var(--text-muted)'
+                                : gap > 20 ? 'var(--accent-emerald)'
+                                : gap > 0 ? 'rgba(62,232,165,0.7)'
+                                : gap > -20 ? 'rgba(255,107,138,0.7)'
+                                : 'var(--accent-rose)';
+                              const gapBg = gap == null ? 'transparent'
+                                : gap > 20 ? 'rgba(6,78,59,0.35)'
+                                : gap > 0 ? 'rgba(6,78,59,0.15)'
+                                : gap > -20 ? 'rgba(76,5,25,0.15)'
+                                : 'rgba(76,5,25,0.35)';
+                              return (
+                                <>
+                                  <td className="text-center px-1 py-[2px]">
+                                    <span className="text-[9px] tabular-nums font-medium" style={{ color: 'var(--text-secondary)' }}>
+                                      {fmtPrice(price)}
+                                    </span>
+                                  </td>
+                                  <td className="text-center px-1 py-[2px]">
+                                    <span className="text-[9px] tabular-nums font-medium" style={{ color: iv != null ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+                                      {fmtPrice(iv)}
+                                    </span>
+                                  </td>
+                                  <td className="text-center px-1 py-[2px]">
+                                    <div
+                                      className="rounded-[4px] mx-auto"
+                                      style={{
+                                        background: gapBg,
+                                        height: 26,
+                                        width: 52,
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        border: '1px solid var(--violet-3)',
+                                      }}
+                                    >
+                                      <span
+                                        className="text-[9px] tabular-nums font-bold"
+                                        style={{ color: gapColor }}
+                                      >
+                                        {gap != null ? `${gap > 0 ? '+' : ''}${gap.toFixed(1)}%` : '\u2014'}
+                                      </span>
+                                    </div>
+                                  </td>
+                                </>
+                              );
+                            })()}
                           </tr>
 
                           {/* Expanded zone charts row */}
                           {expandedAsset === asset.asset_label && (
                             <ExpandedAssetRow
                               assetLabel={asset.asset_label}
-                              colSpan={horizons.length + 3}
+                              colSpan={horizons.length + 6}
                               onClose={() => setExpandedAsset(null)}
                               asset={asset}
                               horizons={horizons}

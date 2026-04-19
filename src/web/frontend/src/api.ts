@@ -31,6 +31,7 @@ export const api = {
   highConviction: (type: 'buy' | 'sell') =>
     fetchApi<{ signals: HighConvictionSignal[]; count: number }>(`/api/signals/high-conviction/${type}`),
   qualityScores: () => fetchApi<QualityScoresData>('/api/signals/quality-scores'),
+  intrinsicValues: () => fetchApi<IntrinsicValuesData>('/api/signals/intrinsic-values'),
 
   // Risk
   riskDashboard: () => fetchApi<RiskDashboard>('/api/risk/dashboard'),
@@ -129,6 +130,27 @@ export interface QualityFormula {
 export interface QualityScoresData {
   scores: Record<string, number>;
   formula: QualityFormula;
+}
+
+export interface IntrinsicValuation {
+  intrinsic_value: number | null;
+  price: number | null;
+  gap_pct: number | null;
+}
+export interface IntrinsicMethodStep {
+  step: string;
+  desc: string;
+}
+export interface IntrinsicFormula {
+  title: string;
+  description: string;
+  methodology: IntrinsicMethodStep[];
+  non_company_methods: Record<string, string>;
+  interpretation: Record<string, string>;
+}
+export interface IntrinsicValuesData {
+  valuations: Record<string, IntrinsicValuation>;
+  formula: IntrinsicFormula;
 }
 
 export interface OverviewData {
