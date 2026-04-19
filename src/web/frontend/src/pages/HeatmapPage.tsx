@@ -28,7 +28,7 @@ import {
 const COLLAPSE_KEY = 'heatmap_v2_collapse';
 const FILTER_KEY = 'heatmap_v2_filter';
 
-type SignalFilter = 'all' | 'strong_buy' | 'buy' | 'hold' | 'sell' | 'strong_sell';
+type SignalFilter = 'all' | 'strong_buy' | 'buy' | 'hold' | 'sell' | 'strong_sell' | 'green' | 'red';
 
 /** Sorting state for heatmap columns */
 type SortKey = 'momentum' | 'quality' | 'price' | 'intrinsic' | 'gap' | number;  // number = horizon key
@@ -64,13 +64,18 @@ function getSignalBadge(label: string): { text: string; bg: string; fg: string }
   return null;
 }
 
-const FILTER_OPTIONS: { value: SignalFilter; label: string; color: string }[] = [
-  { value: 'all', label: 'All Signals', color: 'var(--text-secondary)' },
-  { value: 'strong_buy', label: 'Strong Buy', color: 'var(--accent-emerald)' },
-  { value: 'buy', label: 'Buy', color: 'rgba(62,232,165,0.7)' },
-  { value: 'hold', label: 'Hold', color: 'var(--text-muted)' },
-  { value: 'sell', label: 'Sell', color: 'rgba(255,107,138,0.7)' },
-  { value: 'strong_sell', label: 'Strong Sell', color: 'var(--accent-rose)' },
+const SIGNAL_FILTERS: { value: SignalFilter; label: string; icon?: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'strong_buy', label: 'Strong Buy' },
+  { value: 'buy', label: 'Buy' },
+  { value: 'hold', label: 'Hold' },
+  { value: 'sell', label: 'Sell' },
+  { value: 'strong_sell', label: 'Strong Sell' },
+];
+
+const COLOR_FILTERS: { value: SignalFilter; label: string }[] = [
+  { value: 'green', label: 'Green' },
+  { value: 'red', label: 'Red' },
 ];
 
 /** Extract ticker from "Company Name (TICKER)" */
@@ -241,6 +246,18 @@ function heatColor(expRet: number | null | undefined): string {
 
 function signalMatchesFilter(row: SummaryRow, filter: SignalFilter): boolean {
   if (filter === 'all') return true;
+  if (filter === 'green') {
+    // Show assets where majority of horizon signals are positive
+    const sigs = Object.values(row.horizon_signals) as HorizonSignal[];
+    const pos = sigs.filter(s => s?.exp_ret != null && s.exp_ret > 0.003).length;
+    return pos > sigs.length / 2;
+  }
+  if (filter === 'red') {
+    // Show assets where majority of horizon signals are negative
+    const sigs = Object.values(row.horizon_signals) as HorizonSignal[];
+    const neg = sigs.filter(s => s?.exp_ret != null && s.exp_ret < -0.003).length;
+    return neg > sigs.length / 2;
+  }
   const label = (row.nearest_label || '').toUpperCase().replace(/[\s-]/g, '_');
   return label === filter.toUpperCase();
 }
@@ -265,7 +282,7 @@ function SentimentStrip({ sector }: { sector: SectorGroup }) {
 }
 
 /* ── Summary Statistics Strip ──────────────────────────────────── */
-function SummaryStrip({ sectors }: { sectors: SectorGroup[] }) {
+function SummaryStrip({ sectors, activeFilter, onFilterChange }: { sectors: SectorGroup[]; activeFilter: SignalFilter; onFilterChange: (f: SignalFilter) => void }) {
   const stats = useMemo(() => {
     let totalAssets = 0, strongBuys = 0, buys = 0, holds = 0, sells = 0, strongSells = 0, exits = 0;
     for (const s of sectors) {
@@ -281,26 +298,70 @@ function SummaryStrip({ sectors }: { sectors: SectorGroup[] }) {
              sectors: sectors.length, active: strongBuys + buys + sells + strongSells };
   }, [sectors]);
 
-  const items = [
-    { label: 'Assets', value: stats.totalAssets, color: 'var(--text-primary)' },
-    { label: 'Sectors', value: stats.sectors, color: 'var(--accent-violet)' },
-    { label: 'Strong Buy', value: stats.strongBuys, color: 'var(--accent-emerald)' },
-    { label: 'Buy', value: stats.buys, color: 'rgba(62,232,165,0.7)' },
-    { label: 'Hold', value: stats.holds, color: 'var(--text-muted)' },
-    { label: 'Sell', value: stats.sells, color: 'rgba(255,107,138,0.7)' },
-    { label: 'Strong Sell', value: stats.strongSells, color: 'var(--accent-rose)' },
+  const items: { label: string; value: number; color: string; glow: string; filterVal?: SignalFilter }[] = [
+    { label: 'Assets', value: stats.totalAssets, color: 'var(--text-primary)', glow: 'rgba(139,92,246,0.15)' },
+    { label: 'Sectors', value: stats.sectors, color: 'var(--accent-violet)', glow: 'rgba(139,92,246,0.2)' },
+    { label: 'Strong Buy', value: stats.strongBuys, color: 'var(--accent-emerald)', glow: 'rgba(62,232,165,0.2)', filterVal: 'strong_buy' },
+    { label: 'Buy', value: stats.buys, color: 'rgba(62,232,165,0.8)', glow: 'rgba(62,232,165,0.15)', filterVal: 'buy' },
+    { label: 'Hold', value: stats.holds, color: 'var(--accent-amber)', glow: 'rgba(245,197,66,0.12)', filterVal: 'hold' },
+    { label: 'Sell', value: stats.sells, color: 'rgba(255,107,138,0.8)', glow: 'rgba(255,107,138,0.15)', filterVal: 'sell' },
+    { label: 'Strong Sell', value: stats.strongSells, color: 'var(--accent-rose)', glow: 'rgba(255,107,138,0.2)', filterVal: 'strong_sell' },
   ];
 
+  const bullish = stats.strongBuys + stats.buys;
+  const bearish = stats.strongSells + stats.sells;
+  const bullPct = stats.totalAssets > 0 ? Math.round((bullish / stats.totalAssets) * 100) : 0;
+  const sentiment = bullish > bearish * 2 ? 'Bullish' : bearish > bullish * 2 ? 'Bearish' : 'Neutral';
+  const sentimentColor = sentiment === 'Bullish' ? 'var(--accent-emerald)' : sentiment === 'Bearish' ? 'var(--accent-rose)' : 'var(--accent-amber)';
+
   return (
-    <div className="flex items-center gap-1.5 flex-wrap">
-      {items.map((it, idx) => (
-        <div key={it.label}
-          className="glass-card hover-lift flex items-center gap-1.5 px-3 py-2 rounded-lg"
-          style={{ animationDelay: `${idx * 50}ms` }}>
-          <span className="text-label">{it.label}</span>
-          <span className="text-stat-value tabular-nums" style={{ color: it.color, fontSize: 13 }}>{it.value}</span>
+    <div className="space-y-3">
+      {/* Sentiment bar */}
+      <div
+        className="rounded-2xl px-5 py-3 flex items-center gap-4"
+        style={{
+          background: 'linear-gradient(135deg, rgba(13,5,30,0.9) 0%, rgba(10,18,42,0.9) 100%)',
+          border: '1px solid var(--violet-10)',
+          boxShadow: '0 4px 24px rgba(0,0,0,0.2), inset 0 1px 0 var(--violet-4)',
+        }}
+      >
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full animate-pulse" style={{ background: sentimentColor, boxShadow: `0 0 8px ${sentimentColor}` }} />
+          <span className="text-[13px] font-bold tracking-wide" style={{ color: sentimentColor }}>{sentiment}</span>
         </div>
-      ))}
+        <div className="flex-1 h-2 rounded-full overflow-hidden flex" style={{ background: 'var(--void-surface)' }}>
+          <div className="h-full transition-all duration-700" style={{ width: `${bullPct}%`, background: 'linear-gradient(90deg, var(--accent-emerald), rgba(62,232,165,0.5))' }} />
+          <div className="h-full transition-all duration-700" style={{ width: `${100 - bullPct}%`, background: 'linear-gradient(90deg, rgba(255,107,138,0.5), var(--accent-rose))' }} />
+        </div>
+        <span className="text-[11px] tabular-nums font-semibold" style={{ color: 'var(--text-secondary)' }}>
+          {bullPct}% bullish
+        </span>
+      </div>
+
+      {/* Stat cards */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {items.map((it, idx) => {
+          const isClickable = !!it.filterVal;
+          const isActive = it.filterVal === activeFilter;
+          return (
+            <button
+              key={it.label}
+              onClick={() => isClickable && onFilterChange(isActive ? 'all' : it.filterVal!)}
+              className={`flex items-center gap-2 px-3.5 py-2.5 rounded-xl transition-all duration-200 ${isClickable ? 'cursor-pointer' : 'cursor-default'}`}
+              style={{
+                background: isActive ? it.glow : 'var(--void-surface)',
+                border: `1px solid ${isActive ? it.color : 'var(--violet-6)'}`,
+                boxShadow: isActive ? `0 0 20px ${it.glow}, inset 0 1px 0 rgba(255,255,255,0.04)` : '0 2px 8px rgba(0,0,0,0.15), inset 0 1px 0 rgba(255,255,255,0.03)',
+                animationDelay: `${idx * 60}ms`,
+                transform: isActive ? 'scale(1.05)' : 'scale(1)',
+              }}
+            >
+              <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: isActive ? it.color : 'var(--text-muted)' }}>{it.label}</span>
+              <span className="text-[15px] font-bold tabular-nums" style={{ color: it.color }}>{it.value}</span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -690,7 +751,7 @@ export default function HeatmapPage() {
 
       {/* Summary strip */}
       <div className="mb-4 fade-up-delay-1">
-        <SummaryStrip sectors={sectors} />
+        <SummaryStrip sectors={sectors} activeFilter={filter} onFilterChange={setFilter} />
       </div>
 
       {/* Quality Score Formula Explanation */}
@@ -800,77 +861,149 @@ export default function HeatmapPage() {
       )}
 
       {/* Controls bar */}
-      <div className="mb-4 flex items-center gap-3 flex-wrap fade-up-delay-2">
-        {/* Search */}
-        <div className="relative flex-1 min-w-[200px] max-w-[360px]">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: 'var(--text-muted)' }} />
-          <input
-            id="heatmap-search"
-            type="text"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Search assets or sectors..."
-            className="w-full pl-9 pr-8 py-2.5 rounded-xl text-[12px] outline-none transition-all focus-ring"
-            style={{
-              background: 'var(--void-surface)',
-              border: '1px solid var(--border-void)',
-              color: 'var(--text-primary)',
-              backdropFilter: 'blur(8px)',
-            }}
-            onFocus={e => (e.target.style.borderColor = 'rgba(139,92,246,0.35)')}
-            onBlur={e => (e.target.style.borderColor = 'var(--border-void)')}
-          />
-          {search && (
-            <button
-              onClick={() => setSearch('')}
-              className="absolute right-2.5 top-1/2 -translate-y-1/2"
-              style={{ color: 'var(--text-muted)' }}
-            >
-              <X className="w-3.5 h-3.5" />
+      <div
+        className="mb-4 rounded-2xl px-4 py-3 fade-up-delay-2"
+        style={{
+          background: 'linear-gradient(135deg, rgba(13,5,30,0.85) 0%, rgba(10,18,42,0.85) 100%)',
+          border: '1px solid var(--violet-8)',
+          boxShadow: '0 4px 20px rgba(0,0,0,0.15), inset 0 1px 0 var(--violet-4)',
+          backdropFilter: 'blur(12px)',
+        }}
+      >
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Search */}
+          <div className="relative flex-1 min-w-[200px] max-w-[340px]">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: 'var(--text-muted)' }} />
+            <input
+              id="heatmap-search"
+              type="text"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search assets or sectors..."
+              className="w-full pl-9 pr-8 py-2 rounded-xl text-[12px] outline-none transition-all"
+              style={{
+                background: 'var(--void)',
+                border: '1px solid var(--violet-10)',
+                color: 'var(--text-primary)',
+              }}
+              onFocus={e => (e.target.style.borderColor = 'rgba(139,92,246,0.4)')}
+              onBlur={e => (e.target.style.borderColor = 'var(--violet-10)')}
+            />
+            {search && (
+              <button
+                onClick={() => setSearch('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* Signal filter pills */}
+          <div className="flex items-center gap-1">
+            <Filter className="w-3.5 h-3.5 mr-1" style={{ color: 'var(--accent-violet)', opacity: 0.6 }} />
+            {SIGNAL_FILTERS.map(opt => (
+              <button
+                key={opt.value}
+                onClick={() => setFilter(opt.value)}
+                className="filter-pill"
+                data-active={filter === opt.value || undefined}
+                data-filter={opt.value}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Separator */}
+          <div className="w-px h-6 mx-1" style={{ background: 'var(--violet-15)' }} />
+
+          {/* Color filters */}
+          <div className="flex items-center gap-1">
+            {COLOR_FILTERS.map(opt => (
+              <button
+                key={opt.value}
+                onClick={() => setFilter(filter === opt.value ? 'all' : opt.value)}
+                className="filter-pill"
+                data-active={filter === opt.value || undefined}
+                data-filter={opt.value}
+              >
+                {opt.value === 'green'
+                  ? <TrendingUp className="w-3 h-3 mr-1 inline" style={{ color: 'var(--accent-emerald)' }} />
+                  : <TrendingDown className="w-3 h-3 mr-1 inline" style={{ color: 'var(--accent-rose)' }} />}
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Separator */}
+          <div className="w-px h-6 mx-1" style={{ background: 'var(--violet-15)' }} />
+
+          {/* Expand/Collapse */}
+          <div className="flex items-center gap-1">
+            <button onClick={expandAll}
+              className="px-2.5 py-1.5 rounded-lg text-[10px] font-medium transition-all hover:scale-105"
+              style={{ background: 'var(--violet-6)', color: 'var(--text-secondary)', border: '1px solid var(--violet-8)' }}>
+              Expand All
             </button>
-          )}
-        </div>
-
-        {/* Signal filter pills */}
-        <div className="flex items-center gap-1">
-          <Filter className="w-3.5 h-3.5 mr-1" style={{ color: 'var(--text-muted)' }} />
-          {FILTER_OPTIONS.map(opt => (
-            <button
-              key={opt.value}
-              onClick={() => setFilter(opt.value)}
-              className="filter-pill"
-              data-active={filter === opt.value || undefined}
-              data-filter={opt.value}
-            >
-              {opt.label}
+            <button onClick={collapseAll}
+              className="px-2.5 py-1.5 rounded-lg text-[10px] font-medium transition-all hover:scale-105"
+              style={{ background: 'var(--violet-6)', color: 'var(--text-secondary)', border: '1px solid var(--violet-8)' }}>
+              Collapse All
             </button>
-          ))}
+          </div>
+
+          {/* Color legend - pushed right */}
+          <div className="ml-auto">
+            <ColorScaleLegend />
+          </div>
         </div>
 
-        {/* Expand/Collapse */}
-        <div className="flex items-center gap-1 ml-auto">
-          <button onClick={expandAll}
-            className="px-2.5 py-1 rounded-lg text-[10px] font-medium transition-colors"
-            style={{ background: 'var(--void-surface)', color: 'var(--text-secondary)' }}>
-            Expand All
-          </button>
-          <button onClick={collapseAll}
-            className="px-2.5 py-1 rounded-lg text-[10px] font-medium transition-colors"
-            style={{ background: 'var(--void-surface)', color: 'var(--text-secondary)' }}>
-            Collapse All
-          </button>
-        </div>
-
-        {/* Color legend */}
-        <ColorScaleLegend />
+        {/* Active filter indicator */}
+        {filter !== 'all' && (
+          <div className="flex items-center gap-2 mt-2.5 pt-2.5" style={{ borderTop: '1px solid var(--violet-6)' }}>
+            <span className="text-[10px] font-medium" style={{ color: 'var(--text-muted)' }}>Active filter:</span>
+            <span
+              className="px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider flex items-center gap-1"
+              style={{
+                background: filter === 'green' ? 'rgba(62,232,165,0.15)' : filter === 'red' ? 'rgba(255,107,138,0.15)' : 'var(--violet-10)',
+                color: filter === 'green' ? 'var(--accent-emerald)' : filter === 'red' ? 'var(--accent-rose)'
+                  : ['strong_buy', 'buy'].includes(filter) ? 'var(--accent-emerald)'
+                  : ['strong_sell', 'sell'].includes(filter) ? 'var(--accent-rose)'
+                  : 'var(--accent-amber)',
+                border: `1px solid ${filter === 'green' ? 'rgba(62,232,165,0.3)' : filter === 'red' ? 'rgba(255,107,138,0.3)' : 'var(--violet-15)'}`,
+              }}
+            >
+              {filter === 'green' ? <TrendingUp className="w-3 h-3" style={{ color: 'var(--accent-emerald)' }} /> : filter === 'red' ? <TrendingDown className="w-3 h-3" style={{ color: 'var(--accent-rose)' }} /> : null}
+              {filter.replace('_', ' ')}
+            </span>
+            <button
+              onClick={() => setFilter('all')}
+              className="text-[10px] px-2 py-0.5 rounded-lg transition-all hover:scale-105"
+              style={{ color: 'var(--text-muted)', background: 'var(--violet-6)' }}
+            >
+              Clear ×
+            </button>
+            <span className="text-[10px] tabular-nums ml-auto" style={{ color: 'var(--text-muted)' }}>
+              {filteredSectors.reduce((a, s) => a + s.assets.length, 0)} results
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Main heatmap */}
       <div
         ref={containerRef}
         tabIndex={0}
-        className={`glass-card overflow-hidden relative fade-up-delay-3 ${isFullWidth ? '-mx-6' : ''}`}
-        style={{ outline: 'none' }}
+        className={`overflow-hidden relative fade-up-delay-3 ${isFullWidth ? '-mx-6' : ''}`}
+        style={{
+          outline: 'none',
+          borderRadius: 16,
+          background: 'linear-gradient(180deg, rgba(12,11,29,0.95) 0%, rgba(6,5,14,0.98) 100%)',
+          border: '1px solid var(--violet-8)',
+          boxShadow: '0 8px 48px rgba(0,0,0,0.3), 0 0 0 1px var(--violet-3), inset 0 1px 0 var(--violet-5)',
+        }}
       >
         {/* Tooltip */}
         {tooltip && <HeatTooltip info={tooltip} />}
@@ -1405,16 +1538,35 @@ export default function HeatmapPage() {
 
         {/* Bottom status bar */}
         <div
-          className="flex items-center justify-between px-5 py-2"
-          style={{ borderTop: '1px solid var(--violet-8)', background: 'var(--void)' }}
+          className="flex items-center justify-between px-5 py-2.5"
+          style={{
+            borderTop: '1px solid var(--violet-8)',
+            background: 'linear-gradient(90deg, rgba(6,5,14,0.95) 0%, rgba(12,11,29,0.9) 50%, rgba(6,5,14,0.95) 100%)',
+          }}
         >
-          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-            {filteredSectors.reduce((a, s) => a + s.assets.length, 0)} assets across {filteredSectors.length} sectors
-            {search && <> matching "<span style={{ color: 'var(--text-violet)' }}>{search}</span>"</>}
-          </span>
-          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-            {horizons.length} horizons
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-[10px] tabular-nums" style={{ color: 'var(--text-secondary)' }}>
+              <strong style={{ color: 'var(--accent-violet)' }}>{filteredSectors.reduce((a, s) => a + s.assets.length, 0)}</strong> assets across <strong style={{ color: 'var(--accent-violet)' }}>{filteredSectors.length}</strong> sectors
+            </span>
+            {search && (
+              <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: 'var(--violet-8)', color: 'var(--text-violet)' }}>
+                <Search className="w-3 h-3 inline" /> {search}
+              </span>
+            )}
+            {filter !== 'all' && (
+              <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: 'var(--violet-8)', color: 'var(--text-violet)' }}>
+                <Filter className="w-3 h-3 inline" /> {filter.replace('_', ' ')}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-[10px] tabular-nums" style={{ color: 'var(--text-muted)' }}>
+              {horizons.length} horizons
+            </span>
+            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              ⌨ j/k ↕ · Enter ↔ · / search
+            </span>
+          </div>
         </div>
       </div>
     </>

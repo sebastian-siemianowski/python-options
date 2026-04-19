@@ -1139,6 +1139,18 @@ button:active:not(:disabled) {
   color: var(--accent-amber);
   box-shadow: 0 0 12px rgba(245, 197, 66, 0.08);
 }
+.filter-pill[data-active="true"][data-filter="green"] {
+  background: rgba(62, 232, 165, 0.15);
+  border-color: rgba(62, 232, 165, 0.3);
+  color: var(--accent-emerald);
+  box-shadow: 0 0 16px rgba(62, 232, 165, 0.12), inset 0 1px 0 rgba(62, 232, 165, 0.08);
+}
+.filter-pill[data-active="true"][data-filter="red"] {
+  background: rgba(255, 107, 138, 0.15);
+  border-color: rgba(255, 107, 138, 0.3);
+  color: var(--accent-rose);
+  box-shadow: 0 0 16px rgba(255, 107, 138, 0.12), inset 0 1px 0 rgba(255, 107, 138, 0.08);
+}
 
 /* ================================================================
    PREMIUM TABLES (S3.5) -- Upgraded table styling
