@@ -3057,7 +3057,7 @@ def student_t_filter_with_lfo_cv_kernel(
         S = P_pred + R
         
         if S > _MIN_VARIANCE:
-            # FIX: Student-t scale = sqrt(S × (ν-2)/ν)
+            # Student-t scale = sqrt(S * (nu-2)/nu) for predictive density
             if nu > 2.0:
                 scale = np.sqrt(S * (nu - 2.0) / nu)
             else:
@@ -3065,7 +3065,7 @@ def student_t_filter_with_lfo_cv_kernel(
             z = innovation / scale
             z_sq = z * z
             
-            # Log-likelihood contribution
+            # Log-likelihood contribution (Student-t predictive density)
             ll_t = log_norm_const - np.log(scale) + neg_exp * np.log(1.0 + z_sq * inv_nu)
             if ll_t < -_MAX_LL_CONTRIB:
                 ll_t = -_MAX_LL_CONTRIB
@@ -3076,10 +3076,15 @@ def student_t_filter_with_lfo_cv_kernel(
                 lfo_sum += ll_t
                 lfo_count += 1
             
-            # Robust Kalman gain
+            # Student-t robust weighting: downweight outliers
+            # w_t = (nu + 1) / (nu + z_sq_S) where z_sq_S = innovation^2 / S
+            z_sq_S = (innovation * innovation) / S
+            w_t = (nu + 1.0) / (nu + z_sq_S)
+            
+            # Robust Kalman gain with Student-t weighting
             K = P_pred / S
-            mu = mu_pred + K * innovation
-            P = (1.0 - K) * P_pred
+            mu = mu_pred + K * w_t * innovation
+            P = (1.0 - w_t * K) * P_pred
         else:
             mu = mu_pred
             P = P_pred
@@ -5228,6 +5233,493 @@ def gaussian_score_fold_kernel(
     md = total_md / 10.0
 
     return kp, md
+
+# =============================================================================
+# REGIME-CONDITIONAL c KERNELS (Tune.md Story 2.1)
+# =============================================================================
+# Time-varying observation noise: R_t = c_t * vol_t^2  where c_t = c[regime_t]
+# In trending regimes, drift explains more variance -> smaller c.
+# In crisis regimes, everything is noise -> larger c.
+# =============================================================================
+
+
+@njit(cache=True, fastmath=True)
+def build_c_array_from_regimes(
+    regime_labels: np.ndarray,
+    c_per_regime: np.ndarray,
+) -> np.ndarray:
+    """
+    Expand per-regime c values into a time-varying c_t array.
+
+    Parameters
+    ----------
+    regime_labels : array of int, shape (T,)
+        Regime label for each time step (0-4).
+    c_per_regime : array of float, shape (5,)
+        c value for each regime (indexed by regime id).
+
+    Returns
+    -------
+    c_array : array of float, shape (T,)
+        Time-varying c_t = c_per_regime[regime_labels[t]].
+    """
+    n = len(regime_labels)
+    c_array = np.empty(n, dtype=np.float64)
+    for t in range(n):
+        r = regime_labels[t]
+        if r < 0 or r >= len(c_per_regime):
+            c_array[t] = 1.0  # fallback
+        else:
+            c_array[t] = c_per_regime[r]
+    return c_array
+
+
+@njit(cache=True, fastmath=True)
+def regime_c_gaussian_filter_kernel(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c_array: np.ndarray,
+    phi: float,
+    P0: float = 1e-4,
+) -> tuple:
+    """
+    phi-Gaussian Kalman filter with time-varying c_t (regime-conditional).
+
+    Same as phi_gaussian_filter_kernel but R_t = c_array[t] * vol_t^2.
+
+    Parameters
+    ----------
+    c_array : array of float, shape (T,)
+        Time-varying observation noise scale.
+
+    Returns
+    -------
+    (mu_filtered, P_filtered, log_likelihood)
+    """
+    n = len(returns)
+    mu = 0.0
+    P = P0
+    mu_filtered = np.zeros(n)
+    P_filtered = np.zeros(n)
+    log_likelihood = 0.0
+    phi_sq = phi * phi
+
+    for t in range(n):
+        mu_pred = phi * mu
+        P_pred = phi_sq * P + q
+
+        vol_t = vol[t]
+        R = c_array[t] * (vol_t * vol_t)
+        innovation = returns[t] - mu_pred
+        S = P_pred + R
+
+        if S > _MIN_VARIANCE:
+            K = P_pred / S
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+
+            innov_sq = innovation * innovation
+            innov_sq_scaled = innov_sq / S
+            if innov_sq_scaled > 100.0:
+                innov_sq_scaled = 100.0
+
+            ll_contrib = -0.5 * (_LOG_2PI + np.log(S) + innov_sq_scaled)
+            if ll_contrib < -_MAX_LL_CONTRIB:
+                ll_contrib = -_MAX_LL_CONTRIB
+            log_likelihood += ll_contrib
+        else:
+            mu = mu_pred
+            P = P_pred
+
+        mu_filtered[t] = mu
+        P_filtered[t] = P if P > _MIN_VARIANCE else _MIN_VARIANCE
+
+    return mu_filtered, P_filtered, log_likelihood
+
+
+@njit(cache=True, fastmath=False)
+def regime_c_student_t_filter_kernel(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c_array: np.ndarray,
+    phi: float,
+    nu: float,
+    log_gamma_half_nu: float,
+    log_gamma_half_nu_plus_half: float,
+    P0: float = 1e-4,
+) -> tuple:
+    """
+    phi-Student-t Kalman filter with time-varying c_t (regime-conditional).
+
+    Same as phi_student_t_filter_kernel but R_t = c_array[t] * vol_t^2.
+
+    Returns
+    -------
+    (mu_filtered, P_filtered, log_likelihood)
+    """
+    n = len(returns)
+    mu = 0.0
+    P = P0
+    mu_filtered = np.zeros(n)
+    P_filtered = np.zeros(n)
+    log_likelihood = 0.0
+    phi_sq = phi * phi
+
+    log_nu = np.log(nu)
+    log_pi = np.log(np.pi)
+    log_norm = (log_gamma_half_nu_plus_half
+                - log_gamma_half_nu
+                - 0.5 * (log_nu + log_pi))
+
+    for t in range(n):
+        mu_pred = phi * mu
+        P_pred = phi_sq * P + q
+
+        vol_t = vol[t]
+        R = c_array[t] * (vol_t * vol_t)
+        innovation = returns[t] - mu_pred
+        S = P_pred + R
+
+        if S > _MIN_VARIANCE:
+            K = P_pred / S
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+
+            m_dist_sq = (innovation * innovation) / S
+            ll_contrib = (log_norm
+                          - 0.5 * np.log(S)
+                          - 0.5 * (nu + 1.0) * np.log(1.0 + m_dist_sq / nu))
+            if ll_contrib < -_MAX_LL_CONTRIB:
+                ll_contrib = -_MAX_LL_CONTRIB
+            log_likelihood += ll_contrib
+        else:
+            mu = mu_pred
+            P = P_pred
+
+        mu_filtered[t] = mu
+        P_filtered[t] = P if P > _MIN_VARIANCE else _MIN_VARIANCE
+
+    return mu_filtered, P_filtered, log_likelihood
+
+# =============================================================================
+# RV-ADAPTIVE PROCESS NOISE KERNELS (Tune.md Story 1.1)
+# =============================================================================
+# Proactive process noise q_t that scales with realized volatility acceleration:
+#   q_t = q_base * exp(gamma * delta_log_vol_sq)
+# Unlike GAS-Q (reactive to errors), RV-Q shifts BEFORE errors materialize
+# because realized vol expansion is observable in real time via OHLC data.
+# =============================================================================
+
+@njit(cache=True, fastmath=False)
+def rv_adaptive_q_kernel(
+    vol: np.ndarray,
+    q_base: float,
+    gamma: float,
+    q_min: float = 1e-8,
+    q_max: float = 1e-2,
+) -> np.ndarray:
+    """
+    Compute time-varying process noise q_t from realized volatility changes.
+
+    q_t = q_base * exp(gamma * delta_log(vol_t^2))
+
+    Parameters
+    ----------
+    vol : np.ndarray
+        Realized volatility array (e.g. from Garman-Klass), length T.
+    q_base : float
+        Baseline process noise (unconditional level).
+    gamma : float
+        Sensitivity to vol acceleration. gamma=0 recovers static q.
+    q_min : float
+        Floor to prevent filter freeze (default 1e-8).
+    q_max : float
+        Ceiling to prevent filter divergence (default 1e-2).
+
+    Returns
+    -------
+    q_path : np.ndarray
+        Time-varying process noise, length T.
+    """
+    n = len(vol)
+    q_path = np.empty(n, dtype=np.float64)
+
+    # First timestep: no delta available, use q_base
+    q_path[0] = q_base
+    if q_path[0] < q_min:
+        q_path[0] = q_min
+    elif q_path[0] > q_max:
+        q_path[0] = q_max
+
+    for t in range(1, n):
+        vol_curr = vol[t]
+        vol_prev = vol[t - 1]
+
+        # Compute delta log(vol^2) = 2 * delta log(vol)
+        # Guard against zero or negative vol
+        if vol_curr > 1e-15 and vol_prev > 1e-15:
+            delta_log_vol_sq = 2.0 * (np.log(vol_curr) - np.log(vol_prev))
+        else:
+            delta_log_vol_sq = 0.0
+
+        # q_t = q_base * exp(gamma * delta)
+        exponent = gamma * delta_log_vol_sq
+        # Clamp exponent to prevent overflow
+        if exponent > 20.0:
+            exponent = 20.0
+        elif exponent < -20.0:
+            exponent = -20.0
+
+        q_t = q_base * np.exp(exponent)
+
+        # Enforce bounds
+        if q_t < q_min:
+            q_t = q_min
+        elif q_t > q_max:
+            q_t = q_max
+
+        q_path[t] = q_t
+
+    return q_path
+
+
+@njit(cache=True, fastmath=True)
+def rv_adaptive_q_gaussian_filter_kernel(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q_base: float,
+    gamma: float,
+    c: float,
+    phi: float,
+    q_min: float = 1e-8,
+    q_max: float = 1e-2,
+    P0: float = 1e-4,
+    mu_filtered: np.ndarray = np.empty(0),
+    P_filtered: np.ndarray = np.empty(0),
+    q_path: np.ndarray = np.empty(0),
+) -> float:
+    """
+    phi-Gaussian Kalman filter with RV-adaptive process noise.
+
+    State:       mu_t = phi * mu_{t-1} + w_t,  w_t ~ N(0, q_t)
+    Observation: r_t  = mu_t + eps_t,           eps_t ~ N(0, c * vol_t^2)
+
+    q_t = q_base * exp(gamma * delta_log(vol_t^2))
+
+    Parameters
+    ----------
+    returns, vol : np.ndarray
+        Observations and realized volatility.
+    q_base : float
+        Baseline process noise.
+    gamma : float
+        RV-feedback sensitivity. gamma=0 recovers static q.
+    c, phi : float
+        Observation noise scaling and AR(1) persistence.
+    mu_filtered, P_filtered, q_path : np.ndarray
+        Pre-allocated output arrays (length T). Written in-place.
+
+    Returns
+    -------
+    log_likelihood : float
+    """
+    n = len(returns)
+    mu = 0.0
+    P = P0
+    log_ll = 0.0
+    phi_sq = phi * phi
+    log_2pi = 1.8378770664093453
+    _EPS = 1e-12
+
+    # Compute first q value
+    q_t = q_base
+    if q_t < q_min:
+        q_t = q_min
+    elif q_t > q_max:
+        q_t = q_max
+
+    for t in range(n):
+        # Compute adaptive q_t from vol changes
+        if t > 0:
+            vol_curr = vol[t]
+            vol_prev = vol[t - 1]
+            if vol_curr > 1e-15 and vol_prev > 1e-15:
+                delta_log_vol_sq = 2.0 * (np.log(vol_curr) - np.log(vol_prev))
+            else:
+                delta_log_vol_sq = 0.0
+            exponent = gamma * delta_log_vol_sq
+            if exponent > 20.0:
+                exponent = 20.0
+            elif exponent < -20.0:
+                exponent = -20.0
+            q_t = q_base * np.exp(exponent)
+            if q_t < q_min:
+                q_t = q_min
+            elif q_t > q_max:
+                q_t = q_max
+
+        if len(q_path) > 0:
+            q_path[t] = q_t
+
+        # Predict step with AR(1) and adaptive q
+        mu_pred = phi * mu
+        P_pred = phi_sq * P + q_t
+
+        # Innovation
+        vol_t = vol[t]
+        R = c * (vol_t * vol_t)
+        innovation = returns[t] - mu_pred
+        S = P_pred + R
+
+        if S > _EPS:
+            K = P_pred / S
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+            if P < _EPS:
+                P = _EPS
+
+            z_sq = (innovation * innovation) / S
+            if z_sq > 100.0:
+                z_sq = 100.0
+            ll_t = -0.5 * (log_2pi + np.log(S) + z_sq)
+            if ll_t == ll_t:
+                log_ll += ll_t
+        else:
+            mu = mu_pred
+            P = P_pred
+
+        if len(mu_filtered) > 0:
+            mu_filtered[t] = mu
+        if len(P_filtered) > 0:
+            P_filtered[t] = P if P > _EPS else _EPS
+
+    return log_ll
+
+
+@njit(cache=True, fastmath=True)
+def rv_adaptive_q_student_t_filter_kernel(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q_base: float,
+    gamma: float,
+    c: float,
+    phi: float,
+    nu: float,
+    log_gamma_half_nu: float,
+    log_gamma_half_nu_plus_half: float,
+    q_min: float = 1e-8,
+    q_max: float = 1e-2,
+    P0: float = 1e-4,
+    mu_filtered: np.ndarray = np.empty(0),
+    P_filtered: np.ndarray = np.empty(0),
+    q_path: np.ndarray = np.empty(0),
+) -> float:
+    """
+    phi-Student-t Kalman filter with RV-adaptive process noise.
+
+    State:       mu_t = phi * mu_{t-1} + w_t,  w_t ~ N(0, q_t)
+    Observation: r_t  = mu_t + eps_t,           eps_t ~ t_nu(0, c * vol_t^2)
+
+    q_t = q_base * exp(gamma * delta_log(vol_t^2))
+
+    Returns
+    -------
+    log_likelihood : float
+    """
+    n = len(returns)
+
+    # Data-adaptive initialization (same as phi_student_t_filter_kernel)
+    _init_w = min(20, n)
+    if _init_w >= 3:
+        _sorted = np.sort(returns[:_init_w])
+        _mid = _init_w // 2
+        mu = _sorted[_mid] if _init_w % 2 == 1 else (_sorted[_mid - 1] + _sorted[_mid]) * 0.5
+        _mean_init = 0.0
+        for _ii in range(_init_w):
+            _mean_init += returns[_ii]
+        _mean_init /= _init_w
+        _var_init = 0.0
+        for _ii in range(_init_w):
+            _var_init += (returns[_ii] - _mean_init) ** 2
+        _var_init /= _init_w
+        P = max(_var_init, 1e-6)
+    else:
+        mu = 0.0
+        P = P0
+
+    log_ll = 0.0
+    phi_sq = phi * phi
+    _EPS = 1e-12
+
+    # First q value
+    q_t = q_base
+    if q_t < q_min:
+        q_t = q_min
+    elif q_t > q_max:
+        q_t = q_max
+
+    for t in range(n):
+        # Compute adaptive q_t from vol changes
+        if t > 0:
+            vol_curr = vol[t]
+            vol_prev = vol[t - 1]
+            if vol_curr > 1e-15 and vol_prev > 1e-15:
+                delta_log_vol_sq = 2.0 * (np.log(vol_curr) - np.log(vol_prev))
+            else:
+                delta_log_vol_sq = 0.0
+            exponent = gamma * delta_log_vol_sq
+            if exponent > 20.0:
+                exponent = 20.0
+            elif exponent < -20.0:
+                exponent = -20.0
+            q_t = q_base * np.exp(exponent)
+            if q_t < q_min:
+                q_t = q_min
+            elif q_t > q_max:
+                q_t = q_max
+
+        if len(q_path) > 0:
+            q_path[t] = q_t
+
+        # Predict step with AR(1) and adaptive q
+        mu_pred = phi * mu
+        P_pred = phi_sq * P + q_t
+
+        # Observation variance
+        vol_t = vol[t]
+        R = c * (vol_t * vol_t)
+        innovation = returns[t] - mu_pred
+        S = P_pred + R
+
+        if S > _EPS:
+            forecast_scale = np.sqrt(S)
+
+            # Student-t log-likelihood
+            ll_t = student_t_logpdf_kernel(
+                returns[t], nu, mu_pred, forecast_scale,
+                log_gamma_half_nu, log_gamma_half_nu_plus_half
+            )
+            if ll_t < -100.0:
+                ll_t = -100.0
+            log_ll += ll_t
+
+            K = P_pred / S
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+        else:
+            mu = mu_pred
+            P = P_pred
+
+        if len(mu_filtered) > 0:
+            mu_filtered[t] = mu
+        if len(P_filtered) > 0:
+            P_filtered[t] = P if P > _EPS else _EPS
+
+    return log_ll
+
+
 # =============================================================================
 # GAS-Q GAUSSIAN FILTER KERNEL
 # =============================================================================
@@ -5664,3 +6156,90 @@ def phi_gaussian_cv_test_fold_kernel(
         P_pred = (1.0 - K) * P_pred
 
     return ll_fold, n_obs, std_written
+
+
+# =============================================================================
+# ONLINE c UPDATE KERNEL (Tune.md Story 2.3)
+# =============================================================================
+# Innovation-variance monitoring for adaptive observation noise scalar c.
+#
+# Update rule:
+#   ratio_t = v_t^2 / R_t              (innovation variance ratio)
+#   c_{t+1} = c_t + eta_t * (ratio_t - 1)
+#   eta_t   = max(eta_min, eta_init * decay^t)
+#
+# When calibrated, E[v_t^2 / R_t] = 1 (innovations are consistent with R_t).
+# If ratio > 1 persistently, c is too low -> increase.
+# If ratio < 1 persistently, c is too high -> decrease.
+# =============================================================================
+
+@njit(cache=True, fastmath=True)
+def online_c_update_kernel(
+    innovations,       # float64[N] : v_t = r_t - mu_pred_t
+    vol_sq,            # float64[N] : sigma_t^2 (EWMA variance at each step)
+    c_init,            # float64    : initial c value from MLE
+    eta_init,          # float64    : initial learning rate
+    eta_min,           # float64    : minimum learning rate floor
+    eta_decay,         # float64    : multiplicative decay per step (e.g. 0.999)
+    c_min,             # float64    : lower bound for c
+    c_max,             # float64    : upper bound for c
+):
+    """
+    Online c update via exponential smoothing of innovation variance ratio.
+
+    Returns:
+        c_path : float64[N] - the c value at each time step
+        eta_path : float64[N] - the learning rate at each time step
+        ratio_ema : float64 - final EMA of innovation variance ratio
+    """
+    N = len(innovations)
+    c_path = np.empty(N, dtype=np.float64)
+    eta_path = np.empty(N, dtype=np.float64)
+
+    c_t = c_init
+    eta_t = eta_init
+    # EMA of ratio for diagnostics (smooth estimate of E[v^2/R])
+    ratio_ema = 1.0
+    ema_alpha = 0.05  # EMA smoothing for ratio tracking
+
+    for t in range(N):
+        v = innovations[t]
+        vsq = vol_sq[t]
+
+        # Current observation variance using current c
+        R_t = c_t * vsq
+        if R_t < 1e-20:
+            # Degenerate: skip update
+            c_path[t] = c_t
+            eta_path[t] = eta_t
+            eta_t = max(eta_min, eta_t * eta_decay)
+            continue
+
+        # Innovation variance ratio
+        ratio_t = (v * v) / R_t
+
+        # Clip extreme ratios to prevent jumps (winsorize at [0.01, 100])
+        if ratio_t > 100.0:
+            ratio_t = 100.0
+        if ratio_t < 0.01:
+            ratio_t = 0.01
+
+        # Update EMA of ratio
+        ratio_ema = (1.0 - ema_alpha) * ratio_ema + ema_alpha * ratio_t
+
+        # c update: move toward making ratio = 1
+        c_new = c_t + eta_t * (ratio_t - 1.0)
+
+        # Enforce bounds
+        if c_new < c_min:
+            c_new = c_min
+        if c_new > c_max:
+            c_new = c_max
+
+        c_path[t] = c_new
+        eta_path[t] = eta_t
+
+        c_t = c_new
+        eta_t = max(eta_min, eta_t * eta_decay)
+
+    return c_path, eta_path, ratio_ema

@@ -7,15 +7,17 @@ import type {
   MarketBreadth, CorrelationStress,
 } from '../api';
 import PageHeader from '../components/PageHeader';
-import StatCard from '../components/StatCard';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { RiskSkeleton } from '../components/CosmicSkeleton';
 import { CosmicErrorCard } from '../components/CosmicErrorState';
 import { RiskEmpty } from '../components/CosmicEmptyState';
 import {
-  ShieldAlert, Thermometer, Activity, AlertOctagon, RefreshCw,
+  ShieldAlert, Thermometer, Activity, RefreshCw,
   ChevronDown, ChevronRight, ArrowUp, ArrowDown, Minus,
   Gem, Globe, BarChart3, Link2,
+  CircleDot, CircleAlert, Flame, Skull,
+  DollarSign, TrendingUp, Landmark, Droplets, Cog,
+  Award, Medal, Trophy,
 } from 'lucide-react';
 
 type RiskTab = 'overview' | 'cross_asset' | 'metals' | 'market' | 'sectors' | 'currencies';
@@ -164,24 +166,26 @@ export default function RiskPage() {
       <PageHeader
         title="Risk Dashboard"
         action={
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             {dash?._cached && (
-              <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                cached {dash._cache_age_seconds ? `${Math.round(dash._cache_age_seconds / 60)}m ago` : ''}
+              <span className="px-2.5 py-1 rounded-lg text-[10px] font-medium"
+                style={{ background: 'var(--violet-6)', color: 'var(--text-muted)', border: '1px solid var(--violet-8)' }}>
+                ⏱ cached {dash._cache_age_seconds ? `${Math.round(dash._cache_age_seconds / 60)}m ago` : ''}
               </span>
             )}
             <button
               onClick={handleRefresh}
               disabled={refreshing || summaryQ.isFetching}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] transition-all duration-200 disabled:opacity-50"
+              className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium transition-all duration-300 disabled:opacity-50"
               style={{
-                background: 'var(--violet-8)',
+                background: 'linear-gradient(135deg, var(--violet-12), var(--violet-8))',
                 color: '#b49aff',
-                border: '1px solid var(--violet-12)',
+                border: '1px solid var(--violet-15)',
+                boxShadow: '0 2px 8px var(--violet-8)',
               }}
             >
               <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
-              {refreshing ? 'Refreshing...' : 'Refresh Data'}
+              {refreshing ? 'Refreshing...' : 'Refresh'}
             </button>
           </div>
         }
@@ -189,57 +193,81 @@ export default function RiskPage() {
         Unified cross-asset risk assessment
       </PageHeader>
 
-      {/* ── Cosmic Speedometer Gauge (Story 5.1) ──────────────────── */}
+      {/* ── Cosmic Speedometer Gauge ──────────────────────────────── */}
       <TemperatureGauge temperature={data.combined_temperature} status={data.status} computedAt={data.computed_at} />
 
       {/* ── Per-module summary cards ──────────────────────────────── */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8 fade-up-delay-1">
-        <StatCard
-          title="Cross-Asset Stress"
-          value={data.risk_temperature.toFixed(3)}
-          subtitle="FX / Equities / Duration / Commodities"
-          icon={<ShieldAlert className="w-5 h-5" />}
-          color={data.risk_temperature < 0.3 ? 'green' : data.risk_temperature < 0.7 ? 'amber' : 'red'}
-        />
-        <StatCard
-          title="Metals Risk"
-          value={data.metals_temperature.toFixed(3)}
-          subtitle="Gold / Silver / Copper / Palladium"
-          icon={<Activity className="w-5 h-5" />}
-          color={data.metals_temperature < 0.3 ? 'green' : data.metals_temperature < 0.7 ? 'amber' : 'red'}
-        />
-        <StatCard
-          title="Market Temperature"
-          value={data.market_temperature.toFixed(3)}
-          subtitle="Equity universe / Sectors / Currencies"
-          icon={<AlertOctagon className="w-5 h-5" />}
-          color={data.market_temperature < 0.3 ? 'green' : data.market_temperature < 0.7 ? 'amber' : 'red'}
-        />
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-8 fade-up-delay-1">
+        {[
+          { title: 'Cross-Asset Stress', val: data.risk_temperature, sub: 'FX · Equities · Duration · Commodities', icon: ShieldAlert, tab: 'cross_asset' as RiskTab },
+          { title: 'Metals Risk', val: data.metals_temperature, sub: 'Gold · Silver · Copper · Palladium', icon: Gem, tab: 'metals' as RiskTab },
+          { title: 'Market Temperature', val: data.market_temperature, sub: 'Equity Universe · Sectors · Currencies', icon: Globe, tab: 'market' as RiskTab },
+        ].map(({ title, val, sub, icon: Icon, tab: cardTab }) => {
+          const cardColor = val < 0.3 ? 'var(--accent-emerald)' : val < 0.7 ? 'var(--accent-amber)' : 'var(--accent-rose)';
+          const cardGlow = val < 0.3 ? 'var(--emerald-8)' : val < 0.7 ? 'rgba(245,197,66,0.06)' : 'var(--rose-8)';
+          return (
+            <button key={title} onClick={() => setTab(cardTab)}
+              className="glass-card p-5 text-left hover-lift transition-all duration-300 group relative overflow-hidden"
+              style={{ borderTop: `2px solid ${cardColor}` }}>
+              <div style={{
+                position: 'absolute', top: 0, right: 0, width: 120, height: 120, borderRadius: '50%',
+                background: `radial-gradient(circle, ${cardGlow} 0%, transparent 70%)`,
+                transform: 'translate(30%, -30%)', pointerEvents: 'none',
+              }} />
+              <div className="relative z-10">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <Icon className="w-4 h-4" style={{ color: cardColor }} />
+                    <span className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>{title}</span>
+                  </div>
+                  <ChevronRight className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity" style={{ color: cardColor }} />
+                </div>
+                <div className="text-2xl font-bold mb-1" style={{ color: cardColor, fontVariantNumeric: 'tabular-nums' }}>
+                  {val.toFixed(3)}
+                </div>
+                <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{sub}</div>
+              </div>
+            </button>
+          );
+        })}
       </div>
 
       {/* ── Tab nav ───────────────────────────────────────────────── */}
-      <div className="premium-tabs mb-8 overflow-x-auto fade-up-delay-2">
-        {tabs.map(({ id, label, icon: Icon }) => (
-          <button
-            key={id}
-            onClick={() => setTab(id)}
-            className="premium-tab"
-            data-active={tab === id}
-          >
-            <Icon className="w-4 h-4 tab-icon" />
-            {label}
-          </button>
-        ))}
+      <div className="mb-8 fade-up-delay-2">
+        <div className="flex items-center gap-1 p-1 rounded-xl overflow-x-auto"
+          style={{ background: 'var(--violet-4)', border: '1px solid var(--violet-8)' }}>
+          {tabs.map(({ id, label, icon: Icon }) => {
+            const isActive = tab === id;
+            return (
+              <button
+                key={id}
+                onClick={() => setTab(id)}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg text-[12px] font-medium transition-all duration-200 whitespace-nowrap"
+                style={{
+                  background: isActive ? 'linear-gradient(135deg, var(--violet-15), var(--violet-10))' : 'transparent',
+                  color: isActive ? '#b49aff' : '#7a8ba4',
+                  boxShadow: isActive ? '0 2px 8px var(--violet-10)' : 'none',
+                  border: isActive ? '1px solid var(--violet-20)' : '1px solid transparent',
+                }}
+              >
+                <Icon className="w-3.5 h-3.5" />
+                {label}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* ── Tab content ───────────────────────────────────────────── */}
-      {tab === 'overview' && <OverviewTab data={data} />}
-      {tab === 'cross_asset' && dash && <CrossAssetTab categories={dash.risk_temperature?.categories} />}
-      {tab === 'metals' && dash && <MetalsTab metals={dash.metals_risk_temperature} />}
-      {tab === 'market' && dash && <MarketTab market={dash.market_temperature} />}
-      {tab === 'sectors' && dash && <SectorsTab sectors={dash.market_temperature?.sectors} />}
-      {tab === 'currencies' && dash && <CurrenciesTab currencies={dash.market_temperature?.currencies} />}
-      {dashQ.isLoading && tab !== 'overview' && <LoadingSpinner text="Loading full dashboard data..." />}
+      <div className="fade-up">
+        {tab === 'overview' && <OverviewTab data={data} />}
+        {tab === 'cross_asset' && dash && <CrossAssetTab categories={dash.risk_temperature?.categories} />}
+        {tab === 'metals' && dash && <MetalsTab metals={dash.metals_risk_temperature} />}
+        {tab === 'market' && dash && <MarketTab market={dash.market_temperature} />}
+        {tab === 'sectors' && dash && <SectorsTab sectors={dash.market_temperature?.sectors} />}
+        {tab === 'currencies' && dash && <CurrenciesTab currencies={dash.market_temperature?.currencies} />}
+        {dashQ.isLoading && tab !== 'overview' && <LoadingSpinner text="Loading full dashboard data..." />}
+      </div>
     </>
   );
 }
@@ -532,24 +560,73 @@ function TemperatureSparkline({ history }: { history: TempPoint[] }) {
    ══════════════════════════════════════════════════════════════════ */
 
 function OverviewTab({ data: _data }: { data: { combined_temperature: number; status: string } }) {
+  const tiers = [
+    { range: '< 0.3', label: 'Calm', desc: 'Full exposure permitted', color: 'var(--accent-emerald)', glow: 'var(--emerald-8)', Icon: CircleDot },
+    { range: '0.3 – 0.7', label: 'Elevated', desc: 'Monitor positions closely', color: 'var(--accent-amber)', glow: 'rgba(245,197,66,0.06)', Icon: CircleAlert },
+    { range: '0.7 – 1.2', label: 'Stressed', desc: 'Reduce risk exposure', color: 'var(--accent-rose)', glow: 'var(--rose-8)', Icon: Flame },
+    { range: '> 1.2', label: 'Crisis', desc: 'Capital preservation mode', color: 'var(--accent-rose)', glow: 'var(--rose-12)', Icon: Skull },
+  ];
+  const activeTier = _data.combined_temperature < 0.3 ? 0 : _data.combined_temperature < 0.7 ? 1 : _data.combined_temperature < 1.2 ? 2 : 3;
+
   return (
-    <div className="glass-card p-5 hover-lift">
-      <h3 className="text-sm font-medium mb-3" style={{ color: 'var(--text-secondary)' }}>Risk Interpretation</h3>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
-        {[
-          { range: '< 0.3', label: 'Calm', desc: 'Full exposure permitted', color: 'var(--accent-emerald)' },
-          { range: '0.3 - 0.7', label: 'Elevated', desc: 'Monitor positions closely', color: 'var(--accent-amber)' },
-          { range: '0.7 - 1.2', label: 'Stressed', desc: 'Reduce risk exposure', color: 'var(--accent-rose)' },
-          { range: '> 1.2', label: 'Crisis', desc: 'Capital preservation mode', color: 'var(--accent-rose)' },
-        ].map((tier) => (
-          <div key={tier.label} className="flex items-start gap-2">
-            <span className="w-2 h-2 rounded-full mt-1 flex-shrink-0" style={{ background: tier.color }} />
-            <div>
-              <p className="font-medium" style={{ color: 'var(--text-primary)' }}>{tier.label} ({tier.range})</p>
-              <p style={{ color: 'var(--text-muted)' }}>{tier.desc}</p>
+    <div className="space-y-6">
+      {/* Risk regime cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {tiers.map((tier, idx) => {
+          const isActive = idx === activeTier;
+          return (
+            <div key={tier.label} className="glass-card p-4 relative overflow-hidden transition-all duration-300"
+              style={{
+                borderLeft: `3px solid ${isActive ? tier.color : 'transparent'}`,
+                boxShadow: isActive ? `0 0 20px ${tier.glow}, inset 0 0 20px ${tier.glow}` : 'none',
+                transform: isActive ? 'scale(1.02)' : 'scale(1)',
+              }}>
+              {isActive && <div style={{
+                position: 'absolute', top: 0, right: 0, width: 80, height: 80, borderRadius: '50%',
+                background: `radial-gradient(circle, ${tier.glow} 0%, transparent 70%)`,
+                transform: 'translate(20%, -20%)', pointerEvents: 'none',
+              }} />}
+              <div className="relative z-10">
+                <div className="mb-1"><tier.Icon className="w-5 h-5" style={{ color: isActive ? tier.color : 'var(--text-muted)' }} /></div>
+                <div className="text-sm font-semibold mb-0.5" style={{ color: isActive ? tier.color : 'var(--text-primary)' }}>
+                  {tier.label}
+                </div>
+                <div className="text-[10px] font-mono mb-1.5" style={{ color: isActive ? tier.color : 'var(--text-muted)' }}>
+                  {tier.range}
+                </div>
+                <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{tier.desc}</div>
+                {isActive && (
+                  <div className="mt-2 px-2 py-0.5 rounded-full text-[9px] font-bold inline-block"
+                    style={{ background: tier.glow, color: tier.color, border: `1px solid ${tier.color}30` }}>
+                    CURRENT
+                  </div>
+                )}
+              </div>
             </div>
+          );
+        })}
+      </div>
+
+      {/* Methodology info */}
+      <div className="glass-card p-5">
+        <h3 className="text-sm font-medium mb-3 flex items-center gap-2" style={{ color: 'var(--text-secondary)' }}>
+          <Activity className="w-4 h-4" style={{ color: 'var(--accent-violet)' }} />
+          How It Works
+        </h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+          <div className="space-y-1">
+            <div className="font-medium" style={{ color: 'var(--accent-violet)' }}>Cross-Asset Stress (40%)</div>
+            <div style={{ color: 'var(--text-muted)' }}>FX carry, equity futures, rates, and commodity signals aggregated via z-scores</div>
           </div>
-        ))}
+          <div className="space-y-1">
+            <div className="font-medium" style={{ color: 'var(--accent-violet)' }}>Metals Risk (30%)</div>
+            <div style={{ color: 'var(--text-muted)' }}>Gold, silver, copper, palladium stress with vol inversion and crash detection</div>
+          </div>
+          <div className="space-y-1">
+            <div className="font-medium" style={{ color: 'var(--accent-violet)' }}>Market Temperature (30%)</div>
+            <div style={{ color: 'var(--text-muted)' }}>Equity breadth, correlation stress, sector rotation, and currency positioning</div>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -559,12 +636,19 @@ function OverviewTab({ data: _data }: { data: { combined_temperature: number; st
    Story 5.2: Cross-Asset Stress Tab with Constellation
    ══════════════════════════════════════════════════════════════════ */
 
-const CONSTELLATION_NODES = [
-  { id: 'FX Carry', x: 80, y: 40 },
-  { id: 'Equities', x: 280, y: 40 },
-  { id: 'Duration', x: 280, y: 160 },
-  { id: 'Commodities', x: 80, y: 160 },
+const RADAR_CATEGORIES = [
+  { id: 'FX_Stress', label: 'FX Carry', Icon: DollarSign },
+  { id: 'Futures_Stress', label: 'Equities', Icon: TrendingUp },
+  { id: 'Rates_Stress', label: 'Duration', Icon: Landmark },
+  { id: 'Commodity_Stress', label: 'Commodities', Icon: Droplets },
+  { id: 'Metals_Stress', label: 'Metals', Icon: Cog },
 ];
+
+function stressNodeColor(stress: number) {
+  if (stress > 1.5) return { main: '#ff6b8a', glow: 'rgba(255,107,138,0.35)', bg: 'rgba(255,107,138,0.12)' };
+  if (stress > 0.7) return { main: '#f5c542', glow: 'rgba(245,197,66,0.30)', bg: 'rgba(245,197,66,0.10)' };
+  return { main: '#3ee8a5', glow: 'rgba(62,232,165,0.30)', bg: 'rgba(62,232,165,0.10)' };
+}
 
 function CrossAssetTab({ categories }: { categories?: Record<string, RiskStressCategory> }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -574,95 +658,278 @@ function CrossAssetTab({ categories }: { categories?: Record<string, RiskStressC
     setExpanded(prev => { const n = new Set(prev); n.has(name) ? n.delete(name) : n.add(name); return n; });
 
   const sorted = Object.values(categories).sort((a, b) => b.weighted_contribution - a.weighted_contribution);
-  const catMap = Object.fromEntries(sorted.map(c => [c.name, c]));
+  // Index by dict key and name for flexible lookup
+  const catByKey: Record<string, RiskStressCategory> = {};
+  Object.entries(categories).forEach(([k, v]) => { catByKey[k] = v; catByKey[v.name] = v; });
+
+  // Build radar data
+  const radarData = RADAR_CATEGORIES.map(rc => {
+    const cat = catByKey[rc.id];
+    return { ...rc, stress: cat?.stress_level ?? 0, weight: cat?.weight ?? 0.2, contribution: cat?.weighted_contribution ?? 0 };
+  });
+  const avgStress = radarData.reduce((s, d) => s + d.stress, 0) / (radarData.length || 1);
+  const maxStress = Math.max(...radarData.map(d => d.stress), 0.01);
+  const avgColors = stressNodeColor(avgStress);
+
+  // Radar pentagon math
+  const CX = 200, CY = 190, R = 110;
+  const radarPt = (i: number, frac: number) => {
+    const angle = (Math.PI * 2 * i) / radarData.length - Math.PI / 2;
+    return { x: CX + R * frac * Math.cos(angle), y: CY + R * frac * Math.sin(angle) };
+  };
+  const radarScale = 3; // max stress on radar
+  const radarPath = radarData.map((d, i) => {
+    const p = radarPt(i, Math.min(d.stress / radarScale, 1));
+    return `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`;
+  }).join(' ') + ' Z';
+
+  // Per-vertex label placement to avoid overlaps
+  const labelLayout = (i: number) => {
+    const n = radarData.length;
+    const angleDeg = (360 * i) / n - 90;
+    // Normalized angle 0-360
+    const norm = ((angleDeg % 360) + 360) % 360;
+    // Determine anchor and offset based on position around the pentagon
+    let anchor: 'middle' | 'start' | 'end' = 'middle';
+    let dx = 0, dy = 0;
+    if (norm >= 350 || norm <= 10) { // top
+      dy = -18; anchor = 'middle';
+    } else if (norm > 10 && norm < 90) { // top-right
+      dx = 18; dy = -6; anchor = 'start';
+    } else if (norm >= 90 && norm < 170) { // bottom-right
+      dx = 18; dy = 10; anchor = 'start';
+    } else if (norm >= 170 && norm <= 210) { // bottom
+      dy = 22; anchor = 'middle';
+    } else if (norm > 210 && norm < 270) { // bottom-left
+      dx = -18; dy = 10; anchor = 'end';
+    } else { // top-left
+      dx = -18; dy = -6; anchor = 'end';
+    }
+    return { anchor, dx, dy };
+  };
 
   return (
     <div className="space-y-6">
-      {/* Constellation Diagram */}
-      <div className="glass-card p-6 flex justify-center" style={{ position: 'relative' }}>
-        <svg viewBox="0 0 360 200" width={360} height={200}>
-          <defs>
-            <radialGradient id="node-gradient">
-              <stop offset="0%" stopColor="var(--violet-15)" />
-              <stop offset="100%" stopColor="var(--violet-3)" />
-            </radialGradient>
-          </defs>
+      {/* ── Radial Stress Dashboard ── */}
+      <div className="glass-card" style={{
+        position: 'relative', overflow: 'hidden', padding: '32px 24px 24px',
+        background: 'linear-gradient(160deg, rgba(10,14,40,0.85) 0%, rgba(20,10,50,0.7) 50%, rgba(8,18,48,0.85) 100%)',
+        borderTop: `1px solid ${avgColors.glow}`,
+      }}>
+        {/* Ambient glow */}
+        <div style={{
+          position: 'absolute', top: '40%', left: '50%', transform: 'translate(-50%, -50%)',
+          width: 420, height: 420, borderRadius: '50%', pointerEvents: 'none',
+          background: `radial-gradient(circle, ${avgColors.glow} 0%, transparent 70%)`,
+        }} />
 
-          {/* Connection lines between all pairs */}
-          {CONSTELLATION_NODES.map((a, i) =>
-            CONSTELLATION_NODES.slice(i + 1).map(b => {
-              const catA = catMap[a.id];
-              const catB = catMap[b.id];
-              const stress = catA && catB
-                ? (catA.stress_level + catB.stress_level) / 2
-                : 0.3;
-              const lineColor = stress > 0.7 ? 'rgba(255,107,138,0.4)' : stress > 0.3 ? 'rgba(245,197,66,0.3)' : 'var(--violet-15)';
-              const sw = 1 + stress * 3;
+        {/* Title row */}
+        <div style={{ position: 'relative', zIndex: 2, display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{
+              width: 10, height: 10, borderRadius: '50%', background: avgColors.main,
+              boxShadow: `0 0 12px ${avgColors.glow}`,
+            }} />
+            <span style={{ color: 'var(--text-luminous)', fontSize: 15, fontWeight: 700, letterSpacing: '0.02em' }}>
+              Cross-Asset Stress Radar
+            </span>
+          </div>
+          <div style={{
+            padding: '4px 14px', borderRadius: 20,
+            background: avgColors.bg, border: `1px solid ${avgColors.glow}`,
+            color: avgColors.main, fontSize: 13, fontWeight: 700,
+            fontVariantNumeric: 'tabular-nums',
+          }}>
+            Avg {avgStress.toFixed(2)}
+          </div>
+        </div>
+
+        {/* Radar Chart + Category Cards Layout */}
+        <div style={{ position: 'relative', zIndex: 2, display: 'flex', gap: 28, alignItems: 'stretch', flexWrap: 'wrap' }}>
+          {/* SVG Radar */}
+          <div style={{ flex: '0 0 400px', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+            <svg viewBox="0 0 400 400" width={400} height={400}>
+              <defs>
+                <radialGradient id="radar-center-glow">
+                  <stop offset="0%" stopColor={avgColors.glow} />
+                  <stop offset="100%" stopColor="transparent" />
+                </radialGradient>
+                <linearGradient id="radar-fill-grad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={avgColors.main} stopOpacity={0.25} />
+                  <stop offset="100%" stopColor={avgColors.main} stopOpacity={0.05} />
+                </linearGradient>
+                <filter id="radar-glow">
+                  <feGaussianBlur stdDeviation="4" result="blur" />
+                  <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+                </filter>
+              </defs>
+
+              {/* Background glow */}
+              <circle cx={CX} cy={CY} r={R + 20} fill="url(#radar-center-glow)" opacity={0.5} />
+
+              {/* Grid rings */}
+              {[0.33, 0.66, 1.0].map((frac, i) => (
+                <polygon key={i}
+                  points={radarData.map((_, j) => { const p = radarPt(j, frac); return `${p.x},${p.y}`; }).join(' ')}
+                  fill="none" stroke="rgba(140,160,200,0.08)" strokeWidth={1}
+                  strokeDasharray={i < 2 ? '3,6' : undefined}
+                />
+              ))}
+
+              {/* Axis lines */}
+              {radarData.map((_, i) => {
+                const p = radarPt(i, 1);
+                return <line key={i} x1={CX} y1={CY} x2={p.x} y2={p.y} stroke="rgba(140,160,200,0.06)" strokeWidth={1} />;
+              })}
+
+              {/* Grid labels */}
+              {[1, 2, 3].map(v => {
+                const p = radarPt(0, v / radarScale);
+                return (
+                  <text key={v} x={p.x + 6} y={p.y - 4} fill="rgba(140,160,200,0.25)" fontSize={9} fontWeight={500}>
+                    {v}
+                  </text>
+                );
+              })}
+
+              {/* Filled radar area */}
+              <path d={radarPath} fill="url(#radar-fill-grad)" stroke={avgColors.main}
+                strokeWidth={2} strokeLinejoin="round" filter="url(#radar-glow)" opacity={0.9} />
+
+              {/* Data points on radar vertices */}
+              {radarData.map((d, i) => {
+                const p = radarPt(i, Math.min(d.stress / radarScale, 1));
+                const colors = stressNodeColor(d.stress);
+                return (
+                  <g key={d.id}>
+                    <circle cx={p.x} cy={p.y} r={7} fill={colors.bg} stroke={colors.main} strokeWidth={2} />
+                    <circle cx={p.x} cy={p.y} r={3} fill={colors.main} />
+                  </g>
+                );
+              })}
+
+              {/* Category labels at the tips — per-vertex positioned */}
+              {radarData.map((d, i) => {
+                const lp = radarPt(i, 1.18);
+                const colors = stressNodeColor(d.stress);
+                const layout = labelLayout(i);
+                const bx = lp.x + layout.dx;
+                const by = lp.y + layout.dy;
+                return (
+                  <g key={`label-${d.id}`}>
+                    {/* Label name */}
+                    <text x={bx} y={by} textAnchor={layout.anchor}
+                      fill="rgba(180,195,220,0.7)" fontSize={10} fontWeight={500}>
+                      {d.label}
+                    </text>
+                    {/* Stress value below label */}
+                    <text x={bx} y={by + 14} textAnchor={layout.anchor}
+                      fill={colors.main} fontSize={13} fontWeight={800}
+                      fontFamily="var(--font-mono, monospace)">
+                      {d.stress.toFixed(2)}
+                    </text>
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
+
+          {/* Category mini cards */}
+          <div style={{ flex: 1, minWidth: 240, display: 'flex', flexDirection: 'column', gap: 10, justifyContent: 'center' }}>
+            {radarData.sort((a, b) => b.stress - a.stress).map((d) => {
+              const colors = stressNodeColor(d.stress);
+              const barPct = Math.min((d.stress / maxStress) * 100, 100);
               return (
-                <line key={`${a.id}-${b.id}`}
-                  x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-                  stroke={lineColor} strokeWidth={sw} />
+                <div key={d.id} style={{
+                  display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px',
+                  borderRadius: 10, background: 'rgba(15,20,55,0.5)',
+                  border: `1px solid rgba(140,160,200,0.08)`,
+                  transition: 'all 0.2s',
+                }}>
+                  <span style={{ width: 28, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><d.Icon style={{ width: 18, height: 18, color: stressNodeColor(d.stress).main }} /></span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+                      <span style={{ color: 'var(--text-luminous)', fontSize: 12, fontWeight: 600 }}>{d.label}</span>
+                      <span style={{
+                        color: colors.main, fontSize: 14, fontWeight: 800,
+                        fontVariantNumeric: 'tabular-nums',
+                      }}>{d.stress.toFixed(2)}</span>
+                    </div>
+                    {/* Stress bar */}
+                    <div style={{
+                      height: 4, borderRadius: 2, background: 'rgba(140,160,200,0.08)', overflow: 'hidden',
+                    }}>
+                      <div style={{
+                        height: '100%', borderRadius: 2, width: `${barPct}%`,
+                        background: `linear-gradient(90deg, ${colors.main}88, ${colors.main})`,
+                        transition: 'width 0.6s ease',
+                      }} />
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 3 }}>
+                      <span style={{ color: 'rgba(140,160,200,0.4)', fontSize: 9 }}>
+                        Weight {(d.weight * 100).toFixed(0)}%
+                      </span>
+                      <span style={{ color: 'rgba(140,160,200,0.4)', fontSize: 9 }}>
+                        Contribution {d.contribution.toFixed(2)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
               );
-            })
-          )}
-
-          {/* Nodes */}
-          {CONSTELLATION_NODES.map(node => {
-            const cat = catMap[node.id];
-            const stress = cat?.stress_level ?? 0;
-            const nodeColor = stress > 0.7 ? 'var(--accent-rose)' : stress > 0.3 ? 'var(--accent-amber)' : 'var(--accent-violet)';
-            return (
-              <g key={node.id}>
-                <circle cx={node.x} cy={node.y} r={28} fill="url(#node-gradient)"
-                  stroke={nodeColor} strokeWidth={3} />
-                <text x={node.x} y={node.y - 2} textAnchor="middle" fill={nodeColor}
-                  fontSize={14} fontWeight={700}>
-                  {stress.toFixed(2)}
-                </text>
-                <text x={node.x} y={node.y + 36} textAnchor="middle"
-                  fill="#7a8ba4" fontSize={9} fontWeight={500}>
-                  {node.id}
-                </text>
-              </g>
-            );
-          })}
-        </svg>
+            })}
+          </div>
+        </div>
       </div>
 
       {/* Category Detail Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {sorted.map(cat => (
-          <div key={cat.name} className="glass-card overflow-hidden hover-lift">
-            <button onClick={() => toggle(cat.name)}
-              className="w-full px-4 py-3 flex items-center justify-between transition-colors duration-150"
-              style={{ background: expanded.has(cat.name) ? 'var(--violet-4)' : undefined }}
-            >
-              <div className="flex items-center gap-3">
-                <StressPip level={cat.stress_level} />
-                <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{cat.name}</span>
-              </div>
-              <div className="flex items-center gap-4 text-xs">
-                <span style={{ color: 'var(--text-secondary)' }}>Wt: {(cat.weight * 100).toFixed(0)}%</span>
-                <span className={stressColor(cat.stress_level)}>{cat.stress_level.toFixed(3)}</span>
-                {expanded.has(cat.name) ? <ChevronDown className="w-4 h-4" style={{ color: '#7a8ba4' }} /> : <ChevronRight className="w-4 h-4" style={{ color: '#7a8ba4' }} />}
-              </div>
-            </button>
-            {expanded.has(cat.name) && cat.indicators && (
-              <div className="px-4 pb-3">
-                {/* Contribution bar */}
-                <div className="flex gap-0.5 mb-3 h-1.5 rounded-full overflow-hidden" style={{ width: 120 }}>
-                  {cat.indicators.map((ind, i) => (
-                    <div key={i} style={{
-                      flex: Math.max(ind.contribution, 0.01),
-                      background: ['var(--accent-violet)', '#b49aff', 'var(--text-violet)', '#818cf8', 'var(--accent-indigo)'][i % 5],
-                    }} />
-                  ))}
+        {sorted.map(cat => {
+          const catStressColor = cat.stress_level > 0.7 ? 'var(--accent-rose)' : cat.stress_level > 0.3 ? 'var(--accent-amber)' : 'var(--accent-emerald)';
+          return (
+            <div key={cat.name} className="glass-card overflow-hidden hover-lift"
+              style={{ borderLeft: `3px solid ${catStressColor}` }}>
+              <button onClick={() => toggle(cat.name)}
+                className="w-full px-4 py-3.5 flex items-center justify-between transition-colors duration-150"
+                style={{ background: expanded.has(cat.name) ? 'var(--violet-4)' : undefined }}
+              >
+                <div className="flex items-center gap-3">
+                  <StressPip level={cat.stress_level} size={10} />
+                  <div className="text-left">
+                    <span className="text-sm font-semibold" style={{ color: 'var(--text-luminous)' }}>
+                      {cat.name.replace(/_/g, ' ')}
+                    </span>
+                    <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                      Weight: {(cat.weight * 100).toFixed(0)}%
+                    </div>
+                  </div>
                 </div>
-                <IndicatorsTable indicators={cat.indicators} />
-              </div>
-            )}
-          </div>
-        ))}
+                <div className="flex items-center gap-3 text-xs">
+                  <span className="text-base font-bold" style={{ color: catStressColor, fontVariantNumeric: 'tabular-nums' }}>
+                    {cat.stress_level.toFixed(2)}
+                  </span>
+                  {expanded.has(cat.name)
+                    ? <ChevronDown className="w-4 h-4" style={{ color: '#7a8ba4' }} />
+                    : <ChevronRight className="w-4 h-4" style={{ color: '#7a8ba4' }} />}
+                </div>
+              </button>
+              {expanded.has(cat.name) && cat.indicators && (
+                <div className="px-4 pb-4">
+                  {/* Contribution bar */}
+                  <div className="flex gap-0.5 mb-3 h-2 rounded-full overflow-hidden" style={{ width: '100%', maxWidth: 200 }}>
+                    {cat.indicators.map((ind, i) => (
+                      <div key={i} className="transition-all duration-300" style={{
+                        flex: Math.max(ind.contribution, 0.01),
+                        background: ['var(--accent-violet)', '#b49aff', 'var(--text-violet)', '#818cf8', 'var(--accent-indigo)'][i % 5],
+                        borderRadius: 4,
+                      }} />
+                    ))}
+                  </div>
+                  <IndicatorsTable indicators={cat.indicators} />
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -981,6 +1248,11 @@ function CurrenciesTab({ currencies }: { currencies?: Record<string, CurrencyMet
   // Find JPY pair for callout
   const jpyEntry = entries.find(([name]) => name.includes('JPY'));
 
+  // Aggregate stats
+  const avgRisk = entries.reduce((acc, [, c]) => acc + c.risk_score, 0) / entries.length;
+  const bullishCount = entries.filter(([, c]) => c.forecast_30d != null && c.forecast_30d > 0).length;
+  const bearishCount = entries.length - bullishCount;
+
   return (
     <div className="space-y-6">
       {/* JPY Strength Callout (Story 5.5 AC-3) */}
@@ -1023,19 +1295,41 @@ function CurrenciesTab({ currencies }: { currencies?: Record<string, CurrencyMet
         </div>
       )}
 
-      {/* Heatmap toggle */}
-      <div className="flex justify-end">
-        <button
-          onClick={() => setHeatmap(!heatmap)}
-          className="px-3 py-1 rounded-full text-[11px] font-medium transition-all duration-200"
-          style={{
-            background: heatmap ? 'var(--violet-15)' : 'var(--violet-6)',
-            color: heatmap ? '#b49aff' : 'var(--accent-violet)',
-            border: `1px solid ${heatmap ? 'var(--violet-30)' : 'var(--violet-10)'}`,
-          }}
-        >
-          {heatmap ? 'Cards' : 'Heatmap'}
-        </button>
+      {/* Summary + Heatmap toggle */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4 text-xs">
+          <span style={{ color: 'var(--text-muted)' }}>{entries.length} pairs</span>
+          <span style={{ color: 'var(--text-muted)' }}>
+            Avg Risk: <span style={{ color: avgRisk > 50 ? 'var(--accent-rose)' : 'var(--accent-emerald)', fontWeight: 600 }}>{avgRisk.toFixed(0)}</span>
+          </span>
+          <span style={{ color: 'var(--text-muted)' }}>
+            <span style={{ color: 'var(--accent-emerald)' }}>▲{bullishCount}</span>
+            {' / '}
+            <span style={{ color: 'var(--accent-rose)' }}>▼{bearishCount}</span>
+          </span>
+        </div>
+        <div className="flex gap-1 p-0.5 rounded-lg" style={{ background: 'var(--violet-4)', border: '1px solid var(--violet-8)' }}>
+          <button
+            onClick={() => setHeatmap(false)}
+            className="px-3 py-1 rounded-md text-[11px] font-medium transition-all duration-200"
+            style={{
+              background: !heatmap ? 'var(--violet-15)' : 'transparent',
+              color: !heatmap ? '#b49aff' : '#7a8ba4',
+            }}
+          >
+            Cards
+          </button>
+          <button
+            onClick={() => setHeatmap(true)}
+            className="px-3 py-1 rounded-md text-[11px] font-medium transition-all duration-200"
+            style={{
+              background: heatmap ? 'var(--violet-15)' : 'transparent',
+              color: heatmap ? '#b49aff' : '#7a8ba4',
+            }}
+          >
+            Table
+          </button>
+        </div>
       </div>
 
       {heatmap ? (
@@ -1073,43 +1367,54 @@ function CurrenciesTab({ currencies }: { currencies?: Record<string, CurrencyMet
         </div>
       ) : (
         /* Glass card grid */
-        <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gridAutoRows: '1fr' }}>
-          {entries.map(([name, c]) => (
-            <div key={name} className="glass-card p-4 hover-lift cursor-pointer transition-all duration-150">
-              <div className="flex items-center justify-between mb-2">
-                <div>
-                  <div className="text-sm font-semibold" style={{ color: 'var(--text-luminous)' }}>
-                    {name}
-                    {c.is_inverse && <span className="ml-1 text-[10px]" style={{ color: 'var(--accent-amber)' }}>inv</span>}
+        <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gridAutoRows: '1fr' }}>
+          {entries.map(([name, c], idx) => {
+            const pairColor = c.risk_score > 60 ? 'var(--accent-rose)' : c.risk_score > 30 ? 'var(--accent-amber)' : 'var(--accent-emerald)';
+            return (
+              <div key={name} className="glass-card p-4 hover-lift transition-all duration-200 fade-up relative overflow-hidden"
+                style={{ animationDelay: `${idx * 30}ms`, borderTop: `2px solid ${pairColor}` }}>
+                <div style={{
+                  position: 'absolute', bottom: 0, right: 0, width: 100, height: 100, borderRadius: '50%',
+                  background: `radial-gradient(circle, ${c.risk_score > 60 ? 'var(--rose-6)' : 'var(--emerald-6)'} 0%, transparent 70%)`,
+                  transform: 'translate(30%, 30%)', pointerEvents: 'none',
+                }} />
+                <div className="relative z-10">
+                  <div className="flex items-center justify-between mb-2">
+                    <div>
+                      <div className="text-sm font-semibold" style={{ color: 'var(--text-luminous)' }}>
+                        {name}
+                        {c.is_inverse && <span className="ml-1.5 px-1 py-0.5 rounded text-[8px] font-bold" style={{ background: 'rgba(245,197,66,0.15)', color: 'var(--accent-amber)' }}>INV</span>}
+                      </div>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <span className="text-base font-bold" style={{ color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>
+                          {c.rate?.toFixed(4) ?? '--'}
+                        </span>
+                        {c.return_1d != null && (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium"
+                            style={{
+                              background: c.return_1d > 0 ? 'rgba(62,232,165,0.12)' : 'rgba(255,107,138,0.12)',
+                              color: c.return_1d > 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)',
+                            }}>
+                            {c.return_1d > 0 ? '+' : ''}{(c.return_1d * 100).toFixed(2)}%
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex flex-col items-end gap-1">
+                      <MomentumBadge signal={c.momentum_signal} />
+                      <RiskScoreCell score={c.risk_score} />
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 mt-0.5">
-                    <span className="text-base font-bold" style={{ color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>
-                      {c.rate?.toFixed(4) ?? '--'}
-                    </span>
-                    {c.return_1d != null && (
-                      <span className="px-1 py-0.5 rounded text-[10px]"
-                        style={{
-                          background: c.return_1d > 0 ? 'var(--emerald-12)' : 'var(--rose-12)',
-                          color: c.return_1d > 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)',
-                        }}>
-                        {c.return_1d > 0 ? '+' : ''}{(c.return_1d * 100).toFixed(2)}%
-                      </span>
-                    )}
+                  {/* Forecast spectrum */}
+                  <div className="flex gap-0.5 mt-1">
+                    {[c.forecast_7d, c.forecast_30d, c.forecast_90d, c.forecast_180d, c.forecast_365d].map((f, i) => (
+                      <SpectrumCell key={i} value={f} label={['7D','30D','90D','180D','365D'][i]} showLabel />
+                    ))}
                   </div>
                 </div>
-                <div className="flex flex-col items-end gap-1">
-                  <MomentumBadge signal={c.momentum_signal} />
-                  <StressBar level={c.risk_score / 100} />
-                </div>
               </div>
-              {/* Forecast spectrum */}
-              <div className="flex gap-0.5">
-                {[c.forecast_7d, c.forecast_30d, c.forecast_90d, c.forecast_180d, c.forecast_365d].map((f, i) => (
-                  <SpectrumCell key={i} value={f} label={['7D','30D','90D','180D','365D'][i]} showLabel />
-                ))}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -1139,19 +1444,23 @@ function SectorsTab({ sectors }: { sectors?: Record<string, SectorMetrics> }) {
     }
   }, [sectors, sortBy]);
 
-  const medalColors = ['var(--accent-amber)', '#94a3b8', '#cd7f32']; // gold, silver, bronze
+  const MedalIcons = [Trophy, Award, Medal];
 
   return (
-    <div className="space-y-4">
-      {/* Sort control */}
-      <div className="flex justify-end">
-        <div className="flex gap-1">
+    <div className="space-y-5">
+      {/* Sort control bar */}
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+          {entries.length} Sectors · Sorted by {sortBy}
+        </h3>
+        <div className="flex gap-1 p-0.5 rounded-lg" style={{ background: 'var(--violet-4)', border: '1px solid var(--violet-8)' }}>
           {(['performance', 'momentum', 'risk', 'alpha'] as SectorSort[]).map(s => (
             <button key={s} onClick={() => setSortBy(s)}
-              className="px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all duration-150"
+              className="px-3 py-1 rounded-md text-[11px] font-medium transition-all duration-200"
               style={{
-                background: sortBy === s ? 'var(--violet-12)' : 'transparent',
+                background: sortBy === s ? 'var(--violet-15)' : 'transparent',
                 color: sortBy === s ? '#b49aff' : '#7a8ba4',
+                boxShadow: sortBy === s ? '0 1px 4px var(--violet-8)' : 'none',
               }}>
               {s.charAt(0).toUpperCase() + s.slice(1)}
             </button>
@@ -1161,65 +1470,77 @@ function SectorsTab({ sectors }: { sectors?: Record<string, SectorMetrics> }) {
 
       {/* Ranked sector cards */}
       <div className="space-y-2">
-        {entries.map(([name, s], idx) => (
-          <div key={name} className="glass-card px-4 py-3 hover-lift flex items-center gap-4"
-            style={{ minHeight: 56 }}>
-            {/* Rank badge */}
-            <div className="w-6 text-center flex-shrink-0">
-              {idx < 3 ? (
-                <span className="text-sm font-bold" style={{ color: medalColors[idx] }}>#{idx + 1}</span>
-              ) : (
-                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>#{idx + 1}</span>
-              )}
-            </div>
-
-            {/* Name + ticker */}
-            <div className="flex-shrink-0" style={{ width: 140 }}>
-              <div className="text-sm font-medium" style={{ color: 'var(--text-luminous)' }}>{name}</div>
-              <div className="text-[10px]" style={{ color: 'var(--accent-violet)' }}>{s.ticker}</div>
-            </div>
-
-            {/* Multi-period returns */}
-            <div className="flex gap-1.5 flex-shrink-0">
-              {[
-                { label: '1D', v: s.return_1d },
-                { label: '5D', v: s.return_5d },
-                { label: '21D', v: s.return_21d },
-              ].map(({ label, v }) => (
-                <span key={label} className="px-1.5 py-0.5 rounded text-[10px] font-medium"
-                  style={{
-                    background: v != null && v > 0 ? 'rgba(62,232,165,0.10)' : v != null && v < 0 ? 'rgba(255,107,138,0.10)' : 'rgba(100,116,139,0.08)',
-                    color: v != null && v > 0 ? 'var(--accent-emerald)' : v != null && v < 0 ? 'var(--accent-rose)' : '#7a8ba4',
-                  }}>
-                  {v != null ? `${v > 0 ? '+' : ''}${(v * 100).toFixed(1)}%` : '--'}
-                </span>
-              ))}
-            </div>
-
-            {/* Momentum */}
-            <div className="flex items-center gap-1 flex-shrink-0" style={{ width: 80 }}>
-              <MomentumBadge signal={s.momentum_signal} />
-            </div>
-
-            {/* Risk contribution bar */}
-            <div className="flex-1 flex items-center gap-2">
-              <div className="flex-1 h-1 rounded-full overflow-hidden" style={{ background: 'var(--violet-6)' }}>
-                <div className="h-full rounded-full" style={{
-                  width: `${Math.min(s.risk_score, 100)}%`,
-                  background: 'linear-gradient(90deg, var(--accent-violet), var(--text-violet))',
-                }} />
+        {entries.map(([name, s], idx) => {
+          const sectorColor = s.risk_score > 70 ? 'var(--accent-rose)' : s.risk_score > 40 ? 'var(--accent-amber)' : 'var(--accent-emerald)';
+          return (
+            <div key={name} className="glass-card px-5 py-3.5 hover-lift flex items-center gap-4 fade-up"
+              style={{ minHeight: 60, animationDelay: `${idx * 40}ms`, borderLeft: `3px solid ${sectorColor}` }}>
+              {/* Rank badge */}
+              <div className="w-8 text-center flex-shrink-0">
+                {idx < 3 ? (
+                  <>{(() => { const MIcon = MedalIcons[idx]; return <MIcon className="w-5 h-5" style={{ color: idx === 0 ? '#fbbf24' : idx === 1 ? '#94a3b8' : '#d97706' }} />; })()}</>
+                ) : (
+                  <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>#{idx + 1}</span>
+                )}
               </div>
-              <RiskScoreCell score={s.risk_score} />
-            </div>
 
-            {/* Forecast spectrum */}
-            <div className="flex gap-0.5 flex-shrink-0">
-              {[s.forecast_7d, s.forecast_30d, s.forecast_90d].map((f, i) => (
-                <SpectrumCell key={i} value={f} compact />
-              ))}
+              {/* Name + ticker */}
+              <div className="flex-shrink-0" style={{ width: 130 }}>
+                <div className="text-sm font-semibold" style={{ color: 'var(--text-luminous)' }}>{name}</div>
+                <div className="text-[10px] font-mono" style={{ color: 'var(--accent-violet)' }}>{s.ticker}</div>
+              </div>
+
+              {/* Multi-period returns */}
+              <div className="flex gap-1 flex-shrink-0">
+                {[
+                  { label: '1D', v: s.return_1d },
+                  { label: '5D', v: s.return_5d },
+                  { label: '21D', v: s.return_21d },
+                ].map(({ label, v }) => (
+                  <div key={label} className="flex flex-col items-center px-1.5 py-0.5 rounded"
+                    style={{
+                      background: v != null && v > 0 ? 'rgba(62,232,165,0.08)' : v != null && v < 0 ? 'rgba(255,107,138,0.08)' : 'rgba(100,116,139,0.05)',
+                      minWidth: 48,
+                    }}>
+                    <span className="text-[8px]" style={{ color: 'var(--text-muted)' }}>{label}</span>
+                    <span className="text-[10px] font-semibold" style={{
+                      color: v != null && v > 0 ? 'var(--accent-emerald)' : v != null && v < 0 ? 'var(--accent-rose)' : '#7a8ba4',
+                    }}>
+                      {v != null ? `${v > 0 ? '+' : ''}${(v * 100).toFixed(1)}%` : '--'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Momentum */}
+              <div className="flex items-center gap-1 flex-shrink-0" style={{ width: 80 }}>
+                <MomentumBadge signal={s.momentum_signal} />
+              </div>
+
+              {/* Risk score with gradient bar */}
+              <div className="flex-1 flex items-center gap-2">
+                <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--violet-6)' }}>
+                  <div className="h-full rounded-full transition-all duration-500" style={{
+                    width: `${Math.min(s.risk_score, 100)}%`,
+                    background: `linear-gradient(90deg, var(--accent-emerald), var(--accent-amber), var(--accent-rose))`,
+                  }} />
+                </div>
+                <RiskScoreCell score={s.risk_score} />
+              </div>
+
+              {/* Forecast spectrum */}
+              <div className="flex gap-0.5 flex-shrink-0">
+                {[
+                  { v: s.forecast_7d, l: '7D' },
+                  { v: s.forecast_30d, l: '30D' },
+                  { v: s.forecast_90d, l: '90D' },
+                ].map(({ v, l }) => (
+                  <SpectrumCell key={l} value={v} label={l} showLabel compact />
+                ))}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -1243,7 +1564,8 @@ function SpectrumCell({ value, label, showLabel, compact }: {
       </div>
     );
   }
-  const pct = value * 100;
+  // Forecast values are already in percent (e.g., 5.97 = 5.97%)
+  const pct = value;
   const absMax = 20; // +-20% max for color mapping
   const intensity = Math.min(Math.abs(pct) / absMax, 1);
   const bg = pct > 0
@@ -1350,7 +1672,8 @@ function ReturnCell({ v }: { v: number | null | undefined }) {
 
 function ForecastCell({ v }: { v: number | null | undefined }) {
   if (v == null) return <span style={{ color: 'var(--text-muted)' }}>--</span>;
-  const pct = v * 100;
+  // Forecast values are already in percent
+  const pct = v;
   const color = pct > 0 ? 'var(--accent-emerald)' : pct < 0 ? 'var(--accent-rose)' : 'var(--text-secondary)';
   return <span style={{ color, fontVariantNumeric: 'tabular-nums' }}>{pct > 0 ? '+' : ''}{pct.toFixed(1)}%</span>;
 }

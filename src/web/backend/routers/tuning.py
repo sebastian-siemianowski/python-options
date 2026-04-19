@@ -64,10 +64,10 @@ async def tune_detail(symbol: str):
 async def retune_stream(mode: str = "retune"):
     """
     Stream retune progress via Server-Sent Events.
-    
+
     Runs `make retune` (or `make tune` / `make calibrate`) as a subprocess and
     streams stdout/stderr line by line.
-    
+
     Query params:
       mode: "retune" (default), "tune", "calibrate"
     """
@@ -76,9 +76,10 @@ async def retune_stream(mode: str = "retune"):
         mode = "retune"
 
     async def event_generator():
-        yield f"data: {_sse_json('start', f'Starting make {mode}...')}\n\n"
-
+        process = None
         try:
+            yield f"data: {_sse_json('start', f'Starting make {mode}...')}\n\n"
+
             process = await asyncio.create_subprocess_exec(
                 "make", mode,
                 cwd=REPO_ROOT,
@@ -95,6 +96,8 @@ async def retune_stream(mode: str = "retune"):
             )
 
             asset_count = 0
+            success_count = 0
+            fail_count = 0
             while True:
                 line = await process.stdout.readline()
                 if not line:
@@ -106,18 +109,39 @@ async def retune_stream(mode: str = "retune"):
                 # Detect asset progress lines (tune_ux.py outputs progress)
                 if any(marker in text for marker in ["✓", "✗", "tuning", "Tuning", "Processing"]):
                     asset_count += 1
-                    yield f"data: {_sse_json('progress', text, asset_count)}\n\n"
-                elif any(marker in text for marker in ["Step", "RETUNE", "═", "✅", "📥", "📦", "🎛"]):
+                    if "✓" in text:
+                        success_count += 1
+                    elif "✗" in text:
+                        fail_count += 1
+                    yield f"data: {_sse_json('progress', text, asset_count, success_count, fail_count)}\n\n"
+                elif any(marker in text for marker in ["Step", "RETUNE", "═"]):
                     yield f"data: {_sse_json('phase', text)}\n\n"
                 else:
                     yield f"data: {_sse_json('log', text)}\n\n"
 
             await process.wait()
             status = "completed" if process.returncode == 0 else "failed"
-            yield f"data: {_sse_json(status, f'make {mode} finished (exit code {process.returncode})', asset_count)}\n\n"
+            yield f"data: {_sse_json(status, f'make {mode} finished (exit code {process.returncode})', asset_count, success_count, fail_count)}\n\n"
 
+        except asyncio.CancelledError:
+            # Client disconnected — kill the subprocess gracefully
+            if process and process.returncode is None:
+                try:
+                    process.terminate()
+                    await asyncio.wait_for(process.wait(), timeout=5.0)
+                except (asyncio.TimeoutError, ProcessLookupError):
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+            return
         except Exception as e:
             yield f"data: {_sse_json('error', str(e))}\n\n"
+            if process and process.returncode is None:
+                try:
+                    process.terminate()
+                except ProcessLookupError:
+                    pass
 
     return StreamingResponse(
         event_generator(),
@@ -139,7 +163,13 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub('', text)
 
 
-def _sse_json(event_type: str, message: str, count: int = 0) -> str:
+def _sse_json(event_type: str, message: str, count: int = 0, success: int = 0, fail: int = 0) -> str:
     """Format an SSE data payload with ANSI codes stripped."""
     import json
-    return json.dumps({"type": event_type, "message": _strip_ansi(message), "count": count})
+    return json.dumps({
+        "type": event_type,
+        "message": _strip_ansi(message),
+        "count": count,
+        "success": success,
+        "fail": fail,
+    })

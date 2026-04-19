@@ -15,6 +15,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   Grid3X3,
+  TrendingUp,
 } from 'lucide-react';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import CommandPalette from './CommandPalette';
@@ -270,6 +271,11 @@ export default function Layout() {
           df.file_exists ? 'Failure file exists' : 'No failure file',
         ];
       },
+    },
+    {
+      to: '/indicators', label: 'Indicators', icon: TrendingUp,
+      badgeFn: () => null,
+      tooltipFn: () => ['500 strategy indicators', '10 families backtested'],
     },
     {
       to: '/services', label: 'Services', icon: HeartPulse,

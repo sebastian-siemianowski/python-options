@@ -49,6 +49,8 @@ export default function OverviewPage() {
     staleTime: 120_000,
   });
 
+  const scrollRef = useScrollReveal();
+
   if (isLoading) return <DashboardSkeleton />;
   if (error) return <CosmicErrorCard title="Unable to load dashboard" error={error as Error} onRetry={() => window.location.reload()} />;
   if (!data) return <DashboardEmpty />;
@@ -76,8 +78,6 @@ export default function OverviewPage() {
 
   // Errors from overview
   const overviewErrors = data.errors || [];
-
-  const scrollRef = useScrollReveal();
 
   return (
     <div ref={scrollRef}>

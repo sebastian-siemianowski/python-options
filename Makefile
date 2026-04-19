@@ -860,3 +860,30 @@ web-stop:
 	@-pkill -f "vite.*src/web/frontend" 2>/dev/null || true
 	@-pkill -f "celery.*web.backend" 2>/dev/null || true
 	@echo "✓ Web services stopped"
+
+# ── Indicators Backtesting ───────────────────────────────────────────────────
+
+# Full backtest: 500 strategies x 120 assets
+indicators:
+	@echo "Running full indicators backtest (500 strategies x 120 assets)..."
+	cd src && ../.venv/bin/python -m indicators.cli
+
+# Quick test: 500 strategies x 10 assets
+indicators-quick:
+	@echo "Running quick indicators backtest (10 assets)..."
+	cd src && ../.venv/bin/python -m indicators.cli --quick
+
+# Run specific strategy IDs
+indicators-ids:
+	@echo "Usage: make indicators-ids IDS=1,2,3"
+	cd src && ../.venv/bin/python -m indicators.cli --ids $(IDS)
+
+# Run by family name
+indicators-family:
+	@echo "Usage: make indicators-family FAMILY=Trend"
+	cd src && ../.venv/bin/python -m indicators.cli --family "$(FAMILY)"
+
+# Show top N
+indicators-top:
+	@echo "Usage: make indicators-top TOP=50"
+	cd src && ../.venv/bin/python -m indicators.cli --top $(TOP)

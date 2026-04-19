@@ -41,7 +41,7 @@ from typing import Dict, Optional, Tuple, Union
 
 import numpy as np
 from scipy import stats
-from scipy.optimize import minimize_scalar, minimize
+from scipy.optimize import minimize_scalar, minimize, brentq
 from scipy.special import gammaln
 
 
@@ -628,3 +628,570 @@ def compare_contaminated_vs_single(
         "mixture_preferred_aic": aic_mixture < aic_single,
         "mixture_significant_lr": lr_pvalue < 0.05,
     }
+
+
+# =============================================================================
+# EPIC 18 CONSTANTS
+# =============================================================================
+
+# EM convergence
+EM_DEFAULT_ITER = 50
+EM_TOL = 0.01  # nats
+
+# Minimum observations for EM
+EM_MIN_OBS = 30
+
+# Jump threshold
+JUMP_THRESHOLD = 0.5
+
+# Q inflation on jumps
+JUMP_Q_MULTIPLIER = 10.0
+
+# Epsilon bounds for EM (tighter than profile)
+EM_EPSILON_MIN = 0.02
+EM_EPSILON_MAX = 0.20
+
+# Nu grids for EM M-step
+EM_NU_NORMAL_GRID = np.array([4.0, 6.0, 8.0, 10.0, 12.0, 15.0, 20.0, 30.0])
+EM_NU_CRISIS_GRID = np.array([2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 8.0])
+
+# Nu bounds for EM
+EM_NU_NORMAL_MIN = 4.0
+EM_NU_NORMAL_MAX = 30.0
+EM_NU_CRISIS_MIN = 2.5
+EM_NU_CRISIS_MAX = 8.0
+
+
+# =============================================================================
+# EPIC 18: Story 18.1 -- EM CST Fit
+# =============================================================================
+
+@dataclass(frozen=True)
+class CSTFitResult:
+    """Result of EM-based CST fitting.
+
+    Attributes
+    ----------
+    epsilon : float
+        Contamination probability (fraction from crisis component).
+    nu_normal : float
+        Degrees of freedom for the normal component.
+    nu_crisis : float
+        Degrees of freedom for the crisis component (nu_crisis < nu_normal).
+    log_likelihood : float
+        Final log-likelihood of the mixture model.
+    bic : float
+        BIC of the fitted model (3 parameters).
+    n_iter : int
+        Number of EM iterations run.
+    converged : bool
+        Whether the EM converged within tolerance.
+    responsibilities : np.ndarray
+        Final posterior responsibilities gamma_t = P(crisis | r_t).
+    """
+    epsilon: float
+    nu_normal: float
+    nu_crisis: float
+    log_likelihood: float
+    bic: float
+    n_iter: int
+    converged: bool
+    responsibilities: np.ndarray
+
+
+def _em_compute_responsibilities(z: np.ndarray, epsilon: float,
+                                  nu_normal: float, nu_crisis: float) -> np.ndarray:
+    """E-step: compute gamma_t = P(crisis | z_t) via log-sum-exp."""
+    log_p_normal = _em_student_t_logpdf(z, nu_normal) + np.log(
+        max(1.0 - epsilon, 1e-12)
+    )
+    log_p_crisis = _em_student_t_logpdf(z, nu_crisis) + np.log(
+        max(epsilon, 1e-12)
+    )
+    log_max = np.maximum(log_p_normal, log_p_crisis)
+    log_denom = log_max + np.log(
+        np.exp(log_p_normal - log_max) + np.exp(log_p_crisis - log_max)
+    )
+    gamma = np.exp(log_p_crisis - log_denom)
+    return np.clip(gamma, 1e-10, 1.0 - 1e-10)
+
+
+def _em_student_t_logpdf(z: np.ndarray, nu: float) -> np.ndarray:
+    """Standardized Student-t log-pdf for EM internal use."""
+    half_nu = 0.5 * nu
+    half_nup1 = 0.5 * (nu + 1.0)
+    log_norm = (
+        gammaln(half_nup1)
+        - gammaln(half_nu)
+        - 0.5 * np.log(nu * np.pi)
+    )
+    log_kernel = -half_nup1 * np.log1p(z ** 2 / nu)
+    return log_norm + log_kernel
+
+
+def _em_weighted_nu_mle(z: np.ndarray, weights: np.ndarray,
+                         nu_grid: np.ndarray) -> float:
+    """M-step: find nu maximizing weighted log-likelihood on a grid."""
+    best_nu = float(nu_grid[0])
+    best_ll = -np.inf
+    for nu in nu_grid:
+        logpdf = _em_student_t_logpdf(z, float(nu))
+        wll = float(np.sum(weights * logpdf))
+        if wll > best_ll:
+            best_ll = wll
+            best_nu = float(nu)
+    return best_nu
+
+
+def _em_mixture_loglik(z: np.ndarray, epsilon: float,
+                        nu_normal: float, nu_crisis: float) -> float:
+    """Compute total log-likelihood of the CST mixture."""
+    log_p_normal = _em_student_t_logpdf(z, nu_normal) + np.log(
+        max(1.0 - epsilon, 1e-12)
+    )
+    log_p_crisis = _em_student_t_logpdf(z, nu_crisis) + np.log(
+        max(epsilon, 1e-12)
+    )
+    log_max = np.maximum(log_p_normal, log_p_crisis)
+    log_sum = log_max + np.log(
+        np.exp(log_p_normal - log_max) + np.exp(log_p_crisis - log_max)
+    )
+    return float(np.sum(log_sum))
+
+
+def em_cst_fit(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    n_iter: int = EM_DEFAULT_ITER,
+    epsilon_init: float = 0.10,
+    nu_normal_init: float = 10.0,
+    nu_crisis_init: float = 4.0,
+) -> CSTFitResult:
+    """Fit a Contaminated Student-t via EM algorithm.
+
+    Parameters
+    ----------
+    returns : array
+        Log returns.
+    vol : array
+        EWMA volatility estimates (same length as returns).
+    q : float
+        Kalman process noise.
+    c : float
+        Kalman observation noise multiplier.
+    phi : float
+        Kalman AR(1) coefficient.
+    n_iter : int
+        Maximum EM iterations.
+    epsilon_init : float
+        Initial contamination probability.
+    nu_normal_init : float
+        Initial normal component nu.
+    nu_crisis_init : float
+        Initial crisis component nu.
+
+    Returns
+    -------
+    CSTFitResult
+        Fitted parameters and diagnostics.
+    """
+    returns = np.asarray(returns, dtype=np.float64)
+    vol = np.asarray(vol, dtype=np.float64)
+
+    # Filter NaN / inf
+    valid = np.isfinite(returns) & np.isfinite(vol) & (vol > 1e-12)
+    r_clean = returns[valid]
+    v_clean = vol[valid]
+    n = len(r_clean)
+
+    if n < EM_MIN_OBS:
+        return CSTFitResult(
+            epsilon=epsilon_init,
+            nu_normal=nu_normal_init,
+            nu_crisis=nu_crisis_init,
+            log_likelihood=-1e12,
+            bic=1e12,
+            n_iter=0,
+            converged=False,
+            responsibilities=np.full(len(returns), epsilon_init),
+        )
+
+    # Compute standardized innovations: z_t = r_t / (c * vol_t)
+    scale = c * v_clean
+    scale = np.maximum(scale, 1e-12)
+    z = r_clean / scale
+
+    # Initialize
+    epsilon = float(np.clip(epsilon_init, EM_EPSILON_MIN, EM_EPSILON_MAX))
+    nu_normal = float(np.clip(nu_normal_init, EM_NU_NORMAL_MIN, EM_NU_NORMAL_MAX))
+    nu_crisis = float(np.clip(nu_crisis_init, EM_NU_CRISIS_MIN, EM_NU_CRISIS_MAX))
+
+    # Ensure nu_crisis < nu_normal
+    if nu_crisis >= nu_normal:
+        nu_crisis = max(EM_NU_CRISIS_MIN, nu_normal - 2.0)
+
+    prev_ll = -np.inf
+    converged = False
+    gamma = None
+    final_iter = 0
+
+    for iteration in range(n_iter):
+        # E-step
+        gamma = _em_compute_responsibilities(z, epsilon, nu_normal, nu_crisis)
+
+        # M-step: update epsilon
+        epsilon = float(np.clip(np.mean(gamma), EM_EPSILON_MIN, EM_EPSILON_MAX))
+
+        # M-step: update nu_normal (normal weights = 1 - gamma)
+        w_normal = 1.0 - gamma
+        nu_normal = float(np.clip(
+            _em_weighted_nu_mle(z, w_normal, EM_NU_NORMAL_GRID),
+            EM_NU_NORMAL_MIN, EM_NU_NORMAL_MAX,
+        ))
+
+        # M-step: update nu_crisis (crisis weights = gamma)
+        nu_crisis = float(np.clip(
+            _em_weighted_nu_mle(z, gamma, EM_NU_CRISIS_GRID),
+            EM_NU_CRISIS_MIN, EM_NU_CRISIS_MAX,
+        ))
+
+        # Enforce nu_crisis < nu_normal
+        if nu_crisis >= nu_normal:
+            nu_crisis = max(EM_NU_CRISIS_MIN, nu_normal - 2.0)
+
+        # Check convergence
+        ll = _em_mixture_loglik(z, epsilon, nu_normal, nu_crisis)
+        final_iter = iteration + 1
+        if abs(ll - prev_ll) < EM_TOL:
+            converged = True
+            prev_ll = ll
+            break
+        prev_ll = ll
+
+    # Final log-likelihood
+    final_ll = _em_mixture_loglik(z, epsilon, nu_normal, nu_crisis)
+
+    # BIC: 3 parameters (epsilon, nu_normal, nu_crisis)
+    bic = -2.0 * final_ll + 3.0 * np.log(n)
+
+    # Map responsibilities back to original array
+    full_gamma = np.full(len(returns), epsilon)
+    full_gamma[valid] = gamma if gamma is not None else epsilon
+
+    return CSTFitResult(
+        epsilon=epsilon,
+        nu_normal=nu_normal,
+        nu_crisis=nu_crisis,
+        log_likelihood=float(final_ll),
+        bic=float(bic),
+        n_iter=final_iter,
+        converged=converged,
+        responsibilities=full_gamma,
+    )
+
+
+# =============================================================================
+# EPIC 18: Story 18.2 -- Online Jump Detection via CST Responsibilities
+# =============================================================================
+
+@dataclass(frozen=True)
+class JumpProbabilityResult:
+    """Result of single-observation jump probability.
+
+    Attributes
+    ----------
+    gamma : float
+        Posterior probability of crisis component: P(crisis | r_t).
+    is_jump : bool
+        Whether gamma > JUMP_THRESHOLD.
+    q_inflation : float
+        Multiplicative factor for process noise: 1 + JUMP_Q_MULTIPLIER * gamma.
+    log_p_normal : float
+        Log-likelihood under normal component.
+    log_p_crisis : float
+        Log-likelihood under crisis component.
+    """
+    gamma: float
+    is_jump: bool
+    q_inflation: float
+    log_p_normal: float
+    log_p_crisis: float
+
+
+def cst_jump_probability(
+    r_t: float,
+    mu_t: float,
+    sigma_t: float,
+    epsilon: float,
+    nu_normal: float,
+    nu_crisis: float,
+) -> JumpProbabilityResult:
+    """Compute posterior jump probability for a single observation.
+
+    Parameters
+    ----------
+    r_t : float
+        Observed return at time t.
+    mu_t : float
+        Kalman filter predicted mean at time t.
+    sigma_t : float
+        Predicted standard deviation at time t.
+    epsilon : float
+        Contamination probability from CST fit.
+    nu_normal : float
+        Normal component degrees of freedom.
+    nu_crisis : float
+        Crisis component degrees of freedom.
+
+    Returns
+    -------
+    JumpProbabilityResult
+        Jump detection result with gamma, flag, and q inflation.
+    """
+    if not np.isfinite(r_t) or not np.isfinite(mu_t):
+        return JumpProbabilityResult(
+            gamma=epsilon,
+            is_jump=False,
+            q_inflation=1.0 + JUMP_Q_MULTIPLIER * epsilon,
+            log_p_normal=-1e6,
+            log_p_crisis=-1e6,
+        )
+
+    sigma_safe = max(abs(sigma_t), 1e-12)
+    z = np.array([(r_t - mu_t) / sigma_safe])
+
+    lp_normal = float(_em_student_t_logpdf(z, nu_normal)[0])
+    lp_crisis = float(_em_student_t_logpdf(z, nu_crisis)[0])
+
+    log_joint_normal = lp_normal + np.log(max(1.0 - epsilon, 1e-12))
+    log_joint_crisis = lp_crisis + np.log(max(epsilon, 1e-12))
+
+    log_max = max(log_joint_normal, log_joint_crisis)
+    log_denom = log_max + np.log(
+        np.exp(log_joint_normal - log_max)
+        + np.exp(log_joint_crisis - log_max)
+    )
+
+    gamma = float(np.exp(log_joint_crisis - log_denom))
+    gamma = max(0.0, min(1.0, gamma))
+
+    is_jump = gamma > JUMP_THRESHOLD
+    q_inflation = 1.0 + JUMP_Q_MULTIPLIER * gamma
+
+    return JumpProbabilityResult(
+        gamma=gamma,
+        is_jump=is_jump,
+        q_inflation=q_inflation,
+        log_p_normal=lp_normal,
+        log_p_crisis=lp_crisis,
+    )
+
+
+def cst_jump_probability_array(
+    returns: np.ndarray,
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    epsilon: float,
+    nu_normal: float,
+    nu_crisis: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Vectorized jump probability for arrays.
+
+    Returns
+    -------
+    gamma : array
+        Posterior crisis probabilities.
+    q_inflation : array
+        Process noise inflation factors.
+    """
+    returns = np.asarray(returns, dtype=np.float64)
+    mu = np.asarray(mu, dtype=np.float64)
+    sigma = np.asarray(sigma, dtype=np.float64)
+
+    sigma_safe = np.maximum(np.abs(sigma), 1e-12)
+    z = (returns - mu) / sigma_safe
+
+    lp_normal = _em_student_t_logpdf(z, nu_normal)
+    lp_crisis = _em_student_t_logpdf(z, nu_crisis)
+
+    log_joint_normal = lp_normal + np.log(max(1.0 - epsilon, 1e-12))
+    log_joint_crisis = lp_crisis + np.log(max(epsilon, 1e-12))
+
+    log_max = np.maximum(log_joint_normal, log_joint_crisis)
+    log_denom = log_max + np.log(
+        np.exp(log_joint_normal - log_max) + np.exp(log_joint_crisis - log_max)
+    )
+
+    gamma = np.clip(np.exp(log_joint_crisis - log_denom), 0.0, 1.0)
+    nan_mask = ~np.isfinite(gamma)
+    gamma[nan_mask] = epsilon
+
+    q_inflation = 1.0 + JUMP_Q_MULTIPLIER * gamma
+
+    return gamma, q_inflation
+
+
+# =============================================================================
+# EPIC 18: Story 18.3 -- CST-Adjusted Forecast Intervals
+# =============================================================================
+
+@dataclass(frozen=True)
+class CSTPredictionInterval:
+    """CST prediction interval result.
+
+    Attributes
+    ----------
+    q_lo : float
+        Lower quantile.
+    q_hi : float
+        Upper quantile.
+    width : float
+        Interval width (q_hi - q_lo).
+    width_pure_t : float
+        Width from pure Student-t (for comparison).
+    width_ratio : float
+        CST width / pure-t width (should be >= 1).
+    """
+    q_lo: float
+    q_hi: float
+    width: float
+    width_pure_t: float
+    width_ratio: float
+
+
+def _cst_cdf_em(x: float, mu: float, sigma: float,
+                 epsilon: float, nu_normal: float, nu_crisis: float) -> float:
+    """CDF of the CST mixture at point x (for bisection)."""
+    sigma_safe = max(abs(sigma), 1e-12)
+    z = (x - mu) / sigma_safe
+    cdf_normal = float(stats.t.cdf(z, df=nu_normal))
+    cdf_crisis = float(stats.t.cdf(z, df=nu_crisis))
+    return (1.0 - epsilon) * cdf_normal + epsilon * cdf_crisis
+
+
+def _cst_quantile_em(p: float, mu: float, sigma: float,
+                      epsilon: float, nu_normal: float, nu_crisis: float) -> float:
+    """Quantile of the CST mixture via Brent's method on the CDF."""
+    sigma_safe = max(abs(sigma), 1e-12)
+
+    # Initial bracket from crisis-component quantiles (wider tails)
+    z_lo = float(stats.t.ppf(max(p * 0.1, 1e-8), df=nu_crisis))
+    z_hi = float(stats.t.ppf(min(1.0 - (1.0 - p) * 0.1, 1.0 - 1e-8), df=nu_crisis))
+
+    x_lo = mu + z_lo * sigma_safe * 3.0
+    x_hi = mu + z_hi * sigma_safe * 3.0
+
+    # Expand bracket until it contains the root
+    for _ in range(15):
+        f_lo = _cst_cdf_em(x_lo, mu, sigma_safe, epsilon, nu_normal, nu_crisis) - p
+        f_hi = _cst_cdf_em(x_hi, mu, sigma_safe, epsilon, nu_normal, nu_crisis) - p
+        if f_lo * f_hi < 0:
+            break
+        spread = x_hi - x_lo
+        x_lo -= 0.5 * spread
+        x_hi += 0.5 * spread
+    else:
+        return mu + float(stats.t.ppf(p, df=nu_normal)) * sigma_safe
+
+    try:
+        result = brentq(
+            lambda x: _cst_cdf_em(x, mu, sigma_safe, epsilon, nu_normal, nu_crisis) - p,
+            x_lo, x_hi,
+            xtol=1e-8, maxiter=100,
+        )
+        return float(result)
+    except (ValueError, RuntimeError):
+        return mu + float(stats.t.ppf(p, df=nu_normal)) * sigma_safe
+
+
+def cst_prediction_interval(
+    mu: float,
+    sigma: float,
+    epsilon: float,
+    nu_normal: float,
+    nu_crisis: float,
+    alpha: float = 0.05,
+) -> CSTPredictionInterval:
+    """Compute CST-adjusted prediction interval.
+
+    Parameters
+    ----------
+    mu : float
+        Predicted mean.
+    sigma : float
+        Predicted standard deviation.
+    epsilon : float
+        Contamination probability.
+    nu_normal : float
+        Normal component degrees of freedom.
+    nu_crisis : float
+        Crisis component degrees of freedom.
+    alpha : float
+        Significance level (default 0.05 for 95% PI).
+
+    Returns
+    -------
+    CSTPredictionInterval
+        Prediction interval with width comparison to pure Student-t.
+    """
+    sigma_safe = max(abs(sigma), 1e-12)
+
+    q_lo = _cst_quantile_em(alpha / 2.0, mu, sigma_safe,
+                             epsilon, nu_normal, nu_crisis)
+    q_hi = _cst_quantile_em(1.0 - alpha / 2.0, mu, sigma_safe,
+                             epsilon, nu_normal, nu_crisis)
+
+    width = q_hi - q_lo
+
+    # Pure Student-t comparison (normal component)
+    z_lo_pure = float(stats.t.ppf(alpha / 2.0, df=nu_normal))
+    z_hi_pure = float(stats.t.ppf(1.0 - alpha / 2.0, df=nu_normal))
+    width_pure = (z_hi_pure - z_lo_pure) * sigma_safe
+
+    width_ratio = width / max(width_pure, 1e-12)
+
+    return CSTPredictionInterval(
+        q_lo=q_lo,
+        q_hi=q_hi,
+        width=width,
+        width_pure_t=width_pure,
+        width_ratio=width_ratio,
+    )
+
+
+def cst_prediction_interval_array(
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    epsilon: float,
+    nu_normal: float,
+    nu_crisis: float,
+    alpha: float = 0.05,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Vectorized prediction intervals.
+
+    Returns
+    -------
+    q_lo : array
+        Lower bounds.
+    q_hi : array
+        Upper bounds.
+    """
+    mu = np.asarray(mu, dtype=np.float64)
+    sigma = np.asarray(sigma, dtype=np.float64)
+    n = len(mu)
+
+    q_lo = np.empty(n)
+    q_hi = np.empty(n)
+
+    for i in range(n):
+        result = cst_prediction_interval(
+            float(mu[i]), float(sigma[i]),
+            epsilon, nu_normal, nu_crisis, alpha,
+        )
+        q_lo[i] = result.q_lo
+        q_hi[i] = result.q_hi
+
+    return q_lo, q_hi

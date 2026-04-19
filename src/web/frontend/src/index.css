@@ -249,8 +249,8 @@ body {
 }
 
 /* ================================================================
-   ANIMATED MESH GRADIENT BACKGROUND
-   Living, breathing surface like lumenlingo's cosmic aesthetic
+   STATIC MESH GRADIENT BACKGROUND
+   Subtle depth without animation
    ================================================================ */
 #root {
   position: relative;
@@ -267,37 +267,6 @@ body {
     radial-gradient(ellipse 60% 80% at 85% 70%, rgba(56,217,245,0.04) 0%, transparent 50%),
     radial-gradient(ellipse 70% 50% at 50% 90%, rgba(99,102,241,0.05) 0%, transparent 50%),
     radial-gradient(ellipse 40% 40% at 70% 10%, rgba(226,122,245,0.03) 0%, transparent 50%);
-  animation: mesh-drift 20s ease-in-out infinite alternate;
-}
-@keyframes mesh-drift {
-  0% {
-    background:
-      radial-gradient(ellipse 80% 60% at 10% 20%, rgba(139,92,246,0.07) 0%, transparent 50%),
-      radial-gradient(ellipse 60% 80% at 85% 70%, rgba(56,217,245,0.04) 0%, transparent 50%),
-      radial-gradient(ellipse 70% 50% at 50% 90%, rgba(99,102,241,0.05) 0%, transparent 50%),
-      radial-gradient(ellipse 40% 40% at 70% 10%, rgba(226,122,245,0.03) 0%, transparent 50%);
-  }
-  33% {
-    background:
-      radial-gradient(ellipse 70% 70% at 25% 35%, rgba(139,92,246,0.06) 0%, transparent 50%),
-      radial-gradient(ellipse 80% 60% at 70% 55%, rgba(56,217,245,0.05) 0%, transparent 50%),
-      radial-gradient(ellipse 50% 60% at 40% 80%, rgba(99,102,241,0.04) 0%, transparent 50%),
-      radial-gradient(ellipse 50% 50% at 80% 25%, rgba(226,122,245,0.04) 0%, transparent 50%);
-  }
-  66% {
-    background:
-      radial-gradient(ellipse 60% 80% at 15% 50%, rgba(139,92,246,0.05) 0%, transparent 50%),
-      radial-gradient(ellipse 70% 70% at 75% 40%, rgba(56,217,245,0.06) 0%, transparent 50%),
-      radial-gradient(ellipse 60% 40% at 55% 75%, rgba(99,102,241,0.06) 0%, transparent 50%),
-      radial-gradient(ellipse 45% 45% at 60% 15%, rgba(226,122,245,0.03) 0%, transparent 50%);
-  }
-  100% {
-    background:
-      radial-gradient(ellipse 75% 65% at 20% 30%, rgba(139,92,246,0.07) 0%, transparent 50%),
-      radial-gradient(ellipse 65% 75% at 80% 60%, rgba(56,217,245,0.05) 0%, transparent 50%),
-      radial-gradient(ellipse 55% 55% at 45% 85%, rgba(99,102,241,0.05) 0%, transparent 50%),
-      radial-gradient(ellipse 40% 40% at 65% 15%, rgba(226,122,245,0.04) 0%, transparent 50%);
-  }
 }
 
 /* Subtle film-grain noise texture for organic feel */
@@ -474,17 +443,9 @@ body {
 
 .gradient-text {
   background: linear-gradient(135deg, #a78bfa 0%, #c4b5fd 30%, #e27af5 60%, #38d9f5 100%);
-  background-size: 300% 300%;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
-  animation: gradient-shift 8s ease infinite;
-}
-
-@keyframes gradient-shift {
-  0% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-  100% { background-position: 0% 50%; }
 }
 
 /* Signal flash */
@@ -660,14 +621,11 @@ body {
   opacity: 0;
   transform: translateY(16px);
   transition: opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1),
-              transform 0.5s cubic-bezier(0.16, 1, 0.3, 1),
-              filter 0.5s cubic-bezier(0.16, 1, 0.3, 1);
-  filter: blur(4px);
+              transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
 }
-.scroll-reveal.is-revealed {
+.scroll-reveal.is-visible {
   opacity: 1;
   transform: translateY(0);
-  filter: blur(0);
 }
 
 /* Reduced motion: instant reveals */
@@ -1181,6 +1139,18 @@ button:active:not(:disabled) {
   color: var(--accent-amber);
   box-shadow: 0 0 12px rgba(245, 197, 66, 0.08);
 }
+.filter-pill[data-active="true"][data-filter="green"] {
+  background: rgba(62, 232, 165, 0.15);
+  border-color: rgba(62, 232, 165, 0.3);
+  color: var(--accent-emerald);
+  box-shadow: 0 0 16px rgba(62, 232, 165, 0.12), inset 0 1px 0 rgba(62, 232, 165, 0.08);
+}
+.filter-pill[data-active="true"][data-filter="red"] {
+  background: rgba(255, 107, 138, 0.15);
+  border-color: rgba(255, 107, 138, 0.3);
+  color: var(--accent-rose);
+  box-shadow: 0 0 16px rgba(255, 107, 138, 0.12), inset 0 1px 0 rgba(255, 107, 138, 0.08);
+}
 
 /* ================================================================
    PREMIUM TABLES (S3.5) -- Upgraded table styling
@@ -1450,21 +1420,6 @@ button:active:not(:disabled) {
 }
 .error-pulse-glow {
   animation: error-pulse-glow 3s ease-in-out infinite;
-}
-
-/* ================================================================
-   SCROLL-TRIGGERED ANIMATIONS (Story 10.6)
-   Elements below fold materialize on viewport entry
-   ================================================================ */
-.scroll-reveal {
-  opacity: 0;
-  transform: translateY(12px);
-  transition: opacity 250ms cubic-bezier(0.2, 0, 0, 1),
-              transform 250ms cubic-bezier(0.2, 0, 0, 1);
-}
-.scroll-reveal.is-visible {
-  opacity: 1;
-  transform: translateY(0);
 }
 
 /* Reduced motion: instant appearance, no animations */

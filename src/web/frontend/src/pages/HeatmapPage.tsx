@@ -6,36 +6,76 @@
  * Click any asset row to expand inline zone charts (1M/3M/6M/12M).
  */
 import { useQuery } from '@tanstack/react-query';
-import { api, type SectorGroup, type SummaryRow, type HorizonSignal } from '../api';
+import { api, type SectorGroup, type SummaryRow, type HorizonSignal, type QualityScoresData, type IntrinsicValuesData, type IntrinsicValuation } from '../api';
 import PageHeader from '../components/PageHeader';
 import { DashboardSkeleton } from '../components/CosmicSkeleton';
 import { CosmicErrorCard } from '../components/CosmicErrorState';
 import { DashboardEmpty } from '../components/CosmicEmptyState';
 import BuySellZoneCharts from '../components/BuySellZoneCharts';
+import MiniPriceChart from '../components/MiniPriceChart';
 import { formatHorizon } from '../utils/horizons';
 import React, {
   useState, useMemo, useCallback, useEffect, useRef,
 } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  ChevronDown, ChevronRight, Search, X, Filter,
+  ChevronDown, ChevronRight, ChevronUp, Search, X, Filter,
   TrendingUp, TrendingDown, Minus, Maximize2, Minimize2,
-  ExternalLink, Loader2,
+  ExternalLink, Loader2, ArrowUpDown, Info,
 } from 'lucide-react';
 
 /* ── Constants ──────────────────────────────────────────────────── */
 const COLLAPSE_KEY = 'heatmap_v2_collapse';
 const FILTER_KEY = 'heatmap_v2_filter';
 
-type SignalFilter = 'all' | 'strong_buy' | 'buy' | 'hold' | 'sell' | 'strong_sell';
+type SignalFilter = 'all' | 'strong_buy' | 'buy' | 'hold' | 'sell' | 'strong_sell' | 'green' | 'red';
 
-const FILTER_OPTIONS: { value: SignalFilter; label: string; color: string }[] = [
-  { value: 'all', label: 'All Signals', color: 'var(--text-secondary)' },
-  { value: 'strong_buy', label: 'Strong Buy', color: 'var(--accent-emerald)' },
-  { value: 'buy', label: 'Buy', color: 'rgba(62,232,165,0.7)' },
-  { value: 'hold', label: 'Hold', color: 'var(--text-muted)' },
-  { value: 'sell', label: 'Sell', color: 'rgba(255,107,138,0.7)' },
-  { value: 'strong_sell', label: 'Strong Sell', color: 'var(--accent-rose)' },
+/** Sorting state for heatmap columns */
+type SortKey = 'momentum' | 'quality' | 'price' | 'intrinsic' | 'gap' | number;  // number = horizon key
+type SortDir = 'asc' | 'desc';
+interface SortState { key: SortKey; dir: SortDir; }
+
+/** Get the sortable value for a given asset row and sort key */
+function getSortValue(row: SummaryRow, key: SortKey, qualityScores?: Record<string, number>, valuations?: Record<string, IntrinsicValuation>): number {
+  if (key === 'momentum') return row.momentum_score ?? 0;
+  if (key === 'quality') {
+    const ticker = row.asset_label.includes('(') ? row.asset_label.split('(').pop()!.replace(')', '').trim() : row.asset_label;
+    return qualityScores?.[ticker] ?? 50;
+  }
+  if (key === 'price' || key === 'intrinsic' || key === 'gap') {
+    const ticker = extractTicker(row.asset_label);
+    const v = valuations?.[ticker];
+    if (key === 'price') return v?.price ?? 0;
+    if (key === 'intrinsic') return v?.intrinsic_value ?? 0;
+    return v?.gap_pct ?? 0;
+  }
+  const sig = row.horizon_signals[key] || row.horizon_signals[String(key)];
+  return sig?.exp_ret ?? 0;
+}
+
+/** Signal label badge colors */
+function getSignalBadge(label: string): { text: string; bg: string; fg: string } | null {
+  const norm = (label || '').toUpperCase().replace(/[\s-]/g, '_');
+  if (norm.includes('STRONG_BUY')) return { text: 'Strong Buy', bg: 'rgba(6,78,59,0.6)', fg: 'var(--accent-emerald)' };
+  if (norm.includes('BUY')) return { text: 'Buy', bg: 'rgba(6,78,59,0.4)', fg: 'rgba(62,232,165,0.85)' };
+  if (norm.includes('STRONG_SELL')) return { text: 'Strong Sell', bg: 'rgba(76,5,25,0.6)', fg: 'var(--accent-rose)' };
+  if (norm.includes('SELL')) return { text: 'Sell', bg: 'rgba(76,5,25,0.4)', fg: 'rgba(255,107,138,0.85)' };
+  if (norm.includes('HOLD')) return { text: 'Hold', bg: 'var(--violet-8)', fg: 'var(--text-muted)' };
+  return null;
+}
+
+const SIGNAL_FILTERS: { value: SignalFilter; label: string; icon?: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'strong_buy', label: 'Strong Buy' },
+  { value: 'buy', label: 'Buy' },
+  { value: 'hold', label: 'Hold' },
+  { value: 'sell', label: 'Sell' },
+  { value: 'strong_sell', label: 'Strong Sell' },
+];
+
+const COLOR_FILTERS: { value: SignalFilter; label: string }[] = [
+  { value: 'green', label: 'Green' },
+  { value: 'red', label: 'Red' },
 ];
 
 /** Extract ticker from "Company Name (TICKER)" */
@@ -62,6 +102,11 @@ function ExpandedAssetRow({
   const forecastQ = useQuery({
     queryKey: ['forecast', ticker],
     queryFn: () => api.chartForecast(ticker),
+    staleTime: 120_000,
+  });
+  const indQ = useQuery({
+    queryKey: ['indicators', ticker, 365],
+    queryFn: () => api.chartIndicators(ticker, 365),
     staleTime: 120_000,
   });
 
@@ -149,11 +194,11 @@ function ExpandedAssetRow({
               })}
             </div>
 
-            {/* Zone charts */}
+            {/* Main price chart with SMA / Bollinger / Forecast */}
             {ohlcvLoading && (
               <div className="flex items-center justify-center py-10 gap-2">
                 <Loader2 className="w-4 h-4 animate-spin" style={{ color: 'var(--accent-violet)' }} />
-                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Loading zone charts...</span>
+                <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Loading chart...</span>
               </div>
             )}
             {!ohlcvLoading && !hasOhlcv && (
@@ -161,13 +206,25 @@ function ExpandedAssetRow({
                 <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>No chart data available for {ticker}</span>
               </div>
             )}
-            {!ohlcvLoading && hasOhlcv && hasForecast && (
-              <BuySellZoneCharts
+            {!ohlcvLoading && hasOhlcv && (
+              <MiniPriceChart
                 ohlcv={ohlcvQ.data!.data}
-                forecasts={forecastQ.data!.forecasts}
-                symbol={ticker}
-                compact
+                indicators={indQ.data?.indicators ?? null}
+                forecast={forecastQ.data ?? null}
+                height={340}
               />
+            )}
+
+            {/* Zone charts */}
+            {!ohlcvLoading && hasOhlcv && hasForecast && (
+              <div className="mt-3">
+                <BuySellZoneCharts
+                  ohlcv={ohlcvQ.data!.data}
+                  forecasts={forecastQ.data!.forecasts}
+                  symbol={ticker}
+                  compact
+                />
+              </div>
             )}
           </div>
         </div>
@@ -189,6 +246,18 @@ function heatColor(expRet: number | null | undefined): string {
 
 function signalMatchesFilter(row: SummaryRow, filter: SignalFilter): boolean {
   if (filter === 'all') return true;
+  if (filter === 'green') {
+    // Show assets where majority of horizon signals are positive
+    const sigs = Object.values(row.horizon_signals) as HorizonSignal[];
+    const pos = sigs.filter(s => s?.exp_ret != null && s.exp_ret > 0.003).length;
+    return pos > sigs.length / 2;
+  }
+  if (filter === 'red') {
+    // Show assets where majority of horizon signals are negative
+    const sigs = Object.values(row.horizon_signals) as HorizonSignal[];
+    const neg = sigs.filter(s => s?.exp_ret != null && s.exp_ret < -0.003).length;
+    return neg > sigs.length / 2;
+  }
   const label = (row.nearest_label || '').toUpperCase().replace(/[\s-]/g, '_');
   return label === filter.toUpperCase();
 }
@@ -213,7 +282,7 @@ function SentimentStrip({ sector }: { sector: SectorGroup }) {
 }
 
 /* ── Summary Statistics Strip ──────────────────────────────────── */
-function SummaryStrip({ sectors }: { sectors: SectorGroup[] }) {
+function SummaryStrip({ sectors, activeFilter, onFilterChange }: { sectors: SectorGroup[]; activeFilter: SignalFilter; onFilterChange: (f: SignalFilter) => void }) {
   const stats = useMemo(() => {
     let totalAssets = 0, strongBuys = 0, buys = 0, holds = 0, sells = 0, strongSells = 0, exits = 0;
     for (const s of sectors) {
@@ -229,26 +298,70 @@ function SummaryStrip({ sectors }: { sectors: SectorGroup[] }) {
              sectors: sectors.length, active: strongBuys + buys + sells + strongSells };
   }, [sectors]);
 
-  const items = [
-    { label: 'Assets', value: stats.totalAssets, color: 'var(--text-primary)' },
-    { label: 'Sectors', value: stats.sectors, color: 'var(--accent-violet)' },
-    { label: 'Strong Buy', value: stats.strongBuys, color: 'var(--accent-emerald)' },
-    { label: 'Buy', value: stats.buys, color: 'rgba(62,232,165,0.7)' },
-    { label: 'Hold', value: stats.holds, color: 'var(--text-muted)' },
-    { label: 'Sell', value: stats.sells, color: 'rgba(255,107,138,0.7)' },
-    { label: 'Strong Sell', value: stats.strongSells, color: 'var(--accent-rose)' },
+  const items: { label: string; value: number; color: string; glow: string; filterVal?: SignalFilter }[] = [
+    { label: 'Assets', value: stats.totalAssets, color: 'var(--text-primary)', glow: 'rgba(139,92,246,0.15)' },
+    { label: 'Sectors', value: stats.sectors, color: 'var(--accent-violet)', glow: 'rgba(139,92,246,0.2)' },
+    { label: 'Strong Buy', value: stats.strongBuys, color: 'var(--accent-emerald)', glow: 'rgba(62,232,165,0.2)', filterVal: 'strong_buy' },
+    { label: 'Buy', value: stats.buys, color: 'rgba(62,232,165,0.8)', glow: 'rgba(62,232,165,0.15)', filterVal: 'buy' },
+    { label: 'Hold', value: stats.holds, color: 'var(--accent-amber)', glow: 'rgba(245,197,66,0.12)', filterVal: 'hold' },
+    { label: 'Sell', value: stats.sells, color: 'rgba(255,107,138,0.8)', glow: 'rgba(255,107,138,0.15)', filterVal: 'sell' },
+    { label: 'Strong Sell', value: stats.strongSells, color: 'var(--accent-rose)', glow: 'rgba(255,107,138,0.2)', filterVal: 'strong_sell' },
   ];
 
+  const bullish = stats.strongBuys + stats.buys;
+  const bearish = stats.strongSells + stats.sells;
+  const bullPct = stats.totalAssets > 0 ? Math.round((bullish / stats.totalAssets) * 100) : 0;
+  const sentiment = bullish > bearish * 2 ? 'Bullish' : bearish > bullish * 2 ? 'Bearish' : 'Neutral';
+  const sentimentColor = sentiment === 'Bullish' ? 'var(--accent-emerald)' : sentiment === 'Bearish' ? 'var(--accent-rose)' : 'var(--accent-amber)';
+
   return (
-    <div className="flex items-center gap-1.5 flex-wrap">
-      {items.map((it, idx) => (
-        <div key={it.label}
-          className="glass-card hover-lift flex items-center gap-1.5 px-3 py-2 rounded-lg"
-          style={{ animationDelay: `${idx * 50}ms` }}>
-          <span className="text-label">{it.label}</span>
-          <span className="text-stat-value tabular-nums" style={{ color: it.color, fontSize: 13 }}>{it.value}</span>
+    <div className="space-y-3">
+      {/* Sentiment bar */}
+      <div
+        className="rounded-2xl px-5 py-3 flex items-center gap-4"
+        style={{
+          background: 'linear-gradient(135deg, rgba(13,5,30,0.9) 0%, rgba(10,18,42,0.9) 100%)',
+          border: '1px solid var(--violet-10)',
+          boxShadow: '0 4px 24px rgba(0,0,0,0.2), inset 0 1px 0 var(--violet-4)',
+        }}
+      >
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full animate-pulse" style={{ background: sentimentColor, boxShadow: `0 0 8px ${sentimentColor}` }} />
+          <span className="text-[13px] font-bold tracking-wide" style={{ color: sentimentColor }}>{sentiment}</span>
         </div>
-      ))}
+        <div className="flex-1 h-2 rounded-full overflow-hidden flex" style={{ background: 'var(--void-surface)' }}>
+          <div className="h-full transition-all duration-700" style={{ width: `${bullPct}%`, background: 'linear-gradient(90deg, var(--accent-emerald), rgba(62,232,165,0.5))' }} />
+          <div className="h-full transition-all duration-700" style={{ width: `${100 - bullPct}%`, background: 'linear-gradient(90deg, rgba(255,107,138,0.5), var(--accent-rose))' }} />
+        </div>
+        <span className="text-[11px] tabular-nums font-semibold" style={{ color: 'var(--text-secondary)' }}>
+          {bullPct}% bullish
+        </span>
+      </div>
+
+      {/* Stat cards */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {items.map((it, idx) => {
+          const isClickable = !!it.filterVal;
+          const isActive = it.filterVal === activeFilter;
+          return (
+            <button
+              key={it.label}
+              onClick={() => isClickable && onFilterChange(isActive ? 'all' : it.filterVal!)}
+              className={`flex items-center gap-2 px-3.5 py-2.5 rounded-xl transition-all duration-200 ${isClickable ? 'cursor-pointer' : 'cursor-default'}`}
+              style={{
+                background: isActive ? it.glow : 'var(--void-surface)',
+                border: `1px solid ${isActive ? it.color : 'var(--violet-6)'}`,
+                boxShadow: isActive ? `0 0 20px ${it.glow}, inset 0 1px 0 rgba(255,255,255,0.04)` : '0 2px 8px rgba(0,0,0,0.15), inset 0 1px 0 rgba(255,255,255,0.03)',
+                animationDelay: `${idx * 60}ms`,
+                transform: isActive ? 'scale(1.05)' : 'scale(1)',
+              }}
+            >
+              <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: isActive ? it.color : 'var(--text-muted)' }}>{it.label}</span>
+              <span className="text-[15px] font-bold tabular-nums" style={{ color: it.color }}>{it.value}</span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -367,6 +480,26 @@ function HeatTooltip({ info }: { info: TooltipInfo }) {
   );
 }
 
+/** Quality score color based on 0-100 tier */
+function qualityColor(score: number): string {
+  if (score >= 90) return 'var(--accent-emerald)';
+  if (score >= 80) return 'rgba(62,232,165,0.85)';
+  if (score >= 70) return 'rgba(62,232,165,0.65)';
+  if (score >= 60) return 'rgba(139,152,246,0.75)';
+  if (score >= 50) return 'var(--text-muted)';
+  if (score >= 40) return 'rgba(255,180,107,0.75)';
+  if (score >= 30) return 'rgba(255,138,107,0.75)';
+  if (score >= 20) return 'rgba(255,107,138,0.75)';
+  return 'var(--accent-rose)';
+}
+
+function qualityBg(score: number): string {
+  if (score >= 80) return 'rgba(6,78,59,0.25)';
+  if (score >= 60) return 'rgba(30,27,75,0.25)';
+  if (score >= 40) return 'rgba(60,40,10,0.2)';
+  return 'rgba(76,5,25,0.2)';
+}
+
 /* ── Color Scale Legend ─────────────────────────────────────────── */
 function ColorScaleLegend() {
   return (
@@ -406,6 +539,16 @@ export default function HeatmapPage() {
     queryFn: api.signalSummary,
     staleTime: 120_000,
   });
+  const qualityQ = useQuery({
+    queryKey: ['qualityScores'],
+    queryFn: api.qualityScores,
+    staleTime: 300_000,
+  });
+  const intrinsicQ = useQuery({
+    queryKey: ['intrinsicValues'],
+    queryFn: api.intrinsicValues,
+    staleTime: 300_000,
+  });
 
   /* State */
   const [search, setSearch] = useState('');
@@ -425,6 +568,9 @@ export default function HeatmapPage() {
   const [flashCell, setFlashCell] = useState<string | null>(null);
   const [isFullWidth, setIsFullWidth] = useState(false);
   const [expandedAsset, setExpandedAsset] = useState<string | null>(null);
+  const [sort, setSort] = useState<SortState | null>(null);
+  const [showFormula, setShowFormula] = useState(false);
+  const [showIntrinsicFormula, setShowIntrinsicFormula] = useState(false);
 
   /* Persist state */
   useEffect(() => {
@@ -436,8 +582,12 @@ export default function HeatmapPage() {
 
   const sectors = sectorQ.data?.sectors ?? [];
   const horizons = summaryQ.data?.horizons ?? [];
+  const qualityScores = qualityQ.data?.scores ?? {};
+  const qualityFormula = qualityQ.data?.formula ?? null;
+  const valuations = intrinsicQ.data?.valuations ?? {};
+  const intrinsicFormula = intrinsicQ.data?.formula ?? null;
 
-  /* Filter + search */
+  /* Filter + search + sort */
   const filteredSectors = useMemo(() => {
     const q = search.toLowerCase().trim();
     return sectors.map(s => {
@@ -448,9 +598,16 @@ export default function HeatmapPage() {
       if (q) {
         assets = assets.filter(a => a.asset_label.toLowerCase().includes(q) || (a.sector || '').toLowerCase().includes(q));
       }
+      if (sort) {
+        assets = [...assets].sort((a, b) => {
+          const va = getSortValue(a, sort.key, qualityScores, valuations);
+          const vb = getSortValue(b, sort.key, qualityScores, valuations);
+          return sort.dir === 'desc' ? vb - va : va - vb;
+        });
+      }
       return { ...s, assets, asset_count: assets.length };
     }).filter(s => s.assets.length > 0);
-  }, [sectors, search, filter]);
+  }, [sectors, search, filter, sort, qualityScores, valuations]);
 
   /* Flatten for keyboard navigation */
   const flatRows = useMemo(() => {
@@ -594,81 +751,259 @@ export default function HeatmapPage() {
 
       {/* Summary strip */}
       <div className="mb-4 fade-up-delay-1">
-        <SummaryStrip sectors={sectors} />
+        <SummaryStrip sectors={sectors} activeFilter={filter} onFilterChange={setFilter} />
       </div>
 
-      {/* Controls bar */}
-      <div className="mb-4 flex items-center gap-3 flex-wrap fade-up-delay-2">
-        {/* Search */}
-        <div className="relative flex-1 min-w-[200px] max-w-[360px]">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: 'var(--text-muted)' }} />
-          <input
-            id="heatmap-search"
-            type="text"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Search assets or sectors..."
-            className="w-full pl-9 pr-8 py-2.5 rounded-xl text-[12px] outline-none transition-all focus-ring"
-            style={{
-              background: 'var(--void-surface)',
-              border: '1px solid var(--border-void)',
-              color: 'var(--text-primary)',
-              backdropFilter: 'blur(8px)',
-            }}
-            onFocus={e => (e.target.style.borderColor = 'rgba(139,92,246,0.35)')}
-            onBlur={e => (e.target.style.borderColor = 'var(--border-void)')}
-          />
-          {search && (
-            <button
-              onClick={() => setSearch('')}
-              className="absolute right-2.5 top-1/2 -translate-y-1/2"
-              style={{ color: 'var(--text-muted)' }}
+      {/* Quality Score Formula Explanation */}
+      {qualityFormula && (
+        <div className="mb-4 fade-up-delay-1">
+          <button
+            onClick={() => setShowFormula(f => !f)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-colors"
+            style={{ background: 'var(--violet-8)', color: 'var(--text-violet)', border: '1px solid var(--violet-12)' }}
+          >
+            <Info className="w-3.5 h-3.5" />
+            {qualityFormula.title}
+            {showFormula ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+          </button>
+          {showFormula && (
+            <div
+              className="mt-2 rounded-xl p-4"
+              style={{
+                background: 'linear-gradient(160deg, rgba(13,5,30,0.95) 0%, rgba(10,18,42,0.95) 100%)',
+                border: '1px solid var(--violet-15)',
+                boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
+              }}
             >
-              <X className="w-3.5 h-3.5" />
-            </button>
+              <p className="text-[11px] mb-3" style={{ color: 'var(--text-secondary)' }}>
+                {qualityFormula.description}
+              </p>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mb-3">
+                {qualityFormula.components.map(c => (
+                  <div key={c.name} className="rounded-lg p-2" style={{ background: 'var(--violet-4)', border: '1px solid var(--violet-8)' }}>
+                    <div className="flex items-center justify-between mb-0.5">
+                      <span className="text-[10px] font-semibold" style={{ color: 'var(--text-violet)' }}>{c.name}</span>
+                      <span className="text-[10px] font-bold tabular-nums" style={{ color: 'var(--accent-violet)' }}>{(c.weight * 100).toFixed(0)}%</span>
+                    </div>
+                    <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>{c.desc}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {qualityFormula.tiers.map(t => (
+                  <span key={t.range} className="px-2 py-0.5 rounded text-[9px] font-medium" style={{ background: 'var(--violet-6)', color: 'var(--text-secondary)' }}>
+                    <strong style={{ color: 'var(--text-primary)' }}>{t.range}</strong> {t.label} — {t.desc}
+                  </span>
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(qualityFormula.non_company_notes).map(([k, v]) => (
+                  <span key={k} className="text-[9px]" style={{ color: 'var(--text-muted)' }}>
+                    <strong style={{ color: 'var(--text-secondary)' }}>{k}:</strong> {v}
+                  </span>
+                ))}
+              </div>
+            </div>
           )}
         </div>
+      )}
 
-        {/* Signal filter pills */}
-        <div className="flex items-center gap-1">
-          <Filter className="w-3.5 h-3.5 mr-1" style={{ color: 'var(--text-muted)' }} />
-          {FILTER_OPTIONS.map(opt => (
-            <button
-              key={opt.value}
-              onClick={() => setFilter(opt.value)}
-              className="filter-pill"
-              data-active={filter === opt.value || undefined}
-              data-filter={opt.value}
+      {/* Intrinsic Value Formula Explanation */}
+      {intrinsicFormula && (
+        <div className="mb-4 fade-up-delay-1">
+          <button
+            onClick={() => setShowIntrinsicFormula(f => !f)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-colors"
+            style={{ background: 'var(--violet-8)', color: 'var(--text-violet)', border: '1px solid var(--violet-12)' }}
+          >
+            <Info className="w-3.5 h-3.5" />
+            {intrinsicFormula.title}
+            {showIntrinsicFormula ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+          </button>
+          {showIntrinsicFormula && (
+            <div
+              className="mt-2 rounded-xl p-4"
+              style={{
+                background: 'linear-gradient(160deg, rgba(13,5,30,0.95) 0%, rgba(10,18,42,0.95) 100%)',
+                border: '1px solid var(--violet-15)',
+                boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
+              }}
             >
-              {opt.label}
+              <p className="text-[11px] mb-3" style={{ color: 'var(--text-secondary)' }}>
+                {intrinsicFormula.description}
+              </p>
+              <div className="space-y-1.5 mb-3">
+                {intrinsicFormula.methodology.map(m => (
+                  <div key={m.step} className="rounded-lg p-2" style={{ background: 'var(--violet-4)', border: '1px solid var(--violet-8)' }}>
+                    <span className="text-[10px] font-semibold" style={{ color: 'var(--text-violet)' }}>{m.step}</span>
+                    <span className="text-[9px] ml-2" style={{ color: 'var(--text-muted)' }}>{m.desc}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-2 mb-2">
+                {Object.entries(intrinsicFormula.non_company_methods).map(([k, v]) => (
+                  <span key={k} className="text-[9px]" style={{ color: 'var(--text-muted)' }}>
+                    <strong style={{ color: 'var(--text-secondary)' }}>{k}:</strong> {v}
+                  </span>
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-3 mt-2 pt-2" style={{ borderTop: '1px solid var(--violet-8)' }}>
+                <span className="text-[9px]" style={{ color: 'var(--accent-emerald)' }}>
+                  <strong>+%</strong> = {intrinsicFormula.interpretation.positive_pct}
+                </span>
+                <span className="text-[9px]" style={{ color: 'var(--accent-rose)' }}>
+                  <strong>−%</strong> = {intrinsicFormula.interpretation.negative_pct}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Controls bar */}
+      <div
+        className="mb-4 rounded-2xl px-4 py-3 fade-up-delay-2"
+        style={{
+          background: 'linear-gradient(135deg, rgba(13,5,30,0.85) 0%, rgba(10,18,42,0.85) 100%)',
+          border: '1px solid var(--violet-8)',
+          boxShadow: '0 4px 20px rgba(0,0,0,0.15), inset 0 1px 0 var(--violet-4)',
+          backdropFilter: 'blur(12px)',
+        }}
+      >
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Search */}
+          <div className="relative flex-1 min-w-[200px] max-w-[340px]">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: 'var(--text-muted)' }} />
+            <input
+              id="heatmap-search"
+              type="text"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search assets or sectors..."
+              className="w-full pl-9 pr-8 py-2 rounded-xl text-[12px] outline-none transition-all"
+              style={{
+                background: 'var(--void)',
+                border: '1px solid var(--violet-10)',
+                color: 'var(--text-primary)',
+              }}
+              onFocus={e => (e.target.style.borderColor = 'rgba(139,92,246,0.4)')}
+              onBlur={e => (e.target.style.borderColor = 'var(--violet-10)')}
+            />
+            {search && (
+              <button
+                onClick={() => setSearch('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* Signal filter pills */}
+          <div className="flex items-center gap-1">
+            <Filter className="w-3.5 h-3.5 mr-1" style={{ color: 'var(--accent-violet)', opacity: 0.6 }} />
+            {SIGNAL_FILTERS.map(opt => (
+              <button
+                key={opt.value}
+                onClick={() => setFilter(opt.value)}
+                className="filter-pill"
+                data-active={filter === opt.value || undefined}
+                data-filter={opt.value}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Separator */}
+          <div className="w-px h-6 mx-1" style={{ background: 'var(--violet-15)' }} />
+
+          {/* Color filters */}
+          <div className="flex items-center gap-1">
+            {COLOR_FILTERS.map(opt => (
+              <button
+                key={opt.value}
+                onClick={() => setFilter(filter === opt.value ? 'all' : opt.value)}
+                className="filter-pill"
+                data-active={filter === opt.value || undefined}
+                data-filter={opt.value}
+              >
+                {opt.value === 'green'
+                  ? <TrendingUp className="w-3 h-3 mr-1 inline" style={{ color: 'var(--accent-emerald)' }} />
+                  : <TrendingDown className="w-3 h-3 mr-1 inline" style={{ color: 'var(--accent-rose)' }} />}
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Separator */}
+          <div className="w-px h-6 mx-1" style={{ background: 'var(--violet-15)' }} />
+
+          {/* Expand/Collapse */}
+          <div className="flex items-center gap-1">
+            <button onClick={expandAll}
+              className="px-2.5 py-1.5 rounded-lg text-[10px] font-medium transition-all hover:scale-105"
+              style={{ background: 'var(--violet-6)', color: 'var(--text-secondary)', border: '1px solid var(--violet-8)' }}>
+              Expand All
             </button>
-          ))}
+            <button onClick={collapseAll}
+              className="px-2.5 py-1.5 rounded-lg text-[10px] font-medium transition-all hover:scale-105"
+              style={{ background: 'var(--violet-6)', color: 'var(--text-secondary)', border: '1px solid var(--violet-8)' }}>
+              Collapse All
+            </button>
+          </div>
+
+          {/* Color legend - pushed right */}
+          <div className="ml-auto">
+            <ColorScaleLegend />
+          </div>
         </div>
 
-        {/* Expand/Collapse */}
-        <div className="flex items-center gap-1 ml-auto">
-          <button onClick={expandAll}
-            className="px-2.5 py-1 rounded-lg text-[10px] font-medium transition-colors"
-            style={{ background: 'var(--void-surface)', color: 'var(--text-secondary)' }}>
-            Expand All
-          </button>
-          <button onClick={collapseAll}
-            className="px-2.5 py-1 rounded-lg text-[10px] font-medium transition-colors"
-            style={{ background: 'var(--void-surface)', color: 'var(--text-secondary)' }}>
-            Collapse All
-          </button>
-        </div>
-
-        {/* Color legend */}
-        <ColorScaleLegend />
+        {/* Active filter indicator */}
+        {filter !== 'all' && (
+          <div className="flex items-center gap-2 mt-2.5 pt-2.5" style={{ borderTop: '1px solid var(--violet-6)' }}>
+            <span className="text-[10px] font-medium" style={{ color: 'var(--text-muted)' }}>Active filter:</span>
+            <span
+              className="px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider flex items-center gap-1"
+              style={{
+                background: filter === 'green' ? 'rgba(62,232,165,0.15)' : filter === 'red' ? 'rgba(255,107,138,0.15)' : 'var(--violet-10)',
+                color: filter === 'green' ? 'var(--accent-emerald)' : filter === 'red' ? 'var(--accent-rose)'
+                  : ['strong_buy', 'buy'].includes(filter) ? 'var(--accent-emerald)'
+                  : ['strong_sell', 'sell'].includes(filter) ? 'var(--accent-rose)'
+                  : 'var(--accent-amber)',
+                border: `1px solid ${filter === 'green' ? 'rgba(62,232,165,0.3)' : filter === 'red' ? 'rgba(255,107,138,0.3)' : 'var(--violet-15)'}`,
+              }}
+            >
+              {filter === 'green' ? <TrendingUp className="w-3 h-3" style={{ color: 'var(--accent-emerald)' }} /> : filter === 'red' ? <TrendingDown className="w-3 h-3" style={{ color: 'var(--accent-rose)' }} /> : null}
+              {filter.replace('_', ' ')}
+            </span>
+            <button
+              onClick={() => setFilter('all')}
+              className="text-[10px] px-2 py-0.5 rounded-lg transition-all hover:scale-105"
+              style={{ color: 'var(--text-muted)', background: 'var(--violet-6)' }}
+            >
+              Clear ×
+            </button>
+            <span className="text-[10px] tabular-nums ml-auto" style={{ color: 'var(--text-muted)' }}>
+              {filteredSectors.reduce((a, s) => a + s.assets.length, 0)} results
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Main heatmap */}
       <div
         ref={containerRef}
         tabIndex={0}
-        className={`glass-card overflow-hidden relative fade-up-delay-3 ${isFullWidth ? '-mx-6' : ''}`}
-        style={{ outline: 'none' }}
+        className={`overflow-hidden relative fade-up-delay-3 ${isFullWidth ? '-mx-6' : ''}`}
+        style={{
+          outline: 'none',
+          borderRadius: 16,
+          background: 'linear-gradient(180deg, rgba(12,11,29,0.95) 0%, rgba(6,5,14,0.98) 100%)',
+          border: '1px solid var(--violet-8)',
+          boxShadow: '0 8px 48px rgba(0,0,0,0.3), 0 0 0 1px var(--violet-3), inset 0 1px 0 var(--violet-5)',
+        }}
       >
         {/* Tooltip */}
         {tooltip && <HeatTooltip info={tooltip} />}
@@ -699,30 +1034,199 @@ export default function HeatmapPage() {
                       background: 'var(--void)',
                       position: 'sticky', left: 0, zIndex: 20,
                       borderBottom: '1px solid var(--violet-10)',
-                      width: 200,
+                      width: 220,
                     }}>
                     Asset
                   </th>
-                  {horizons.map(h => (
-                    <th key={h} className="text-center px-1 py-3 font-semibold text-[10px]"
-                      style={{
-                        color: 'var(--text-muted)',
-                        background: 'var(--void)',
-                        borderBottom: '1px solid var(--violet-10)',
-                        minWidth: 56,
-                      }}>
-                      {formatHorizon(h)}
-                    </th>
-                  ))}
-                  <th className="text-center px-2 py-3 font-semibold text-[11px]"
-                    style={{
-                      color: 'var(--text-muted)',
-                      background: 'var(--void)',
-                      borderBottom: '1px solid var(--violet-10)',
-                      minWidth: 56,
-                    }}>
-                    Mom
-                  </th>
+                  {horizons.map(h => {
+                    const isActive = sort?.key === h;
+                    return (
+                      <th key={h}
+                        className="text-center px-1 py-3 font-semibold text-[10px] cursor-pointer select-none group/sort"
+                        style={{
+                          color: isActive ? 'var(--accent-violet)' : 'var(--text-muted)',
+                          background: isActive ? 'var(--violet-4)' : 'var(--void)',
+                          borderBottom: '1px solid var(--violet-10)',
+                          minWidth: 56,
+                          transition: 'color 0.15s, background 0.15s',
+                        }}
+                        onClick={() => setSort(prev =>
+                          prev?.key === h
+                            ? prev.dir === 'desc' ? { key: h, dir: 'asc' } : null
+                            : { key: h, dir: 'desc' }
+                        )}
+                        title={`Sort by ${formatHorizon(h)}`}
+                      >
+                        <div className="flex items-center justify-center gap-0.5">
+                          {formatHorizon(h)}
+                          {isActive
+                            ? (sort.dir === 'desc'
+                                ? <ChevronDown className="w-3 h-3" />
+                                : <ChevronUp className="w-3 h-3" />)
+                            : <ArrowUpDown className="w-2.5 h-2.5 opacity-0 group-hover/sort:opacity-40 transition-opacity" />
+                          }
+                        </div>
+                      </th>
+                    );
+                  })}
+                  {(() => {
+                    const isActive = sort?.key === 'momentum';
+                    return (
+                      <th
+                        className="text-center px-2 py-3 font-semibold text-[11px] cursor-pointer select-none group/sort"
+                        style={{
+                          color: isActive ? 'var(--accent-violet)' : 'var(--text-muted)',
+                          background: isActive ? 'var(--violet-4)' : 'var(--void)',
+                          borderBottom: '1px solid var(--violet-10)',
+                          minWidth: 56,
+                          transition: 'color 0.15s, background 0.15s',
+                        }}
+                        onClick={() => setSort(prev =>
+                          prev?.key === 'momentum'
+                            ? prev.dir === 'desc' ? { key: 'momentum', dir: 'asc' } : null
+                            : { key: 'momentum', dir: 'desc' }
+                        )}
+                        title="Sort by Momentum"
+                      >
+                        <div className="flex items-center justify-center gap-0.5">
+                          Mom
+                          {isActive
+                            ? (sort.dir === 'desc'
+                                ? <ChevronDown className="w-3 h-3" />
+                                : <ChevronUp className="w-3 h-3" />)
+                            : <ArrowUpDown className="w-2.5 h-2.5 opacity-0 group-hover/sort:opacity-40 transition-opacity" />
+                          }
+                        </div>
+                      </th>
+                    );
+                  })()}
+                  {(() => {
+                    const isActive = sort?.key === 'quality';
+                    return (
+                      <th
+                        className="text-center px-2 py-3 font-semibold text-[11px] cursor-pointer select-none group/sort"
+                        style={{
+                          color: isActive ? 'var(--accent-violet)' : 'var(--text-muted)',
+                          background: isActive ? 'var(--violet-4)' : 'var(--void)',
+                          borderBottom: '1px solid var(--violet-10)',
+                          minWidth: 52,
+                          transition: 'color 0.15s, background 0.15s',
+                        }}
+                        onClick={() => setSort(prev =>
+                          prev?.key === 'quality'
+                            ? prev.dir === 'desc' ? { key: 'quality', dir: 'asc' } : null
+                            : { key: 'quality', dir: 'desc' }
+                        )}
+                        title="Sort by Quality Score"
+                      >
+                        <div className="flex items-center justify-center gap-0.5">
+                          Quality
+                          {isActive
+                            ? (sort.dir === 'desc'
+                                ? <ChevronDown className="w-3 h-3" />
+                                : <ChevronUp className="w-3 h-3" />)
+                            : <ArrowUpDown className="w-2.5 h-2.5 opacity-0 group-hover/sort:opacity-40 transition-opacity" />
+                          }
+                        </div>
+                      </th>
+                    );
+                  })()}
+                  {/* Price column header */}
+                  {(() => {
+                    const isActive = sort?.key === 'price';
+                    return (
+                      <th
+                        className="text-center px-2 py-3 font-semibold text-[11px] cursor-pointer select-none group/sort"
+                        style={{
+                          color: isActive ? 'var(--accent-violet)' : 'var(--text-muted)',
+                          background: isActive ? 'var(--violet-4)' : 'var(--void)',
+                          borderBottom: '1px solid var(--violet-10)',
+                          minWidth: 64,
+                          transition: 'color 0.15s, background 0.15s',
+                        }}
+                        onClick={() => setSort(prev =>
+                          prev?.key === 'price'
+                            ? prev.dir === 'desc' ? { key: 'price', dir: 'asc' } : null
+                            : { key: 'price', dir: 'desc' }
+                        )}
+                        title="Sort by Current Price"
+                      >
+                        <div className="flex items-center justify-center gap-0.5">
+                          Price
+                          {isActive
+                            ? (sort.dir === 'desc'
+                                ? <ChevronDown className="w-3 h-3" />
+                                : <ChevronUp className="w-3 h-3" />)
+                            : <ArrowUpDown className="w-2.5 h-2.5 opacity-0 group-hover/sort:opacity-40 transition-opacity" />
+                          }
+                        </div>
+                      </th>
+                    );
+                  })()}
+                  {/* Intrinsic Value column header */}
+                  {(() => {
+                    const isActive = sort?.key === 'intrinsic';
+                    return (
+                      <th
+                        className="text-center px-2 py-3 font-semibold text-[11px] cursor-pointer select-none group/sort"
+                        style={{
+                          color: isActive ? 'var(--accent-violet)' : 'var(--text-muted)',
+                          background: isActive ? 'var(--violet-4)' : 'var(--void)',
+                          borderBottom: '1px solid var(--violet-10)',
+                          minWidth: 64,
+                          transition: 'color 0.15s, background 0.15s',
+                        }}
+                        onClick={() => setSort(prev =>
+                          prev?.key === 'intrinsic'
+                            ? prev.dir === 'desc' ? { key: 'intrinsic', dir: 'asc' } : null
+                            : { key: 'intrinsic', dir: 'desc' }
+                        )}
+                        title="Sort by Intrinsic Value (Buffett/Munger DCF)"
+                      >
+                        <div className="flex items-center justify-center gap-0.5">
+                          Intrinsic
+                          {isActive
+                            ? (sort.dir === 'desc'
+                                ? <ChevronDown className="w-3 h-3" />
+                                : <ChevronUp className="w-3 h-3" />)
+                            : <ArrowUpDown className="w-2.5 h-2.5 opacity-0 group-hover/sort:opacity-40 transition-opacity" />
+                          }
+                        </div>
+                      </th>
+                    );
+                  })()}
+                  {/* Below/Above intrinsic column header */}
+                  {(() => {
+                    const isActive = sort?.key === 'gap';
+                    return (
+                      <th
+                        className="text-center px-2 py-3 font-semibold text-[11px] cursor-pointer select-none group/sort"
+                        style={{
+                          color: isActive ? 'var(--accent-violet)' : 'var(--text-muted)',
+                          background: isActive ? 'var(--violet-4)' : 'var(--void)',
+                          borderBottom: '1px solid var(--violet-10)',
+                          minWidth: 64,
+                          transition: 'color 0.15s, background 0.15s',
+                        }}
+                        onClick={() => setSort(prev =>
+                          prev?.key === 'gap'
+                            ? prev.dir === 'desc' ? { key: 'gap', dir: 'asc' } : null
+                            : { key: 'gap', dir: 'desc' }
+                        )}
+                        title="Sort by Below/Above Intrinsic Value %"
+                      >
+                        <div className="flex items-center justify-center gap-0.5">
+                          B/A IV
+                          {isActive
+                            ? (sort.dir === 'desc'
+                                ? <ChevronDown className="w-3 h-3" />
+                                : <ChevronUp className="w-3 h-3" />)
+                            : <ArrowUpDown className="w-2.5 h-2.5 opacity-0 group-hover/sort:opacity-40 transition-opacity" />
+                          }
+                        </div>
+                      </th>
+                    );
+                  })()}
                 </tr>
               </thead>
               {filteredSectors.map(sector => {
@@ -745,7 +1249,7 @@ export default function HeatmapPage() {
                     >
                       <td
                         className="px-4 py-2.5 whitespace-nowrap"
-                        colSpan={horizons.length + 2}
+                        colSpan={horizons.length + 6}
                         style={{ borderBottom: '1px solid var(--violet-6)' }}
                       >
                         <div className="flex items-center gap-3">
@@ -838,6 +1342,18 @@ export default function HeatmapPage() {
                                 >
                                   {asset.asset_label}
                                 </span>
+                                {(() => {
+                                  const badge = getSignalBadge(asset.nearest_label);
+                                  if (!badge) return null;
+                                  return (
+                                    <span
+                                      className="px-1.5 py-[1px] rounded text-[8px] font-semibold uppercase tracking-wide whitespace-nowrap"
+                                      style={{ background: badge.bg, color: badge.fg }}
+                                    >
+                                      {badge.text}
+                                    </span>
+                                  );
+                                })()}
                               </div>
                             </td>
 
@@ -908,13 +1424,103 @@ export default function HeatmapPage() {
                                 {mom > 0 ? '+' : ''}{Math.round(mom)}%
                               </span>
                             </td>
+
+                            {/* Quality score column */}
+                            {(() => {
+                              const ticker = asset.asset_label.includes('(') ? asset.asset_label.split('(').pop()!.replace(')', '').trim() : asset.asset_label;
+                              const qs = qualityScores[ticker] ?? 50;
+                              return (
+                                <td className="text-center px-1 py-[2px]">
+                                  <div
+                                    className="rounded-[4px] mx-auto"
+                                    style={{
+                                      background: qualityBg(qs),
+                                      height: 26,
+                                      width: 42,
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      border: '1px solid var(--violet-3)',
+                                    }}
+                                  >
+                                    <span
+                                      className="text-[10px] tabular-nums font-bold"
+                                      style={{ color: qualityColor(qs) }}
+                                    >
+                                      {qs}
+                                    </span>
+                                  </div>
+                                </td>
+                              );
+                            })()}
+
+                            {/* Price / Intrinsic / Below-Above columns */}
+                            {(() => {
+                              const ticker = extractTicker(asset.asset_label);
+                              const v = valuations[ticker];
+                              const price = v?.price;
+                              const iv = v?.intrinsic_value;
+                              const gap = v?.gap_pct;
+                              const fmtPrice = (val: number | null | undefined) => {
+                                if (val == null) return '\u2014';
+                                if (val >= 10000) return val.toLocaleString('en-US', { maximumFractionDigits: 0 });
+                                if (val >= 100) return val.toFixed(1);
+                                if (val >= 1) return val.toFixed(2);
+                                return val.toFixed(4);
+                              };
+                              const gapColor = gap == null ? 'var(--text-muted)'
+                                : gap > 20 ? 'var(--accent-emerald)'
+                                : gap > 0 ? 'rgba(62,232,165,0.7)'
+                                : gap > -20 ? 'rgba(255,107,138,0.7)'
+                                : 'var(--accent-rose)';
+                              const gapBg = gap == null ? 'transparent'
+                                : gap > 20 ? 'rgba(6,78,59,0.35)'
+                                : gap > 0 ? 'rgba(6,78,59,0.15)'
+                                : gap > -20 ? 'rgba(76,5,25,0.15)'
+                                : 'rgba(76,5,25,0.35)';
+                              return (
+                                <>
+                                  <td className="text-center px-1 py-[2px]">
+                                    <span className="text-[9px] tabular-nums font-medium" style={{ color: 'var(--text-secondary)' }}>
+                                      {fmtPrice(price)}
+                                    </span>
+                                  </td>
+                                  <td className="text-center px-1 py-[2px]">
+                                    <span className="text-[9px] tabular-nums font-medium" style={{ color: iv != null ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+                                      {fmtPrice(iv)}
+                                    </span>
+                                  </td>
+                                  <td className="text-center px-1 py-[2px]">
+                                    <div
+                                      className="rounded-[4px] mx-auto"
+                                      style={{
+                                        background: gapBg,
+                                        height: 26,
+                                        width: 52,
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        border: '1px solid var(--violet-3)',
+                                      }}
+                                    >
+                                      <span
+                                        className="text-[9px] tabular-nums font-bold"
+                                        style={{ color: gapColor }}
+                                      >
+                                        {gap != null ? `${gap > 0 ? '+' : ''}${gap.toFixed(1)}%` : '\u2014'}
+                                      </span>
+                                    </div>
+                                  </td>
+                                </>
+                              );
+                            })()}
                           </tr>
 
                           {/* Expanded zone charts row */}
                           {expandedAsset === asset.asset_label && (
                             <ExpandedAssetRow
                               assetLabel={asset.asset_label}
-                              colSpan={horizons.length + 2}
+                              colSpan={horizons.length + 6}
                               onClose={() => setExpandedAsset(null)}
                               asset={asset}
                               horizons={horizons}
@@ -932,16 +1538,35 @@ export default function HeatmapPage() {
 
         {/* Bottom status bar */}
         <div
-          className="flex items-center justify-between px-5 py-2"
-          style={{ borderTop: '1px solid var(--violet-8)', background: 'var(--void)' }}
+          className="flex items-center justify-between px-5 py-2.5"
+          style={{
+            borderTop: '1px solid var(--violet-8)',
+            background: 'linear-gradient(90deg, rgba(6,5,14,0.95) 0%, rgba(12,11,29,0.9) 50%, rgba(6,5,14,0.95) 100%)',
+          }}
         >
-          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-            {filteredSectors.reduce((a, s) => a + s.assets.length, 0)} assets across {filteredSectors.length} sectors
-            {search && <> matching "<span style={{ color: 'var(--text-violet)' }}>{search}</span>"</>}
-          </span>
-          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-            {horizons.length} horizons
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-[10px] tabular-nums" style={{ color: 'var(--text-secondary)' }}>
+              <strong style={{ color: 'var(--accent-violet)' }}>{filteredSectors.reduce((a, s) => a + s.assets.length, 0)}</strong> assets across <strong style={{ color: 'var(--accent-violet)' }}>{filteredSectors.length}</strong> sectors
+            </span>
+            {search && (
+              <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: 'var(--violet-8)', color: 'var(--text-violet)' }}>
+                <Search className="w-3 h-3 inline" /> {search}
+              </span>
+            )}
+            {filter !== 'all' && (
+              <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: 'var(--violet-8)', color: 'var(--text-violet)' }}>
+                <Filter className="w-3 h-3 inline" /> {filter.replace('_', ' ')}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-[10px] tabular-nums" style={{ color: 'var(--text-muted)' }}>
+              {horizons.length} horizons
+            </span>
+            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              ⌨ j/k ↕ · Enter ↔ · / search
+            </span>
+          </div>
         </div>
       </div>
     </>

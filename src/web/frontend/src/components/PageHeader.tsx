@@ -18,7 +18,7 @@ export default function PageHeader({ title, children, action }: Props) {
           >
             {title}
           </h1>
-          <p className="text-sm mt-3 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{children}</p>
+          <div className="text-sm mt-3 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{children}</div>
         </div>
         {action && <div>{action}</div>}
       </div>

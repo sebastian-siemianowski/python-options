@@ -14,6 +14,7 @@ import ServicesPage from './pages/ServicesPage';
 import DiagnosticsPage from './pages/DiagnosticsPage';
 import ProfitabilityPage from './pages/ProfitabilityPage';
 import HeatmapPage from './pages/HeatmapPage';
+import IndicatorsPage from './pages/IndicatorsPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -30,7 +31,7 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
-        <BrowserRouter>
+        <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
           <Routes>
             <Route element={<Layout />}>
               <Route path="/" element={<OverviewPage />} />
@@ -44,6 +45,7 @@ export default function App() {
               <Route path="/arena" element={<ArenaPage />} />
               <Route path="/diagnostics" element={<DiagnosticsPage />} />
               <Route path="/diagnostics/profitability" element={<ProfitabilityPage />} />
+              <Route path="/indicators" element={<IndicatorsPage />} />
               <Route path="/services" element={<ServicesPage />} />
             </Route>
           </Routes>

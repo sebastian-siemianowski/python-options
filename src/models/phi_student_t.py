@@ -78,6 +78,21 @@ except ImportError:
     run_student_t_cdf_array = None
     run_student_t_pdf_array = None
 
+# Numerical stability primitives (Epic 28)
+try:
+    from calibration.numerical_stability import (
+        safe_student_t_logpdf,
+        safe_student_t_logpdf_scalar,
+        clamp_covariance_array,
+        P_MIN_DEFAULT as _P_MIN,
+        P_MAX_DEFAULT as _P_MAX,
+    )
+    _NUMERICAL_STABILITY_AVAILABLE = True
+except ImportError:
+    _NUMERICAL_STABILITY_AVAILABLE = False
+    _P_MIN = 1e-10
+    _P_MAX = 1.0
+
 
 def _fast_t_cdf(z, nu):
     """
@@ -267,20 +282,26 @@ def refine_two_piece_nu(
         (nu_L_refined, nu_R_refined, ll): Refined parameters and log-likelihood.
     """
     from scipy.optimize import minimize
-    from scipy.special import gammaln as scipy_gammaln
 
     innovations = np.asarray(innovations).flatten()
     z = innovations / max(scale, 1e-12)
     left_mask = z < 0.0
     right_mask = ~left_mask
 
-    def _student_t_logpdf(x, nu):
-        """Log-pdf of Student-t(nu, 0, 1)."""
-        return (
-            scipy_gammaln(0.5 * (nu + 1)) - scipy_gammaln(0.5 * nu)
-            - 0.5 * np.log(nu * np.pi)
-            - 0.5 * (nu + 1) * np.log(1.0 + x ** 2 / nu)
-        )
+    if _NUMERICAL_STABILITY_AVAILABLE:
+        def _student_t_logpdf(x, nu):
+            """Log-pdf of Student-t(nu, 0, 1) via safe_student_t_logpdf."""
+            return safe_student_t_logpdf(np.asarray(x), nu, np.zeros_like(x), np.ones_like(x))
+    else:
+        from scipy.special import gammaln as scipy_gammaln
+
+        def _student_t_logpdf(x, nu):
+            """Log-pdf of Student-t(nu, 0, 1)."""
+            return (
+                scipy_gammaln(0.5 * (nu + 1)) - scipy_gammaln(0.5 * nu)
+                - 0.5 * np.log(nu * np.pi)
+                - 0.5 * (nu + 1) * np.log(1.0 + x ** 2 / nu)
+            )
 
     def neg_ll(params):
         nu_L, nu_R = params
@@ -577,7 +598,7 @@ HIGH_VOL_EQUITY_SYMBOLS = frozenset({
     'SPCE', 'ABTC', 'BZAI', 'BNZI', 'AIRI',
     # March 2026 expansion — micro/small-cap with annualized vol > 50%
     'ESLT', 'QS', 'QUBT', 'PACB', 'APLM', 'NVTS',
-    'ACHR', 'GORO', 'USAS', 'APLT', 'ONDS', 'GPUS',
+    'ACHR', 'GORO', 'USAS', 'ONDS', 'GPUS',
 })
 
 
@@ -1197,6 +1218,8 @@ def filter_phi_ms_q(
         # Weighted update
         mu_t = mu_t + K_t * w_t * innovation
         P_t = (1 - w_t * K_t) * P_t
+        # Covariance clamping (Story 28.2: prevent P collapse/explosion)
+        P_t = max(_P_MIN, min(P_t, _P_MAX))
 
         # Store filtered state
         mu[t] = mu_t
@@ -1205,6 +1228,7 @@ def filter_phi_ms_q(
         # State prediction with TIME-VARYING q
         mu_t = phi * mu_t
         P_t = (phi ** 2) * P_t + q_t[t]
+        P_t = max(_P_MIN, min(P_t, _P_MAX))
 
     return mu, P, total_ll, q_t, p_stress
 
@@ -1625,6 +1649,9 @@ class PhiStudentTDriftModel:
         """
         if scale <= 0 or nu <= 0:
             return -1e12
+
+        if _NUMERICAL_STABILITY_AVAILABLE:
+            return safe_student_t_logpdf_scalar(x, nu, mu, scale)
 
         z = (x - mu) / scale
         log_norm = gammaln((nu + 1.0) / 2.0) - gammaln(nu / 2.0) - 0.5 * np.log(nu * np.pi * (scale ** 2))

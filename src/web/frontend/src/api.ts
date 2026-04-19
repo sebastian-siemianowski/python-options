@@ -30,6 +30,8 @@ export const api = {
   strongSignals: () => fetchApi<StrongSignalsData>('/api/signals/strong-signals'),
   highConviction: (type: 'buy' | 'sell') =>
     fetchApi<{ signals: HighConvictionSignal[]; count: number }>(`/api/signals/high-conviction/${type}`),
+  qualityScores: () => fetchApi<QualityScoresData>('/api/signals/quality-scores'),
+  intrinsicValues: () => fetchApi<IntrinsicValuesData>('/api/signals/intrinsic-values'),
 
   // Risk
   riskDashboard: () => fetchApi<RiskDashboard>('/api/risk/dashboard'),
@@ -75,7 +77,7 @@ export const api = {
   taskStatus: (taskId: string) => fetchApi<TaskStatusResponse>(`/api/tasks/status/${taskId}`),
 
   // Cache refresh (invalidate in-memory server cache)
-  refreshTuneCache: () => postApi<{ status: string }>('/api/tuning/refresh-cache', {}),
+  refreshTuneCache: () => postApi<{ status: string }>('/api/tune/refresh-cache', {}),
   refreshSignalCache: () => postApi<{ status: string }>('/api/signals/refresh-cache', {}),
 
   // Diagnostics
@@ -88,9 +90,68 @@ export const api = {
 
   // Risk (full dashboard + refresh)
   riskRefresh: () => postApi<{ status: string; summary: RiskSummary }>('/api/risk/refresh'),
+
+  // Indicators
+  indicatorsLeaderboard: (top = 0, family?: string) => {
+    const params = new URLSearchParams();
+    if (top > 0) params.set('top', String(top));
+    if (family) params.set('family', family);
+    return fetchApi<IndicatorsLeaderboard>(`/api/indicators/leaderboard?${params}`);
+  },
+  indicatorsTop10: () => fetchApi<IndicatorStrategy[]>('/api/indicators/top10'),
+  indicatorsFamilies: () => fetchApi<IndicatorFamily[]>('/api/indicators/families'),
+  indicatorsStrategy: (id: number) => fetchApi<IndicatorStrategyDetail>(`/api/indicators/strategy/${id}`),
+  indicatorsHeatmap: (id: number) => fetchApi<IndicatorHeatmap>(`/api/indicators/strategy/${id}/heatmap`),
+  indicatorsRefresh: () => postApi<{ status: string }>('/api/indicators/refresh'),
+  indicatorsRunBacktest: (mode: 'quick' | 'full' = 'full') =>
+    postApi<IndicatorBacktestStart>(`/api/indicators/backtest?mode=${mode}`),
+  indicatorsBacktestStatus: () => fetchApi<IndicatorBacktestStatus>('/api/indicators/backtest/status'),
 };
 
 // ── Types ───────────────────────────────────────────────────────────
+
+export interface QualityFormulaComponent {
+  name: string;
+  weight: number;
+  desc: string;
+}
+export interface QualityFormulaTier {
+  range: string;
+  label: string;
+  desc: string;
+}
+export interface QualityFormula {
+  title: string;
+  description: string;
+  components: QualityFormulaComponent[];
+  tiers: QualityFormulaTier[];
+  non_company_notes: Record<string, string>;
+}
+export interface QualityScoresData {
+  scores: Record<string, number>;
+  formula: QualityFormula;
+}
+
+export interface IntrinsicValuation {
+  intrinsic_value: number | null;
+  price: number | null;
+  gap_pct: number | null;
+}
+export interface IntrinsicMethodStep {
+  step: string;
+  desc: string;
+}
+export interface IntrinsicFormula {
+  title: string;
+  description: string;
+  methodology: IntrinsicMethodStep[];
+  non_company_methods: Record<string, string>;
+  interpretation: Record<string, string>;
+}
+export interface IntrinsicValuesData {
+  valuations: Record<string, IntrinsicValuation>;
+  formula: IntrinsicFormula;
+}
 
 export interface OverviewData {
   signals: SignalStats;
@@ -254,6 +315,27 @@ export interface Indicators {
   };
   rsi?: { time: string; value: number }[];
   atr?: { time: string; value: number }[];
+  macd?: {
+    macd: { time: string; value: number }[];
+    signal: { time: string; value: number }[];
+    histogram: { time: string; value: number }[];
+  };
+  stochastic?: {
+    k: { time: string; value: number }[];
+    d: { time: string; value: number }[];
+  };
+  adx?: {
+    adx: { time: string; value: number }[];
+    plus_di: { time: string; value: number }[];
+    minus_di: { time: string; value: number }[];
+  };
+  obv?: { time: string; value: number }[];
+  cci?: { time: string; value: number }[];
+  mfi?: { time: string; value: number }[];
+  cmf?: { time: string; value: number }[];
+  roc?: { time: string; value: number }[];
+  bbpctb?: { time: string; value: number }[];
+  composite?: { time: string; value: number }[];
 }
 
 export interface ForecastData {
@@ -276,14 +358,37 @@ export interface ChartImage {
 export interface TuneAsset {
   symbol: string;
   best_model: string;
-  pit_calibration_grade: string;
-  ad_stat: number | null;
-  ad_critical: number | null;
+  pit_calibration_grade: string | null;
   ad_pass: boolean | null;
+  ks_pvalue: number | null;
+  ks_stat: number | null;
   num_models: number;
+  bic: number | null;
+  phi: number | null;
+  nu: number | null;
+  n_obs: number | null;
+  top_weight: number | null;
   cache_version: string;
   last_tuned: string;
   file_size_kb: number;
+}
+
+export interface ModelAnalytics {
+  count: number;
+  avg_bic: number | null;
+  median_bic: number | null;
+  best_bic: number | null;
+  worst_bic: number | null;
+  avg_phi: number | null;
+  avg_nu: number | null;
+  avg_weight: number | null;
+  avg_ks_pvalue: number | null;
+  median_ks_pvalue: number | null;
+  pit_pass: number;
+  pit_fail: number;
+  pit_pass_rate: number | null;
+  avg_n_obs: number | null;
+  top_symbols: string[];
 }
 
 export interface TuneStats {
@@ -292,6 +397,7 @@ export interface TuneStats {
   pit_fail: number;
   pit_unknown: number;
   models_distribution: Record<string, number>;
+  models_analytics?: Record<string, ModelAnalytics>;
 }
 
 export interface TuneDetail {
@@ -679,4 +785,82 @@ export interface ProfitabilityMetrics {
   crps: number[];
   ece: number[];
   targets: Record<string, number>;
+}
+
+// ── Indicators ──────────────────────────────────────────────────────
+export interface IndicatorStrategy {
+  rank: number;
+  id: number;
+  name: string;
+  family: string;
+  composite: number;
+  sharpe: number | null;
+  sortino: number | null;
+  cagr: number | null;
+  bh_cagr: number | null;
+  cagr_diff: number | null;
+  max_dd: number | null;
+  buy_hit: number | null;
+  sell_hit: number | null;
+  win_rate: number | null;
+  profit_factor: number | null;
+  exposure: number | null;
+  n_trades: number | null;
+  n_assets: number;
+  sharpe_beat_bh: string | null;
+}
+
+export interface IndicatorsLeaderboard {
+  strategies: IndicatorStrategy[];
+  total: number;
+}
+
+export interface IndicatorFamily {
+  name: string;
+  count: number;
+  avg_composite: number;
+  ids: number[];
+}
+
+export interface IndicatorAssetResult {
+  symbol: string;
+  sharpe: number;
+  cagr: number;
+  max_dd: number;
+  total_return: number;
+  win_rate: number | null;
+  n_trades: number;
+}
+
+export interface IndicatorStrategyDetail {
+  id: number;
+  name: string;
+  family: string;
+  aggregate: Record<string, unknown>;
+  per_asset: IndicatorAssetResult[];
+}
+
+export interface IndicatorHeatmap {
+  id: number;
+  name: string;
+  assets: IndicatorAssetResult[];
+}
+
+export interface IndicatorBacktestStart {
+  status: string;
+  mode?: string;
+  started_at?: number;
+  progress?: string;
+}
+
+export interface IndicatorBacktestStatus {
+  running: boolean;
+  pid: number | null;
+  started_at: number | null;
+  finished_at: number | null;
+  exit_code: number | null;
+  progress: string;
+  error: string | null;
+  mode: string | null;
+  elapsed_seconds: number | null;
 }

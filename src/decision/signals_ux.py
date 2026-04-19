@@ -27,6 +27,20 @@ from rich.rule import Rule
 from rich.align import Align
 from contextlib import contextmanager
 
+# Forecast scorecard (Epic 25 - Forecast Quality Display)
+try:
+    from calibration.forecast_scorecard import display_scorecard, compute_scorecard_metrics
+    FORECAST_SCORECARD_AVAILABLE = True
+except ImportError:
+    FORECAST_SCORECARD_AVAILABLE = False
+
+# Sector attribution (Epic 24 - Sector Breakdown)
+try:
+    from calibration.sector_attribution import compute_sector_attribution
+    SECTOR_ATTRIBUTION_AVAILABLE = True
+except ImportError:
+    SECTOR_ATTRIBUTION_AVAILABLE = False
+
 # Pre-compiled regex for stripping Rich markup (performance optimization)
 _RICH_MARKUP_PATTERN = re.compile(r"\[/?[^\]]+\]")
 

@@ -2487,7 +2487,6 @@ DEFAULT_ASSET_UNIVERSE = [
     # -------------------------
     "ALNY",   # Alnylam Pharmaceuticals, Inc. — RNAi therapeutics leader
     "APLS",   # Apellis Pharmaceuticals, Inc. — Complement pathway therapies
-    "APLT",   # Applied Therapeutics, Inc. — Rare disease treatments
     "BETA",   # Beta Bionics, Inc. — Diabetes management tech
 
     # -------------------------
@@ -2992,9 +2991,9 @@ SECTOR_MAP = {
     "Small-Mid Cap Finance": {
         "AGNC", "ABTC", "AXG", "ASB", "ANGX", "BMHL", "BNZI", "BNKK", "BTCS", "BCAL", "ARR"
     },
-    # Small-Mid Cap Biotech: ANNA, BBIO, ATAI, APLM (Institutional), ALNY, APLS, APLT (Tradeable)
+    # Small-Mid Cap Biotech: ANNA, BBIO, ATAI, APLM (Institutional), ALNY, APLS (Tradeable)
     "Small-Mid Cap Biotech": {
-        "ANNA", "BBIO", "ATAI", "APLM", "ALNY", "APLS", "APLT"
+        "ANNA", "BBIO", "ATAI", "APLM", "ALNY", "APLS"
     },
     # Small-Mid Cap Technology: BZAI, AIRE (Institutional), ASPI, ABAT, ADUR, APLD, ALMU, AMZE, AIFF (Tradeable)
     "Small-Mid Cap Technology": {
@@ -3169,7 +3168,7 @@ KNOWN_SYMBOL_CURRENCIES: Dict[str, str] = {
     "ARR": "USD",
     # Biotech
     "ANNA": "USD", "BBIO": "USD", "ATAI": "USD", "APLM": "USD",
-    "ALNY": "USD", "APLS": "USD", "APLT": "USD",
+    "ALNY": "USD", "APLS": "USD",
     # Technology
     "BZAI": "USD", "AIRE": "USD", "ASPI": "USD", "ABAT": "USD", "ADUR": "USD",
     "APLD": "USD", "ALMU": "USD", "AMZE": "USD", "AIFF": "USD",

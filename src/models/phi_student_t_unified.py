@@ -169,6 +169,147 @@ PHI_SHRINKAGE_TAU_MIN = 1e-3
 PHI_SHRINKAGE_GLOBAL_DEFAULT = 0.0
 PHI_SHRINKAGE_LAMBDA_DEFAULT = 0.05
 
+# ---------------------------------------------------------------------------
+# ASSET-CLASS ADAPTIVE φ PRIOR (Tune.md Story 3.1)
+# ---------------------------------------------------------------------------
+# phi_0 reflects known persistence structure per asset class.
+# lambda_phi controls shrinkage strength (inversely proportional to sample size).
+# ---------------------------------------------------------------------------
+
+PHI_PRIOR_INDEX = 0.95       # Indices: strong momentum / trend-following
+PHI_PRIOR_LARGE_CAP = 0.80   # Large cap equities: moderate momentum
+PHI_PRIOR_SMALL_CAP = 0.30   # Small cap: mean-reverting / noisy
+PHI_PRIOR_CRYPTO = 0.70      # Crypto: partial momentum, high vol
+PHI_PRIOR_METALS = 0.85      # Precious metals: macro-driven momentum
+PHI_PRIOR_FOREX = 0.50       # FX pairs: moderate mean reversion
+PHI_PRIOR_HIGH_VOL = 0.20    # High-vol / meme: strong mean reversion
+PHI_PRIOR_DEFAULT = 0.50     # Fallback: agnostic center
+
+PHI_PRIOR_LAMBDA_BASE = 0.10  # Base shrinkage strength (scaled by 1/n_samples)
+
+# Symbol sets for broad phi classification
+INDEX_SYMBOLS = frozenset({
+    'SPY', 'QQQ', 'IWM', 'DIA', 'VOO', 'VTI', 'RSP',
+    '^GSPC', '^IXIC', '^DJI', '^RUT',
+    'SPX', 'NDX', 'DJIA',
+})
+
+LARGE_CAP_SYMBOLS = frozenset({
+    'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'META', 'NVDA',
+    'TSLA', 'BRK-B', 'JPM', 'JNJ', 'UNH', 'V', 'MA', 'PG',
+    'HD', 'BAC', 'XOM', 'CVX', 'ABBV', 'KO', 'PEP', 'COST',
+    'MRK', 'AVGO', 'LLY', 'TMO', 'ORCL', 'ACN', 'CRM', 'ADBE',
+    'NFLX', 'AMD', 'INTC', 'QCOM', 'TXN', 'GS', 'MS', 'SCHW',
+    'LMT', 'RTX', 'NOC', 'GD', 'BA', 'CAT', 'DE', 'GE',
+    'UPS', 'LIN', 'PFE', 'DIS', 'NKE', 'SBUX',
+})
+
+SMALL_CAP_SYMBOLS = frozenset({
+    'UPST', 'AFRM', 'IONQ', 'SNAP', 'DKNG', 'CRWD',
+    'PLTR', 'SOFI', 'RIVN', 'LCID', 'RIOT', 'MARA',
+    'NET', 'RBLX', 'HOOD', 'COIN',
+})
+
+CRYPTO_SYMBOLS = frozenset({
+    'BTC-USD', 'ETH-USD', 'SOL-USD', 'ADA-USD', 'DOT-USD',
+    'DOGE-USD', 'AVAX-USD', 'MATIC-USD', 'LINK-USD', 'XRP-USD',
+    'BNB-USD', 'SHIB-USD',
+})
+
+
+def _classify_asset_for_phi(asset_symbol):
+    """
+    Classify asset into broad category for phi prior selection.
+
+    Returns one of: 'index', 'large_cap', 'small_cap', 'crypto',
+                     'metals', 'forex', 'high_vol', 'default'
+    """
+    if asset_symbol is None:
+        return 'default'
+    sym = asset_symbol.strip().upper()
+
+    if sym in INDEX_SYMBOLS:
+        return 'index'
+    if sym in CRYPTO_SYMBOLS:
+        return 'crypto'
+    if sym in METALS_GOLD_SYMBOLS or sym in METALS_SILVER_SYMBOLS or sym in METALS_OTHER_SYMBOLS:
+        return 'metals'
+    if sym in HIGH_VOL_EQUITY_SYMBOLS:
+        return 'high_vol'
+    if sym.endswith('=X'):
+        return 'forex'
+    if sym in SMALL_CAP_SYMBOLS:
+        return 'small_cap'
+    if sym in LARGE_CAP_SYMBOLS:
+        return 'large_cap'
+    if sym.endswith('=F'):
+        return 'metals'
+    return 'default'
+
+
+def compute_phi_prior(asset_symbol, returns=None, n_samples=252):
+    """
+    Compute asset-class-adaptive phi prior (phi_0, lambda_phi).
+
+    Story 3.1: Different asset classes have known persistence structures.
+    The prior centers phi estimation at the appropriate value and shrinks
+    with strength inversely proportional to sample size.
+
+    Parameters
+    ----------
+    asset_symbol : str
+        Ticker symbol (e.g., 'SPY', 'UPST', 'BTC-USD').
+    returns : array-like, optional
+        Return series. If provided, ACF(1) is used to refine the prior.
+    n_samples : int
+        Number of observations (for shrinkage strength scaling).
+
+    Returns
+    -------
+    tuple of (phi_0: float, lambda_phi: float)
+        phi_0: prior center
+        lambda_phi: shrinkage strength (larger = stronger pull toward phi_0)
+    """
+    asset_class = _classify_asset_for_phi(asset_symbol)
+
+    _PHI_PRIOR_MAP = {
+        'index': PHI_PRIOR_INDEX,
+        'large_cap': PHI_PRIOR_LARGE_CAP,
+        'small_cap': PHI_PRIOR_SMALL_CAP,
+        'crypto': PHI_PRIOR_CRYPTO,
+        'metals': PHI_PRIOR_METALS,
+        'forex': PHI_PRIOR_FOREX,
+        'high_vol': PHI_PRIOR_HIGH_VOL,
+        'default': PHI_PRIOR_DEFAULT,
+    }
+
+    phi_0 = _PHI_PRIOR_MAP.get(asset_class, PHI_PRIOR_DEFAULT)
+
+    # Refine with ACF(1) if returns available
+    if returns is not None:
+        try:
+            returns_arr = np.asarray(returns).flatten()
+            valid = returns_arr[np.isfinite(returns_arr)]
+            if len(valid) > 50:
+                mean_r = float(np.mean(valid))
+                centered = valid - mean_r
+                var_r = float(np.sum(centered ** 2))
+                if var_r > 1e-20:
+                    acf1 = float(np.sum(centered[:-1] * centered[1:])) / var_r
+                    acf1 = float(np.clip(acf1, -0.99, 0.99))
+                    # Blend: 70% asset-class prior + 30% ACF evidence
+                    phi_0 = 0.7 * phi_0 + 0.3 * acf1
+        except Exception:
+            pass
+
+    phi_0 = float(np.clip(phi_0, -0.99, 0.99))
+
+    # Shrinkage strength: inversely proportional to sample size
+    lambda_phi = PHI_PRIOR_LAMBDA_BASE * (252.0 / max(n_samples, 50))
+
+    return phi_0, lambda_phi
+
+
 # Discrete ν grid for Student-t models
 # 4 BMA flavours: heavy tails (3), fat tails (4), moderate (8), near-Gaussian (20).
 # Intermediate ν values are still explored internally by Stage 5 CV
@@ -266,7 +407,7 @@ HIGH_VOL_EQUITY_SYMBOLS = frozenset({
     'SPCE', 'ABTC', 'BZAI', 'BNZI', 'AIRI',
     # March 2026 expansion — micro/small-cap with annualized vol > 50%
     'ESLT', 'QS', 'QUBT', 'PACB', 'APLM', 'NVTS',
-    'ACHR', 'GORO', 'USAS', 'APLT', 'ONDS', 'GPUS',
+    'ACHR', 'GORO', 'USAS', 'ONDS', 'GPUS',
 })
 
 
@@ -717,12 +858,14 @@ class UnifiedStudentTConfig:
         returns: np.ndarray,
         vol: np.ndarray,
         nu_base: float = 8.0,
+        gk_c_prior_value: float = None,
     ) -> 'UnifiedStudentTConfig':
         """
         Auto-configure from data characteristics.
 
         Uses robust statistics (MAD) for c bounds and
         data-driven initialization for asymmetry and VoV.
+        If gk_c_prior_value is provided, narrows c bounds around the GK prior.
         """
         returns = np.asarray(returns).flatten()
         vol = np.asarray(vol).flatten()
@@ -736,21 +879,29 @@ class UnifiedStudentTConfig:
             # Not enough data, use defaults
             return cls(nu_base=nu_base)
 
-        # Data-driven c bounds using robust MAD scale
-        returns_mad = float(np.median(np.abs(returns_clean - np.median(returns_clean))))
+        # Always compute vol_median (needed for q_min, q_init below)
         vol_median = float(np.median(vol_clean))
 
-        if vol_median > 1e-10 and returns_mad > 0:
-            # c_target such that c × vol² ≈ returns_variance
-            returns_scale = returns_mad / 0.6745  # MAD to σ conversion
-            c_target = (returns_scale / vol_median) ** 2
-            c_target = float(np.clip(c_target, 0.01, 50.0))
-            c_min = max(0.1 * c_target, 0.001)
-            c_max = min(10.0 * c_target, 100.0)
+        # GK-informed c bounds if prior available (Story 2.2)
+        if gk_c_prior_value is not None and gk_c_prior_value > 0:
+            from calibration.realized_volatility import compute_gk_informed_c_bounds
+            c_min, c_max = compute_gk_informed_c_bounds(gk_c_prior_value)
+            c_target = float(gk_c_prior_value)
         else:
-            c_target = 1.0
-            c_min = 0.01
-            c_max = 10.0
+            # Data-driven c bounds using robust MAD scale
+            returns_mad = float(np.median(np.abs(returns_clean - np.median(returns_clean))))
+
+            if vol_median > 1e-10 and returns_mad > 0:
+                # c_target such that c * vol^2 ~ returns_variance
+                returns_scale = returns_mad / 0.6745  # MAD to sigma conversion
+                c_target = (returns_scale / vol_median) ** 2
+                c_target = float(np.clip(c_target, 0.01, 50.0))
+                c_min = max(0.1 * c_target, 0.001)
+                c_max = min(10.0 * c_target, 100.0)
+            else:
+                c_target = 1.0
+                c_min = 0.01
+                c_max = 10.0
 
         # VoV from realized vol-of-vol
         # More sensitive formula for gamma variation across assets
@@ -1898,6 +2049,7 @@ class UnifiedPhiStudentTModel:
         nu_base: float = 8.0,
         train_frac: float = 0.7,
         asset_symbol: str = None,
+        gk_c_prior_value: float = None,
     ) -> Tuple['UnifiedStudentTConfig', Dict]:
         """
         Staged optimization for unified Student-t Kalman filter model.
@@ -1918,6 +2070,7 @@ class UnifiedPhiStudentTModel:
             nu_base: Base degrees of freedom (from discrete grid)
             train_frac: Fraction for train/test split
             asset_symbol: Asset symbol for profile selection
+            gk_c_prior_value: GK-derived c prior (Story 2.2, optional)
 
         Returns:
             Tuple of (UnifiedStudentTConfig, diagnostics_dict)
@@ -1926,7 +2079,8 @@ class UnifiedPhiStudentTModel:
         vol = np.asarray(vol).flatten()
 
         # Auto-configure initial bounds from data
-        config = UnifiedStudentTConfig.auto_configure(returns, vol, nu_base)
+        config = UnifiedStudentTConfig.auto_configure(returns, vol, nu_base,
+                                                       gk_c_prior_value=gk_c_prior_value)
 
         n = len(returns)
         n_train = int(n * train_frac)
@@ -1937,8 +2091,14 @@ class UnifiedPhiStudentTModel:
         asset_class = _detect_asset_class(asset_symbol)
         profile = ASSET_CLASS_PROFILES.get(asset_class, {}) if asset_class else {}
 
+        # ── Story 3.1: Asset-class adaptive phi prior
+        phi_prior_center, phi_prior_lambda = compute_phi_prior(
+            asset_symbol, returns=returns_train, n_samples=n_train)
+
         # ── STAGE 1: Base parameters (q, c, φ)
-        s1 = cls._stage_1_base_params(returns_train, vol_train, n_train, nu_base, config)
+        s1 = cls._stage_1_base_params(returns_train, vol_train, n_train, nu_base, config,
+                                       phi_prior_center=phi_prior_center,
+                                       phi_prior_lambda=phi_prior_lambda)
         if not s1['success']:
             return config, {"stage": 0, "success": False,
                             "error": "Stage 1 optimization failed", "degraded": True}
@@ -2000,6 +2160,21 @@ class UnifiedPhiStudentTModel:
         beta_opt = s5['beta_opt']
         mu_drift_opt = s5['mu_drift_opt']
         mu_pred_train = s5['mu_pred_train']
+
+        # ── STAGE 5b: phi-nu identifiability guard (Story 3.3) ──
+        try:
+            from calibration.phi_nu_identifiability import check_phi_nu_identifiability
+            _ident = check_phi_nu_identifiability(
+                returns_train, vol_train, q_opt, c_opt, phi_opt, nu_opt,
+                phi_0=phi_prior_center, nu_0=8.0,
+                asset_symbol=config.asset_symbol if hasattr(config, 'asset_symbol') else None,
+            )
+            phi_nu_kappa = _ident.condition_number
+            if _ident.regularization_applied:
+                phi_opt = _ident.phi_regularized
+                nu_opt = _ident.nu_regularized
+        except Exception:
+            phi_nu_kappa = -1.0
 
         # ── STAGE 5c: GJR-GARCH
         garch = cls._stage_5c_garch_estimation(
@@ -2179,6 +2354,10 @@ class UnifiedPhiStudentTModel:
             garch_kalman_w, q_vol_zeta,
             s5h['loc_bias_var_coeff'], s5h['loc_bias_drift_coeff'],
             asset_class)
+
+        # Inject phi-nu identifiability diagnostics (Story 3.3)
+        diagnostics['phi_nu_kappa'] = phi_nu_kappa
+        diagnostics['phi_nu_regularized'] = (phi_nu_kappa > 100.0 and phi_nu_kappa > 0)
 
         # ── TEST-PERIOD EVALUATION (centralised scoring)
         # Run filter_and_calibrate once here so tune.py can read
@@ -3805,12 +3984,13 @@ class UnifiedPhiStudentTModel:
     # ---------------------------------------------------------------------------
 
     @classmethod
-    def _stage_1_base_params(cls, returns_train, vol_train, n_train, nu_base, config):
+    def _stage_1_base_params(cls, returns_train, vol_train, n_train, nu_base, config,
+                              phi_prior_center=None, phi_prior_lambda=None):
         """
-        Stage 1: Estimate base Kalman filter parameters (q, c, φ).
+        Stage 1: Estimate base Kalman filter parameters (q, c, phi).
 
         Uses likelihood-based objective with state regularization to prevent
-        the φ→1 / q→0 collapse (random walk degeneracy).
+        the phi->1 / q->0 collapse (random walk degeneracy).
 
         Args:
             returns_train: Training returns array
@@ -3818,12 +3998,18 @@ class UnifiedPhiStudentTModel:
             n_train: Number of training observations
             nu_base: Degrees of freedom for Student-t
             config: Auto-configured UnifiedStudentTConfig
+            phi_prior_center: Asset-class phi prior center (Story 3.1)
+            phi_prior_lambda: Asset-class phi prior strength (Story 3.1)
 
         Returns:
             dict with keys: q, c, phi, log_q, success
             On failure: success=False and defaults from config
         """
         from scipy.optimize import minimize
+
+        # Story 3.1: Use asset-class phi prior if provided, else fall back to 0.0
+        _phi_center = float(phi_prior_center) if phi_prior_center is not None else PHI_SHRINKAGE_GLOBAL_DEFAULT
+        _phi_lambda = float(phi_prior_lambda) if phi_prior_lambda is not None else PHI_SHRINKAGE_LAMBDA_DEFAULT
 
         def neg_ll_base(params):
             log_q, theta_c, phi = params
@@ -3851,17 +4037,20 @@ class UnifiedPhiStudentTModel:
             if phi_pen > 0 and q_pen > 0:
                 state_reg += 80.0 * phi_pen * q_pen
 
-            # φ shrinkage prior (centered at 0, same as phi_gaussian)
-            _phi_tau_s1 = 1.0 / math.sqrt(2.0 * max(PHI_SHRINKAGE_LAMBDA_DEFAULT / max(n_train, 100), 1e-12))
-            _phi_tau_s1 = max(_phi_tau_s1, PHI_SHRINKAGE_TAU_MIN)
-            phi_shrink = 0.5 * (phi ** 2) / (_phi_tau_s1 ** 2) / n_train
+            # Story 3.1: Asset-class adaptive phi shrinkage prior
+            # Quadratic penalty pulling phi toward class-specific center
+            # Uses original tau for strong regularization; lambda scales the strength
+            _phi_tau_s1 = PHI_SHRINKAGE_TAU_MIN
+            phi_shrink = _phi_lambda * 0.5 * ((phi - _phi_center) ** 2) / (_phi_tau_s1 ** 2) / n_train
 
             return -ll / n_train + state_reg + phi_shrink
 
         log_q_init = np.log10(max(config.q_min * 10, 1e-7))
         c_safe = max(config.c, 0.01)
         theta_c_init = np.log(c_safe)
-        x0 = [log_q_init, theta_c_init, 0.0]
+        # Story 3.1: Initialize phi at the prior center (clamped to bounds)
+        phi_init = float(np.clip(_phi_center, -0.79, 0.98))
+        x0 = [log_q_init, theta_c_init, phi_init]
 
         bounds = [
             (np.log10(config.q_min), -2),

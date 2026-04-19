@@ -33,7 +33,9 @@ function handlePointerMove(e: PointerEvent) {
 }
 
 function handlePointerLeave(e: PointerEvent) {
-  const target = (e.target as HTMLElement).closest<HTMLElement>('.hover-lift');
+  const el = e.target;
+  if (!(el instanceof Element)) return;
+  const target = el.closest<HTMLElement>('.hover-lift');
   if (!target) return;
 
   target.style.removeProperty('--tilt-x');

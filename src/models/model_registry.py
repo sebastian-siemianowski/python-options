@@ -61,6 +61,7 @@ class ModelFamily(Enum):
     HANSEN_SKEW_T = "hansen_skew_t"
     EVT_GPD = "evt_gpd"
     CONTAMINATED_T = "contaminated_t"
+    RV_Q = "rv_q"  # RV-adaptive process noise variants (Tune.md Story 1.3)
 
 
 class SupportType(Enum):
@@ -194,6 +195,26 @@ def make_cst_name(epsilon: float, nu_normal: float, nu_crisis: float) -> str:
     """
     eps_str = f"{epsilon:.2f}".replace(".", "")
     return f"cst_eps_{eps_str}_nu_normal_{nu_normal:.0f}_nu_crisis_{nu_crisis:.0f}"
+
+
+def make_rv_q_gaussian_name() -> str:
+    """Generate canonical name for RV-Q Gaussian model."""
+    return "rv_q_gaussian"
+
+
+def make_rv_q_phi_gaussian_name() -> str:
+    """Generate canonical name for RV-Q phi-Gaussian model."""
+    return "rv_q_phi_gaussian"
+
+
+def make_rv_q_student_t_name(nu: int) -> str:
+    """Generate canonical name for RV-Q Student-t model with given nu."""
+    return f"rv_q_student_t_nu_{nu}"
+
+
+def is_rv_q_model(name: str) -> bool:
+    """Check if model name is an RV-Q variant."""
+    return name.startswith("rv_q_")
 
 
 def parse_cst_name(name: str) -> Optional[Tuple[float, float, float]]:
@@ -377,6 +398,52 @@ def build_model_registry() -> Dict[str, ModelSpec]:
     )
     
     # =========================================================================
+    # RV-Q FAMILY (RV-adaptive process noise variants) -- Tune.md Story 1.3
+    # =========================================================================
+    # RV-Q models compete with static-q and GAS-Q via BMA.
+    # q_t = q_base * exp(gamma * delta_log(vol_t^2))
+    # Proactive regime adaptation (vs GAS-Q reactive).
+    
+    # RV-Q Gaussian (no phi)
+    registry[make_rv_q_gaussian_name()] = ModelSpec(
+        name=make_rv_q_gaussian_name(),
+        family=ModelFamily.RV_Q,
+        support=SupportType.FULL,
+        n_params=4,  # q_base, gamma, c, phi=1 fixed -> effectively 3 + gamma
+        param_names=("q_base", "gamma", "c", "phi"),
+        default_params={"q_base": 1e-6, "gamma": 1.0, "c": 1.0, "phi": 1.0},
+        description="Kalman filter with RV-adaptive process noise (Gaussian)",
+    )
+    
+    # RV-Q phi-Gaussian
+    registry[make_rv_q_phi_gaussian_name()] = ModelSpec(
+        name=make_rv_q_phi_gaussian_name(),
+        family=ModelFamily.RV_Q,
+        support=SupportType.FULL,
+        n_params=4,  # q_base, gamma, c, phi
+        param_names=("q_base", "gamma", "c", "phi"),
+        default_params={"q_base": 1e-6, "gamma": 1.0, "c": 1.0, "phi": 0.98},
+        description="AR(1) Kalman with RV-adaptive process noise (Gaussian)",
+    )
+    
+    # RV-Q Student-t family (same nu grid as base Student-t)
+    for nu in STUDENT_T_NU_GRID:
+        name = make_rv_q_student_t_name(nu)
+        registry[name] = ModelSpec(
+            name=name,
+            family=ModelFamily.RV_Q,
+            support=SupportType.FULL,
+            n_params=5,  # q_base, gamma, c, phi, nu
+            param_names=("q_base", "gamma", "c", "phi", "nu"),
+            default_params={
+                "q_base": 1e-6, "gamma": 1.0, "c": 1.0, "phi": 0.98,
+                "nu": float(nu),
+            },
+            description=f"AR(1) Kalman with RV-adaptive q, Student-t(nu={nu})",
+            grid_values={"nu": [float(nu)]},
+        )
+    
+    # =========================================================================
     
     return registry
 
@@ -480,6 +547,12 @@ def get_sampler_for_model(spec: ModelSpec) -> str:
             return "student_t_mc"
         elif spec.family == ModelFamily.HANSEN_SKEW_T:
             return "hansen_skew_t_mc"
+        elif spec.family == ModelFamily.RV_Q:
+            # RV-Q uses same sampling as base model (Gaussian or Student-t)
+            params = spec.param_names
+            if "nu" in params:
+                return "student_t_mc"
+            return "gaussian_mc"
         else:
             return "gaussian_mc"  # fallback
     
@@ -546,6 +619,12 @@ def extract_model_params_for_sampling(
         result["evt_xi"] = fitted_params.get("evt_xi", fitted_params.get("xi", spec.default_params.get("evt_xi")))
         result["evt_sigma"] = fitted_params.get("evt_sigma", fitted_params.get("sigma", spec.default_params.get("evt_sigma")))
         result["evt_threshold"] = fitted_params.get("evt_threshold", fitted_params.get("threshold", spec.default_params.get("evt_threshold")))
+    
+    elif spec.family == ModelFamily.RV_Q:
+        result["q_base"] = fitted_params.get("q_base", spec.default_params.get("q_base", 1e-6))
+        result["gamma"] = fitted_params.get("gamma", spec.default_params.get("gamma", 1.0))
+        if "nu" in spec.param_names:
+            result["nu"] = fitted_params.get("nu", spec.default_params.get("nu"))
     
     return result
 
