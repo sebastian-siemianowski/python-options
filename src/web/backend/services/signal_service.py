@@ -5,6 +5,7 @@ Includes in-memory caching to avoid re-reading JSON on every request.
 """
 
 import json
+import math
 import os
 import glob
 import time
@@ -19,6 +20,19 @@ HIGH_CONVICTION_DIR = os.path.join(DATA_DIR, "high_conviction")
 # ── In-memory cache ─────────────────────────────────────────────────
 _signal_cache: Dict[str, Any] = {}
 _signal_cache_mtime: float = 0.0
+
+
+def _sanitize_for_json(obj: Any) -> Any:
+    """Recursively replace NaN/Inf floats with None for JSON compliance."""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    return obj
 
 
 def _invalidate_signal_cache() -> None:
@@ -106,7 +120,7 @@ def get_high_conviction_signals(signal_type: str = "buy") -> List[Dict[str, Any]
                     signals.append(data)
         except (json.JSONDecodeError, IOError):
             continue
-    return signals
+    return _sanitize_for_json(signals)
 
 
 def get_cache_age_seconds(cache_path: str = DEFAULT_CACHE_PATH) -> Optional[float]:
