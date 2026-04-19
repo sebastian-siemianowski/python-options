@@ -373,12 +373,31 @@ export interface TuneAsset {
   file_size_kb: number;
 }
 
+export interface ModelAnalytics {
+  count: number;
+  avg_bic: number | null;
+  median_bic: number | null;
+  best_bic: number | null;
+  worst_bic: number | null;
+  avg_phi: number | null;
+  avg_nu: number | null;
+  avg_weight: number | null;
+  avg_ks_pvalue: number | null;
+  median_ks_pvalue: number | null;
+  pit_pass: number;
+  pit_fail: number;
+  pit_pass_rate: number | null;
+  avg_n_obs: number | null;
+  top_symbols: string[];
+}
+
 export interface TuneStats {
   total: number;
   pit_pass: number;
   pit_fail: number;
   pit_unknown: number;
   models_distribution: Record<string, number>;
+  models_analytics?: Record<string, ModelAnalytics>;
 }
 
 export interface TuneDetail {

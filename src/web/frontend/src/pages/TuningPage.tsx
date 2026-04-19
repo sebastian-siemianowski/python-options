@@ -1,21 +1,17 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, useRef, useEffect, useCallback, useSyncExternalStore, useMemo, memo } from 'react';
 import { api } from '../api';
-import type { TuneAsset } from '../api';
+import type { TuneAsset, ModelAnalytics } from '../api';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { TuningSkeleton } from '../components/CosmicSkeleton';
 import {
-  Settings, CheckCircle, XCircle, AlertCircle, RefreshCw, Play, Square, Terminal,
-  Copy, ArrowDown, ArrowRight, Clock, Zap, TrendingUp, BarChart3, Activity,
+  CheckCircle, XCircle, AlertCircle, RefreshCw, Play, Square, Terminal,
+  Copy, ArrowDown, ArrowRight,
   ChevronDown, ChevronUp, Search, Filter, Layers, Target, Timer, Award,
-  PieChart, Hash, Eye, Gauge, Shield, Sparkles, X,
+  PieChart, Eye, X,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  Cell,
-} from 'recharts';
 import { formatModelName, formatModelNameShort } from '../utils/modelNames';
 import {
   type RetuneStatus, type RetuneLogEntry,
@@ -174,7 +170,12 @@ export default function TuningPage() {
 
   const modelData = stats?.models_distribution
     ? Object.entries(stats.models_distribution)
-        .map(([name, count]) => ({ name: formatModelNameShort(name), fullName: name, count: count as number }))
+        .map(([name, count]) => ({
+          name: formatModelNameShort(name),
+          fullName: name,
+          count: count as number,
+          analytics: stats.models_analytics?.[name] ?? null,
+        }))
         .sort((a, b) => b.count - a.count)
     : [];
 
@@ -691,59 +692,100 @@ function logColor(type: string): string {
 }
 
 /* ══════════════════════════════════════════════════════════════════
-   Model Distribution Chart — Premium Redesign
+   Model Distribution — Rich Analytics Dashboard
    ══════════════════════════════════════════════════════════════════ */
 
 const ModelDistributionChart = memo(function ModelDistributionChart({ data, expanded }: {
-  data: { name: string; fullName?: string; count: number }[];
+  data: { name: string; fullName?: string; count: number; analytics: ModelAnalytics | null }[];
   expanded?: boolean;
 }) {
+  const [hoveredModel, setHoveredModel] = useState<string | null>(null);
   const total = useMemo(() => data.reduce((s, d) => s + d.count, 0), [data]);
 
   // Group by family
   const families = useMemo(() => {
-    const fam: Record<string, { count: number; models: typeof data }> = {};
+    const fam: Record<string, { count: number; models: typeof data; pitPass: number; pitFail: number; bics: number[] }> = {};
     data.forEach(d => {
       const f = modelFamily(d.fullName ?? d.name);
-      if (!fam[f]) fam[f] = { count: 0, models: [] };
+      if (!fam[f]) fam[f] = { count: 0, models: [], pitPass: 0, pitFail: 0, bics: [] };
       fam[f].count += d.count;
       fam[f].models.push(d);
+      if (d.analytics) {
+        fam[f].pitPass += d.analytics.pit_pass;
+        fam[f].pitFail += d.analytics.pit_fail;
+        if (d.analytics.avg_bic != null) fam[f].bics.push(d.analytics.avg_bic);
+      }
     });
     return Object.entries(fam).sort((a, b) => b[1].count - a[1].count);
   }, [data]);
 
+  // Best BIC model for highlighting
+  const bestBicModel = useMemo(() => {
+    let best: string | null = null;
+    let bestVal = Infinity;
+    data.forEach(d => {
+      if (d.analytics?.avg_bic != null && d.analytics.avg_bic < bestVal) {
+        bestVal = d.analytics.avg_bic;
+        best = d.fullName ?? d.name;
+      }
+    });
+    return best;
+  }, [data]);
+
+  const hoveredAnalytics = useMemo(() => {
+    if (!hoveredModel) return null;
+    return data.find(d => (d.fullName ?? d.name) === hoveredModel)?.analytics ?? null;
+  }, [data, hoveredModel]);
+
   if (!expanded) {
-    // Compact horizontal bar summary
+    // Compact view — stacked bar + family legend with key metrics
     return (
       <div className="glass-card p-4 mb-6 fade-up" style={{
         background: 'linear-gradient(135deg, var(--violet-3), rgba(99,102,241,0.02))',
       }}>
-        <div className="flex items-center gap-3 mb-3">
-          <PieChart className="w-4 h-4" style={{ color: 'var(--accent-cyan)' }} />
-          <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Model Distribution</span>
-          <span className="text-[10px] font-mono" style={{ color: '#7a8ba4' }}>{data.length} types &middot; {total} total</span>
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-3">
+            <PieChart className="w-4 h-4" style={{ color: 'var(--accent-cyan)' }} />
+            <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Model Distribution</span>
+            <span className="text-[10px] font-mono" style={{ color: '#7a8ba4' }}>{data.length} types &middot; {total} assets</span>
+          </div>
+          <div className="flex items-center gap-3 text-[10px]">
+            {families.map(([f, { count, pitPass, pitFail }]) => {
+              const colors = MODEL_COLORS[f] ?? MODEL_COLORS.default;
+              const pitTotal = pitPass + pitFail;
+              const pitRate = pitTotal > 0 ? Math.round((pitPass / pitTotal) * 100) : null;
+              return (
+                <div key={f} className="flex items-center gap-1.5">
+                  <div className="w-2 h-2 rounded-sm" style={{ background: colors.bar }} />
+                  <span style={{ color: colors.text }}>{familyLabel(f)}</span>
+                  <span className="font-mono" style={{ color: '#7a8ba4' }}>{count}</span>
+                  {pitRate != null && (
+                    <span className="font-mono" style={{ color: pitRate >= 90 ? 'var(--accent-emerald)' : pitRate >= 70 ? 'var(--accent-amber)' : 'var(--accent-rose)' }}>
+                      {pitRate}%
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
-        <div className="flex gap-0.5 h-5 rounded-lg overflow-hidden mb-2">
-          {data.slice(0, 12).map((d) => {
+        <div className="flex gap-0.5 h-6 rounded-lg overflow-hidden">
+          {data.map((d) => {
             const frac = d.count / (total || 1);
             const colors = MODEL_COLORS[modelFamily(d.fullName ?? d.name)] ?? MODEL_COLORS.default;
+            const isBest = (d.fullName ?? d.name) === bestBicModel;
             return (
-              <div key={d.name} title={`${d.name}: ${d.count} (${(frac * 100).toFixed(1)}%)`}
-                className="transition-all duration-200 hover:brightness-125 cursor-default"
-                style={{ flex: d.count, background: colors.bar, minWidth: frac > 0.02 ? 2 : 0 }}
+              <div key={d.name}
+                title={`${d.name}: ${d.count} assets (${(frac * 100).toFixed(1)}%)${d.analytics?.avg_bic != null ? ` | Avg BIC: ${d.analytics.avg_bic.toFixed(0)}` : ''}${d.analytics?.pit_pass_rate != null ? ` | PIT: ${(d.analytics.pit_pass_rate * 100).toFixed(0)}%` : ''}`}
+                className="transition-all duration-200 hover:brightness-125 cursor-default relative"
+                style={{
+                  flex: d.count,
+                  background: isBest ? `linear-gradient(180deg, ${colors.bar}, ${colors.bar}cc)` : colors.bar,
+                  minWidth: frac > 0.02 ? 2 : 0,
+                  borderRight: '1px solid rgba(0,0,0,0.2)',
+                  boxShadow: isBest ? `0 0 8px ${colors.bar}60` : undefined,
+                }}
               />
-            );
-          })}
-        </div>
-        <div className="flex flex-wrap gap-x-3 gap-y-1">
-          {families.map(([f, { count }]) => {
-            const colors = MODEL_COLORS[f] ?? MODEL_COLORS.default;
-            return (
-              <div key={f} className="flex items-center gap-1.5 text-[10px]">
-                <div className="w-2 h-2 rounded-sm" style={{ background: colors.bar }} />
-                <span style={{ color: colors.text }}>{familyLabel(f)}</span>
-                <span className="font-mono" style={{ color: '#7a8ba4' }}>{count}</span>
-              </div>
             );
           })}
         </div>
@@ -751,61 +793,273 @@ const ModelDistributionChart = memo(function ModelDistributionChart({ data, expa
     );
   }
 
-  // Expanded view with family cards + bar chart
+  // ── Expanded: Full analytics dashboard ──────────────────────────
   return (
     <div className="glass-card p-5 mb-6 fade-up" style={{
       background: 'linear-gradient(135deg, var(--violet-3), rgba(99,102,241,0.02))',
     }}>
-      <div className="flex items-center gap-3 mb-4">
-        <PieChart className="w-4 h-4" style={{ color: 'var(--accent-cyan)' }} />
-        <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Model Distribution</span>
-        <span className="text-[10px] font-mono" style={{ color: '#7a8ba4' }}>{data.length} types &middot; {total} total</span>
+      <div className="flex items-center justify-between mb-5">
+        <div className="flex items-center gap-3">
+          <PieChart className="w-4 h-4" style={{ color: 'var(--accent-cyan)' }} />
+          <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Model Analytics</span>
+          <span className="text-[10px] font-mono" style={{ color: '#7a8ba4' }}>{data.length} models &middot; {total} assets</span>
+        </div>
       </div>
 
-      {/* Family summary cards */}
+      {/* Family summary cards with richer data */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
-        {families.map(([f, { count, models }]) => {
+        {families.map(([f, { count, models, pitPass, pitFail, bics }]) => {
           const colors = MODEL_COLORS[f] ?? MODEL_COLORS.default;
           const pct = ((count / total) * 100).toFixed(1);
+          const pitTotal = pitPass + pitFail;
+          const pitRate = pitTotal > 0 ? Math.round((pitPass / pitTotal) * 100) : null;
+          const avgBic = bics.length > 0 ? bics.reduce((a, b) => a + b, 0) / bics.length : null;
           return (
-            <div key={f} className="p-3 rounded-xl" style={{ background: colors.bg, border: `1px solid ${colors.bar}30` }}>
+            <div key={f} className="p-3 rounded-xl transition-all duration-200 hover:scale-[1.01]" style={{
+              background: colors.bg, border: `1px solid ${colors.bar}30`,
+            }}>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold" style={{ color: colors.text }}>{familyLabel(f)}</span>
                 <span className="font-mono text-lg font-bold" style={{ color: colors.text }}>{count}</span>
               </div>
-              <div className="h-1 rounded-full overflow-hidden mb-1.5" style={{ background: `${colors.bar}20` }}>
-                <div className="h-full rounded-full" style={{ width: `${pct}%`, background: colors.bar }} />
+              <div className="h-1.5 rounded-full overflow-hidden mb-2" style={{ background: `${colors.bar}20` }}>
+                <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: colors.bar }} />
               </div>
-              <div className="text-[9px]" style={{ color: `${colors.text}99` }}>
-                {pct}% &middot; {models.length} variants
+              <div className="grid grid-cols-2 gap-1 text-[9px]">
+                <div style={{ color: `${colors.text}99` }}>{pct}% &middot; {models.length} variants</div>
+                {pitRate != null && (
+                  <div className="text-right font-mono" style={{
+                    color: pitRate >= 90 ? 'var(--accent-emerald)' : pitRate >= 70 ? 'var(--accent-amber)' : 'var(--accent-rose)',
+                  }}>
+                    PIT {pitRate}%
+                  </div>
+                )}
+                {avgBic != null && (
+                  <div className="font-mono col-span-2" style={{ color: '#7a8ba4' }}>
+                    Avg BIC: {avgBic.toFixed(0)}
+                  </div>
+                )}
               </div>
             </div>
           );
         })}
       </div>
 
-      {/* Individual model bars */}
-      <div className="space-y-1">
-        {data.map((d) => {
-          const frac = d.count / (total || 1);
-          const colors = MODEL_COLORS[modelFamily(d.fullName ?? d.name)] ?? MODEL_COLORS.default;
-          return (
-            <div key={d.name} className="flex items-center gap-2 group">
-              <span className="w-36 text-[10px] font-medium truncate text-right" style={{ color: colors.text }} title={d.fullName ?? d.name}>
-                {d.name}
-              </span>
-              <div className="flex-1 h-3 rounded-sm overflow-hidden" style={{ background: 'var(--violet-4)' }}>
-                <div className="h-full rounded-sm transition-all duration-300 group-hover:brightness-125" style={{
-                  width: `${Math.max(frac * 100, 0.5)}%`,
-                  background: `linear-gradient(90deg, ${colors.bar}, ${colors.bar}aa)`,
-                }} />
-              </div>
-              <span className="w-8 text-right font-mono text-[10px] font-bold" style={{ color: colors.text }}>{d.count}</span>
-              <span className="w-10 text-right font-mono text-[9px]" style={{ color: '#7a8ba4' }}>{(frac * 100).toFixed(1)}%</span>
-            </div>
-          );
-        })}
+      {/* Full model analytics table */}
+      <div className="overflow-x-auto rounded-xl" style={{ border: '1px solid var(--violet-6)' }}>
+        <table className="w-full text-xs">
+          <thead>
+            <tr style={{ background: 'rgba(10,10,26,0.6)', borderBottom: '1px solid var(--violet-8)' }}>
+              <th className="text-left px-3 py-2.5 font-medium" style={{ color: 'var(--text-muted)' }}>Model</th>
+              <th className="text-center px-2 py-2.5 font-medium" style={{ color: 'var(--text-muted)' }}>Assets</th>
+              <th className="text-right px-2 py-2.5 font-medium" style={{ color: 'var(--text-muted)' }}>Avg BIC</th>
+              <th className="text-right px-2 py-2.5 font-medium" style={{ color: 'var(--text-muted)' }}>Best BIC</th>
+              <th className="text-center px-2 py-2.5 font-medium" style={{ color: 'var(--text-muted)' }}>PIT Rate</th>
+              <th className="text-right px-2 py-2.5 font-medium" style={{ color: 'var(--text-muted)' }}>Avg phi</th>
+              <th className="text-right px-2 py-2.5 font-medium" style={{ color: 'var(--text-muted)' }}>Avg nu</th>
+              <th className="text-right px-2 py-2.5 font-medium" style={{ color: 'var(--text-muted)' }}>Avg KS p</th>
+              <th className="text-right px-2 py-2.5 font-medium" style={{ color: 'var(--text-muted)' }}>Avg Wt</th>
+              <th className="px-2 py-2.5 font-medium" style={{ color: 'var(--text-muted)', minWidth: 100 }}>Share</th>
+              <th className="text-left px-2 py-2.5 font-medium" style={{ color: 'var(--text-muted)' }}>Top Symbols</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.map((d) => {
+              const frac = d.count / (total || 1);
+              const colors = MODEL_COLORS[modelFamily(d.fullName ?? d.name)] ?? MODEL_COLORS.default;
+              const a = d.analytics;
+              const isBest = (d.fullName ?? d.name) === bestBicModel;
+              const isHovered = (d.fullName ?? d.name) === hoveredModel;
+              const pitTotal = a ? a.pit_pass + a.pit_fail : 0;
+              const pitRate = pitTotal > 0 ? Math.round((a!.pit_pass / pitTotal) * 100) : null;
+
+              return (
+                <tr key={d.name}
+                  onMouseEnter={() => setHoveredModel(d.fullName ?? d.name)}
+                  onMouseLeave={() => setHoveredModel(null)}
+                  className="transition-colors duration-100"
+                  style={{
+                    borderBottom: '1px solid var(--violet-4)',
+                    background: isBest ? 'rgba(16,185,129,0.04)' : isHovered ? 'rgba(139,92,246,0.04)' : undefined,
+                    borderLeft: isBest ? '2px solid var(--accent-emerald)' : '2px solid transparent',
+                  }}
+                >
+                  {/* Model name */}
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-medium" style={{
+                        background: colors.bg, color: colors.text,
+                      }}>
+                        {d.name}
+                      </span>
+                      {isBest && <Target className="w-3 h-3" style={{ color: 'var(--accent-emerald)' }} />}
+                    </div>
+                  </td>
+
+                  {/* Asset count */}
+                  <td className="px-2 py-2 text-center font-mono font-bold" style={{ color: colors.text }}>
+                    {d.count}
+                  </td>
+
+                  {/* Avg BIC */}
+                  <td className="px-2 py-2 text-right font-mono" style={{
+                    color: a?.avg_bic != null ? '#b49aff' : 'var(--text-muted)',
+                    fontVariantNumeric: 'tabular-nums',
+                  }}>
+                    {a?.avg_bic != null ? a.avg_bic.toFixed(0) : '--'}
+                  </td>
+
+                  {/* Best BIC */}
+                  <td className="px-2 py-2 text-right font-mono" style={{
+                    color: a?.best_bic != null ? 'var(--accent-cyan)' : 'var(--text-muted)',
+                    fontVariantNumeric: 'tabular-nums',
+                  }}>
+                    {a?.best_bic != null ? a.best_bic.toFixed(0) : '--'}
+                  </td>
+
+                  {/* PIT Rate */}
+                  <td className="px-2 py-2 text-center">
+                    {pitRate != null ? (
+                      <div className="flex items-center justify-center gap-1.5">
+                        <div className="w-8 h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--violet-6)' }}>
+                          <div className="h-full rounded-full" style={{
+                            width: `${pitRate}%`,
+                            background: pitRate >= 90 ? 'var(--accent-emerald)' : pitRate >= 70 ? 'var(--accent-amber)' : 'var(--accent-rose)',
+                          }} />
+                        </div>
+                        <span className="font-mono text-[10px]" style={{
+                          color: pitRate >= 90 ? 'var(--accent-emerald)' : pitRate >= 70 ? 'var(--accent-amber)' : 'var(--accent-rose)',
+                        }}>
+                          {pitRate}%
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>--</span>
+                    )}
+                  </td>
+
+                  {/* Avg phi */}
+                  <td className="px-2 py-2 text-right font-mono" style={{
+                    color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums',
+                  }}>
+                    {a?.avg_phi != null ? a.avg_phi.toFixed(4) : '--'}
+                  </td>
+
+                  {/* Avg nu */}
+                  <td className="px-2 py-2 text-right font-mono" style={{
+                    color: a?.avg_nu != null ? 'var(--accent-amber)' : 'var(--text-muted)',
+                    fontVariantNumeric: 'tabular-nums',
+                  }}>
+                    {a?.avg_nu != null ? a.avg_nu.toFixed(1) : '--'}
+                  </td>
+
+                  {/* Avg KS p-value */}
+                  <td className="px-2 py-2 text-right font-mono" style={{
+                    color: a?.avg_ks_pvalue != null
+                      ? (a.avg_ks_pvalue >= 0.05 ? 'var(--accent-emerald)' : 'var(--accent-rose)')
+                      : 'var(--text-muted)',
+                    fontVariantNumeric: 'tabular-nums',
+                  }}>
+                    {a?.avg_ks_pvalue != null ? a.avg_ks_pvalue.toFixed(3) : '--'}
+                  </td>
+
+                  {/* Avg top weight */}
+                  <td className="px-2 py-2 text-right font-mono" style={{
+                    color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums',
+                  }}>
+                    {a?.avg_weight != null ? `${(a.avg_weight * 100).toFixed(1)}%` : '--'}
+                  </td>
+
+                  {/* Share bar */}
+                  <td className="px-2 py-2">
+                    <div className="flex items-center gap-1.5">
+                      <div className="flex-1 h-2 rounded-sm overflow-hidden" style={{ background: 'var(--violet-4)' }}>
+                        <div className="h-full rounded-sm transition-all duration-300" style={{
+                          width: `${Math.max(frac * 100, 1)}%`,
+                          background: `linear-gradient(90deg, ${colors.bar}, ${colors.bar}aa)`,
+                        }} />
+                      </div>
+                      <span className="font-mono text-[9px] w-8 text-right" style={{ color: '#7a8ba4' }}>
+                        {(frac * 100).toFixed(1)}%
+                      </span>
+                    </div>
+                  </td>
+
+                  {/* Top symbols */}
+                  <td className="px-2 py-2">
+                    <div className="flex gap-1 flex-wrap">
+                      {(a?.top_symbols ?? []).slice(0, 3).map(s => (
+                        <span key={s} className="px-1 py-0.5 rounded text-[8px] font-mono font-medium" style={{
+                          background: 'var(--violet-4)', color: 'var(--text-secondary)',
+                        }}>
+                          {s}
+                        </span>
+                      ))}
+                      {(a?.top_symbols?.length ?? 0) > 3 && (
+                        <span className="text-[8px] font-mono" style={{ color: '#7a8ba4' }}>
+                          +{(a?.top_symbols?.length ?? 0) - 3}
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+
+          {/* Summary footer */}
+          <tfoot>
+            <tr style={{ background: 'rgba(10,10,26,0.4)', borderTop: '1px solid var(--violet-8)' }}>
+              <td className="px-3 py-2 text-[10px] font-semibold" style={{ color: 'var(--text-muted)' }}>TOTAL</td>
+              <td className="px-2 py-2 text-center font-mono font-bold text-[10px]" style={{ color: '#b49aff' }}>{total}</td>
+              <td colSpan={9} className="px-2 py-2">
+                <div className="flex items-center gap-4 text-[9px]">
+                  {families.map(([f, { count }]) => {
+                    const colors = MODEL_COLORS[f] ?? MODEL_COLORS.default;
+                    return (
+                      <span key={f} style={{ color: colors.text }}>
+                        {familyLabel(f)}: <strong>{count}</strong> ({((count / total) * 100).toFixed(0)}%)
+                      </span>
+                    );
+                  })}
+                </div>
+              </td>
+            </tr>
+          </tfoot>
+        </table>
       </div>
+
+      {/* Hover detail card */}
+      {hoveredAnalytics && hoveredModel && (
+        <div className="mt-4 p-4 rounded-xl transition-all duration-200" style={{
+          background: 'rgba(10,10,26,0.5)', border: '1px solid var(--violet-8)',
+        }}>
+          <div className="flex items-center gap-2 mb-3">
+            <Eye className="w-3.5 h-3.5" style={{ color: 'var(--accent-cyan)' }} />
+            <span className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
+              {formatModelName(hoveredModel)}
+            </span>
+            <span className="text-[10px] font-mono" style={{ color: '#7a8ba4' }}>{hoveredAnalytics.count} assets</span>
+          </div>
+          <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
+            {[
+              { label: 'Avg BIC', value: hoveredAnalytics.avg_bic?.toFixed(0), color: '#b49aff' },
+              { label: 'Best BIC', value: hoveredAnalytics.best_bic?.toFixed(0), color: 'var(--accent-cyan)' },
+              { label: 'Worst BIC', value: hoveredAnalytics.worst_bic?.toFixed(0), color: 'var(--accent-rose)' },
+              { label: 'Median KS p', value: hoveredAnalytics.median_ks_pvalue?.toFixed(4), color: hoveredAnalytics.median_ks_pvalue != null && hoveredAnalytics.median_ks_pvalue >= 0.05 ? 'var(--accent-emerald)' : 'var(--accent-rose)' },
+              { label: 'PIT Pass', value: hoveredAnalytics.pit_pass_rate != null ? `${(hoveredAnalytics.pit_pass_rate * 100).toFixed(0)}% (${hoveredAnalytics.pit_pass}/${hoveredAnalytics.pit_pass + hoveredAnalytics.pit_fail})` : null, color: hoveredAnalytics.pit_pass_rate != null && hoveredAnalytics.pit_pass_rate >= 0.9 ? 'var(--accent-emerald)' : 'var(--accent-amber)' },
+              { label: 'Avg Obs', value: hoveredAnalytics.avg_n_obs?.toFixed(0), color: '#94a3b8' },
+            ].map(p => (
+              <div key={p.label} className="p-2 rounded-lg text-center" style={{ background: 'var(--violet-4)' }}>
+                <div className="text-[8px] uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>{p.label}</div>
+                <div className="text-[11px] font-mono font-medium" style={{ color: p.value ? p.color : 'var(--text-muted)' }}>
+                  {p.value ?? '--'}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 });
