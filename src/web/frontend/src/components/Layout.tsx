@@ -41,13 +41,15 @@ function getSavedCollapsed(): boolean {
 }
 
 /* ─── Badge color helpers ───────────────────────────────────────── */
+/* Hairline pill look: faint tinted bg + 1px ring, tabular numerals,
+   applied via NavLink badge span. */
 const badgeColors = {
-  emerald: 'bg-[var(--emerald-12)] text-[var(--accent-emerald)]',
-  rose: 'bg-[var(--rose-12)] text-[var(--accent-rose)]',
-  amber: 'bg-[var(--amber-12)] text-[var(--accent-amber)]',
-  violet: 'bg-[var(--violet-12)] text-[#C4B5FD]',
-  fuchsia: 'bg-[rgba(226,122,245,0.12)] text-[var(--accent-fuchsia)]',
-  cyan: 'bg-[rgba(56,217,245,0.12)] text-[var(--accent-cyan)]',
+  emerald: 'bg-[var(--emerald-12)] text-[var(--accent-emerald)] ring-1 ring-[rgba(62,232,165,0.28)]',
+  rose:    'bg-[var(--rose-12)] text-[var(--accent-rose)] ring-1 ring-[rgba(255,107,138,0.28)]',
+  amber:   'bg-[var(--amber-12)] text-[var(--accent-amber)] ring-1 ring-[rgba(245,158,11,0.28)]',
+  violet:  'bg-[var(--violet-12)] text-[#C4B5FD] ring-1 ring-[rgba(139,92,246,0.28)]',
+  fuchsia: 'bg-[rgba(226,122,245,0.12)] text-[var(--accent-fuchsia)] ring-1 ring-[rgba(226,122,245,0.28)]',
+  cyan:    'bg-[rgba(56,217,245,0.12)] text-[var(--accent-cyan)] ring-1 ring-[rgba(56,217,245,0.28)]',
 };
 
 /* ─── Layout component ──────────────────────────────────────────── */
@@ -321,54 +323,69 @@ export default function Layout() {
         style={{ width: sidebarWidth }}
         aria-label="Main navigation"
       >
-        {/* Logo */}
-        <div className={`px-4 py-6 ${collapsed ? 'flex items-center justify-center' : ''}`}>
+        {/* Brand / Logo — Apple-like identity block */}
+        <div className={`${collapsed ? 'px-3 py-5 flex items-center justify-center' : 'px-5 pt-6 pb-5'}`}>
           {collapsed ? (
-            <div className="w-9 h-9 rounded-xl flex items-center justify-center"
-                 style={{
-                   background: 'linear-gradient(135deg, rgba(139,92,246,0.18) 0%, rgba(56,217,245,0.08) 100%)',
-                   boxShadow: '0 0 20px var(--violet-12)',
-                 }}>
-              <Activity className="w-4.5 h-4.5" style={{ color: 'var(--accent-violet-bright)' }} />
+            <div
+              className="w-9 h-9 rounded-[11px] flex items-center justify-center"
+              style={{
+                background: 'linear-gradient(135deg, rgba(139,92,246,0.20) 0%, rgba(56,217,245,0.08) 100%)',
+                border: '1px solid rgba(139,92,246,0.22)',
+                boxShadow: '0 0 18px var(--violet-12), inset 0 1px 0 rgba(255,255,255,0.06)',
+              }}
+            >
+              <Activity className="w-[17px] h-[17px]" style={{ color: 'var(--accent-violet-bright)' }} strokeWidth={2.25} />
             </div>
           ) : (
-            <div className="flex items-center gap-3.5">
+            <div className="flex items-center gap-3">
               <div className="relative">
                 <div
-                  className="w-10 h-10 rounded-xl flex items-center justify-center"
+                  className="w-10 h-10 rounded-[12px] flex items-center justify-center"
                   style={{
-                    background: 'linear-gradient(135deg, rgba(139,92,246,0.18) 0%, rgba(56,217,245,0.08) 100%)',
-                    boxShadow: '0 0 24px var(--violet-12)',
-                    border: '1px solid var(--violet-12)',
+                    background: 'linear-gradient(135deg, rgba(139,92,246,0.22) 0%, rgba(56,217,245,0.08) 100%)',
+                    boxShadow: '0 0 22px var(--violet-12), inset 0 1px 0 rgba(255,255,255,0.08)',
+                    border: '1px solid rgba(139,92,246,0.26)',
                   }}
                 >
-                  <Activity className="w-5 h-5" style={{ color: 'var(--accent-violet-bright)' }} />
+                  <Activity className="w-[18px] h-[18px]" style={{ color: 'var(--accent-violet-bright)' }} strokeWidth={2.25} />
                 </div>
                 <span
-                  className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 pulse-dot`}
+                  className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full pulse-dot"
                   style={{
                     background: allServicesOk ? 'var(--accent-emerald)' : 'var(--accent-rose)',
-                    ringColor: 'var(--void)',
-                    boxShadow: `0 0 8px ${allServicesOk ? 'rgba(62,232,165,0.6)' : 'rgba(255,107,138,0.6)'}`,
+                    boxShadow: `0 0 0 2px var(--void), 0 0 10px ${allServicesOk ? 'rgba(62,232,165,0.65)' : 'rgba(255,107,138,0.65)'}`,
                   }}
                 />
               </div>
-              <div>
-                <h1 className="text-[14px] font-semibold gradient-text tracking-tight leading-tight">
+              <div className="min-w-0">
+                <h1 className="text-[13.5px] font-semibold gradient-text leading-tight" style={{ letterSpacing: '-0.01em' }}>
                   Signal Engine
                 </h1>
-                <p className="text-[10px] font-medium tracking-widest uppercase mt-0.5" style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}>
-                  BMA + Kalman v5.30
+                <p
+                  className="text-[9.5px] font-medium uppercase mt-0.5 tabular-nums"
+                  style={{ color: 'var(--text-muted)', letterSpacing: '0.14em' }}
+                >
+                  BMA &middot; Kalman v5.30
                 </p>
               </div>
             </div>
           )}
         </div>
 
-        <div className="divider-fade mx-4" />
+        <div className="divider-fade mx-5" />
+
+        {/* Section label (expanded only) */}
+        {!collapsed && (
+          <div
+            className="px-5 pt-4 pb-2 text-[9.5px] font-semibold uppercase"
+            style={{ color: 'var(--text-muted)', letterSpacing: '0.14em', opacity: 0.7 }}
+          >
+            Navigate
+          </div>
+        )}
 
         {/* Navigation */}
-        <nav className="flex-1 py-3 px-2.5 space-y-0.5 overflow-y-auto" aria-label="Pages">
+        <nav className={`flex-1 ${collapsed ? 'py-3 px-2' : 'pb-3 px-3'} space-y-[3px] overflow-y-auto`} aria-label="Pages">
           {navItems.map((item) => {
             const badge = item.badgeFn?.();
             const isActive = item.to === '/'
@@ -383,21 +400,39 @@ export default function Layout() {
                 onMouseEnter={(e) => showTooltip(item, e.currentTarget as HTMLElement)}
                 onMouseLeave={hideTooltip}
               >
+                {/* Left accent rail — Apple-like active indicator */}
+                {isActive && !collapsed && (
+                  <span
+                    aria-hidden
+                    className="absolute left-0 top-1/2 -translate-y-1/2 w-[2px] h-5 rounded-full"
+                    style={{
+                      background: 'linear-gradient(180deg, var(--accent-violet-bright), var(--accent-cyan))',
+                      boxShadow: '0 0 8px rgba(139,92,246,0.6)',
+                    }}
+                  />
+                )}
                 <NavLink
                   to={item.to}
                   end={item.to === '/'}
-                  className={`flex items-center gap-3 rounded-xl text-[13px] font-medium transition-all duration-200 ${
-                    collapsed ? 'justify-center px-2 py-2.5' : 'px-3 py-2.5'
+                  className={`relative flex items-center gap-3 text-[12.5px] font-medium transition-all duration-150 ${
+                    collapsed ? 'justify-center px-2 py-2.5 rounded-[11px]' : 'px-3 py-[9px] rounded-[11px]'
                   } ${
                     isActive
-                      ? 'nav-active-indicator nav-cosmic-active'
-                      : 'hover:bg-[var(--violet-5)]'
+                      ? ''
+                      : 'hover:bg-[rgba(139,92,246,0.06)]'
                   }`}
                   style={{
                     color: isActive ? 'var(--accent-violet-bright)' : 'var(--text-muted)',
+                    background: isActive ? 'linear-gradient(90deg, rgba(139,92,246,0.14), rgba(139,92,246,0.04))' : undefined,
+                    border: isActive ? '1px solid rgba(139,92,246,0.22)' : '1px solid transparent',
+                    boxShadow: isActive ? 'inset 0 1px 0 rgba(255,255,255,0.04)' : undefined,
                   }}
                 >
-                  <Icon className="w-[18px] h-[18px] flex-shrink-0" style={{ opacity: isActive ? 1 : 0.7 }} />
+                  <Icon
+                    className="w-[17px] h-[17px] flex-shrink-0"
+                    strokeWidth={isActive ? 2.25 : 1.9}
+                    style={{ opacity: isActive ? 1 : 0.78 }}
+                  />
 
                   {!collapsed && (
                     <>
@@ -405,6 +440,7 @@ export default function Layout() {
                         className="flex-1 truncate"
                         style={{
                           color: isActive ? 'var(--accent-violet-bright)' : 'var(--text-secondary)',
+                          letterSpacing: '-0.005em',
                         }}
                       >
                         {item.label}
@@ -413,7 +449,7 @@ export default function Layout() {
                       {/* Micro-indicators */}
                       {item.to === '/services' ? (
                         <span
-                          className="w-2 h-2 rounded-full ml-auto pulse-dot"
+                          className="w-[7px] h-[7px] rounded-full ml-auto pulse-dot"
                           style={{
                             background: allServicesOk ? 'var(--accent-emerald)' : 'var(--accent-rose)',
                             boxShadow: `0 0 8px ${allServicesOk ? 'var(--emerald-50)' : 'var(--rose-50)'}`,
@@ -421,7 +457,8 @@ export default function Layout() {
                         />
                       ) : badge ? (
                         <span
-                          className={`micro-badge ml-auto ${badgeColors[badge.color as keyof typeof badgeColors] || badgeColors.violet}`}
+                          className={`ml-auto inline-flex items-center justify-center rounded-full px-1.5 min-w-[22px] h-[18px] text-[9.5px] font-semibold tabular-nums ${badgeColors[badge.color as keyof typeof badgeColors] || badgeColors.violet}`}
+                          style={{ letterSpacing: '0.01em' }}
                         >
                           {badge.text}
                         </span>
@@ -434,26 +471,53 @@ export default function Layout() {
           })}
         </nav>
 
-        {/* Collapse toggle */}
-        <div className="px-3 py-4">
+        {/* Footer — collapse + tagline */}
+        <div className={`${collapsed ? 'px-2' : 'px-4'} pb-4 pt-3`}>
           <div className="divider-fade mb-3" />
           <button
             onClick={() => setCollapsed(c => !c)}
-            className="flex items-center justify-center w-full rounded-xl py-2 transition-all duration-200 hover:bg-[rgba(139,92,246,0.07)]"
-            style={{ color: 'var(--text-muted)' }}
-            title={collapsed ? 'Expand sidebar (Cmd+B)' : 'Collapse sidebar (Cmd+B)'}
+            className={`flex items-center ${collapsed ? 'justify-center' : 'justify-between'} w-full transition-all duration-200 hover:brightness-110 active:scale-[0.98]`}
+            style={{
+              color: 'var(--text-muted)',
+              background: 'rgba(255,255,255,0.02)',
+              border: '1px solid var(--violet-8)',
+              borderRadius: 999,
+              padding: collapsed ? '6px 6px' : '6px 10px 6px 12px',
+            }}
+            title={collapsed ? 'Expand sidebar  ⌘B' : 'Collapse sidebar  ⌘B'}
           >
             {collapsed ? (
-              <ChevronsRight className="w-4 h-4" />
+              <ChevronsRight className="w-[14px] h-[14px]" strokeWidth={2.25} />
             ) : (
-              <div className="flex items-center gap-2 text-[10px]">
-                <ChevronsLeft className="w-3.5 h-3.5" />
-                <span className="tracking-widest uppercase font-medium" style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}>Collapse</span>
-              </div>
+              <>
+                <span
+                  className="text-[9.5px] uppercase font-semibold"
+                  style={{ color: 'var(--text-muted)', letterSpacing: '0.14em' }}
+                >
+                  Collapse
+                </span>
+                <span className="inline-flex items-center gap-1.5 text-[9px] font-mono" style={{ color: 'var(--text-muted)', opacity: 0.8 }}>
+                  <kbd
+                    className="px-1 py-[1px] rounded-[4px] font-sans font-semibold"
+                    style={{
+                      background: 'rgba(255,255,255,0.04)',
+                      border: '1px solid var(--violet-8)',
+                      fontSize: 9,
+                      letterSpacing: 0,
+                    }}
+                  >
+                    ⌘B
+                  </kbd>
+                  <ChevronsLeft className="w-[12px] h-[12px]" strokeWidth={2} />
+                </span>
+              </>
             )}
           </button>
           {!collapsed && (
-            <p className="text-[9px] font-medium tracking-widest text-center mt-2.5 uppercase" style={{ color: 'var(--text-muted)', opacity: 0.4, letterSpacing: '0.14em' }}>
+            <p
+              className="text-[8.5px] font-semibold text-center mt-3 uppercase tabular-nums"
+              style={{ color: 'var(--text-muted)', opacity: 0.45, letterSpacing: '0.22em' }}
+            >
               Bayesian Model Averaging
             </p>
           )}

@@ -194,11 +194,17 @@ export default function TuningPage() {
               queryClient.invalidateQueries({ queryKey: ['tuneStats'] });
             }}
             disabled={listQ.isFetching}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm transition disabled:opacity-50"
-            style={{ background: 'var(--violet-8)', color: '#b49aff', border: '1px solid var(--violet-12)' }}
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[12px] font-medium transition-all duration-150 disabled:opacity-50 hover:brightness-110 active:scale-[0.98]"
+            style={{
+              background: 'linear-gradient(180deg, rgba(180,154,255,0.10), rgba(180,154,255,0.05))',
+              color: '#c9b8ff',
+              border: '1px solid var(--violet-15)',
+              backdropFilter: 'blur(8px)',
+              WebkitBackdropFilter: 'blur(8px)',
+            }}
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${listQ.isFetching ? 'animate-spin' : ''}`} />
-            Reload
+            <RefreshCw className={`w-3 h-3 ${listQ.isFetching ? 'animate-spin' : ''}`} />
+            <span style={{ letterSpacing: '0.01em' }}>Reload</span>
           </button>
         }
       >
@@ -253,16 +259,32 @@ export default function TuningPage() {
 
       {/* ── Active Filter Indicator ────────────────────────────── */}
       {cardFilter !== 'all' && cardFilter !== 'models' && (
-        <div className="mb-4 flex items-center gap-2 px-3 py-2 rounded-xl text-xs" style={{
-          background: 'var(--violet-4)', border: '1px solid var(--violet-8)',
-        }}>
-          <Filter className="w-3.5 h-3.5" style={{ color: '#b49aff' }} />
-          <span style={{ color: 'var(--text-secondary)' }}>
-            Showing <strong style={{ color: '#b49aff' }}>{filtered.length}</strong> assets with PIT status: <strong style={{ color: '#b49aff' }}>{cardFilter}</strong>
+        <div className="mb-5 flex items-center gap-2">
+          <span
+            className="inline-flex items-center gap-2 pl-3 pr-1.5 py-1 rounded-full text-[11.5px]"
+            style={{
+              background: 'rgba(180,154,255,0.06)',
+              border: '1px solid var(--violet-12)',
+              color: 'var(--text-secondary)',
+              backdropFilter: 'blur(8px)',
+              WebkitBackdropFilter: 'blur(8px)',
+            }}
+          >
+            <Filter className="w-3 h-3" style={{ color: '#c9b8ff' }} />
+            <span>
+              Filtered <span className="font-mono font-semibold" style={{ color: '#c9b8ff', fontVariantNumeric: 'tabular-nums' }}>{filtered.length}</span>
+              <span style={{ color: 'var(--text-muted)' }}> · PIT </span>
+              <span style={{ color: '#c9b8ff', textTransform: 'capitalize' }}>{cardFilter}</span>
+            </span>
+            <button
+              onClick={() => setCardFilter('all')}
+              className="inline-flex items-center justify-center w-5 h-5 rounded-full transition-all hover:brightness-125"
+              style={{ background: 'var(--violet-10)', color: '#b49aff' }}
+              aria-label="Clear filter"
+            >
+              <X className="w-3 h-3" />
+            </button>
           </span>
-          <button onClick={() => setCardFilter('all')} className="ml-auto p-0.5 rounded hover:bg-[var(--violet-8)] transition" style={{ color: '#7a8ba4' }}>
-            <X className="w-3.5 h-3.5" />
-          </button>
         </div>
       )}
 
@@ -294,32 +316,92 @@ export default function TuningPage() {
       )}
 
       {/* ── Asset Table ───────────────────────────────────────── */}
-      <div className="glass-card overflow-hidden fade-up-delay-1">
-        <div className="px-3 py-2.5 flex items-center gap-2" style={{ borderBottom: '1px solid var(--violet-8)' }}>
-          <div className="relative flex-1 max-w-sm">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: '#7a8ba4' }} />
-            <input type="text" value={search} onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search symbol or model..."
-              className="w-full pl-8 pr-3 py-2 rounded-lg text-sm outline-none transition-all focus-ring"
-              style={{ background: 'rgba(10,10,26,0.6)', border: '1px solid var(--violet-8)', color: 'var(--text-primary)' }}
+      <div className="glass-card overflow-hidden fade-up-delay-1" style={{ borderRadius: 18 }}>
+        <div
+          className="px-4 py-3 flex items-center gap-3"
+          style={{
+            borderBottom: '1px solid var(--violet-8)',
+            background: 'linear-gradient(180deg, rgba(255,255,255,0.02), transparent)',
+          }}
+        >
+          <div className="relative flex-1 max-w-md">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: '#7a8ba4' }} />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search symbols or models"
+              className="w-full pl-9 pr-16 py-2 rounded-full text-[13px] outline-none transition-all focus-ring"
+              style={{
+                background: 'rgba(10,10,26,0.55)',
+                border: '1px solid var(--violet-10)',
+                color: 'var(--text-primary)',
+                backdropFilter: 'blur(8px)',
+                WebkitBackdropFilter: 'blur(8px)',
+                letterSpacing: '0.005em',
+              }}
             />
+            <kbd
+              className="absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-5 h-5 rounded-md text-[10px] font-mono pointer-events-none"
+              style={{
+                background: 'var(--violet-8)',
+                color: '#7a8ba4',
+                border: '1px solid var(--violet-10)',
+                fontVariantNumeric: 'tabular-nums',
+              }}
+              title="Search"
+            >
+              /
+            </kbd>
           </div>
-          <span className="text-[11px] font-mono px-2 py-1 rounded" style={{ color: '#b49aff', background: 'var(--violet-6)' }}>
-            {sorted.length} / {assets.length}
-          </span>
+          <div className="ml-auto flex items-center gap-2">
+            <span
+              className="text-[11px] font-mono px-2.5 py-1 rounded-full"
+              style={{
+                color: 'var(--text-secondary)',
+                background: 'rgba(255,255,255,0.03)',
+                border: '1px solid var(--violet-8)',
+                fontVariantNumeric: 'tabular-nums',
+                letterSpacing: '0.01em',
+              }}
+            >
+              <span style={{ color: '#c9b8ff' }}>{sorted.length}</span>
+              <span style={{ color: 'var(--text-muted)' }}> of {assets.length}</span>
+            </span>
+          </div>
         </div>
 
-        {/* Health bar */}
+        {/* Health bar — restrained Apple-style */}
         {stats && (
-          <div className="px-3 py-1.5 flex items-center gap-2 text-[10px]" style={{ background: 'var(--violet-2)' }}>
-            <div className="flex-1 h-2 rounded-md overflow-hidden flex" style={{ background: 'var(--violet-4)' }}>
-              <div style={{ flex: stats.pit_pass, background: 'linear-gradient(90deg, var(--accent-emerald), #6ff0c0)' }} />
-              <div style={{ flex: stats.pit_fail, background: 'linear-gradient(90deg, var(--accent-rose), #ff5577)' }} />
-              <div style={{ flex: stats.pit_unknown, background: 'rgba(100,116,139,0.3)' }} />
+          <div
+            className="px-4 py-2.5 flex items-center gap-4"
+            style={{ background: 'rgba(255,255,255,0.015)', borderBottom: '1px solid var(--violet-6)' }}
+          >
+            <div
+              className="flex-1 h-[3px] rounded-full overflow-hidden flex"
+              style={{ background: 'rgba(255,255,255,0.04)' }}
+            >
+              <div style={{ flex: stats.pit_pass, background: 'var(--accent-emerald)' }} />
+              <div style={{ flex: stats.pit_fail, background: 'var(--accent-rose)' }} />
+              <div style={{ flex: stats.pit_unknown, background: 'rgba(148,163,184,0.35)' }} />
             </div>
-            <span style={{ color: 'var(--accent-emerald)' }}>{stats.pit_pass} pass</span>
-            <span style={{ color: 'var(--accent-rose)' }}>{stats.pit_fail} fail</span>
-            <span style={{ color: '#7a8ba4' }}>{stats.pit_unknown} unk</span>
+            <div className="flex items-center gap-3 text-[10.5px]" style={{ fontVariantNumeric: 'tabular-nums' }}>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--accent-emerald)' }} />
+                <span style={{ color: 'var(--accent-emerald)' }}>{stats.pit_pass}</span>
+                <span style={{ color: 'var(--text-muted)' }}>pass</span>
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--accent-rose)' }} />
+                <span style={{ color: 'var(--accent-rose)' }}>{stats.pit_fail}</span>
+                <span style={{ color: 'var(--text-muted)' }}>fail</span>
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'rgba(148,163,184,0.6)' }} />
+                <span style={{ color: 'var(--text-secondary)' }}>{stats.pit_unknown}</span>
+                <span style={{ color: 'var(--text-muted)' }}>unknown</span>
+              </span>
+            </div>
           </div>
         )}
 
@@ -341,13 +423,16 @@ export default function TuningPage() {
               </tr>
             </thead>
             <tbody>
-              {sorted.slice(0, 500).map((a: TuneAsset) => (
+              {sorted.slice(0, 500).map((a: TuneAsset) => {
+                const isSelected = selectedSymbol === a.symbol;
+                return (
                 <tr key={a.symbol}
                   onClick={() => setSelectedSymbol(a.symbol)}
-                  className="cursor-pointer transition-colors duration-150 hover:bg-[rgba(139,92,246,0.06)]"
+                  className="cursor-pointer transition-colors duration-150 hover:bg-[rgba(180,154,255,0.04)]"
                   style={{
-                    borderBottom: '1px solid var(--violet-4)',
-                    background: selectedSymbol === a.symbol ? 'var(--violet-6)' : undefined,
+                    borderBottom: '1px solid rgba(255,255,255,0.04)',
+                    background: isSelected ? 'rgba(180,154,255,0.07)' : undefined,
+                    boxShadow: isSelected ? 'inset 2px 0 0 var(--accent-violet)' : undefined,
                   }}
                 >
                   <td className="px-3 py-2 font-semibold" style={{ color: 'var(--text-luminous)' }}>{a.symbol}</td>
@@ -386,7 +471,19 @@ export default function TuningPage() {
                     {a.n_obs ?? '--'}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
+              {sorted.length === 0 && (
+                <tr>
+                  <td colSpan={11} className="px-3 py-12 text-center">
+                    <div className="inline-flex flex-col items-center gap-2">
+                      <Search className="w-5 h-5" style={{ color: 'var(--text-muted)' }} />
+                      <div className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>No assets match</div>
+                      <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Try clearing the filter or search</div>
+                    </div>
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -665,20 +762,76 @@ function SummaryCard({ icon, label, value, sub, color, active, onClick }: {
   active?: boolean; onClick?: () => void;
 }) {
   return (
-    <button onClick={onClick} className="glass-card p-4 flex items-center gap-3 text-left transition-all duration-200 hover:-translate-y-[1px] w-full" style={{
-      borderLeft: `3px solid ${color}`,
-      background: active
-        ? `linear-gradient(135deg, ${color}15, ${color}08)`
-        : 'linear-gradient(135deg, var(--violet-3), rgba(99,102,241,0.02))',
-      boxShadow: active ? `0 0 12px ${color}25, inset 0 0 20px ${color}08` : undefined,
-      outline: active ? `1px solid ${color}40` : undefined,
-    }}>
-      <div className="p-2 rounded-lg" style={{ background: `${color}15`, color }}>{icon}</div>
-      <div>
-        <div className="text-xl font-bold font-mono" style={{ color, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
-        <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{label}</div>
-        {sub && <div className="text-[9px] mt-0.5" style={{ color: `${color}99` }}>{sub}</div>}
+    <button
+      onClick={onClick}
+      className="group relative w-full text-left p-4 transition-all duration-200 hover:-translate-y-[1px] focus-ring"
+      style={{
+        borderRadius: 16,
+        background: active
+          ? `linear-gradient(160deg, ${color}10, rgba(255,255,255,0.01))`
+          : 'linear-gradient(160deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01))',
+        border: `1px solid ${active ? color + '30' : 'var(--violet-8)'}`,
+        boxShadow: active
+          ? `0 1px 0 ${color}20 inset, 0 6px 24px -12px ${color}35`
+          : '0 1px 0 rgba(255,255,255,0.02) inset',
+        backdropFilter: 'blur(14px)',
+        WebkitBackdropFilter: 'blur(14px)',
+      }}
+    >
+      {/* Top hairline shimmer */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-3 top-0 h-px"
+        style={{ background: `linear-gradient(90deg, transparent, ${active ? color + '60' : 'rgba(255,255,255,0.08)'}, transparent)` }}
+      />
+      <div className="flex items-start justify-between mb-3">
+        <div
+          className="inline-flex items-center justify-center w-7 h-7 rounded-lg transition-transform duration-200 group-hover:scale-[1.04]"
+          style={{
+            background: `${color}12`,
+            color,
+            border: `1px solid ${color}22`,
+          }}
+        >
+          {icon}
+        </div>
+        {active && (
+          <span
+            className="w-1.5 h-1.5 rounded-full"
+            style={{ background: color, boxShadow: `0 0 8px ${color}` }}
+          />
+        )}
       </div>
+      <div
+        className="font-mono"
+        style={{
+          color: active ? color : 'var(--text-luminous)',
+          fontVariantNumeric: 'tabular-nums',
+          fontSize: 26,
+          lineHeight: 1.1,
+          letterSpacing: '-0.02em',
+          fontWeight: 600,
+        }}
+      >
+        {value}
+      </div>
+      <div
+        className="mt-1 text-[11px]"
+        style={{
+          color: 'var(--text-secondary)',
+          letterSpacing: '0.01em',
+        }}
+      >
+        {label}
+      </div>
+      {sub && (
+        <div
+          className="mt-0.5 text-[10px]"
+          style={{ color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}
+        >
+          {sub}
+        </div>
+      )}
     </button>
   );
 }
@@ -692,10 +845,10 @@ function TopWeightBar({ value }: { value: number | null }) {
   const pct = value * 100;
   const color = pct > 50 ? 'var(--accent-emerald)' : pct > 25 ? 'var(--accent-amber)' : 'var(--text-secondary)';
   return (
-    <div className="flex items-center gap-1.5 justify-end">
-      <span className="font-mono text-[10px]" style={{ color }}>{pct.toFixed(1)}%</span>
-      <div className="w-10 h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--violet-6)' }}>
-        <div className="h-full rounded-full" style={{ width: `${Math.min(pct, 100)}%`, background: color }} />
+    <div className="flex items-center gap-2 justify-end">
+      <span className="font-mono text-[10.5px] tabular-nums" style={{ color, fontVariantNumeric: 'tabular-nums', minWidth: 36, textAlign: 'right' }}>{pct.toFixed(1)}%</span>
+      <div className="w-12 h-[3px] rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.05)' }}>
+        <div className="h-full rounded-full transition-all duration-200" style={{ width: `${Math.min(pct, 100)}%`, background: color, boxShadow: `0 0 4px ${color}55` }} />
       </div>
     </div>
   );
@@ -706,16 +859,27 @@ function TopWeightBar({ value }: { value: number | null }) {
    ══════════════════════════════════════════════════════════════════ */
 
 function GradeBadge({ grade }: { grade: string | null }) {
-  if (!grade) return <span className="text-[9px]" style={{ color: '#7a8ba4' }}>--</span>;
-  const colors: Record<string, { bg: string; text: string }> = {
-    'A': { bg: 'var(--emerald-12)', text: 'var(--accent-emerald)' },
-    'B': { bg: 'rgba(59,130,246,0.12)', text: '#60a5fa' },
-    'C': { bg: 'var(--amber-12)', text: 'var(--accent-amber)' },
-    'D': { bg: 'var(--rose-12)', text: 'var(--accent-rose)' },
+  if (!grade) return <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>--</span>;
+  const colors: Record<string, { bg: string; text: string; ring: string }> = {
+    'A': { bg: 'var(--emerald-12)', text: 'var(--accent-emerald)', ring: 'rgba(52,211,153,0.25)' },
+    'B': { bg: 'rgba(59,130,246,0.12)', text: '#60a5fa', ring: 'rgba(96,165,250,0.25)' },
+    'C': { bg: 'var(--amber-12)', text: 'var(--accent-amber)', ring: 'rgba(251,191,36,0.25)' },
+    'D': { bg: 'var(--rose-12)', text: 'var(--accent-rose)', ring: 'rgba(255,107,138,0.28)' },
   };
-  const c = colors[grade] ?? { bg: 'var(--violet-6)', text: '#94a3b8' };
+  const c = colors[grade] ?? { bg: 'var(--violet-6)', text: '#94a3b8', ring: 'var(--violet-10)' };
   return (
-    <span className="px-1.5 py-0.5 rounded text-[9px] font-bold" style={{ background: c.bg, color: c.text }}>
+    <span
+      className="inline-flex items-center justify-center rounded-md text-[10px] font-bold"
+      style={{
+        background: c.bg,
+        color: c.text,
+        border: `1px solid ${c.ring}`,
+        minWidth: 22,
+        height: 18,
+        padding: '0 5px',
+        letterSpacing: '0.02em',
+      }}
+    >
       {grade}
     </span>
   );
@@ -731,14 +895,21 @@ function SortHeader({ label, sortKey: sk, currentKey, dir, onSort, align }: {
 }) {
   const active = currentKey === sk && dir != null;
   return (
-    <th className={`px-3 py-2 text-${align} cursor-pointer select-none transition-colors hover:text-[#b49aff]`}
-      style={{ color: active ? '#b49aff' : 'var(--text-muted)' }}
+    <th
+      className={`px-3 py-2.5 text-${align} cursor-pointer select-none transition-colors hover:text-[#c9b8ff]`}
+      style={{
+        color: active ? '#c9b8ff' : 'var(--text-muted)',
+        fontSize: 10,
+        fontWeight: 600,
+        textTransform: 'uppercase',
+        letterSpacing: '0.08em',
+      }}
       onClick={() => onSort(sk)}
     >
-      <span className="inline-flex items-center gap-1">
-        {label}
-        {active && dir === 'asc' && <ChevronUp className="w-3 h-3" />}
-        {active && dir === 'desc' && <ChevronDown className="w-3 h-3" />}
+      <span className={`inline-flex items-center gap-1 ${align === 'right' ? 'justify-end' : align === 'center' ? 'justify-center' : ''}`}>
+        <span>{label}</span>
+        {active && dir === 'asc' && <ChevronUp className="w-3 h-3" strokeWidth={2.5} />}
+        {active && dir === 'desc' && <ChevronDown className="w-3 h-3" strokeWidth={2.5} />}
       </span>
     </th>
   );
@@ -824,11 +995,11 @@ function RetunePanel({ status, logs, onClose, elapsed, retune }: {
           {status === 'failed' && <span className="text-xs" style={{ color: 'var(--accent-rose)' }}>Failed{elapsed ? ` after ${formatElapsed(elapsed)}` : ''}</span>}
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={handleCopyLog} className="p-1 rounded transition hover:bg-[var(--violet-8)]" title="Copy log" style={{ color: '#7a8ba4' }}>
-            <Copy className="w-3.5 h-3.5" />
+          <button onClick={handleCopyLog} className="inline-flex items-center justify-center w-7 h-7 rounded-full transition-all hover:brightness-125" title="Copy log" style={{ color: '#94a3b8', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--violet-8)' }}>
+            <Copy className="w-3 h-3" />
           </button>
-          <button onClick={onClose} className="p-1 rounded transition hover:bg-[var(--violet-8)]" style={{ color: '#7a8ba4' }}>
-            <XCircle className="w-3.5 h-3.5" />
+          <button onClick={onClose} className="inline-flex items-center justify-center w-7 h-7 rounded-full transition-all hover:brightness-125" title="Close" style={{ color: '#94a3b8', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--violet-8)' }}>
+            <X className="w-3 h-3" />
           </button>
         </div>
       </div>
@@ -838,7 +1009,7 @@ function RetunePanel({ status, logs, onClose, elapsed, retune }: {
         style={{ background: 'rgba(10,10,26,0.8)' }}>
         {logs.map((entry, i) => (
           <div key={i} className={`py-0.5 ${logColor(entry.type)}`}
-            style={{ borderLeft: entry.type === 'progress' ? '2px solid var(--accent-emerald)' : entry.type === 'error' || entry.type === 'failed' ? '2px solid var(--accent-rose)' : entry.type === 'phase' ? '2px solid var(--accent-cyan)' : '2px solid transparent', paddingLeft: 8 }}>
+            style={{ borderLeft: entry.type === 'progress' ? '1px solid var(--accent-emerald)' : entry.type === 'error' || entry.type === 'failed' ? '1px solid var(--accent-rose)' : entry.type === 'phase' ? '1px solid var(--accent-cyan)' : '1px solid transparent', paddingLeft: 10, opacity: 0.92 }}>
             {entry.message}
           </div>
         ))}
@@ -905,43 +1076,85 @@ const ModelDistributionChart = memo(function ModelDistributionChart({ data, expa
     const maxCount = data.length > 0 ? data[0].count : 1;
 
     return (
-      <div className="glass-card p-5 mb-6 fade-up" style={{
-        background: 'linear-gradient(135deg, var(--violet-3), rgba(99,102,241,0.02))',
-      }}>
-        {/* Header */}
+      <div
+        className="glass-card p-5 mb-6 fade-up"
+        style={{
+          background: 'linear-gradient(135deg, var(--violet-3), rgba(99,102,241,0.02))',
+          borderRadius: 16,
+        }}
+      >
+        {/* Header — Apple-like: icon chip · title stack · hairline pill stats */}
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-3">
-            <div className="p-1.5 rounded-lg" style={{ background: 'rgba(34,211,238,0.1)' }}>
-              <PieChart className="w-4 h-4" style={{ color: 'var(--accent-cyan)' }} />
+            <div
+              className="w-8 h-8 rounded-[10px] flex items-center justify-center"
+              style={{
+                background: 'linear-gradient(135deg, rgba(56,217,245,0.14), rgba(56,217,245,0.04))',
+                border: '1px solid rgba(56,217,245,0.22)',
+                boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06)',
+              }}
+            >
+              <PieChart className="w-[15px] h-[15px]" style={{ color: 'var(--accent-cyan)' }} strokeWidth={2.25} />
             </div>
-            <div>
-              <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Model Distribution</span>
-              <span className="text-[10px] font-mono ml-2" style={{ color: '#7a8ba4' }}>{data.length} models across {total} assets</span>
+            <div className="flex flex-col leading-tight">
+              <span className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
+                Model Distribution
+              </span>
+              <span
+                className="text-[10px] uppercase font-semibold mt-[2px] tabular-nums"
+                style={{ color: 'var(--text-muted)', letterSpacing: '0.1em' }}
+              >
+                {data.length} models &middot; {total} assets
+              </span>
             </div>
           </div>
-          <div className="flex items-center gap-3 text-[10px]">
+          <div className="flex items-center gap-2">
             {globalPitRate != null && (
-              <span className="px-2 py-1 rounded-md font-mono font-medium" style={{
-                background: globalPitRate >= 90 ? 'rgba(16,185,129,0.1)' : 'rgba(245,158,11,0.1)',
-                color: globalPitRate >= 90 ? 'var(--accent-emerald)' : 'var(--accent-amber)',
-                border: `1px solid ${globalPitRate >= 90 ? 'rgba(16,185,129,0.2)' : 'rgba(245,158,11,0.2)'}`,
-              }}>
-                PIT {globalPitRate}%
+              <span
+                className="inline-flex items-center gap-1 h-[22px] px-2.5 rounded-full text-[10px] font-semibold tabular-nums"
+                style={{
+                  background: globalPitRate >= 90 ? 'rgba(16,185,129,0.08)' : 'rgba(245,158,11,0.08)',
+                  color: globalPitRate >= 90 ? 'var(--accent-emerald)' : 'var(--accent-amber)',
+                  border: `1px solid ${globalPitRate >= 90 ? 'rgba(16,185,129,0.24)' : 'rgba(245,158,11,0.24)'}`,
+                  letterSpacing: '0.02em',
+                }}
+              >
+                <span className="opacity-70">PIT</span>
+                <span>{globalPitRate}%</span>
               </span>
             )}
             {globalAvgBic != null && (
-              <span className="px-2 py-1 rounded-md font-mono" style={{
-                background: 'rgba(139,92,246,0.08)', color: '#b49aff', border: '1px solid rgba(139,92,246,0.15)',
-              }}>
-                Avg BIC {globalAvgBic.toFixed(0)}
+              <span
+                className="inline-flex items-center gap-1 h-[22px] px-2.5 rounded-full text-[10px] font-semibold tabular-nums"
+                style={{
+                  background: 'rgba(139,92,246,0.08)',
+                  color: '#b49aff',
+                  border: '1px solid rgba(139,92,246,0.22)',
+                  letterSpacing: '0.02em',
+                }}
+              >
+                <span className="opacity-70">AVG BIC</span>
+                <span>{globalAvgBic.toFixed(0)}</span>
               </span>
             )}
           </div>
         </div>
 
-        {/* All models — individual rows with full names */}
-        <div className="space-y-1.5">
-          {data.map((d) => {
+        {/* Column legend */}
+        <div
+          className="flex items-center gap-3 px-3 pb-2 text-[9.5px] uppercase font-semibold tabular-nums"
+          style={{ color: 'var(--text-muted)', letterSpacing: '0.12em', opacity: 0.7 }}
+        >
+          <span style={{ flex: '0 0 280px' }}>Model</span>
+          <span className="flex-1">Share</span>
+          <span style={{ flex: '0 0 70px' }} className="text-right">Assets</span>
+          <span style={{ flex: '0 0 50px' }} className="text-right">PIT</span>
+          <span style={{ flex: '0 0 65px' }} className="text-right">Avg BIC</span>
+        </div>
+
+        {/* All models — hairline rows, Apple-like */}
+        <div>
+          {data.map((d, i) => {
             const frac = d.count / (total || 1);
             const barPct = (d.count / maxCount) * 100;
             const colors = MODEL_COLORS[modelFamily(d.fullName ?? d.name)] ?? MODEL_COLORS.default;
@@ -950,50 +1163,115 @@ const ModelDistributionChart = memo(function ModelDistributionChart({ data, expa
             const pitTotal = a ? a.pit_pass + a.pit_fail : 0;
             const pitRate = pitTotal > 0 ? Math.round((a!.pit_pass / pitTotal) * 100) : null;
             return (
-              <div key={d.fullName ?? d.name} className="flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-150 hover:scale-[1.005] group" style={{
-                background: isBest ? `linear-gradient(135deg, rgba(16,185,129,0.06), ${colors.bg})` : colors.bg,
-                border: `1px solid ${isBest ? 'rgba(16,185,129,0.25)' : `${colors.bar}15`}`,
-                boxShadow: isBest ? '0 0 12px rgba(16,185,129,0.06)' : undefined,
-              }}>
-                {/* Rank + model name */}
-                <div className="flex items-center gap-2 min-w-0" style={{ flex: '0 0 280px' }}>
-                  {isBest && <Target className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--accent-emerald)' }} />}
-                  <span className="text-[11px] font-semibold truncate" style={{ color: colors.text }}>
+              <div
+                key={d.fullName ?? d.name}
+                className="relative flex items-center gap-3 px-3 py-[9px] transition-colors duration-150 group"
+                style={{
+                  borderTop: i === 0 ? '1px solid rgba(139,92,246,0.09)' : undefined,
+                  borderBottom: '1px solid rgba(139,92,246,0.09)',
+                  background: isBest
+                    ? 'linear-gradient(90deg, rgba(16,185,129,0.06), transparent 60%)'
+                    : undefined,
+                }}
+                onMouseEnter={(e) => {
+                  (e.currentTarget as HTMLDivElement).style.background =
+                    isBest
+                      ? 'linear-gradient(90deg, rgba(16,185,129,0.10), rgba(139,92,246,0.04) 60%)'
+                      : 'rgba(139,92,246,0.04)';
+                }}
+                onMouseLeave={(e) => {
+                  (e.currentTarget as HTMLDivElement).style.background = isBest
+                    ? 'linear-gradient(90deg, rgba(16,185,129,0.06), transparent 60%)'
+                    : '';
+                }}
+              >
+                {/* Left accent rail for best */}
+                {isBest && (
+                  <span
+                    aria-hidden
+                    className="absolute left-0 top-2 bottom-2 w-[2px] rounded-full"
+                    style={{ background: 'var(--accent-emerald)', boxShadow: '0 0 6px rgba(16,185,129,0.55)' }}
+                  />
+                )}
+
+                {/* Model name */}
+                <div className="flex items-center gap-1.5 min-w-0" style={{ flex: '0 0 280px' }}>
+                  <span
+                    className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                    style={{ background: colors.bar, boxShadow: `0 0 6px ${colors.bar}80` }}
+                  />
+                  <span
+                    className="text-[11.5px] font-semibold truncate"
+                    style={{ color: colors.text, letterSpacing: '-0.005em' }}
+                  >
                     {formatModelName(d.fullName ?? d.name)}
                   </span>
+                  {isBest && (
+                    <Target
+                      className="w-3 h-3 flex-shrink-0"
+                      style={{ color: 'var(--accent-emerald)' }}
+                      strokeWidth={2.25}
+                    />
+                  )}
                 </div>
 
-                {/* Share bar */}
-                <div className="flex items-center gap-2 flex-1 min-w-0">
-                  <div className="flex-1 h-2 rounded-sm overflow-hidden" style={{ background: `${colors.bar}12` }}>
-                    <div className="h-full rounded-sm transition-all duration-500" style={{
-                      width: `${Math.max(barPct, 2)}%`,
-                      background: `linear-gradient(90deg, ${colors.bar}, ${colors.bar}88)`,
-                    }} />
+                {/* Share bar — 3px, thin, elegant */}
+                <div className="flex items-center flex-1 min-w-0">
+                  <div
+                    className="flex-1 h-[3px] rounded-full overflow-hidden"
+                    style={{ background: 'rgba(139,92,246,0.08)' }}
+                  >
+                    <div
+                      className="h-full rounded-full transition-all duration-500"
+                      style={{
+                        width: `${Math.max(barPct, 2)}%`,
+                        background: `linear-gradient(90deg, ${colors.bar}, ${colors.bar}aa)`,
+                        boxShadow: `0 0 6px ${colors.bar}55`,
+                      }}
+                    />
                   </div>
                 </div>
 
                 {/* Asset count + share */}
-                <div className="flex items-baseline gap-1" style={{ flex: '0 0 70px' }}>
-                  <span className="text-xs font-mono font-bold" style={{ color: colors.text }}>{d.count}</span>
-                  <span className="text-[9px] font-mono" style={{ color: '#7a8ba4' }}>({(frac * 100).toFixed(1)}%)</span>
+                <div className="flex items-baseline justify-end gap-1 tabular-nums" style={{ flex: '0 0 70px' }}>
+                  <span className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
+                    {d.count}
+                  </span>
+                  <span className="text-[9.5px]" style={{ color: 'var(--text-muted)' }}>
+                    {(frac * 100).toFixed(1)}%
+                  </span>
                 </div>
 
                 {/* PIT rate */}
-                <div style={{ flex: '0 0 50px' }} className="text-right">
+                <div style={{ flex: '0 0 50px' }} className="text-right tabular-nums">
                   {pitRate != null ? (
-                    <span className="text-[10px] font-mono font-semibold" style={{
-                      color: pitRate >= 90 ? 'var(--accent-emerald)' : pitRate >= 70 ? 'var(--accent-amber)' : 'var(--accent-rose)',
-                    }}>PIT {pitRate}%</span>
+                    <span
+                      className="text-[10.5px] font-semibold"
+                      style={{
+                        color:
+                          pitRate >= 90
+                            ? 'var(--accent-emerald)'
+                            : pitRate >= 70
+                            ? 'var(--accent-amber)'
+                            : 'var(--accent-rose)',
+                      }}
+                    >
+                      {pitRate}%
+                    </span>
                   ) : (
-                    <span className="text-[10px] font-mono" style={{ color: '#7a8ba4' }}>--</span>
+                    <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                      &ndash;
+                    </span>
                   )}
                 </div>
 
                 {/* Avg BIC */}
-                <div style={{ flex: '0 0 65px' }} className="text-right">
-                  <span className="text-[10px] font-mono" style={{ color: a?.avg_bic != null ? '#b49aff' : '#7a8ba4' }}>
-                    {a?.avg_bic != null ? a.avg_bic.toFixed(0) : '--'}
+                <div style={{ flex: '0 0 65px' }} className="text-right tabular-nums">
+                  <span
+                    className="text-[10.5px] font-semibold"
+                    style={{ color: a?.avg_bic != null ? '#b49aff' : 'var(--text-muted)' }}
+                  >
+                    {a?.avg_bic != null ? a.avg_bic.toFixed(0) : '–'}
                   </span>
                 </div>
               </div>
@@ -1010,60 +1288,89 @@ const ModelDistributionChart = memo(function ModelDistributionChart({ data, expa
   const globalPitRateExp = (globalPitPassExp + globalPitFailExp) > 0 ? Math.round((globalPitPassExp / (globalPitPassExp + globalPitFailExp)) * 100) : null;
 
   return (
-    <div className="glass-card p-5 mb-6 fade-up" style={{
-      background: 'linear-gradient(135deg, var(--violet-3), rgba(99,102,241,0.03))',
-      boxShadow: '0 4px 24px rgba(99,102,241,0.06)',
-    }}>
-      {/* Header with global stats */}
+    <div
+      className="glass-card p-5 mb-6 fade-up"
+      style={{
+        background: 'linear-gradient(135deg, var(--violet-3), rgba(99,102,241,0.03))',
+        boxShadow: '0 4px 24px rgba(99,102,241,0.06)',
+        borderRadius: 16,
+      }}
+    >
+      {/* Header — icon chip · title · hairline pills */}
       <div className="flex items-center justify-between mb-5">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-xl" style={{ background: 'rgba(34,211,238,0.1)', boxShadow: '0 0 12px rgba(34,211,238,0.08)' }}>
-            <Layers className="w-5 h-5" style={{ color: 'var(--accent-cyan)' }} />
+          <div
+            className="w-10 h-10 rounded-[12px] flex items-center justify-center"
+            style={{
+              background: 'linear-gradient(135deg, rgba(56,217,245,0.16), rgba(56,217,245,0.04))',
+              border: '1px solid rgba(56,217,245,0.24)',
+              boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06), 0 0 16px rgba(34,211,238,0.08)',
+            }}
+          >
+            <Layers className="w-[18px] h-[18px]" style={{ color: 'var(--accent-cyan)' }} strokeWidth={2.25} />
           </div>
-          <div>
-            <h3 className="text-base font-bold" style={{ color: 'var(--text-primary)' }}>Model Analytics Dashboard</h3>
-            <span className="text-[10px] font-mono" style={{ color: '#7a8ba4' }}>{data.length} competing models across {total} assets</span>
+          <div className="flex flex-col leading-tight">
+            <h3 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)', letterSpacing: '-0.015em' }}>
+              Model Analytics
+            </h3>
+            <span
+              className="text-[10px] uppercase font-semibold mt-[2px] tabular-nums"
+              style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}
+            >
+              {data.length} competing models &middot; {total} assets
+            </span>
           </div>
         </div>
         <div className="flex items-center gap-2">
           {globalPitRateExp != null && (
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg" style={{
-              background: globalPitRateExp >= 90 ? 'rgba(16,185,129,0.08)' : 'rgba(245,158,11,0.08)',
-              border: `1px solid ${globalPitRateExp >= 90 ? 'rgba(16,185,129,0.2)' : 'rgba(245,158,11,0.2)'}`,
-            }}>
-              <CheckCircle className="w-3.5 h-3.5" style={{ color: globalPitRateExp >= 90 ? 'var(--accent-emerald)' : 'var(--accent-amber)' }} />
-              <span className="text-xs font-mono font-semibold" style={{
+            <span
+              className="inline-flex items-center gap-1.5 h-[26px] px-3 rounded-full text-[10.5px] font-semibold tabular-nums"
+              style={{
+                background: globalPitRateExp >= 90 ? 'rgba(16,185,129,0.08)' : 'rgba(245,158,11,0.08)',
+                border: `1px solid ${globalPitRateExp >= 90 ? 'rgba(16,185,129,0.24)' : 'rgba(245,158,11,0.24)'}`,
                 color: globalPitRateExp >= 90 ? 'var(--accent-emerald)' : 'var(--accent-amber)',
-              }}>PIT {globalPitRateExp}%</span>
-            </div>
+                letterSpacing: '0.02em',
+              }}
+            >
+              <CheckCircle className="w-[12px] h-[12px]" strokeWidth={2.4} />
+              <span className="opacity-70">PIT</span>
+              <span>{globalPitRateExp}%</span>
+            </span>
           )}
           {bestBicModel && (
-            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg" style={{
-              background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.15)',
-            }}>
-              <Award className="w-3.5 h-3.5" style={{ color: 'var(--accent-emerald)' }} />
-              <span className="text-[10px] font-medium" style={{ color: 'var(--accent-emerald)' }}>Best: {formatModelName(bestBicModel)}</span>
-            </div>
+            <span
+              className="inline-flex items-center gap-1.5 h-[26px] px-3 rounded-full text-[10.5px] font-semibold"
+              style={{
+                background: 'rgba(16,185,129,0.06)',
+                border: '1px solid rgba(16,185,129,0.2)',
+                color: 'var(--accent-emerald)',
+                letterSpacing: '0.01em',
+              }}
+            >
+              <Award className="w-[12px] h-[12px]" strokeWidth={2.4} />
+              <span className="opacity-70 uppercase" style={{ letterSpacing: '0.1em' }}>Best</span>
+              <span>{formatModelName(bestBicModel)}</span>
+            </span>
           )}
         </div>
       </div>
 
-      {/* Full model analytics table */}
-      <div className="overflow-x-auto rounded-xl" style={{ border: '1px solid var(--violet-6)' }}>
+      {/* Full model analytics table — hairline header, tabular-nums body */}
+      <div className="overflow-x-auto rounded-[12px]" style={{ border: '1px solid var(--violet-6)' }}>
         <table className="w-full text-xs">
           <thead>
-            <tr style={{ background: 'rgba(10,10,26,0.6)', borderBottom: '1px solid var(--violet-8)' }}>
-              <th className="text-left px-3 py-2.5 font-medium" style={{ color: 'var(--text-muted)' }}>Model</th>
-              <th className="text-center px-2 py-2.5 font-medium" style={{ color: 'var(--text-muted)' }}>Assets</th>
-              <th className="text-right px-2 py-2.5 font-medium" style={{ color: 'var(--text-muted)' }}>Avg BIC</th>
-              <th className="text-right px-2 py-2.5 font-medium" style={{ color: 'var(--text-muted)' }}>Best BIC</th>
-              <th className="text-center px-2 py-2.5 font-medium" style={{ color: 'var(--text-muted)' }}>PIT Rate</th>
-              <th className="text-right px-2 py-2.5 font-medium" style={{ color: 'var(--text-muted)' }}>Avg phi</th>
-              <th className="text-right px-2 py-2.5 font-medium" style={{ color: 'var(--text-muted)' }}>Avg nu</th>
-              <th className="text-right px-2 py-2.5 font-medium" style={{ color: 'var(--text-muted)' }}>Avg KS p</th>
-              <th className="text-right px-2 py-2.5 font-medium" style={{ color: 'var(--text-muted)' }}>Avg Wt</th>
-              <th className="px-2 py-2.5 font-medium" style={{ color: 'var(--text-muted)', minWidth: 100 }}>Share</th>
-              <th className="text-left px-2 py-2.5 font-medium" style={{ color: 'var(--text-muted)' }}>Top Symbols</th>
+            <tr style={{ background: 'rgba(10,10,26,0.55)', borderBottom: '1px solid var(--violet-8)' }}>
+              <th className="text-left px-3 py-2.5 font-semibold uppercase" style={{ color: 'var(--text-muted)', fontSize: 9.5, letterSpacing: '0.1em' }}>Model</th>
+              <th className="text-center px-2 py-2.5 font-semibold uppercase" style={{ color: 'var(--text-muted)', fontSize: 9.5, letterSpacing: '0.1em' }}>Assets</th>
+              <th className="text-right px-2 py-2.5 font-semibold uppercase" style={{ color: 'var(--text-muted)', fontSize: 9.5, letterSpacing: '0.1em' }}>Avg BIC</th>
+              <th className="text-right px-2 py-2.5 font-semibold uppercase" style={{ color: 'var(--text-muted)', fontSize: 9.5, letterSpacing: '0.1em' }}>Best BIC</th>
+              <th className="text-center px-2 py-2.5 font-semibold uppercase" style={{ color: 'var(--text-muted)', fontSize: 9.5, letterSpacing: '0.1em' }}>PIT Rate</th>
+              <th className="text-right px-2 py-2.5 font-semibold uppercase" style={{ color: 'var(--text-muted)', fontSize: 9.5, letterSpacing: '0.1em' }}>Avg φ</th>
+              <th className="text-right px-2 py-2.5 font-semibold uppercase" style={{ color: 'var(--text-muted)', fontSize: 9.5, letterSpacing: '0.1em' }}>Avg ν</th>
+              <th className="text-right px-2 py-2.5 font-semibold uppercase" style={{ color: 'var(--text-muted)', fontSize: 9.5, letterSpacing: '0.1em' }}>Avg KS p</th>
+              <th className="text-right px-2 py-2.5 font-semibold uppercase" style={{ color: 'var(--text-muted)', fontSize: 9.5, letterSpacing: '0.1em' }}>Avg Wt</th>
+              <th className="px-2 py-2.5 font-semibold uppercase" style={{ color: 'var(--text-muted)', minWidth: 100, fontSize: 9.5, letterSpacing: '0.1em' }}>Share</th>
+              <th className="text-left px-2 py-2.5 font-semibold uppercase" style={{ color: 'var(--text-muted)', fontSize: 9.5, letterSpacing: '0.1em' }}>Top Symbols</th>
             </tr>
           </thead>
           <tbody>
@@ -1387,13 +1694,18 @@ function DetailPanel({ symbol, data, onViewDiagnostics, onClose }: {
         </div>
         <div className="flex items-center gap-2">
           <button onClick={onViewDiagnostics}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-all hover:scale-[1.02]"
-            style={{ color: '#b49aff', background: 'var(--violet-8)', border: '1px solid var(--violet-12)' }}
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[12px] font-medium transition-all duration-150 hover:brightness-110 active:scale-[0.98]"
+            style={{
+              color: '#c9b8ff',
+              background: 'linear-gradient(180deg, rgba(180,154,255,0.12), rgba(180,154,255,0.05))',
+              border: '1px solid var(--violet-15)',
+              letterSpacing: '0.01em',
+            }}
           >
             Diagnostics <ArrowRight className="w-3 h-3" />
           </button>
-          <button onClick={onClose} className="p-1.5 rounded-lg transition hover:bg-[var(--violet-8)]" style={{ color: '#7a8ba4' }}>
-            <X className="w-4 h-4" />
+          <button onClick={onClose} className="inline-flex items-center justify-center w-8 h-8 rounded-full transition-all hover:brightness-125" style={{ color: '#94a3b8', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--violet-8)' }}>
+            <X className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
@@ -1486,17 +1798,35 @@ function DetailPanel({ symbol, data, onViewDiagnostics, onClose }: {
 function PitBadge({ asset }: { asset: TuneAsset }) {
   if (asset.ad_pass === true)
     return (
-      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-medium"
-        style={{ background: 'var(--emerald-12)', color: 'var(--accent-emerald)' }}>
-        <CheckCircle className="w-2.5 h-2.5" /> Pass
+      <span
+        className="inline-flex items-center gap-1 rounded-md text-[10px] font-medium"
+        style={{
+          background: 'var(--emerald-12)',
+          color: 'var(--accent-emerald)',
+          border: '1px solid rgba(52,211,153,0.22)',
+          padding: '1px 6px',
+          height: 18,
+          letterSpacing: '0.01em',
+        }}
+      >
+        <CheckCircle className="w-2.5 h-2.5" strokeWidth={2.5} /> Pass
       </span>
     );
   if (asset.ad_pass === false)
     return (
-      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-medium"
-        style={{ background: 'var(--rose-12)', color: 'var(--accent-rose)' }}>
-        <XCircle className="w-2.5 h-2.5" /> Fail
+      <span
+        className="inline-flex items-center gap-1 rounded-md text-[10px] font-medium"
+        style={{
+          background: 'var(--rose-12)',
+          color: 'var(--accent-rose)',
+          border: '1px solid rgba(255,107,138,0.25)',
+          padding: '1px 6px',
+          height: 18,
+          letterSpacing: '0.01em',
+        }}
+      >
+        <XCircle className="w-2.5 h-2.5" strokeWidth={2.5} /> Fail
       </span>
     );
-  return <span className="inline-block w-2 h-2 rounded-full" style={{ background: '#7a8ba4' }} />;
+  return <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: 'rgba(148,163,184,0.5)' }} />;
 }
