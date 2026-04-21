@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, useMemo, useEffect, useRef, useCallback, Component, type ReactNode, type ErrorInfo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
-import type { SummaryRow, SectorGroup, StrongSignalEntry, HighConvictionSignal, SignalSummaryData, SignalStats, EmaState } from '../api';
+import type { SummaryRow, SectorGroup, StrongSignalEntry, HighConvictionSignal, SignalSummaryData, SignalStats, EmaState, SmaReversal, SmaReversalsData } from '../api';
 import PageHeader from '../components/PageHeader';
 import { SignalTableSkeleton } from '../components/CosmicSkeleton';
 import { CosmicErrorCard } from '../components/CosmicErrorState';
@@ -17,8 +17,8 @@ import { JobRunnerModal, type JobMode } from '../components/JobRunnerModal';
 import {
   ArrowUpCircle, ArrowDownCircle, Filter, ChevronDown, ChevronRight,
   TrendingUp, TrendingDown, Search, X, ExternalLink, BarChart3,
-  Target, Shield, ArrowUp, ArrowDown, Clock, DollarSign,
-  Activity, Eye, Layers, ChevronUp,
+  Target, Shield, ShieldCheck, ArrowUp, ArrowDown, Clock, DollarSign,
+  Activity, Eye, Layers, ChevronUp, AlertTriangle, Zap,
 } from 'lucide-react';
 import { formatHorizon, responsiveHorizons } from '../utils/horizons';
 
@@ -287,6 +287,27 @@ function SignalsPageInner() {
   });
   const emaStates = emaQ.data?.states ?? {};
 
+  const reversalsQ = useQuery({
+    queryKey: ['smaReversals'],
+    queryFn: api.smaReversals,
+    staleTime: 60_000,
+  });
+
+  // asset_label is a display label like "Euro / US Dollar (EURUSD=X)".
+  // Extract the ticker from the trailing parenthetical and normalise FX
+  // variants (EURUSD=X on the API ↔ EURUSD_X on disk / in emaStates).
+  const emaLookup = useCallback((assetLabel: string | undefined | null) => {
+    if (!assetLabel) return undefined;
+    const m = assetLabel.match(/\(([^)]+)\)\s*$/);
+    const raw = (m ? m[1] : assetLabel).trim();
+    return (
+      emaStates[raw] ??
+      emaStates[raw.replace(/=/g, '_')] ??
+      emaStates[raw.replace(/_/g, '=')] ??
+      emaStates[raw.toUpperCase()]
+    );
+  }, [emaStates]);
+
   const rows = data?.summary_rows || [];
   const allHorizons = data?.horizons || [];
   const windowWidth = useWindowWidth();
@@ -346,13 +367,13 @@ function SignalsPageInner() {
   // for a ticker = fail any active EMA toggle.
   const passesEma = useCallback((ticker: string | undefined | null): boolean => {
     if (!emaFilters.p9 && !emaFilters.p50 && !emaFilters.p600) return true;
-    const st = ticker ? emaStates[ticker] : undefined;
+    const st = emaLookup(ticker);
     if (!st) return false;
     if (emaFilters.p9 && st.below_9 !== true) return false;
     if (emaFilters.p50 && st.below_50 !== true) return false;
     if (emaFilters.p600 && st.below_600 !== true) return false;
     return true;
-  }, [emaFilters, emaStates]);
+  }, [emaFilters, emaLookup]);
 
   const filteredRows = useMemo(() => {
     return rows.filter((row) => {
@@ -488,6 +509,14 @@ function SignalsPageInner() {
           emaStates={emaStates}
         />
       </div>
+
+      {/* SMA Reversals — world-class crossover detection (9 / 50 / 600) */}
+      <SmaReversalsPanel
+        data={reversalsQ.data}
+        isLoading={reversalsQ.isLoading}
+        rows={rows}
+        onNavigateChart={(sym) => navigate(`/charts/${sym}`)}
+      />
 
       {/* Export button row */}
       <div className="flex items-center justify-between gap-3 mb-3">
@@ -687,9 +716,9 @@ function SignalsPageInner() {
               Trend
             </span>
             {([
-              { key: 'p9' as const,   period: 'EMA 9',   count: rows.filter(r => emaStates[r.asset_label]?.below_9   === true).length },
-              { key: 'p50' as const,  period: 'EMA 50',  count: rows.filter(r => emaStates[r.asset_label]?.below_50  === true).length },
-              { key: 'p600' as const, period: 'EMA 600', count: rows.filter(r => emaStates[r.asset_label]?.below_600 === true).length },
+              { key: 'p9' as const,   period: 'EMA 9',   count: rows.filter(r => emaLookup(r.asset_label)?.below_9   === true).length },
+              { key: 'p50' as const,  period: 'EMA 50',  count: rows.filter(r => emaLookup(r.asset_label)?.below_50  === true).length },
+              { key: 'p600' as const, period: 'EMA 600', count: rows.filter(r => emaLookup(r.asset_label)?.below_600 === true).length },
             ]).map(({ key, period, count }) => {
               const on = emaFilters[key];
               const emaLoaded = Object.keys(emaStates).length > 0;
@@ -2325,6 +2354,573 @@ interface GroupedTicker {
 }
 
 // ─── Apple-grade micro components for HighConvictionPanel ───────────────
+
+// ═══════════════════════════════════════════════════════════════════════
+//   SmaReversalsPanel — world-class SMA (9/50/600) reversal dashboard
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Consumes the `/api/signals/sma-reversals` snapshot. Each reversal carries
+// a composite 0-100 score built from: ATR-normalised distance, 5d SMA
+// slope, volume vs 20d baseline, persistence (K of M bars on the new
+// side), and freshness (days since cross ≤ 5). False-breaks are penalised
+// (0.6×) but kept visible, flagged with an amber shield.
+//
+function SmaReversalsPanel({
+  data,
+  isLoading,
+  rows,
+  onNavigateChart,
+}: {
+  data: SmaReversalsData | undefined;
+  isLoading: boolean;
+  rows: SummaryRow[];
+  onNavigateChart: (symbol: string) => void;
+}) {
+  const [periodFilter, setPeriodFilter] = useState<Set<number>>(() => new Set([9, 50, 600]));
+  const [direction, setDirection] = useState<'all' | 'bull' | 'bear'>('all');
+  const [gradeFilter, setGradeFilter] = useState<'all' | 'A' | 'B' | 'C'>('all');
+  const [minScore, setMinScore] = useState<number>(40);
+  const [hideFalseBreaks, setHideFalseBreaks] = useState<boolean>(true);
+  const [search, setSearch] = useState<string>('');
+  const [showAll, setShowAll] = useState<boolean>(false);
+
+  const labelMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of rows) {
+      const match = r.asset_label?.match(/\(([^)]+)\)\s*$/);
+      if (match) m.set(match[1].trim(), r.asset_label);
+      else if (r.asset_label) m.set(r.asset_label.trim(), r.asset_label);
+      // Also handle FX `=X` ↔ `_X` variance between data sides
+      if (match) {
+        m.set(match[1].replace(/=/g, '_').trim(), r.asset_label);
+      }
+    }
+    return m;
+  }, [rows]);
+
+  const reversals = data?.reversals || [];
+  const counts = data?.counts_by_period || {};
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toUpperCase();
+    return reversals.filter((r) => {
+      if (!periodFilter.has(r.period as number)) return false;
+      if (direction !== 'all' && r.direction !== direction) return false;
+      if (gradeFilter !== 'all' && r.grade !== gradeFilter) return false;
+      if (r.score < minScore) return false;
+      if (hideFalseBreaks && r.false_break) return false;
+      if (q && !r.symbol.toUpperCase().includes(q)) return false;
+      return true;
+    });
+  }, [reversals, periodFilter, direction, gradeFilter, minScore, hideFalseBreaks, search]);
+
+  const displayed = showAll ? filtered : filtered.slice(0, 20);
+
+  const togglePeriod = (p: number) => {
+    setPeriodFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(p)) {
+        if (next.size > 1) next.delete(p);  // never empty
+      } else {
+        next.add(p);
+      }
+      return next;
+    });
+  };
+
+  // Summary: total bull/bear across selected periods
+  const selectedTotals = useMemo(() => {
+    let bull = 0, bear = 0;
+    for (const p of Array.from(periodFilter)) {
+      const c = counts[String(p)];
+      if (c) { bull += c.bull; bear += c.bear; }
+    }
+    return { bull, bear };
+  }, [counts, periodFilter]);
+
+  return (
+    <div
+      className="mb-5 overflow-hidden fade-up-delay-2"
+      style={{
+        background: 'linear-gradient(180deg, rgba(255,255,255,0.028) 0%, rgba(255,255,255,0.008) 100%)',
+        border: '1px solid rgba(255,255,255,0.07)',
+        borderRadius: '16px',
+        boxShadow: '0 1px 0 rgba(255,255,255,0.05) inset, 0 10px 34px -18px rgba(0,0,0,0.7), 0 1px 0 rgba(0,0,0,0.4)',
+        backdropFilter: 'blur(12px)',
+      }}
+    >
+      {/* Header */}
+      <div className="flex flex-wrap items-center gap-3 px-4 pt-3.5 pb-3" style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+        <div className="flex items-center gap-2.5">
+          <div
+            className="flex items-center justify-center rounded-lg"
+            style={{
+              width: 28, height: 28,
+              background: 'linear-gradient(180deg, rgba(167,139,250,0.22), rgba(167,139,250,0.05))',
+              border: '1px solid rgba(167,139,250,0.32)',
+              boxShadow: '0 0 16px -6px rgba(167,139,250,0.6) inset',
+            }}
+          >
+            <Zap className="w-3.5 h-3.5" style={{ color: '#a78bfa' }} />
+          </div>
+          <div className="flex flex-col">
+            <h2 className="text-[13.5px] font-semibold text-[var(--text-primary)] tracking-tight">SMA Reversals</h2>
+            <span className="text-[9.5px] uppercase tracking-[0.14em] font-semibold text-[var(--text-muted)]">
+              9 · 50 · 600 crossovers
+            </span>
+          </div>
+        </div>
+
+        <div className="h-6 w-px bg-white/[0.05]" aria-hidden />
+
+        {/* Buy-setups headline — the "am I a buyer today" answer */}
+        {data?.buy_setups !== undefined && (
+          <div
+            className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-[3px]"
+            style={{
+              background: 'linear-gradient(180deg, rgba(16,185,129,0.22), rgba(16,185,129,0.06))',
+              border: '1px solid rgba(16,185,129,0.45)',
+              boxShadow: '0 0 16px -6px rgba(16,185,129,0.65) inset',
+            }}
+            title="High-quality long setups: Grade A or B, bull direction, regime-aligned, not overextended"
+          >
+            <ShieldCheck className="w-3 h-3" style={{ color: '#34d399' }} />
+            <span className="text-[10.5px] font-semibold text-white tabular-nums">{data.buy_setups}</span>
+            <span className="text-[9.5px] uppercase tracking-[0.12em] font-semibold text-[#a7f3d0]">buy setups</span>
+          </div>
+        )}
+
+        {/* Totals bull / bear */}
+        <div className="flex items-center gap-3 text-[11px] tabular-nums">
+          <div className="inline-flex items-center gap-1.5">
+            <TrendingUp className="w-3 h-3" style={{ color: '#34d399' }} />
+            <span className="text-[var(--text-secondary)]">Bull</span>
+            <span className="font-semibold text-[var(--text-primary)]">{selectedTotals.bull}</span>
+          </div>
+          <div className="inline-flex items-center gap-1.5">
+            <TrendingDown className="w-3 h-3" style={{ color: '#fb7185' }} />
+            <span className="text-[var(--text-secondary)]">Bear</span>
+            <span className="font-semibold text-[var(--text-primary)]">{selectedTotals.bear}</span>
+          </div>
+          {data?.grade_counts && (
+            <div className="flex items-center gap-1.5 pl-1">
+              <GradeBadge grade="A" count={data.grade_counts.A} />
+              <GradeBadge grade="B" count={data.grade_counts.B} />
+              <GradeBadge grade="C" count={data.grade_counts.C} />
+            </div>
+          )}
+          <div className="text-[10px] text-[var(--text-muted)]">
+            · {filtered.length} shown / {reversals.length} total
+          </div>
+        </div>
+
+        <div className="flex-1 min-w-[8px]" />
+
+        {/* Quick search */}
+        <div
+          className="flex items-center gap-2 px-2.5 py-[5px] transition-all duration-200"
+          style={{
+            background: 'rgba(255,255,255,0.02)',
+            border: '1px solid rgba(255,255,255,0.06)',
+            borderRadius: '10px',
+          }}
+        >
+          <Search className="w-3 h-3 text-[var(--text-muted)]" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Filter ticker..."
+            className="bg-transparent text-[11.5px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none w-32 tabular-nums"
+          />
+          {search && (
+            <button onClick={() => setSearch('')} className="text-[var(--text-muted)] hover:text-[var(--accent-rose)] transition-colors">
+              <X className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Filters row */}
+      <div className="flex flex-wrap items-center gap-3 px-4 py-2.5" style={{ background: 'rgba(255,255,255,0.008)' }}>
+        {/* Period multi-select */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[9.5px] font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)] pr-1">
+            Period
+          </span>
+          {[9, 50, 600].map((p) => {
+            const on = periodFilter.has(p);
+            const c = counts[String(p)];
+            const subtotal = c ? c.bull + c.bear : 0;
+            return (
+              <button
+                key={p}
+                type="button"
+                onClick={() => togglePeriod(p)}
+                aria-pressed={on}
+                className="group inline-flex items-center gap-1.5 rounded-lg px-2 py-1 transition-all duration-200"
+                style={{
+                  background: on ? 'linear-gradient(180deg, rgba(167,139,250,0.28), rgba(167,139,250,0.08))' : 'rgba(255,255,255,0.02)',
+                  border: `1px solid ${on ? 'rgba(167,139,250,0.55)' : 'rgba(255,255,255,0.06)'}`,
+                  boxShadow: on ? '0 0 0 1px rgba(167,139,250,0.22) inset, 0 4px 14px -6px rgba(167,139,250,0.8)' : 'none',
+                  color: on ? '#fff' : 'var(--text-secondary)',
+                }}
+              >
+                <Layers className="w-3 h-3" style={{ color: on ? '#a78bfa' : 'var(--text-muted)' }} />
+                <span className="text-[10.5px] font-semibold tabular-nums">SMA {p}</span>
+                <span
+                  className="inline-flex items-center justify-center rounded-md px-1 min-w-[18px] h-[15px] text-[9.5px] font-semibold tabular-nums"
+                  style={{
+                    background: on ? '#a78bfa' : 'rgba(255,255,255,0.05)',
+                    color: on ? '#0b0c12' : 'var(--text-muted)',
+                  }}
+                >
+                  {subtotal}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="h-5 w-px bg-white/[0.05]" aria-hidden />
+
+        {/* Direction segmented */}
+        <SegmentedControl
+          options={[
+            { key: 'all', label: 'All' },
+            { key: 'bull', label: 'Bull', dot: '#34d399' },
+            { key: 'bear', label: 'Bear', dot: '#fb7185' },
+          ] as const}
+          value={direction}
+          onChange={(v) => setDirection(v)}
+          accent="#a78bfa"
+          size="sm"
+        />
+
+        <div className="h-5 w-px bg-white/[0.05]" aria-hidden />
+
+        {/* Grade filter */}
+        <SegmentedControl
+          options={[
+            { key: 'all', label: 'Any' },
+            { key: 'A', label: 'A', dot: '#10b981' },
+            { key: 'B', label: 'B', dot: '#a78bfa' },
+            { key: 'C', label: 'C', dot: '#64748b' },
+          ] as const}
+          value={gradeFilter}
+          onChange={(v) => setGradeFilter(v)}
+          accent="#10b981"
+          size="sm"
+        />
+
+        <div className="h-5 w-px bg-white/[0.05]" aria-hidden />
+
+        {/* Min score slider */}
+        <label className="flex items-center gap-2">
+          <span className="text-[9.5px] font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">Min Score</span>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={5}
+            value={minScore}
+            onChange={(e) => setMinScore(parseInt(e.target.value, 10))}
+            className="w-24 accent-[var(--accent-violet)]"
+            aria-label="Minimum score"
+          />
+          <span className="text-[11px] tabular-nums text-[var(--text-primary)] font-semibold w-6 text-right">{minScore}</span>
+        </label>
+
+        <div className="h-5 w-px bg-white/[0.05]" aria-hidden />
+
+        {/* False break toggle */}
+        <button
+          type="button"
+          onClick={() => setHideFalseBreaks((v) => !v)}
+          className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-[10.5px] font-medium transition-all"
+          style={{
+            background: hideFalseBreaks ? 'rgba(255,255,255,0.02)' : 'rgba(251,191,36,0.12)',
+            border: `1px solid ${hideFalseBreaks ? 'rgba(255,255,255,0.06)' : 'rgba(251,191,36,0.35)'}`,
+            color: hideFalseBreaks ? 'var(--text-secondary)' : '#fbbf24',
+          }}
+          title={hideFalseBreaks ? 'Show false breaks (whipsawed crossings)' : 'Hide false breaks'}
+        >
+          <AlertTriangle className="w-3 h-3" />
+          {hideFalseBreaks ? 'Hiding false breaks' : 'Showing false breaks'}
+        </button>
+      </div>
+
+      {/* Body */}
+      <div className="px-2 py-2">
+        {isLoading && (
+          <div className="px-3 py-10 text-center text-[12px] text-[var(--text-muted)]">Loading reversals…</div>
+        )}
+        {!isLoading && filtered.length === 0 && (
+          <div className="px-3 py-10 text-center text-[12px] text-[var(--text-muted)]">
+            No reversals matching the current filters.
+          </div>
+        )}
+        {!isLoading && displayed.length > 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
+            {displayed.map((r) => (
+              <ReversalRow
+                key={`${r.symbol}-${r.period}`}
+                r={r}
+                label={labelMap.get(r.symbol) ?? labelMap.get(r.symbol.replace(/=/g, '_')) ?? r.symbol}
+                onClick={() => onNavigateChart(r.symbol)}
+              />
+            ))}
+          </div>
+        )}
+        {!isLoading && filtered.length > 20 && (
+          <div className="flex justify-center pt-2">
+            <button
+              onClick={() => setShowAll((v) => !v)}
+              className="text-[11px] text-[var(--accent-violet)] hover:underline px-3 py-1.5"
+            >
+              {showAll ? `Collapse · show top 20` : `Show all ${filtered.length} reversals`}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Individual row — compact premium card
+// Small badge used in the header summary row ("A 51 · B 87 · C 184")
+function GradeBadge({ grade, count }: { grade: 'A' | 'B' | 'C'; count: number }) {
+  const palette = {
+    A: { bg: 'rgba(16,185,129,0.16)', bd: 'rgba(16,185,129,0.45)', fg: '#34d399' },
+    B: { bg: 'rgba(167,139,250,0.14)', bd: 'rgba(167,139,250,0.42)', fg: '#c4b5fd' },
+    C: { bg: 'rgba(100,116,139,0.14)', bd: 'rgba(100,116,139,0.35)', fg: '#cbd5e1' },
+  }[grade];
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-md px-1.5 py-[1px] text-[9.5px] font-semibold tabular-nums"
+      style={{ background: palette.bg, border: `1px solid ${palette.bd}`, color: palette.fg }}
+      title={`Grade ${grade}: ${count} setup${count === 1 ? '' : 's'}`}
+    >
+      <span style={{ fontWeight: 800 }}>{grade}</span>
+      <span>{count}</span>
+    </span>
+  );
+}
+
+function ReversalRow({ r, label, onClick }: { r: SmaReversal; label: string; onClick: () => void }) {
+  const isBull = r.direction === 'bull';
+  const accent = isBull ? '#10b981' : '#f43f5e';
+  const accentSoft = isBull ? '#34d399' : '#fb7185';
+  const ArrowIcon = isBull ? TrendingUp : TrendingDown;
+  // Score bar fill
+  const scorePct = Math.max(0, Math.min(100, r.score));
+  const scoreColor = r.score >= 80 ? accent : r.score >= 60 ? accentSoft : r.score >= 40 ? '#fbbf24' : '#64748b';
+
+  const persistencePips = Array.from({ length: r.persistence_window }, (_, i) => i < r.persistence);
+
+  // Grade palette
+  const gradePalette: Record<'A' | 'B' | 'C', { bg: string; bd: string; fg: string; shadow: string; title: string }> = {
+    A: { bg: 'linear-gradient(180deg, rgba(16,185,129,0.30), rgba(16,185,129,0.08))', bd: 'rgba(16,185,129,0.60)', fg: '#ffffff', shadow: '0 0 14px -4px rgba(16,185,129,0.85)', title: 'Grade A — full confluence buy setup' },
+    B: { bg: 'linear-gradient(180deg, rgba(167,139,250,0.28), rgba(167,139,250,0.08))', bd: 'rgba(167,139,250,0.55)', fg: '#ffffff', shadow: '0 0 12px -4px rgba(167,139,250,0.75)', title: 'Grade B — tradeable setup' },
+    C: { bg: 'rgba(100,116,139,0.16)', bd: 'rgba(100,116,139,0.35)', fg: '#cbd5e1', shadow: 'none', title: 'Grade C — watch only (regime or R:R weak)' },
+  };
+  const g = r.grade ? gradePalette[r.grade] : null;
+  const edge = r.historical_edge;
+  const hasTradeGeometry = r.stop_price !== null && r.target_price !== null && r.risk_reward !== null;
+
+  // Strip the trailing `(TICKER)` from the label for the body text
+  const displayLabel = label.replace(/\s*\([^)]+\)\s*$/, '').trim() || r.symbol;
+  const tooltip = r.grade_reasons && r.grade_reasons.length > 0 ? r.grade_reasons.join(' · ') : undefined;
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={tooltip}
+      className="group relative w-full text-left rounded-xl px-3 py-2.5 transition-all duration-200"
+      style={{
+        background: 'linear-gradient(180deg, rgba(255,255,255,0.025), rgba(255,255,255,0.008))',
+        border: '1px solid rgba(255,255,255,0.06)',
+        boxShadow: '0 1px 0 rgba(255,255,255,0.03) inset',
+      }}
+      onMouseEnter={(e) => {
+        (e.currentTarget as HTMLButtonElement).style.borderColor = `${accent}55`;
+        (e.currentTarget as HTMLButtonElement).style.boxShadow = `0 1px 0 rgba(255,255,255,0.04) inset, 0 6px 22px -12px ${accent}70`;
+      }}
+      onMouseLeave={(e) => {
+        (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(255,255,255,0.06)';
+        (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 1px 0 rgba(255,255,255,0.03) inset';
+      }}
+    >
+      <div className="flex items-center gap-3">
+        {/* Direction chip */}
+        <div
+          className="flex items-center justify-center rounded-lg flex-shrink-0"
+          style={{
+            width: 32, height: 32,
+            background: `linear-gradient(180deg, ${accent}26, ${accent}08)`,
+            border: `1px solid ${accent}50`,
+            boxShadow: `0 0 14px -5px ${accent}70 inset`,
+          }}
+        >
+          <ArrowIcon className="w-4 h-4" style={{ color: accentSoft, filter: `drop-shadow(0 0 4px ${accent}90)` }} />
+        </div>
+
+        {/* Symbol + label */}
+        <div className="flex flex-col min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[13px] font-semibold text-[var(--text-primary)] tabular-nums tracking-tight">{r.symbol}</span>
+            {/* Grade pill */}
+            {g && (
+              <span
+                className="inline-flex items-center justify-center rounded px-1.5 py-[1px] text-[9.5px] font-bold tabular-nums"
+                style={{ background: g.bg, border: `1px solid ${g.bd}`, color: g.fg, boxShadow: g.shadow }}
+                title={g.title}
+              >
+                {r.grade}
+              </span>
+            )}
+            <span
+              className="text-[9px] font-semibold uppercase tracking-[0.1em] rounded px-1.5 py-[1px]"
+              style={{ background: 'rgba(167,139,250,0.14)', border: '1px solid rgba(167,139,250,0.28)', color: '#c4b5fd' }}
+            >
+              SMA {r.period}
+            </span>
+            {!r.regime_ok && (
+              <span
+                className="inline-flex items-center gap-0.5 rounded px-1 py-[1px] text-[8.5px] font-semibold uppercase tracking-[0.1em]"
+                style={{ background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.30)', color: '#fca5a5' }}
+                title={`Against regime (price ${isBull ? 'below' : 'above'} SMA${r.regime_sma !== null ? ' 200' : ''}) — buying against the trend`}
+              >
+                vs regime
+              </span>
+            )}
+            {r.overextended && (
+              <span
+                className="inline-flex items-center gap-0.5 rounded px-1 py-[1px] text-[8.5px] font-semibold uppercase tracking-[0.1em]"
+                style={{ background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.35)', color: '#fbbf24' }}
+                title="Price > 3 ATR from SMA — chasing kills edge"
+              >
+                overext
+              </span>
+            )}
+            {r.false_break && (
+              <span title="Price re-crossed within 3 bars — possible whipsaw">
+                <AlertTriangle className="w-3 h-3" style={{ color: '#fbbf24' }} />
+              </span>
+            )}
+          </div>
+          <span className="text-[10px] text-[var(--text-muted)] truncate">{displayLabel}</span>
+          {/* Trade geometry line — "Stop · Tgt · R:R · Win% (n)" */}
+          {(hasTradeGeometry || edge.win_rate !== null) && (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5 text-[9.5px] tabular-nums">
+              {hasTradeGeometry && (
+                <>
+                  <span className="text-[var(--text-muted)]">
+                    Stop <span className="text-[var(--text-secondary)] font-medium">{r.stop_price!.toFixed(2)}</span>
+                  </span>
+                  <span className="text-[var(--text-muted)]">·</span>
+                  <span className="text-[var(--text-muted)]">
+                    Tgt <span className="text-[var(--text-secondary)] font-medium">{r.target_price!.toFixed(2)}</span>
+                  </span>
+                  <span className="text-[var(--text-muted)]">·</span>
+                  <span className="text-[var(--text-muted)]">
+                    R:R <span className="font-semibold" style={{ color: accentSoft }}>{r.risk_reward!.toFixed(1)}</span>
+                  </span>
+                </>
+              )}
+              {edge.win_rate !== null && (
+                <>
+                  {hasTradeGeometry && <span className="text-[var(--text-muted)]">·</span>}
+                  <span
+                    className="inline-flex items-center gap-0.5"
+                    title={`Historical ${r.edge_forward_days}-bar forward win-rate across ${edge.samples} past crossings. Median return ${edge.median_fwd_pct !== null ? edge.median_fwd_pct.toFixed(2) + '%' : '—'}.`}
+                  >
+                    <Target className="w-2.5 h-2.5" style={{ color: edge.win_rate >= 0.55 ? accentSoft : '#94a3b8' }} />
+                    <span
+                      className="font-semibold"
+                      style={{ color: edge.win_rate >= 0.55 ? accentSoft : 'var(--text-secondary)' }}
+                    >
+                      {(edge.win_rate * 100).toFixed(0)}%
+                    </span>
+                    <span className="text-[var(--text-muted)]">n={edge.samples}</span>
+                  </span>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Metrics cluster (md+ only) */}
+        <div className="hidden md:flex items-center gap-3 text-[10px] tabular-nums">
+          <div className="flex flex-col items-end">
+            <span className="text-[9px] uppercase tracking-[0.12em] text-[var(--text-muted)]">Dist</span>
+            <span className="text-[var(--text-primary)] font-medium">
+              {r.distance_pct > 0 ? '+' : ''}{r.distance_pct.toFixed(2)}%
+            </span>
+          </div>
+          {r.atr_distance !== null && (
+            <div className="flex flex-col items-end">
+              <span className="text-[9px] uppercase tracking-[0.12em] text-[var(--text-muted)]">ATR</span>
+              <span className="text-[var(--text-primary)] font-medium">{r.atr_distance.toFixed(2)}σ</span>
+            </div>
+          )}
+          {r.volume_ratio !== null && (
+            <div className="flex flex-col items-end">
+              <span className="text-[9px] uppercase tracking-[0.12em] text-[var(--text-muted)]">Vol</span>
+              <span
+                className="font-medium"
+                style={{ color: r.volume_ratio >= 1.2 ? accentSoft : 'var(--text-primary)' }}
+              >
+                {r.volume_ratio.toFixed(2)}×
+              </span>
+            </div>
+          )}
+          <div className="flex flex-col items-end">
+            <span className="text-[9px] uppercase tracking-[0.12em] text-[var(--text-muted)]">Age</span>
+            <span className="text-[var(--text-primary)] font-medium">
+              {r.days_since_cross === 0 ? 'Today' : `${r.days_since_cross}d`}
+            </span>
+          </div>
+        </div>
+
+        {/* Persistence pips */}
+        <div className="flex items-center gap-0.5 px-1" title={`On new side: ${r.persistence} of last ${r.persistence_window} bars`}>
+          {persistencePips.map((on, i) => (
+            <span
+              key={i}
+              className="rounded-full"
+              style={{
+                width: 5, height: 5,
+                background: on ? accentSoft : 'rgba(255,255,255,0.1)',
+                boxShadow: on ? `0 0 4px ${accentSoft}` : 'none',
+              }}
+            />
+          ))}
+        </div>
+
+        {/* Score bar */}
+        <div className="flex flex-col items-end gap-0.5 w-14 flex-shrink-0">
+          <span className="text-[12px] font-bold tabular-nums" style={{ color: scoreColor }}>
+            {r.score.toFixed(0)}
+          </span>
+          <div className="w-full h-[3px] rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}>
+            <div
+              className="h-full rounded-full"
+              style={{
+                width: `${scorePct}%`,
+                background: `linear-gradient(90deg, ${scoreColor}, ${scoreColor}cc)`,
+                boxShadow: `0 0 8px -2px ${scoreColor}`,
+                transition: 'width 320ms cubic-bezier(.2,.8,.2,1)',
+              }}
+            />
+          </div>
+        </div>
+      </div>
+    </button>
+  );
+}
+
 
 // iOS-style segmented control with a sliding accent indicator.
 // Generic over readonly option arrays so callers get a narrow value type.

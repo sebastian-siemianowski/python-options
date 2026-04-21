@@ -33,6 +33,7 @@ export const api = {
   qualityScores: () => fetchApi<QualityScoresData>('/api/signals/quality-scores'),
   intrinsicValues: () => fetchApi<IntrinsicValuesData>('/api/signals/intrinsic-values'),
   emaStates: () => fetchApi<EmaStatesData>('/api/signals/ema-states'),
+  smaReversals: () => fetchApi<SmaReversalsData>('/api/signals/sma-reversals'),
 
   // Risk
   riskDashboard: () => fetchApi<RiskDashboard>('/api/risk/dashboard'),
@@ -167,6 +168,63 @@ export interface EmaStatesData {
   states: Record<string, EmaState>;
   count: number;
   periods: number[];
+  built_at: number;
+}
+
+// ── SMA reversal detection ───────────────────────────────────────────────
+export interface HistoricalEdge {
+  samples: number;
+  win_rate: number | null;       // 0..1, null when samples < 5
+  median_fwd_pct: number | null;
+  mean_fwd_pct: number | null;
+  std_fwd_pct: number | null;
+}
+export interface SmaReversal {
+  symbol: string;
+  period: 9 | 50 | 600 | number;
+  direction: 'bull' | 'bear';
+  price: number;
+  sma: number;
+  distance_pct: number;
+  atr_distance: number | null;
+  atr: number | null;
+  slope_pct_5d: number;
+  volume_ratio: number | null;
+  days_since_cross: number;
+  persistence: number;
+  persistence_window: number;
+  persistence_threshold: number;
+  passes_persistence: boolean;
+  false_break: boolean;
+  score: number; // 0..100
+  cross_date: string | null;
+  cross_index_from_end: number;
+
+  // Buy-signal quality fields
+  regime_sma: number | null;
+  regime_ok: boolean;
+  overextended: boolean;
+  stop_price: number | null;
+  target_price: number | null;
+  risk_reward: number | null;      // 2.0 by construction when set
+  grade: 'A' | 'B' | 'C' | null;
+  grade_reasons: string[];
+  historical_edge: HistoricalEdge;
+  edge_forward_days: number;
+}
+export interface SmaReversalsData {
+  reversals: SmaReversal[];
+  counts_by_period: Record<string, { bull: number; bear: number }>;
+  grade_counts: { A: number; B: number; C: number; ungraded: number };
+  buy_setups: number;
+  periods: number[];
+  lookback_bars: number;
+  persistence_window: number;
+  persistence_threshold: number;
+  regime_period: number;
+  overextended_atr: number;
+  edge_forward_days: number;
+  total: number;
   built_at: number;
 }
 

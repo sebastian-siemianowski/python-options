@@ -113,6 +113,20 @@ async def ema_states():
     return get_all_ema_states()
 
 
+@router.get("/sma-reversals")
+async def sma_reversals():
+    """
+    SMA (9 / 50 / 600) reversal detections across the price universe.
+
+    Each record describes a recent simple-moving-average crossover with
+    supporting quant context: ATR-normalised distance, 5-day SMA slope,
+    volume ratio vs 20d baseline, persistence-of-side, freshness, and a
+    composite 0..100 score (penalised for false breaks).
+    """
+    from web.backend.services.sma_reversals import get_all_sma_reversals
+    return get_all_sma_reversals()
+
+
 @router.get("/intrinsic-values")
 async def intrinsic_values():
     """Buffett/Munger intrinsic value estimates with current prices and valuation gaps."""
