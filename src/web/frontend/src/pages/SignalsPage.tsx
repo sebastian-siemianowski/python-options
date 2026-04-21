@@ -2152,6 +2152,112 @@ interface GroupedTicker {
   maxStrength: number;
 }
 
+// ─── Apple-grade micro components for HighConvictionPanel ───────────────
+
+function KpiCell({
+  label,
+  value,
+  color,
+  icon,
+  dividerRight,
+}: {
+  label: string;
+  value: string;
+  color: string;
+  icon?: React.ReactNode;
+  dividerRight?: boolean;
+}) {
+  return (
+    <div
+      className="px-4 py-3 flex flex-col gap-1"
+      style={{
+        borderRight: dividerRight ? '1px solid rgba(255,255,255,0.05)' : 'none',
+      }}
+    >
+      <div
+        className="flex items-center gap-1.5 text-[9px] uppercase font-semibold"
+        style={{ color: 'var(--text-muted)', letterSpacing: '0.12em' }}
+      >
+        {icon && <span style={{ color }}>{icon}</span>}
+        {label}
+      </div>
+      <div
+        className="text-[20px] font-bold tabular-nums tracking-tight"
+        style={{ color, letterSpacing: '-0.02em', lineHeight: 1 }}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function ArcGauge({
+  value,
+  color,
+  size = 26,
+}: {
+  value: number; // 0..1
+  color: string;
+  size?: number;
+}) {
+  const clamped = Math.max(0, Math.min(1, value));
+  const stroke = Math.max(2, Math.round(size * 0.13));
+  const r = (size - stroke) / 2;
+  const c = size / 2;
+  const circ = 2 * Math.PI * r;
+  const dash = clamped * circ;
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ display: 'block' }}>
+      <circle cx={c} cy={c} r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={stroke} />
+      <circle
+        cx={c}
+        cy={c}
+        r={r}
+        fill="none"
+        stroke={color}
+        strokeWidth={stroke}
+        strokeLinecap="round"
+        strokeDasharray={`${dash} ${circ - dash}`}
+        transform={`rotate(-90 ${c} ${c})`}
+        style={{ transition: 'stroke-dasharray 320ms cubic-bezier(0.2, 0.8, 0.2, 1)' }}
+      />
+    </svg>
+  );
+}
+
+function SegmentedMeter({
+  value,
+  color,
+  segments = 5,
+}: {
+  value: number; // 0..1
+  color: string;
+  segments?: number;
+}) {
+  const lit = Math.round(Math.max(0, Math.min(1, value)) * segments);
+  return (
+    <div className="inline-flex items-center gap-[3px]">
+      {Array.from({ length: segments }).map((_, i) => {
+        const on = i < lit;
+        return (
+          <span
+            key={i}
+            className="rounded-sm"
+            style={{
+              width: 6,
+              height: 10,
+              background: on ? color : 'rgba(255,255,255,0.07)',
+              boxShadow: on ? `0 0 6px ${color}66` : 'none',
+              opacity: on ? 1 - i * 0.08 : 1,
+              transition: 'background-color 200ms, box-shadow 200ms',
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
 function HighConvictionPanel({
   title, signals, color, isLoading, onNavigateChart,
 }: {
@@ -2266,7 +2372,7 @@ function HighConvictionPanel({
   const SortHeader = ({ col, label, w }: { col: HCSortCol; label: string; w?: string }) => (
     <th
       className="px-2 py-2 text-left text-[10px] font-semibold uppercase tracking-wider cursor-pointer select-none group"
-      style={{ color: sortCol === col ? accent : 'var(--text-muted)', width: w }}
+      style={{ color: sortCol === col ? accent : 'var(--text-muted)', width: w, background: '#0b0c12' }}
       onClick={() => handleSort(col)}
     >
       <span className="inline-flex items-center gap-0.5">
@@ -2281,46 +2387,102 @@ function HighConvictionPanel({
   );
 
   return (
-    <div className="glass-card overflow-hidden" style={{ borderTop: `2px solid ${accent}40` }}>
-      {/* Header */}
-      <div className="px-5 py-4" style={{ background: `linear-gradient(135deg, ${accentSoft} 0%, transparent 60%)` }}>
-        <div className="flex items-center gap-3 mb-3">
-          <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: accentSoft, boxShadow: `0 0 20px ${accentSoft}` }}>
-            <Icon className="w-5 h-5" style={{ color: accent }} />
+    <div
+      className="overflow-hidden rounded-2xl"
+      style={{
+        background: 'linear-gradient(180deg, rgba(255,255,255,0.02) 0%, transparent 40%), var(--void-base)',
+        border: `1px solid ${accentSoft}`,
+        boxShadow: `0 1px 0 rgba(255,255,255,0.04) inset, 0 24px 60px -28px ${accent}55, 0 8px 24px -12px rgba(0,0,0,0.6)`,
+      }}
+    >
+      {/* Hero header */}
+      <div
+        className="relative px-6 pt-5 pb-4"
+        style={{
+          background: `radial-gradient(1200px 200px at -10% -60%, ${accent}22, transparent 60%), radial-gradient(800px 160px at 110% -40%, ${accent}14, transparent 60%)`,
+          borderBottom: `1px solid ${accentSoft}`,
+        }}
+      >
+        {/* Top accent line */}
+        <div
+          aria-hidden
+          className="absolute inset-x-0 top-0 h-px"
+          style={{ background: `linear-gradient(90deg, transparent, ${accent}, transparent)`, opacity: 0.65 }}
+        />
+
+        <div className="flex items-start justify-between gap-6">
+          {/* Title block */}
+          <div className="flex items-center gap-3 min-w-0">
+            <div
+              className="w-11 h-11 rounded-2xl flex items-center justify-center shrink-0"
+              style={{
+                background: `linear-gradient(135deg, ${accent}33, ${accent}10)`,
+                border: `1px solid ${accent}40`,
+                boxShadow: `0 0 32px -4px ${accent}66, inset 0 1px 0 rgba(255,255,255,0.08)`,
+              }}
+            >
+              <Icon className="w-5 h-5" style={{ color: accent }} />
+            </div>
+            <div className="min-w-0">
+              <h3
+                className="text-[15px] font-bold leading-tight tracking-tight"
+                style={{ color: 'var(--text-primary)' }}
+              >
+                {title}
+              </h3>
+              <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
+                <span className="tabular-nums" style={{ color: accent }}>{uniqueTickers}</span> positions · <span className="tabular-nums text-[var(--text-secondary)]">{totalSignals}</span> signals
+              </p>
+            </div>
           </div>
-          <div>
-            <h3 className="text-sm font-semibold" style={{ color: accent }}>{title}</h3>
-            <p className="text-[10px] text-[var(--text-muted)]">{uniqueTickers} positions across {totalSignals} signals</p>
-          </div>
-        </div>
-        {/* Summary stats strip */}
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-1.5">
-            <Layers className="w-3 h-3" style={{ color: accentMid }} />
-            <span className="text-[10px] text-[var(--text-secondary)]">Positions</span>
-            <span className="text-[11px] font-bold tabular-nums" style={{ color: accent }}>{uniqueTickers}</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <DollarSign className="w-3 h-3" style={{ color: accentMid }} />
-            <span className="text-[10px] text-[var(--text-secondary)]">Avg Return</span>
-            <span className="text-[11px] font-bold tabular-nums" style={{ color: accent }}>{avgReturn.toFixed(1)}%</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <Target className="w-3 h-3" style={{ color: accentMid }} />
-            <span className="text-[10px] text-[var(--text-secondary)]">Avg P(up)</span>
-            <span className="text-[11px] font-bold tabular-nums" style={{ color: accent }}>{(avgProb * 100).toFixed(0)}%</span>
-          </div>
+
           {/* Search */}
-          <div className="ml-auto flex items-center gap-1 px-2 py-1 rounded-lg" style={{ background: 'var(--void-active)' }}>
-            <Search className="w-3 h-3 text-[var(--text-muted)]" />
+          <div
+            className="flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 rounded-xl transition-all shrink-0"
+            style={{
+              background: 'rgba(255,255,255,0.03)',
+              border: '1px solid rgba(255,255,255,0.06)',
+              width: searchTerm ? 220 : 180,
+            }}
+          >
+            <Search className="w-3.5 h-3.5 text-[var(--text-muted)]" />
             <input
               type="text"
               value={searchTerm}
-              onChange={e => setSearchTerm(e.target.value)}
-              placeholder="Filter..."
-              className="bg-transparent text-[11px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none w-20"
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Filter ticker, company, sector…"
+              className="bg-transparent text-[12px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none flex-1 min-w-0"
             />
+            {searchTerm && (
+              <button
+                type="button"
+                onClick={() => setSearchTerm('')}
+                className="p-0.5 rounded hover:bg-white/[0.06] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+                aria-label="Clear"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
           </div>
+        </div>
+
+        {/* KPI strip */}
+        <div
+          className="mt-4 grid grid-cols-3 rounded-xl overflow-hidden"
+          style={{
+            background: 'rgba(255,255,255,0.025)',
+            border: '1px solid rgba(255,255,255,0.05)',
+          }}
+        >
+          <KpiCell label="Positions" value={uniqueTickers.toString()} color="var(--text-primary)" icon={<Layers className="w-3.5 h-3.5" />} dividerRight />
+          <KpiCell
+            label="Avg Return"
+            value={`${avgReturn >= 0 ? '+' : ''}${avgReturn.toFixed(1)}%`}
+            color={accent}
+            icon={color === 'green' ? <ArrowUp className="w-3.5 h-3.5" /> : <ArrowDown className="w-3.5 h-3.5" />}
+            dividerRight
+          />
+          <KpiCell label="Avg P(up)" value={`${(avgProb * 100).toFixed(0)}%`} color={accent} icon={<Target className="w-3.5 h-3.5" />} />
         </div>
       </div>
 
@@ -2336,185 +2498,310 @@ function HighConvictionPanel({
           <p className="text-xs text-[var(--text-muted)]">{searchTerm ? 'No matching signals' : 'No active signals'}</p>
         </div>
       ) : (
-        <div className="overflow-x-auto" style={{ maxHeight: '420px', overflowY: 'auto' }}>
-          <table className="w-full">
-            <thead className="sticky top-0 z-10" style={{ background: 'var(--void-base)' }}>
-              <tr style={{ borderBottom: `1px solid ${accentSoft}` }}>
+        <div
+          className="overflow-x-auto overflow-y-auto"
+          style={{
+            maxHeight: expandedTicker ? 'none' : '420px',
+            transition: 'max-height 220ms ease',
+          }}
+        >
+          <table className="w-full" style={{ borderCollapse: 'separate', borderSpacing: 0 }}>
+            <thead
+              className="sticky top-0"
+              style={{
+                zIndex: 30,
+                background: '#0b0c12',
+                boxShadow: `0 1px 0 ${accentSoft}, 0 6px 12px -6px rgba(0,0,0,0.55)`,
+                backdropFilter: 'saturate(140%) blur(6px)',
+              }}
+            >
+              <tr>
                 <SortHeader col="ticker" label="Asset" w="140px" />
                 <SortHeader col="sector" label="Sector" />
-                <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Horizons</th>
+                <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]" style={{ background: '#0b0c12' }}>Horizons</th>
                 <SortHeader col="exp_ret" label="Best Return" />
                 <SortHeader col="p_up" label="Avg P(up)" />
                 <SortHeader col="strength" label="Strength" />
-                <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]"></th>
+                <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]" style={{ background: '#0b0c12' }}></th>
               </tr>
             </thead>
             <tbody>
               {sorted.map((g) => {
                 const isExpanded = expandedTicker === g.ticker;
                 const companyName = g.asset_label.includes('(') ? g.asset_label.split('(')[0].trim() : '';
+                const returnIsUp = g.bestReturn >= 0;
                 return (
                   <React.Fragment key={g.ticker}>
                     <tr
-                      className="border-b border-white/[0.03] hover:bg-white/[0.02] cursor-pointer transition-colors"
+                      className="cursor-pointer group transition-colors"
                       onClick={() => setExpandedTicker(isExpanded ? null : g.ticker)}
+                      style={{
+                        background: isExpanded ? `linear-gradient(90deg, ${accent}0f, transparent 55%)` : 'transparent',
+                        borderBottom: '1px solid rgba(255,255,255,0.035)',
+                      }}
+                      onMouseEnter={(e) => { if (!isExpanded) e.currentTarget.style.background = 'rgba(255,255,255,0.025)'; }}
+                      onMouseLeave={(e) => { if (!isExpanded) e.currentTarget.style.background = 'transparent'; }}
                     >
                       {/* Asset */}
-                      <td className="px-2 py-2.5">
-                        <div className="flex items-center gap-2">
-                          <div className="w-1.5 h-8 rounded-full" style={{ background: `linear-gradient(to bottom, ${accent}, ${accent}30)` }} />
-                          <div>
-                            <span className="text-xs font-bold text-[#e2e8f0]">{g.ticker}</span>
-                            {companyName && <p className="text-[9px] text-[var(--text-muted)] truncate max-w-[110px] leading-tight">{companyName}</p>}
+                      <td className="pl-4 pr-3 py-3">
+                        <div className="flex items-center gap-3">
+                          <div
+                            className="rounded-full transition-all"
+                            style={{
+                              width: isExpanded ? 3 : 2,
+                              height: 30,
+                              background: isExpanded
+                                ? accent
+                                : `linear-gradient(to bottom, ${accent}cc, ${accent}33)`,
+                              boxShadow: isExpanded ? `0 0 8px ${accent}88` : 'none',
+                            }}
+                          />
+                          <div className="min-w-0">
+                            <div className="text-[13px] font-bold tracking-tight leading-tight" style={{ color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
+                              {g.ticker}
+                            </div>
+                            {companyName && (
+                              <div className="text-[10px] text-[var(--text-muted)] truncate max-w-[160px] leading-tight mt-0.5">
+                                {companyName}
+                              </div>
+                            )}
                           </div>
                         </div>
                       </td>
                       {/* Sector */}
-                      <td className="px-2 py-2.5">
-                        <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ color: accent, background: accentSoft }}>
+                      <td className="px-2 py-3">
+                        <span
+                          className="inline-flex items-center text-[10px] font-medium px-2 py-1 rounded-md"
+                          style={{
+                            color: 'var(--text-secondary)',
+                            background: 'rgba(255,255,255,0.035)',
+                            border: '1px solid rgba(255,255,255,0.05)',
+                          }}
+                        >
                           {g.sector}
                         </span>
                       </td>
                       {/* Horizons pills */}
-                      <td className="px-2 py-2.5">
-                        <div className="flex items-center gap-1">
-                          {g.signals.map((s, i) => (
-                            <span key={i} className="text-[9px] px-1.5 py-0.5 rounded font-medium tabular-nums"
-                              style={{ background: 'var(--void-active)', color: 'var(--text-secondary)' }}>
-                              {formatHorizon(s.horizon_days)}
-                            </span>
-                          ))}
+                      <td className="px-2 py-3">
+                        <div className="flex items-center gap-1 flex-wrap">
+                          {g.signals.map((s, i) => {
+                            const d = s.horizon_days ?? 0;
+                            // Opacity grades by recency
+                            const op = d <= 1 ? 1 : d <= 3 ? 0.75 : d <= 7 ? 0.55 : 0.35;
+                            return (
+                              <span
+                                key={i}
+                                className="text-[10px] px-1.5 py-0.5 rounded-md font-semibold tabular-nums"
+                                style={{
+                                  background: `${accent}${Math.round(op * 28).toString(16).padStart(2, '0')}`,
+                                  color: accent,
+                                  border: `1px solid ${accent}${Math.round(op * 50).toString(16).padStart(2, '0')}`,
+                                }}
+                              >
+                                {formatHorizon(s.horizon_days)}
+                              </span>
+                            );
+                          })}
                         </div>
                       </td>
                       {/* Best Return */}
-                      <td className="px-2 py-2.5 text-right">
-                        <span className="text-xs font-bold tabular-nums" style={{ color: accent }}>
-                          {color === 'green' ? '+' : ''}{g.bestReturn.toFixed(1)}%
-                        </span>
-                      </td>
-                      {/* Avg P(up) */}
-                      <td className="px-2 py-2.5">
-                        <div className="flex items-center gap-1.5">
-                          <div className="w-12 h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
-                            <div className="h-full rounded-full" style={{ width: `${g.avgPUp * 100}%`, background: accent }} />
-                          </div>
-                          <span className="text-[10px] font-medium tabular-nums text-[var(--text-secondary)]">{(g.avgPUp * 100).toFixed(0)}%</span>
+                      <td className="px-2 py-3 text-right">
+                        <div className="inline-flex items-baseline gap-1 tabular-nums" style={{ color: accent }}>
+                          <span className="text-[15px] font-bold tracking-tight" style={{ letterSpacing: '-0.02em' }}>
+                            {returnIsUp ? '+' : ''}{g.bestReturn.toFixed(1)}
+                          </span>
+                          <span className="text-[10px] font-semibold opacity-70">%</span>
                         </div>
                       </td>
-                      {/* Strength */}
-                      <td className="px-2 py-2.5">
-                        <div className="flex items-center gap-1.5">
-                          <div className="w-10 h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
-                            <div className="h-full rounded-full" style={{ width: `${Math.min(g.maxStrength * 200, 100)}%`, background: accent }} />
-                          </div>
-                          <span className="text-[10px] tabular-nums text-[var(--text-muted)]">{g.maxStrength.toFixed(2)}</span>
+                      {/* Avg P(up) — arc gauge */}
+                      <td className="px-2 py-3">
+                        <div className="flex items-center gap-2">
+                          <ArcGauge value={g.avgPUp} color={accent} size={26} />
+                          <span className="text-[11px] font-semibold tabular-nums" style={{ color: 'var(--text-primary)' }}>
+                            {(g.avgPUp * 100).toFixed(0)}%
+                          </span>
                         </div>
                       </td>
-                      {/* Expand/Chart */}
-                      <td className="px-2 py-2.5">
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={(e) => { e.stopPropagation(); onNavigateChart(g.ticker); }}
-                            className="p-1 rounded hover:bg-white/[0.05] transition-colors"
-                            title="Open chart"
+                      {/* Strength — segmented meter */}
+                      <td className="px-2 py-3">
+                        <div className="flex items-center gap-2">
+                          <SegmentedMeter value={Math.min(g.maxStrength * 2, 1)} color={accent} segments={5} />
+                          <span className="text-[10px] tabular-nums text-[var(--text-muted)]">
+                            {g.maxStrength.toFixed(2)}
+                          </span>
+                        </div>
+                      </td>
+                      {/* Expand */}
+                      <td className="pl-2 pr-4 py-3">
+                        <div className="flex items-center justify-end">
+                          <span
+                            className="inline-flex items-center justify-center rounded-full transition-all"
+                            style={{
+                              width: 22,
+                              height: 22,
+                              background: isExpanded ? accent : 'rgba(255,255,255,0.04)',
+                              color: isExpanded ? 'var(--void-bg)' : 'var(--text-muted)',
+                              boxShadow: isExpanded ? `0 0 10px ${accent}88` : 'none',
+                              transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                              transition: 'transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1), background-color 180ms',
+                            }}
                           >
-                            <BarChart3 className="w-3.5 h-3.5 text-[var(--text-muted)] hover:text-[var(--accent-violet)]" />
-                          </button>
-                          {isExpanded ? <ChevronUp className="w-3.5 h-3.5" style={{ color: accent }} /> : <ChevronDown className="w-3.5 h-3.5 text-[var(--text-muted)]" />}
+                            <ChevronDown className="w-3.5 h-3.5" />
+                          </span>
                         </div>
                       </td>
                     </tr>
-                    {/* Expanded detail — tabbed: Signal Details | Chart (TradingView) */}
+                    {/* Expanded detail — iOS-style segmented control + hero chart */}
                     {isExpanded && (
                       <tr>
-                        <td colSpan={7} style={{ background: `${accentSoft}`, borderBottom: `1px solid ${accentSoft}` }}>
-                          <div className="px-4 py-3">
-                            {/* Tab bar */}
-                            <div className="flex items-center gap-1 mb-3">
-                              <button
-                                type="button"
-                                onClick={() => setExpandedView('details')}
-                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-semibold uppercase tracking-wider transition-colors"
+                        <td
+                          colSpan={7}
+                          style={{
+                            background: `linear-gradient(180deg, ${accent}0a 0%, transparent 100%)`,
+                            borderBottom: `1px solid ${accentSoft}`,
+                          }}
+                        >
+                          <div className="px-5 py-4">
+                            {/* Segmented control */}
+                            <div className="flex items-center justify-between mb-3">
+                              <div
+                                className="inline-flex items-center p-1 rounded-xl relative"
                                 style={{
-                                  background: expandedView === 'details' ? accent : 'transparent',
-                                  color: expandedView === 'details' ? 'var(--void-bg)' : accent,
-                                  border: `1px solid ${expandedView === 'details' ? accent : accentSoft}`,
+                                  background: 'rgba(255,255,255,0.035)',
+                                  border: '1px solid rgba(255,255,255,0.06)',
+                                  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.03)',
                                 }}
                               >
-                                <Eye className="w-3 h-3" />
-                                Signal Details
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setExpandedView('chart')}
-                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-semibold uppercase tracking-wider transition-colors"
-                                style={{
-                                  background: expandedView === 'chart' ? accent : 'transparent',
-                                  color: expandedView === 'chart' ? 'var(--void-bg)' : accent,
-                                  border: `1px solid ${expandedView === 'chart' ? accent : accentSoft}`,
-                                }}
-                              >
-                                <BarChart3 className="w-3 h-3" />
-                                Chart
-                              </button>
-                              <span className="ml-auto text-[9px] uppercase tracking-wider text-[var(--text-muted)] font-semibold">
-                                {g.ticker} · {g.asset_label.includes('(') ? g.asset_label.split('(')[0].trim() : g.asset_label}
-                              </span>
+                                {/* Sliding indicator */}
+                                <div
+                                  aria-hidden
+                                  className="absolute top-1 bottom-1 rounded-lg transition-all"
+                                  style={{
+                                    width: 'calc(50% - 4px)',
+                                    left: expandedView === 'chart' ? '4px' : 'calc(50% + 0px)',
+                                    background: accent,
+                                    boxShadow: `0 2px 8px -2px ${accent}88, inset 0 1px 0 rgba(255,255,255,0.2)`,
+                                    transition: 'left 260ms cubic-bezier(0.2, 0.8, 0.2, 1)',
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedView('chart')}
+                                  className="relative z-10 inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[11px] font-semibold transition-colors"
+                                  style={{
+                                    color: expandedView === 'chart' ? 'var(--void-bg)' : 'var(--text-secondary)',
+                                    minWidth: 110,
+                                    justifyContent: 'center',
+                                  }}
+                                >
+                                  <BarChart3 className="w-3.5 h-3.5" />
+                                  Chart
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedView('details')}
+                                  className="relative z-10 inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[11px] font-semibold transition-colors"
+                                  style={{
+                                    color: expandedView === 'details' ? 'var(--void-bg)' : 'var(--text-secondary)',
+                                    minWidth: 110,
+                                    justifyContent: 'center',
+                                  }}
+                                >
+                                  <Eye className="w-3.5 h-3.5" />
+                                  Details
+                                </button>
+                              </div>
+                              <div className="text-[10px] text-[var(--text-muted)] flex items-center gap-2">
+                                <span className="font-mono text-[var(--text-secondary)] font-semibold tracking-wide">{g.ticker}</span>
+                                {companyName && <span className="hidden sm:inline">· {companyName}</span>}
+                                <span className="hidden md:inline">· {g.sector}</span>
+                              </div>
                             </div>
 
                             {expandedView === 'chart' && (() => {
-                              const active = TV_RANGES.find(r => r.label === tvRange) ?? TV_RANGES[3];
+                              const active = TV_RANGES.find((r) => r.label === tvRange) ?? TV_RANGES[3];
                               const tvSym = toTvSymbol(g.ticker);
                               const iframeSrc = `https://s.tradingview.com/widgetembed/?frameElementId=tv_${encodeURIComponent(g.ticker)}&symbol=${encodeURIComponent(tvSym)}&interval=${active.interval}&range=${active.range}&hidesidetoolbar=0&hidetoptoolbar=0&symboledit=1&saveimage=0&toolbarbg=0f0f1a&theme=dark&style=1&timezone=Etc/UTC&withdateranges=1&hideideas=1&hideideasbutton=1&locale=en`;
                               return (
-                              <div className="rounded-lg overflow-hidden" style={{ background: 'var(--void-base)', border: `1px solid ${accentSoft}` }}>
-                                {/* Timeframe buttons */}
-                                <div className="flex items-center gap-1 px-2 py-1.5" style={{ borderBottom: `1px solid ${accentSoft}`, background: 'var(--void-base)' }}>
-                                  <span className="text-[9px] uppercase tracking-wider text-[var(--text-muted)] font-semibold mr-1">Timeframe</span>
-                                  {TV_RANGES.map((r) => {
-                                    const isActive = r.label === tvRange;
-                                    return (
-                                      <button
-                                        key={r.label}
-                                        type="button"
-                                        onClick={() => setTvRange(r.label)}
-                                        className="px-2 py-0.5 rounded text-[10px] font-semibold tabular-nums transition-colors"
-                                        style={{
-                                          background: isActive ? accent : 'transparent',
-                                          color: isActive ? 'var(--void-bg)' : 'var(--text-secondary)',
-                                          border: `1px solid ${isActive ? accent : 'rgba(255,255,255,0.08)'}`,
-                                        }}
-                                        title={`${r.label} · interval ${r.interval}`}
-                                      >
-                                        {r.label}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                                <iframe
-                                  key={`${g.ticker}_${tvRange}`}
-                                  title={`TradingView ${g.ticker}`}
-                                  src={iframeSrc}
-                                  width="100%"
-                                  height="460"
-                                  frameBorder={0}
-                                  allowTransparency={true}
-                                  scrolling="no"
-                                  style={{ display: 'block', border: 0 }}
-                                />
-                                <div className="flex items-center justify-between px-3 py-1.5 text-[9px] text-[var(--text-muted)]" style={{ borderTop: `1px solid ${accentSoft}` }}>
-                                  <span>Symbol: <span className="font-mono text-[var(--text-secondary)]">{tvSym}</span> · Range: <span className="font-mono text-[var(--text-secondary)]">{active.range}</span></span>
-                                  <a
-                                    href={`https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvSym)}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="inline-flex items-center gap-1 hover:text-[var(--text-primary)] transition-colors"
+                                <div
+                                  className="rounded-2xl overflow-hidden"
+                                  style={{
+                                    background: '#06070b',
+                                    border: `1px solid rgba(255,255,255,0.06)`,
+                                    boxShadow: `0 24px 60px -28px ${accent}44, 0 8px 24px -12px rgba(0,0,0,0.6)`,
+                                  }}
+                                >
+                                  {/* Toolbar */}
+                                  <div
+                                    className="flex items-center gap-3 px-3 py-2"
+                                    style={{
+                                      borderBottom: '1px solid rgba(255,255,255,0.05)',
+                                      background: 'rgba(255,255,255,0.015)',
+                                    }}
                                   >
-                                    Open on TradingView
-                                    <ExternalLink className="w-2.5 h-2.5" />
-                                  </a>
+                                    <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-[var(--text-muted)] font-semibold">
+                                      <Clock className="w-3 h-3" />
+                                      Timeframe
+                                    </div>
+                                    {/* Timeframe segmented */}
+                                    <div
+                                      className="inline-flex items-center p-0.5 rounded-lg"
+                                      style={{
+                                        background: 'rgba(255,255,255,0.04)',
+                                        border: '1px solid rgba(255,255,255,0.05)',
+                                      }}
+                                    >
+                                      {TV_RANGES.map((r) => {
+                                        const isActive = r.label === tvRange;
+                                        return (
+                                          <button
+                                            key={r.label}
+                                            type="button"
+                                            onClick={() => setTvRange(r.label)}
+                                            className="px-2.5 py-1 rounded text-[10px] font-bold tabular-nums transition-all"
+                                            style={{
+                                              background: isActive ? accent : 'transparent',
+                                              color: isActive ? 'var(--void-bg)' : 'var(--text-secondary)',
+                                              boxShadow: isActive ? `0 2px 6px -2px ${accent}aa` : 'none',
+                                              letterSpacing: '0.02em',
+                                            }}
+                                            title={`${r.label} · ${r.interval === 'D' ? 'Daily' : r.interval === 'W' ? 'Weekly' : `${r.interval}m`} candles`}
+                                          >
+                                            {r.label}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                    <a
+                                      href={`https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvSym)}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-semibold transition-colors"
+                                      style={{
+                                        color: 'var(--text-secondary)',
+                                        background: 'rgba(255,255,255,0.04)',
+                                        border: '1px solid rgba(255,255,255,0.06)',
+                                      }}
+                                      title="Open on TradingView"
+                                    >
+                                      <span className="font-mono">{tvSym}</span>
+                                      <ExternalLink className="w-3 h-3" />
+                                    </a>
+                                  </div>
+                                  {/* Iframe */}
+                                  <iframe
+                                    key={`${g.ticker}_${tvRange}`}
+                                    title={`TradingView ${g.ticker}`}
+                                    src={iframeSrc}
+                                    width="100%"
+                                    height="520"
+                                    frameBorder={0}
+                                    allowTransparency={true}
+                                    scrolling="no"
+                                    style={{ display: 'block', border: 0 }}
+                                  />
                                 </div>
-                              </div>
                               );
                             })()}
 
