@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, useMemo, useEffect, useRef, useCallback, Component, type ReactNode, type ErrorInfo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
-import type { SummaryRow, SectorGroup, StrongSignalEntry, HighConvictionSignal, SignalSummaryData } from '../api';
+import type { SummaryRow, SectorGroup, StrongSignalEntry, HighConvictionSignal, SignalSummaryData, SignalStats } from '../api';
 import PageHeader from '../components/PageHeader';
 import { SignalTableSkeleton } from '../components/CosmicSkeleton';
 import { CosmicErrorCard } from '../components/CosmicErrorState';
@@ -11,6 +11,7 @@ import { SignalsEmpty } from '../components/CosmicEmptyState';
 import { ExportButton } from '../components/ExportButton';
 import { Sparkline } from '../components/Sparkline';
 import { SignalStrengthBar, MomentumBadge, CrashRiskHeat, HorizonCell } from '../components/SignalTableVisuals';
+import SignalDetailPanel from '../components/SignalDetailPanel';
 import {
   ArrowUpCircle, ArrowDownCircle, Filter, ChevronDown, ChevronRight,
   TrendingUp, TrendingDown, Search, X, ExternalLink, BarChart3,
@@ -99,7 +100,15 @@ function WsStatusDot({ status }: { status: WSStatus }) {
 
 function SignalsPageInner() {
   const navigate = useNavigate();
-  const [view, setView] = useState<ViewMode>('sectors');
+  // v1 premium: default to 'all' so users see all 490 assets immediately (was 'sectors' which showed collapsed empty sectors)
+  const [view, setView] = useState<ViewMode>(() => {
+    try {
+      const stored = localStorage.getItem('signals-view');
+      if (stored === 'all' || stored === 'sectors' || stored === 'strong') return stored as ViewMode;
+    } catch { /* ignore */ }
+    return 'all';
+  });
+  useEffect(() => { try { localStorage.setItem('signals-view', view); } catch { /* ignore */ } }, [view]);
   const [filter, setFilter] = useState<SignalFilter>('all');
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -257,6 +266,15 @@ function SignalsPageInner() {
   const stats = statsQ.data;
   const sectors = sectorQ.data?.sectors || [];
 
+  // v1 premium: auto-expand sectors on first load so 'sectors' view isn't an empty shell
+  const sectorsAutoExpandedRef = useRef(false);
+  useEffect(() => {
+    if (!sectorsAutoExpandedRef.current && sectors.length > 0) {
+      sectorsAutoExpandedRef.current = true;
+      setExpandedSectors(new Set(sectors.map(s => s.name)));
+    }
+  }, [sectors]);
+
   // Story 3.5: Fuzzy match scoring
   const fuzzyMatch = useCallback((text: string, query: string): boolean => {
     if (!query) return true;
@@ -370,34 +388,9 @@ function SignalsPageInner() {
 
   return (
     <>
-      <PageHeader title="Signals">
-        <span>{rows.length} assets across {horizons.length} horizons</span>
-        <WsStatusDot status={wsStatus} />
-        <ExportButton
-          filename="signals"
-          columns={[
-            { key: 'asset_label', label: 'Asset' },
-            { key: 'signal', label: 'Signal' },
-            { key: 'momentum_score', label: 'Momentum' },
-            { key: 'crash_risk_score', label: 'Crash Risk' },
-          ]}
-          data={filteredRows as unknown as Record<string, unknown>[]}
-          filteredCount={filteredRows.length}
-          totalCount={rows.length}
-        />
-      </PageHeader>
+      {/* ── v1 PREMIUM HERO BAND ─────────────────────────────────────── */}
+      <SignalsHero stats={stats} rows={rows} horizons={horizons} filteredCount={filteredRows.length} wsStatus={wsStatus} />
 
-      {/* Stats bar — premium glassmorphic cards */}
-      {stats && (
-        <div className="grid grid-cols-3 md:grid-cols-6 gap-3 mb-6 fade-up">
-          <StatCard label="Strong Buy" value={stats.strong_buy_signals} total={stats.total_assets} color="#10b981" icon={<ArrowUpCircle className="w-4 h-4" />} />
-          <StatCard label="Buy" value={stats.buy_signals - stats.strong_buy_signals} total={stats.total_assets} color="#6ff0c0" icon={<ArrowUp className="w-4 h-4" />} />
-          <StatCard label="Hold" value={stats.hold_signals} total={stats.total_assets} color="#7a8ba4" icon={<Activity className="w-4 h-4" />} />
-          <StatCard label="Sell" value={stats.sell_signals - stats.strong_sell_signals} total={stats.total_assets} color="#f87171" icon={<ArrowDown className="w-4 h-4" />} />
-          <StatCard label="Strong Sell" value={stats.strong_sell_signals} total={stats.total_assets} color="#f43f5e" icon={<ArrowDownCircle className="w-4 h-4" />} />
-          <StatCard label="Exit" value={stats.exit_signals} total={stats.total_assets} color="#f59e0b" icon={<X className="w-4 h-4" />} />
-        </div>
-      )}
 
       {/* High Conviction Panels — full positions with rich data */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-8 fade-up-delay-1">
@@ -414,6 +407,22 @@ function SignalsPageInner() {
           color="red"
           isLoading={sellQ.isLoading}
           onNavigateChart={(sym) => navigate(`/charts/${sym}`)}
+        />
+      </div>
+
+      {/* Export button row */}
+      <div className="flex items-center justify-end mb-3">
+        <ExportButton
+          filename="signals"
+          columns={[
+            { key: 'asset_label', label: 'Asset' },
+            { key: 'signal', label: 'Signal' },
+            { key: 'momentum_score', label: 'Momentum' },
+            { key: 'crash_risk_score', label: 'Crash Risk' },
+          ]}
+          data={filteredRows as unknown as Record<string, unknown>[]}
+          filteredCount={filteredRows.length}
+          totalCount={rows.length}
         />
       </div>
 
@@ -645,6 +654,96 @@ function StatCard({ label, value, total, color, icon }: { label: string; value: 
       <div className="w-full h-1 rounded-full bg-white/[0.04] overflow-hidden">
         <div className="h-full rounded-full transition-all duration-700 ease-out" style={{ width: `${Math.min(pct, 100)}%`, background: color }} />
       </div>
+    </div>
+  );
+}
+
+/* ── v1 Premium Signals Hero Band ─────────────────────────────────── */
+function SignalsHero({
+  stats, rows, horizons, filteredCount, wsStatus,
+}: {
+  stats: SignalStats | undefined;
+  rows: SummaryRow[];
+  horizons: number[];
+  filteredCount: number;
+  wsStatus: WSStatus;
+}) {
+  const total = stats?.total_assets ?? rows.length;
+  const strongBuy = stats?.strong_buy_signals ?? 0;
+  const buy = stats?.buy_signals ?? 0;
+  const hold = stats?.hold_signals ?? 0;
+  const sell = stats?.sell_signals ?? 0;
+  const strongSell = stats?.strong_sell_signals ?? 0;
+  const conviction = strongBuy + strongSell;
+  const bullishCount = buy; // buy_signals already includes strong_buy in backend convention
+  const bearishCount = sell;
+  const bullishPct = total > 0 ? (bullishCount / total) * 100 : 0;
+  const bearishPct = total > 0 ? (bearishCount / total) * 100 : 0;
+  const neutralPct = Math.max(0, 100 - bullishPct - bearishPct);
+
+  const wsColor =
+    wsStatus === 'connected' ? '#10b981' :
+    wsStatus === 'connecting' ? '#f59e0b' :
+    wsStatus === 'error' ? '#f43f5e' : '#64748b';
+
+  return (
+    <div
+      className="hero-surface fade-up relative overflow-hidden mb-6"
+      style={{ borderRadius: 28, padding: '28px 32px' }}
+    >
+      <div className="flex items-start justify-between gap-8 flex-wrap">
+        {/* Left: hero numeral */}
+        <div className="flex-1 min-w-[240px]">
+          <div className="label-micro mb-2 flex items-center gap-2">
+            <span
+              className="w-1.5 h-1.5 rounded-full"
+              style={{ background: wsColor, boxShadow: wsStatus === 'connected' ? `0 0 8px ${wsColor}` : 'none' }}
+            />
+            <span>Signals Engine · {wsStatus === 'connected' ? 'LIVE' : wsStatus.toUpperCase()}</span>
+          </div>
+          <div className="flex items-baseline gap-3">
+            <span className="num-hero text-white">{conviction}</span>
+            <span className="text-[13px] text-[var(--text-muted)] tabular-nums">
+              of {total} · high conviction
+            </span>
+          </div>
+          <div className="mt-1 text-[12px] text-[var(--text-secondary)] tabular-nums">
+            {filteredCount === rows.length
+              ? <>{horizons.length} horizons active</>
+              : <><span className="text-white font-medium">{filteredCount}</span> shown / {rows.length} total</>
+            }
+          </div>
+        </div>
+
+        {/* Right: split bar + stats strip */}
+        <div className="flex-1 min-w-[320px] max-w-[560px]">
+          <div
+            className="flex items-stretch rounded-full overflow-hidden mb-3"
+            style={{ height: 8, background: 'rgba(255,255,255,0.04)' }}
+            title={`${bullishPct.toFixed(1)}% bullish · ${neutralPct.toFixed(1)}% neutral · ${bearishPct.toFixed(1)}% bearish`}
+          >
+            <div style={{ width: `${bullishPct}%`, background: 'linear-gradient(90deg,#10b981,#6ee7b7)', transition: 'width 600ms ease-out' }} />
+            <div style={{ width: `${neutralPct}%`, background: 'rgba(255,255,255,0.06)', transition: 'width 600ms ease-out' }} />
+            <div style={{ width: `${bearishPct}%`, background: 'linear-gradient(90deg,#fca5a5,#f43f5e)', transition: 'width 600ms ease-out' }} />
+          </div>
+          <div className="grid grid-cols-5 gap-0">
+            <HeroStat label="Strong Buy" value={strongBuy} color="#10b981" />
+            <HeroStat label="Buy" value={Math.max(0, buy - strongBuy)} color="#6ee7b7" divider />
+            <HeroStat label="Hold" value={hold} color="#94a3b8" divider />
+            <HeroStat label="Sell" value={Math.max(0, sell - strongSell)} color="#fca5a5" divider />
+            <HeroStat label="Strong Sell" value={strongSell} color="#f43f5e" divider />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HeroStat({ label, value, color, divider }: { label: string; value: number; color: string; divider?: boolean }) {
+  return (
+    <div className={`flex flex-col items-start px-3 ${divider ? 'stat-col-divider' : ''}`}>
+      <span className="num-display text-[22px]" style={{ color }}>{value}</span>
+      <span className="label-micro mt-1">{label}</span>
     </div>
   );
 }
@@ -888,7 +987,20 @@ function SectorPanels({
 
             {/* Expanded content — premium table */}
             {expanded && (
-              <div style={{ animation: 'slide-down 200ms cubic-bezier(0.2,0,0,1) both' }}>
+              <div
+                style={{
+                  animation: 'sectorReveal 220ms cubic-bezier(0.2,0,0,1) both',
+                }}
+              >
+                <style>{`
+                  @keyframes sectorReveal {
+                    from { opacity: 0; transform: translateY(-4px); }
+                    to   { opacity: 1; transform: translateY(0); }
+                  }
+                  @media (prefers-reduced-motion: reduce) {
+                    [style*="sectorReveal"] { animation: none !important; }
+                  }
+                `}</style>
                 {/* Sector summary strip */}
                 <div className="flex items-center gap-4 px-5 py-2 text-[10px]"
                   style={{ background: `${sentColor}06`, borderTop: `1px solid ${sentColor}15`, borderBottom: '1px solid var(--border-void)' }}>
@@ -1265,21 +1377,36 @@ function CosmicSignalRow({ row, ticker, horizons, highlighted, isExpanded, onTog
   const pUp = nearestHorizon?.p_up;
   const kellyVal = nearestHorizon?.kelly_half;
 
+  const labelColor = signalLabelColor(label);
   return (
     <>
-      <tr className={`cosmic-row border-b border-[var(--border-void)] ${highlighted ? 'aurora-upgrade' : ''} ${isExpanded ? 'bg-[var(--void-hover)]' : ''}`}>
+      <tr
+        onClick={onToggleExpand}
+        className={`cosmic-row cursor-pointer transition-all duration-150 ${highlighted ? 'aurora-upgrade' : ''} ${isExpanded ? 'signals-row-selected' : 'hover:bg-white/[0.015]'}`}
+        style={isExpanded ? {
+          borderLeft: '2px solid var(--accent-violet)',
+          background: 'rgba(139,92,246,0.05)',
+          boxShadow: 'inset 0 0 20px rgba(139,92,246,0.06)',
+        } : {
+          borderLeft: '2px solid transparent',
+          borderBottom: '1px solid rgba(255,255,255,0.035)',
+        }}
+      >
         {/* Asset */}
-        <td className="px-4 py-2 whitespace-nowrap">
-          <button onClick={onToggleExpand} className="text-left group/asset">
-            <span className="font-semibold text-[var(--text-primary)] text-xs group-hover/asset:text-[var(--accent-violet)] transition-colors">
-              {ticker}
-            </span>
-            {row.asset_label.includes('(') && (
-              <span className="block text-[9px] text-[var(--text-muted)] truncate max-w-[140px] leading-tight">
-                {row.asset_label.split('(')[0].trim()}
+        <td className="px-4 py-2.5 whitespace-nowrap" style={{ height: '40px' }}>
+          <div className="flex items-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: labelColor }} />
+            <div className="text-left">
+              <span className="font-semibold text-white text-[12px] tabular-nums">
+                {ticker}
               </span>
-            )}
-          </button>
+              {row.asset_label.includes('(') && (
+                <span className="block text-[9px] text-[var(--text-muted)] truncate max-w-[140px] leading-tight">
+                  {row.asset_label.split('(')[0].trim()}
+                </span>
+              )}
+            </div>
+          </div>
         </td>
         {/* AC-1: Sparkline */}
         <td className="px-1 py-2 text-center">
@@ -1310,17 +1437,28 @@ function CosmicSignalRow({ row, ticker, horizons, highlighted, isExpanded, onTog
             </td>
           );
         })}
-        {/* Expand button */}
+        {/* Expand indicator */}
         <td className="px-2 py-2">
-          <button onClick={onToggleExpand} className="p-1 rounded hover:bg-[var(--void-active)] transition-colors" title="Show chart">
-            <BarChart3 className={`w-3.5 h-3.5 transition-colors ${isExpanded ? 'text-[var(--accent-violet)]' : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'}`} />
-          </button>
+          <ChevronRight
+            className="w-3.5 h-3.5 transition-all duration-200"
+            style={{
+              color: isExpanded ? 'var(--accent-violet)' : 'var(--text-muted)',
+              transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+            }}
+          />
         </td>
       </tr>
       {isExpanded && (
         <tr>
           <td colSpan={horizons.length + 7} className="p-0">
-            <MiniChartPanel ticker={ticker} onNavigateChart={onNavigateChart} />
+            <SignalDetailPanel
+              ticker={ticker}
+              signal={row.nearest_label}
+              momentum={row.momentum_score}
+              crashRisk={row.crash_risk_score}
+              horizonSignals={row.horizon_signals as any}
+              onNavigateChart={onNavigateChart}
+            />
           </td>
         </tr>
       )}
@@ -1328,7 +1466,7 @@ function CosmicSignalRow({ row, ticker, horizons, highlighted, isExpanded, onTog
   );
 }
 
-/* ── Mini chart panel (expandable inline) ────────────────────────── */
+/* ── Mini chart panel (legacy — retained for internal reference, unused) ── */
 function MiniChartPanel({ ticker, onNavigateChart }: { ticker: string; onNavigateChart: () => void }) {
   const { data, isLoading, error } = useQuery({
     queryKey: ['miniChart', ticker],
@@ -1462,8 +1600,19 @@ function SectorSignalRow({ row, horizons, highlighted, delayMs = 0, onNavigateCh
 
   return (
     <>
-      <tr className={`border-b border-white/[0.03] hover:bg-white/[0.015] transition-all duration-150 ${highlighted ? 'aurora-upgrade' : ''} ${isExpanded ? 'bg-white/[0.02]' : ''}`}
-        style={{ animationDelay: `${delayMs}ms` }}>
+      <tr
+        onClick={() => setIsExpanded(p => !p)}
+        className={`cursor-pointer transition-all duration-150 ${highlighted ? 'aurora-upgrade' : ''} ${isExpanded ? '' : 'hover:bg-white/[0.015]'}`}
+        style={isExpanded ? {
+          animationDelay: `${delayMs}ms`,
+          borderLeft: '2px solid var(--accent-violet)',
+          background: 'rgba(139,92,246,0.05)',
+          boxShadow: 'inset 0 0 20px rgba(139,92,246,0.06)',
+        } : {
+          animationDelay: `${delayMs}ms`,
+          borderLeft: '2px solid transparent',
+          borderBottom: '1px solid rgba(255,255,255,0.035)',
+        }}>
         {/* Asset */}
         <td className="px-4 py-2.5 whitespace-nowrap">
           <div className="flex items-center gap-2">
@@ -1513,19 +1662,26 @@ function SectorSignalRow({ row, horizons, highlighted, delayMs = 0, onNavigateCh
         </td>
         {/* Actions */}
         <td className="px-1 py-2.5">
-          <button
-            onClick={() => setIsExpanded(p => !p)}
-            className="p-1 rounded hover:bg-white/[0.05] transition-colors"
-            title="Expand"
-          >
-            <BarChart3 className={`w-3.5 h-3.5 transition-colors ${isExpanded ? 'text-[var(--accent-violet)]' : 'text-[var(--text-muted)]'}`} />
-          </button>
+          <ChevronRight
+            className="w-3.5 h-3.5 transition-all duration-200"
+            style={{
+              color: isExpanded ? 'var(--accent-violet)' : 'var(--text-muted)',
+              transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+            }}
+          />
         </td>
       </tr>
       {isExpanded && (
         <tr>
           <td colSpan={horizons.length + 5} className="p-0">
-            <MiniChartPanel ticker={ticker} onNavigateChart={() => onNavigateChart(ticker)} />
+            <SignalDetailPanel
+              ticker={ticker}
+              signal={row.nearest_label}
+              momentum={row.momentum_score}
+              crashRisk={row.crash_risk_score}
+              horizonSignals={row.horizon_signals as any}
+              onNavigateChart={() => onNavigateChart(ticker)}
+            />
           </td>
         </tr>
       )}
