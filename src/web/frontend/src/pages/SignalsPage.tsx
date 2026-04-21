@@ -135,6 +135,22 @@ function SignalsPageInner() {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [expandedSectors, setExpandedSectors] = useState<Set<string>>(new Set());
+  // EMA-below filters — apply to all three views. Multi-select, AND-combined.
+  const [emaFilters, setEmaFilters] = useState<{ p9: boolean; p50: boolean; p600: boolean }>(
+    () => {
+      try {
+        const stored = localStorage.getItem('signals-ema-filters');
+        if (stored) {
+          const p = JSON.parse(stored);
+          return { p9: !!p.p9, p50: !!p.p50, p600: !!p.p600 };
+        }
+      } catch { /* ignore */ }
+      return { p9: false, p50: false, p600: false };
+    }
+  );
+  useEffect(() => {
+    try { localStorage.setItem('signals-ema-filters', JSON.stringify(emaFilters)); } catch { /* ignore */ }
+  }, [emaFilters]);
   const [jobMode, setJobMode] = useState<JobMode | null>(null);
 
   const [updatedAsset, setUpdatedAsset] = useState<string | null>(null);
@@ -301,16 +317,16 @@ function SignalsPageInner() {
     try { localStorage.removeItem('signals-horizons'); } catch { /* ignore */ }
   }, []);
   const stats = statsQ.data;
-  const sectors = sectorQ.data?.sectors || [];
+  const rawSectors = sectorQ.data?.sectors || [];
 
   // v1 premium: auto-expand sectors on first load so 'sectors' view isn't an empty shell
   const sectorsAutoExpandedRef = useRef(false);
   useEffect(() => {
-    if (!sectorsAutoExpandedRef.current && sectors.length > 0) {
+    if (!sectorsAutoExpandedRef.current && rawSectors.length > 0) {
       sectorsAutoExpandedRef.current = true;
-      setExpandedSectors(new Set(sectors.map(s => s.name)));
+      setExpandedSectors(new Set(rawSectors.map(s => s.name)));
     }
-  }, [sectors]);
+  }, [rawSectors]);
 
   // Story 3.5: Fuzzy match scoring
   const fuzzyMatch = useCallback((text: string, query: string): boolean => {
@@ -326,9 +342,22 @@ function SignalsPageInner() {
     return qi === q.length;
   }, []);
 
+  // EMA-below predicate (keyed by asset_label / symbol). Missing EMA data
+  // for a ticker = fail any active EMA toggle.
+  const passesEma = useCallback((ticker: string | undefined | null): boolean => {
+    if (!emaFilters.p9 && !emaFilters.p50 && !emaFilters.p600) return true;
+    const st = ticker ? emaStates[ticker] : undefined;
+    if (!st) return false;
+    if (emaFilters.p9 && st.below_9 !== true) return false;
+    if (emaFilters.p50 && st.below_50 !== true) return false;
+    if (emaFilters.p600 && st.below_600 !== true) return false;
+    return true;
+  }, [emaFilters, emaStates]);
+
   const filteredRows = useMemo(() => {
     return rows.filter((row) => {
       if (debouncedSearch && !fuzzyMatch(row.asset_label, debouncedSearch)) return false;
+      if (!passesEma(row.asset_label)) return false;
       if (filter === 'all') return true;
       const label = (row.nearest_label || '').toUpperCase().replace(/\s+/g, '_');
       if (filter === 'bullish') return label === 'STRONG_BUY' || label === 'BUY';
@@ -336,7 +365,15 @@ function SignalsPageInner() {
       if (filter === 'greens' || filter === 'reds') return rowHorizonColor(row) === filter;
       return label === filter.toUpperCase();
     });
-  }, [rows, debouncedSearch, filter, fuzzyMatch]);
+  }, [rows, debouncedSearch, filter, fuzzyMatch, passesEma]);
+
+  // Sectors view: apply EMA predicate at the asset level, drop empty sectors.
+  const sectors = useMemo(() => {
+    if (!emaFilters.p9 && !emaFilters.p50 && !emaFilters.p600) return rawSectors;
+    return rawSectors
+      .map(sec => ({ ...sec, assets: sec.assets.filter(a => passesEma(a.asset_label)) }))
+      .filter(sec => sec.assets.length > 0);
+  }, [rawSectors, emaFilters, passesEma]);
 
   /** Story 3.2: Multi-level sorted rows */
   const sortedRows = useMemo(() => {
@@ -503,160 +540,286 @@ function SignalsPageInner() {
         onClose={() => setJobMode(null)}
       />
 
-      {/* View mode + filters */}
-      <div className="flex flex-wrap items-center gap-3 mb-5 fade-up-delay-2">
-        {/* View toggle */}
-        <div className="flex items-center gap-0.5 glass-card px-2.5 py-1.5">
-          {([
-            { key: 'sectors' as ViewMode, label: 'By Sector' },
-            { key: 'strong' as ViewMode, label: 'Strong Signals' },
-            { key: 'all' as ViewMode, label: 'All Assets' },
-          ]).map(({ key, label }) => (
-            <button
-              key={key}
-              onClick={() => setView(key)}
-              className={`px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all duration-200 ${
-                view === key ? 'bg-[var(--accent-violet)]/15 text-[var(--text-violet)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-secondary)] hover:bg-white/[0.02]'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {/* Signal filter — active across all views */}
-        <div className="flex items-center gap-1.5 glass-card px-2.5 py-1.5">
-          <Filter className="w-3 h-3 text-[var(--text-secondary)] mr-1" />
-          <button
-            onClick={() => setFilter('all')}
-            className="filter-pill"
-            data-active={filter === 'all'}
-          >
-            All
-          </button>
-          <span className="w-px h-3.5 bg-white/[0.06] mx-0.5" aria-hidden="true" />
-          <button
-            onClick={() => setFilter('bullish')}
-            className="filter-pill inline-flex items-center"
-            data-active={filter === 'bullish'}
-            data-filter="bullish"
-            title="Buy + Strong Buy"
-          >
-            <span className="inline-block w-1.5 h-1.5 rounded-full mr-1" style={{ background: '#10b981' }} />
-            Bullish
-          </button>
-          <button
-            onClick={() => setFilter('bearish')}
-            className="filter-pill inline-flex items-center"
-            data-active={filter === 'bearish'}
-            data-filter="bearish"
-            title="Sell + Strong Sell"
-          >
-            <span className="inline-block w-1.5 h-1.5 rounded-full mr-1" style={{ background: '#f43f5e' }} />
-            Bearish
-          </button>
-          <button
-            onClick={() => setFilter('greens')}
-            className="filter-pill inline-flex items-center"
-            data-active={filter === 'greens'}
-            data-filter="greens"
-            title="Majority of horizon cells positive"
-          >
-            <span className="inline-block w-1.5 h-1.5 rounded-full mr-1" style={{ background: '#10b981', boxShadow: '0 0 4px #10b98180' }} />
-            Greens
-          </button>
-          <button
-            onClick={() => setFilter('reds')}
-            className="filter-pill inline-flex items-center"
-            data-active={filter === 'reds'}
-            data-filter="reds"
-            title="Majority of horizon cells negative"
-          >
-            <span className="inline-block w-1.5 h-1.5 rounded-full mr-1" style={{ background: '#f43f5e', boxShadow: '0 0 4px #f43f5e80' }} />
-            Reds
-          </button>
-          <span className="w-px h-3.5 bg-white/[0.06] mx-0.5" aria-hidden="true" />
-          {([
-            { key: 'strong_buy' as SignalFilter, label: 'SB' },
-            { key: 'buy' as SignalFilter, label: 'Buy' },
-            { key: 'hold' as SignalFilter, label: 'Hold' },
-            { key: 'sell' as SignalFilter, label: 'Sell' },
-            { key: 'strong_sell' as SignalFilter, label: 'SS' },
-          ]).map(({ key, label }) => (
-            <button
-              key={key}
-              onClick={() => setFilter(key)}
-              className="filter-pill"
-              data-active={filter === key}
-              data-filter={key}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {/* Smart Search with premium focus elevation */}
-        <div className="flex items-center gap-2 glass-card px-3 py-2.5 group search-cosmic focus-ring transition-all duration-200" style={{ backdropFilter: 'blur(8px)' }}>
-          <Search className="w-3.5 h-3.5 text-[var(--text-muted)] group-focus-within:text-[var(--accent-violet)] transition-colors" />
-          <input
-            ref={searchRef}
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search assets..."
-            className="bg-transparent text-[13px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none w-40"
+      {/* ═══ Premium Filter Bar ══════════════════════════════════════════════
+          Apple-grade unified filter surface:
+          - Row 1: View segmented + Primary signal segmented + Search
+          - Row 2: Signal-strength chips + EMA trend chips + result meta + clear
+          ═══════════════════════════════════════════════════════════════════ */}
+      <div className="mb-5 fade-up-delay-2 overflow-hidden" style={{
+        background: 'linear-gradient(180deg, rgba(255,255,255,0.025) 0%, rgba(255,255,255,0.008) 100%)',
+        border: '1px solid rgba(255,255,255,0.06)',
+        borderRadius: '16px',
+        boxShadow: '0 1px 0 rgba(255,255,255,0.04) inset, 0 8px 28px -14px rgba(0,0,0,0.6), 0 1px 0 rgba(0,0,0,0.4)',
+        backdropFilter: 'blur(12px)',
+      }}>
+        {/* ── Row 1 ─ View segmented │ Primary signal segmented │ Search ── */}
+        <div className="flex flex-wrap items-center gap-3 px-4 py-3">
+          {/* View segmented control with sliding indicator */}
+          <SegmentedControl
+            options={[
+              { key: 'sectors', label: 'Sectors' },
+              { key: 'strong', label: 'Strong' },
+              { key: 'all', label: 'All' },
+            ] as const}
+            value={view}
+            onChange={(v) => setView(v as ViewMode)}
+            accent="var(--accent-violet)"
+            size="md"
           />
-          {!search && (
-            <span className="text-[9px] text-[var(--text-muted)] border border-[var(--border-void)] rounded px-1 py-0.5 opacity-50">/</span>
+
+          {/* Primary signal segmented */}
+          <div className="h-5 w-px bg-white/[0.04]" aria-hidden />
+          <SegmentedControl
+            options={[
+              { key: 'all', label: 'All', dot: undefined },
+              { key: 'bullish', label: 'Bullish', dot: '#10b981' },
+              { key: 'bearish', label: 'Bearish', dot: '#f43f5e' },
+              { key: 'greens', label: 'Greens', dot: '#4ade80' },
+              { key: 'reds', label: 'Reds', dot: '#f87171' },
+            ] as const}
+            value={filter === 'all' || filter === 'bullish' || filter === 'bearish' || filter === 'greens' || filter === 'reds' ? filter : 'all'}
+            onChange={(v) => setFilter(v as SignalFilter)}
+            accent="#a78bfa"
+            size="md"
+          />
+
+          <div className="flex-1 min-w-[20px]" />
+
+          {/* Premium Search */}
+          <div
+            className="flex items-center gap-2 px-3 py-[7px] search-cosmic focus-ring transition-all duration-200"
+            style={{
+              background: 'rgba(255,255,255,0.02)',
+              border: '1px solid rgba(255,255,255,0.06)',
+              borderRadius: '10px',
+              backdropFilter: 'blur(6px)',
+            }}
+          >
+            <Search className="w-3.5 h-3.5 text-[var(--text-muted)] group-focus-within:text-[var(--accent-violet)] transition-colors" />
+            <input
+              ref={searchRef}
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search assets..."
+              className="bg-transparent text-[12.5px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none w-40 tabular-nums"
+            />
+            {!search && (
+              <span className="text-[9px] text-[var(--text-muted)] border border-white/[0.08] rounded px-1 py-0.5 opacity-60 font-medium">/</span>
+            )}
+            {search && debouncedSearch !== search && (
+              <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-violet)] animate-pulse" />
+            )}
+            {search && (
+              <>
+                <span className="text-[10px] text-[var(--text-muted)] tabular-nums whitespace-nowrap">
+                  {filteredRows.length}/{rows.length}
+                </span>
+                <button onClick={() => setSearch('')} className="text-[var(--text-muted)] hover:text-[var(--accent-rose)] transition-colors duration-120">
+                  <X className="w-3 h-3" />
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* ── Row 2 ─ Signal chips │ EMA chips │ meta + clear ─────────────── */}
+        <div
+          className="flex flex-wrap items-center gap-3 px-4 py-2.5"
+          style={{ borderTop: '1px solid rgba(255,255,255,0.03)', background: 'rgba(255,255,255,0.008)' }}
+        >
+          {/* Signal strength chips */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-[9.5px] font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)] pr-1">
+              Signal
+            </span>
+            {([
+              { key: 'strong_buy' as SignalFilter, label: 'SB',   full: 'Strong Buy',   accent: '#059669' },
+              { key: 'buy'         as SignalFilter, label: 'Buy',  full: 'Buy',          accent: '#34d399' },
+              { key: 'hold'        as SignalFilter, label: 'Hold', full: 'Hold',         accent: '#fbbf24' },
+              { key: 'sell'        as SignalFilter, label: 'Sell', full: 'Sell',         accent: '#fb7185' },
+              { key: 'strong_sell' as SignalFilter, label: 'SS',   full: 'Strong Sell',  accent: '#e11d48' },
+            ]).map(({ key, label, full, accent }) => {
+              const on = filter === key;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setFilter(on ? 'all' : key)}
+                  aria-pressed={on}
+                  title={full}
+                  className="group relative inline-flex items-center gap-1 rounded-lg px-2 py-1 transition-all duration-200"
+                  style={{
+                    background: on
+                      ? `linear-gradient(180deg, ${accent}30, ${accent}14)`
+                      : 'rgba(255,255,255,0.02)',
+                    border: `1px solid ${on ? accent + '75' : 'rgba(255,255,255,0.05)'}`,
+                    boxShadow: on
+                      ? `0 0 0 1px ${accent}25 inset, 0 4px 14px -6px ${accent}90, 0 0 18px -4px ${accent}60`
+                      : '0 1px 0 rgba(255,255,255,0.02) inset',
+                    color: on ? '#fff' : 'var(--text-secondary)',
+                    transition: 'all 220ms cubic-bezier(.2,.8,.2,1)',
+                  }}
+                >
+                  <span
+                    aria-hidden
+                    className="rounded-full"
+                    style={{
+                      width: 5, height: 5,
+                      background: on ? accent : 'rgba(255,255,255,0.2)',
+                      boxShadow: on ? `0 0 6px ${accent}` : 'none',
+                      transition: 'background 220ms, box-shadow 220ms',
+                    }}
+                  />
+                  <span className="text-[10.5px] font-semibold tracking-wide" style={{ color: on ? '#fff' : 'var(--text-secondary)' }}>
+                    {label}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="h-5 w-px bg-white/[0.05]" aria-hidden />
+
+          {/* EMA trend chips — multi-select */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-[9.5px] font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)] pr-1">
+              Trend
+            </span>
+            {([
+              { key: 'p9' as const,   period: 'EMA 9',   count: rows.filter(r => emaStates[r.asset_label]?.below_9   === true).length },
+              { key: 'p50' as const,  period: 'EMA 50',  count: rows.filter(r => emaStates[r.asset_label]?.below_50  === true).length },
+              { key: 'p600' as const, period: 'EMA 600', count: rows.filter(r => emaStates[r.asset_label]?.below_600 === true).length },
+            ]).map(({ key, period, count }) => {
+              const on = emaFilters[key];
+              const emaLoaded = Object.keys(emaStates).length > 0;
+              const accent = 'var(--accent-violet)';
+              const accentColor = '#a78bfa';
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setEmaFilters({ ...emaFilters, [key]: !on })}
+                  disabled={!emaLoaded}
+                  aria-pressed={on}
+                  title={emaLoaded ? `Only show assets trading below ${period}` : 'Loading EMA data…'}
+                  className="group relative inline-flex items-center gap-1.5 rounded-lg pl-2 pr-1.5 py-1 transition-all duration-200"
+                  style={{
+                    background: on
+                      ? `linear-gradient(180deg, ${accentColor}30, ${accentColor}14)`
+                      : 'rgba(255,255,255,0.02)',
+                    border: `1px solid ${on ? accentColor + '75' : 'rgba(255,255,255,0.05)'}`,
+                    boxShadow: on
+                      ? `0 0 0 1px ${accentColor}25 inset, 0 4px 14px -6px ${accentColor}90, 0 0 18px -4px ${accentColor}60`
+                      : '0 1px 0 rgba(255,255,255,0.02) inset',
+                    color: on ? '#fff' : 'var(--text-secondary)',
+                    cursor: emaLoaded ? 'pointer' : 'wait',
+                    opacity: emaLoaded ? 1 : 0.5,
+                    transition: 'all 220ms cubic-bezier(.2,.8,.2,1)',
+                  }}
+                >
+                  <TrendingDown
+                    className="w-3 h-3"
+                    style={{
+                      color: on ? accentColor : 'var(--text-muted)',
+                      filter: on ? `drop-shadow(0 0 4px ${accentColor})` : 'none',
+                      transition: 'color 220ms, filter 220ms',
+                    }}
+                  />
+                  <span className="text-[10.5px] font-semibold tracking-wide tabular-nums" style={{ color: on ? '#fff' : 'var(--text-secondary)' }}>
+                    {period}
+                  </span>
+                  <span
+                    className="inline-flex items-center justify-center rounded-md px-1 min-w-[18px] h-[15px] text-[9.5px] font-semibold tabular-nums transition-all"
+                    style={{
+                      background: on ? accentColor : 'rgba(255,255,255,0.05)',
+                      color: on ? '#0b0c12' : 'var(--text-muted)',
+                      boxShadow: on ? '0 1px 0 rgba(255,255,255,0.2) inset' : 'none',
+                    }}
+                  >
+                    {emaLoaded ? count : '—'}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex-1 min-w-[8px]" />
+
+          {/* Result count */}
+          <span className="text-[10.5px] text-[var(--text-muted)] tabular-nums">
+            <span className="text-[var(--text-primary)] font-medium">{view === 'sectors' ? sectors.length : filteredRows.length}</span>
+            {' '}{view === 'sectors' ? 'sectors' : 'results'}
+          </span>
+
+          {/* Change counter badge */}
+          {changeLog.length > 0 && (
+            <button
+              onClick={() => {
+                const lastChange = changeLog[0];
+                if (lastChange) {
+                  const el = document.querySelector(`[data-ticker="${lastChange.asset}"]`);
+                  el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+              }}
+              className="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-md animate-pulse"
+              style={{ color: 'var(--accent-violet)', background: 'var(--violet-12)', border: '1px solid rgba(167,139,250,0.18)' }}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-violet)]" />
+              {changeLog.length} change{changeLog.length > 1 ? 's' : ''}
+            </button>
           )}
-          {search && debouncedSearch !== search && (
-            <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-violet)] animate-pulse" />
+
+          {/* Live Feed toggle */}
+          <button
+            onClick={() => setShowTickerTape(p => !p)}
+            className="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-md transition-colors"
+            style={{
+              color: showTickerTape ? 'var(--accent-violet)' : 'var(--text-muted)',
+              background: showTickerTape ? 'var(--violet-12)' : 'rgba(255,255,255,0.02)',
+              border: `1px solid ${showTickerTape ? 'rgba(167,139,250,0.22)' : 'rgba(255,255,255,0.05)'}`,
+            }}
+          >
+            <span
+              className="w-1.5 h-1.5 rounded-full"
+              style={{
+                background: showTickerTape ? 'var(--accent-violet)' : 'rgba(255,255,255,0.2)',
+                boxShadow: showTickerTape ? '0 0 6px var(--accent-violet)' : 'none',
+              }}
+            />
+            Live Feed
+          </button>
+
+          {/* Clear all */}
+          {(filter !== 'all' || emaFilters.p9 || emaFilters.p50 || emaFilters.p600 || search) && (
+            <button
+              type="button"
+              onClick={() => {
+                setFilter('all');
+                setEmaFilters({ p9: false, p50: false, p600: false });
+                setSearch('');
+              }}
+              className="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-md transition-colors"
+              style={{
+                color: 'var(--text-secondary)',
+                background: 'rgba(255,255,255,0.03)',
+                border: '1px solid rgba(255,255,255,0.07)',
+              }}
+              title="Clear all filters"
+            >
+              <X className="w-3 h-3" />
+              Clear
+            </button>
           )}
-          {search && (
+
+          {view === 'sectors' && (
             <>
-              <span className="text-[10px] text-[var(--text-muted)] tabular-nums whitespace-nowrap">{filteredRows.length} of {rows.length}</span>
-              <button onClick={() => setSearch('')} className="text-[var(--text-muted)] hover:text-[var(--accent-rose)] transition-colors duration-120">
-                <X className="w-3 h-3" />
-              </button>
+              <div className="h-4 w-px bg-white/[0.05]" aria-hidden />
+              <button onClick={expandAll} className="text-[10px] text-[var(--accent-violet)] hover:underline">Expand all</button>
+              <button onClick={collapseAll} className="text-[10px] text-[var(--text-muted)] hover:underline">Collapse all</button>
             </>
           )}
         </div>
-
-        <span className="text-xs text-[var(--text-muted)]">
-          {view === 'sectors' ? `${sectors.length} sectors` : `${filteredRows.length} results`}
-        </span>
-
-        {/* Story 3.4: Change counter badge */}
-        {changeLog.length > 0 && (
-          <button
-            onClick={() => {
-              const lastChange = changeLog[0];
-              if (lastChange) {
-                const el = document.querySelector(`[data-ticker="${lastChange.asset}"]`);
-                el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-              }
-            }}
-            className="text-[10px] px-2 py-1 rounded-full animate-pulse"
-            style={{ color: 'var(--accent-violet)', background: 'var(--violet-12)' }}
-          >
-            {changeLog.length} change{changeLog.length > 1 ? 's' : ''}
-          </button>
-        )}
-
-        {/* Story 3.4: Live Feed toggle */}
-        <button
-          onClick={() => setShowTickerTape(p => !p)}
-          className={`text-[10px] px-2 py-1 rounded transition-colors ${showTickerTape ? 'text-[var(--accent-violet)] bg-[var(--violet-12)]' : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'}`}
-        >
-          Live Feed
-        </button>
-
-        {view === 'sectors' && (
-          <div className="flex gap-2 ml-auto">
-            <button onClick={expandAll} className="text-[10px] text-[var(--accent-violet)] hover:underline">Expand All</button>
-            <button onClick={collapseAll} className="text-[10px] text-[var(--text-muted)] hover:underline">Collapse All</button>
-          </div>
-        )}
       </div>
 
       {/* Story 3.4: Ticker tape */}
@@ -734,8 +897,8 @@ function SignalsPageInner() {
       )}
       {view === 'strong' && (
         <StrongSignalsView
-          strongBuy={strongQ.data?.strong_buy || []}
-          strongSell={strongQ.data?.strong_sell || []}
+          strongBuy={(strongQ.data?.strong_buy || []).filter(s => passesEma(s.symbol))}
+          strongSell={(strongQ.data?.strong_sell || []).filter(s => passesEma(s.symbol))}
           filter={filter}
           onNavigateChart={(sym) => navigate(`/charts/${sym}`)}
         />
@@ -2162,6 +2325,107 @@ interface GroupedTicker {
 }
 
 // ─── Apple-grade micro components for HighConvictionPanel ───────────────
+
+// iOS-style segmented control with a sliding accent indicator.
+// Generic over readonly option arrays so callers get a narrow value type.
+function SegmentedControl<K extends string>({
+  options,
+  value,
+  onChange,
+  accent = 'var(--accent-violet)',
+  size = 'md',
+}: {
+  options: ReadonlyArray<{ key: K; label: string; dot?: string }>;
+  value: K;
+  onChange: (next: K) => void;
+  accent?: string;
+  size?: 'sm' | 'md';
+}) {
+  const btnRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [indicator, setIndicator] = useState<{ x: number; w: number } | null>(null);
+
+  const recompute = useCallback(() => {
+    const container = containerRef.current;
+    const btn = btnRefs.current[value];
+    if (!container || !btn) return;
+    const cRect = container.getBoundingClientRect();
+    const bRect = btn.getBoundingClientRect();
+    setIndicator({ x: bRect.left - cRect.left, w: bRect.width });
+  }, [value]);
+
+  useEffect(() => {
+    recompute();
+  }, [recompute, options.length]);
+
+  useEffect(() => {
+    const onResize = () => recompute();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [recompute]);
+
+  const pad = size === 'sm' ? 'px-2 py-[5px]' : 'px-2.5 py-[6px]';
+  const textSize = size === 'sm' ? 'text-[10.5px]' : 'text-[11.5px]';
+
+  return (
+    <div
+      ref={containerRef}
+      className="relative inline-flex items-center gap-0 rounded-xl p-[3px]"
+      style={{
+        background: 'rgba(255,255,255,0.025)',
+        border: '1px solid rgba(255,255,255,0.05)',
+        boxShadow: '0 1px 0 rgba(255,255,255,0.03) inset',
+      }}
+    >
+      {/* Sliding indicator */}
+      {indicator && (
+        <div
+          aria-hidden
+          className="absolute top-[3px] bottom-[3px] rounded-[9px] pointer-events-none"
+          style={{
+            left: indicator.x,
+            width: indicator.w,
+            background: `linear-gradient(180deg, ${accent}22, ${accent}0c)`,
+            border: `1px solid ${accent}55`,
+            boxShadow: `0 0 0 1px ${accent}18 inset, 0 4px 14px -6px ${accent}85, 0 0 18px -6px ${accent}55`,
+            transition: 'left 280ms cubic-bezier(.2,.8,.2,1), width 280ms cubic-bezier(.2,.8,.2,1)',
+          }}
+        />
+      )}
+      {options.map((opt) => {
+        const on = opt.key === value;
+        return (
+          <button
+            key={opt.key}
+            ref={(el) => { btnRefs.current[opt.key] = el; }}
+            type="button"
+            onClick={() => onChange(opt.key)}
+            aria-pressed={on}
+            className={`relative inline-flex items-center gap-1.5 rounded-[9px] ${pad} ${textSize} font-medium transition-colors duration-200`}
+            style={{
+              color: on ? '#fff' : 'var(--text-secondary)',
+            }}
+          >
+            {opt.dot && (
+              <span
+                aria-hidden
+                className="rounded-full"
+                style={{
+                  width: 5,
+                  height: 5,
+                  background: opt.dot,
+                  boxShadow: on ? `0 0 6px ${opt.dot}` : 'none',
+                  transition: 'box-shadow 220ms',
+                }}
+              />
+            )}
+            <span className="whitespace-nowrap">{opt.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 function KpiCell({
   label,
