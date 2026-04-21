@@ -161,35 +161,57 @@ export default function SignalDetailPanel({
       role="region"
       aria-label={`${ticker} price chart`}
       style={{
+        display: 'grid',
+        gridTemplateRows: '1fr',
         background: 'linear-gradient(180deg, rgba(13,13,24,0.65) 0%, rgba(8,8,18,0.75) 100%)',
         borderTop: '1px solid rgba(255,255,255,0.05)',
         borderBottom: '1px solid rgba(255,255,255,0.05)',
-        overflow: 'hidden',
-        animation: 'sdpExpand 280ms cubic-bezier(0.22, 1, 0.36, 1)',
+        animation: 'sdpExpand 320ms cubic-bezier(0.22, 1, 0.36, 1) both',
       }}
     >
       <style>{`
         @keyframes sdpExpand {
-          from { max-height: 0; opacity: 0; }
-          to { max-height: 560px; opacity: 1; }
+          from { grid-template-rows: 0fr; opacity: 0; }
+          to   { grid-template-rows: 1fr; opacity: 1; }
+        }
+        .signal-detail-panel > .sdp-inner {
+          min-height: 0;
+          overflow: hidden;
         }
         @media (prefers-reduced-motion: reduce) {
           .signal-detail-panel { animation: none !important; }
         }
       `}</style>
+      <div className="sdp-inner">
 
-      {/* Header strip — chart type + range toggles + open-full button */}
+      {/* Header strip — ticker label · chart type · range · full view */}
       <div
-        className="flex items-center justify-between px-4"
-        style={{ height: 40, borderBottom: '1px solid rgba(255,255,255,0.035)' }}
+        className="flex items-center justify-between"
+        style={{
+          height: 44,
+          padding: '0 18px',
+          borderBottom: '1px solid rgba(255,255,255,0.035)',
+        }}
       >
         <div className="flex items-center gap-3">
           <span
-            className="label-micro"
-            style={{ color: 'var(--text-muted)', letterSpacing: '0.16em' }}
+            className="label-micro tabular-nums"
+            style={{
+              color: 'var(--text-muted)',
+              letterSpacing: '0.18em',
+              fontWeight: 600,
+            }}
           >
-            {ticker} · chart
+            {ticker}
           </span>
+          <span
+            aria-hidden="true"
+            style={{
+              width: 1,
+              height: 12,
+              background: 'rgba(255,255,255,0.08)',
+            }}
+          />
           <SegmentedToggle
             value={chartType}
             onChange={(v) => setChartType(v as ChartType)}
@@ -214,16 +236,29 @@ export default function SignalDetailPanel({
             ]}
             dense
           />
+          <span
+            aria-hidden="true"
+            style={{
+              width: 1,
+              height: 12,
+              background: 'rgba(255,255,255,0.08)',
+            }}
+          />
           <button
             onClick={onNavigateChart}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-full transition-all duration-150"
+            className="flex items-center gap-1.5 transition-all duration-150"
             style={{
+              height: 26,
+              padding: '0 10px',
+              borderRadius: 999,
               fontSize: 10,
-              letterSpacing: '0.08em',
+              letterSpacing: '0.1em',
               textTransform: 'uppercase',
-              color: 'var(--accent-violet)',
-              background: 'rgba(139,92,246,0.08)',
-              border: '1px solid rgba(139,92,246,0.18)',
+              fontWeight: 600,
+              color: '#e9d5ff',
+              background:
+                'linear-gradient(135deg, rgba(139,92,246,0.16), rgba(6,182,212,0.12))',
+              border: '1px solid rgba(139,92,246,0.28)',
             }}
             title="Open in full chart view"
           >
@@ -270,6 +305,7 @@ export default function SignalDetailPanel({
             horizonSignals={horizonSignals}
           />
         </div>
+      </div>
       </div>
     </div>
   );
@@ -434,21 +470,21 @@ function StatsStrip({
         </span>
       </div>
 
-      {/* Momentum + Crash risk */}
+      {/* Momentum + Crash risk — backend values are 0-100 integers */}
       <div className="grid grid-cols-2 gap-3">
         <MiniMetric
           label="Momentum"
-          value={momentum != null ? `${(momentum * 100).toFixed(0)}%` : '—'}
+          value={momentum != null ? `${Math.round(momentum)}%` : '—'}
           color={momentum != null ? (momentum >= 0 ? '#10b981' : '#f43f5e') : undefined}
         />
         <MiniMetric
           label="Crash risk"
-          value={crashRisk != null ? `${(crashRisk * 100).toFixed(0)}%` : '—'}
+          value={crashRisk != null ? `${Math.round(crashRisk)}%` : '—'}
           color={
             crashRisk != null
-              ? crashRisk > 0.5
+              ? crashRisk > 50
                 ? '#f43f5e'
-                : crashRisk > 0.25
+                : crashRisk > 25
                   ? '#f59e0b'
                   : '#10b981'
               : undefined
