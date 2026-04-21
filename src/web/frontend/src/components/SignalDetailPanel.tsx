@@ -591,36 +591,46 @@ function SegmentedToggle<T extends string>({
   options: { value: T; label: string; icon?: React.ReactNode }[];
   dense?: boolean;
 }) {
-  const activeIndex = options.findIndex((o) => o.value === value);
-  const segWidth = 100 / options.length;
+  const activeIndex = Math.max(0, options.findIndex((o) => o.value === value));
+  const n = options.length;
+  const pad = 2; // track inner padding in px
+  // Indicator is sized against the track's content box: (100% - 2*pad) / n
+  // and positioned from the padding edge so it aligns pixel-perfect with buttons.
+  const indicatorWidth = `calc((100% - ${pad * 2}px) / ${n})`;
+  const indicatorLeft = `calc(${pad}px + ${activeIndex} * (100% - ${pad * 2}px) / ${n})`;
 
   return (
     <div
-      className="relative flex items-center"
+      role="tablist"
+      className="relative flex items-center select-none"
       style={{
         height: dense ? 24 : 26,
-        padding: 2,
+        padding: pad,
         borderRadius: 999,
         background: 'rgba(255,255,255,0.03)',
         border: '1px solid rgba(255,255,255,0.05)',
+        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.02)',
       }}
     >
-      {/* Sliding indicator */}
+      {/* Sliding indicator — pixel-aligned to button track */}
       <div
         aria-hidden="true"
         style={{
           position: 'absolute',
-          top: 2,
-          bottom: 2,
-          left: 2,
-          width: `calc(${segWidth}% - 1px)`,
-          transform: `translateX(${activeIndex * 100}%)`,
-          transition: 'transform 220ms cubic-bezier(0.22, 1, 0.36, 1)',
-          background: 'linear-gradient(135deg, rgba(139,92,246,0.28), rgba(6,182,212,0.22))',
-          border: '1px solid rgba(139,92,246,0.3)',
+          top: pad,
+          bottom: pad,
+          left: indicatorLeft,
+          width: indicatorWidth,
+          transition:
+            'left 260ms cubic-bezier(0.22, 1, 0.36, 1), width 260ms cubic-bezier(0.22, 1, 0.36, 1)',
+          background:
+            'linear-gradient(135deg, rgba(139,92,246,0.30), rgba(6,182,212,0.22))',
+          border: '1px solid rgba(139,92,246,0.32)',
           borderRadius: 999,
-          boxShadow: '0 0 12px rgba(139,92,246,0.18)',
+          boxShadow:
+            '0 0 14px rgba(139,92,246,0.22), inset 0 1px 0 rgba(255,255,255,0.06)',
           pointerEvents: 'none',
+          willChange: 'left, width',
         }}
       />
       {options.map((opt) => {
@@ -628,23 +638,46 @@ function SegmentedToggle<T extends string>({
         return (
           <button
             key={opt.value}
+            role="tab"
+            aria-selected={active}
             onClick={() => onChange(opt.value)}
-            className="relative flex items-center justify-center gap-1 transition-colors duration-150"
+            className="relative flex items-center justify-center transition-colors duration-150"
             style={{
-              flex: 1,
+              flex: '1 1 0',
+              minWidth: 0,
               height: '100%',
-              padding: dense ? '0 10px' : '0 12px',
+              padding: 0,
               fontSize: dense ? 9.5 : 10,
               letterSpacing: '0.1em',
               textTransform: 'uppercase',
               color: active ? '#ffffff' : 'var(--text-muted)',
               fontWeight: active ? 600 : 500,
+              lineHeight: 1,
               borderRadius: 999,
               zIndex: 1,
+              whiteSpace: 'nowrap',
             }}
           >
-            {opt.icon}
-            <span>{opt.label}</span>
+            {/* Inner wrapper supplies breathing room so the track's
+                natural width scales with labels, while flex:1 1 0 keeps
+                segments equal-width for pixel-aligned indicator math. */}
+            <span
+              className="flex items-center justify-center"
+              style={{
+                gap: 5,
+                padding: dense ? '0 12px' : '0 14px',
+              }}
+            >
+              {opt.icon && (
+                <span
+                  className="flex items-center justify-center"
+                  style={{ width: 12, height: 12 }}
+                >
+                  {opt.icon}
+                </span>
+              )}
+              <span style={{ transform: 'translateY(0.5px)' }}>{opt.label}</span>
+            </span>
           </button>
         );
       })}
