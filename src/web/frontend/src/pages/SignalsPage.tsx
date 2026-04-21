@@ -649,8 +649,25 @@ function StatCard({ label, value, total, color, icon }: { label: string; value: 
   );
 }
 
-/* ── Story 3.3: Sector Panels Redesign with Nebula Intelligence ──── */
+/* ── Sector Panels — Premium Redesign ─────────────────────────────── */
 type SectorSortBy = 'momentum' | 'exp_ret' | 'signal' | 'count' | 'alpha';
+const SECTOR_SORT_OPTIONS: { key: SectorSortBy; label: string; icon: React.ReactNode }[] = [
+  { key: 'momentum', label: 'Momentum', icon: <TrendingUp className="w-3 h-3" /> },
+  { key: 'signal', label: 'Signal Score', icon: <Target className="w-3 h-3" /> },
+  { key: 'count', label: 'Asset Count', icon: <Layers className="w-3 h-3" /> },
+  { key: 'alpha', label: 'Alphabetical', icon: <Filter className="w-3 h-3" /> },
+];
+
+function signalLabelColor(label: string): string {
+  switch (label) {
+    case 'STRONG BUY': return '#10b981';
+    case 'BUY': return '#6ee7b7';
+    case 'HOLD': return '#64748b';
+    case 'SELL': return '#fca5a5';
+    case 'STRONG SELL': return '#f43f5e';
+    default: return '#64748b';
+  }
+}
 
 function SectorPanels({
   sectors,
@@ -670,7 +687,7 @@ function SectorPanels({
   updatedAsset: string | null;
 }) {
   const [sectorSort, setSectorSort] = useState<SectorSortBy>('momentum');
-  const [showSortDropdown, setShowSortDropdown] = useState(false);
+  const navigate = useNavigate();
 
   const sorted = useMemo(() => {
     const arr = [...sectors];
@@ -680,42 +697,47 @@ function SectorPanels({
       case 'signal': return arr.sort((a, b) => signalScore(b) - signalScore(a));
       case 'count': return arr.sort((a, b) => b.asset_count - a.asset_count);
       case 'alpha': return arr.sort((a, b) => a.name.localeCompare(b.name));
-      case 'exp_ret': return arr.sort((a, b) => signalScore(b) - signalScore(a)); // fallback
+      case 'exp_ret': return arr.sort((a, b) => signalScore(b) - signalScore(a));
       default: return arr;
     }
   }, [sectors, sectorSort]);
 
+  // Global sector stats
+  const totalAssets = sectors.reduce((s, sec) => s + sec.asset_count, 0);
+  const totalBullish = sectors.reduce((s, sec) => s + (sec.strong_buy ?? 0) + (sec.buy ?? 0), 0);
+  const totalBearish = sectors.reduce((s, sec) => s + (sec.strong_sell ?? 0) + (sec.sell ?? 0), 0);
+
   return (
-    <div className="space-y-2">
-      {/* Story 3.3 AC-3: Sort dropdown */}
-      <div className="flex items-center gap-2 mb-2">
-        <div className="relative">
-          <button
-            onClick={() => setShowSortDropdown(p => !p)}
-            className="text-[10px] text-[var(--text-secondary)] flex items-center gap-1 hover:text-[var(--accent-violet)] transition-colors"
-          >
-            Sort <ChevronDown className="w-3 h-3" />
-          </button>
-          {showSortDropdown && (
-            <div className="absolute top-6 left-0 z-20 glass-card py-1 px-1 min-w-[140px]"
-              style={{ boxShadow: '0 8px 32px rgba(0,0,0,0.4)' }}>
-              {([
-                { key: 'momentum' as SectorSortBy, label: 'Momentum' },
-                { key: 'signal' as SectorSortBy, label: 'Signal Strength' },
-                { key: 'count' as SectorSortBy, label: 'Asset Count' },
-                { key: 'alpha' as SectorSortBy, label: 'Alphabetical' },
-              ]).map(({ key, label }) => (
-                <button key={key}
-                  onClick={() => { setSectorSort(key); setShowSortDropdown(false); }}
-                  className={`block w-full text-left px-3 py-1.5 text-[11px] rounded transition-colors ${
-                    sectorSort === key ? 'text-[var(--accent-violet)] bg-[var(--violet-8)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--void-hover)]'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          )}
+    <div className="space-y-3">
+      {/* Sort bar — pill selector with global stats */}
+      <div className="flex items-center gap-3 mb-1">
+        <div className="flex items-center gap-1 glass-card px-2 py-1.5">
+          {SECTOR_SORT_OPTIONS.map(({ key, label, icon }) => (
+            <button key={key}
+              onClick={() => setSectorSort(key)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all duration-200 ${
+                sectorSort === key
+                  ? 'bg-[var(--accent-violet)]/15 text-[var(--text-violet)] shadow-[0_0_8px_var(--violet-15)]'
+                  : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-white/[0.02]'
+              }`}
+            >
+              {icon}
+              <span className="hidden sm:inline">{label}</span>
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-4 ml-auto text-[10px]">
+          <span className="flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-emerald)]" />
+            <span className="text-[var(--text-muted)]">Bullish</span>
+            <span className="font-bold text-[var(--accent-emerald)] tabular-nums">{totalBullish}</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-rose)]" />
+            <span className="text-[var(--text-muted)]">Bearish</span>
+            <span className="font-bold text-[var(--accent-rose)] tabular-nums">{totalBearish}</span>
+          </span>
+          <span className="text-[var(--text-muted)] tabular-nums">{totalAssets} assets</span>
         </div>
       </div>
 
@@ -731,13 +753,13 @@ function SectorPanels({
 
         const bullish = (sector.strong_buy ?? 0) + (sector.buy ?? 0);
         const bearish = (sector.strong_sell ?? 0) + (sector.sell ?? 0);
-        const total = bullish + bearish + (sector.hold ?? 0);
+        const neutral = sector.hold ?? 0;
+        const total = bullish + bearish + neutral;
         const sentiment = bullish > bearish ? 'bullish' : bearish > bullish ? 'bearish' : 'neutral';
+        const sentColor = sentiment === 'bullish' ? '#10b981' : sentiment === 'bearish' ? '#f43f5e' : '#64748b';
+        const sentGlow = sentiment === 'bullish' ? '0 0 20px rgba(16,185,129,0.08)' : sentiment === 'bearish' ? '0 0 20px rgba(244,63,94,0.08)' : 'none';
 
-        // AC-5: Left border class
-        const borderClass = sentiment === 'bullish' ? 'sector-border-bullish' : sentiment === 'bearish' ? 'sector-border-bearish' : 'sector-border-mixed';
-
-        // AC-2: Best performing asset for peek row
+        // Best performing asset
         const bestAsset = [...sector.assets].sort((a, b) => {
           const aRet = Object.values(a.horizon_signals)[0]?.exp_ret ?? 0;
           const bRet = Object.values(b.horizon_signals)[0]?.exp_ret ?? 0;
@@ -747,7 +769,7 @@ function SectorPanels({
         const bestRet = bestAsset ? (Object.values(bestAsset.horizon_signals)[0]?.exp_ret ?? 0) * 100 : 0;
         const bestLabel = bestAsset ? (bestAsset.nearest_label || 'HOLD').toUpperCase() : '';
 
-        // AC-1: Sentiment bar proportions
+        // Sentiment bar proportions
         const strongBuyPct = total > 0 ? ((sector.strong_buy ?? 0) / total) * 100 : 0;
         const buyPct = total > 0 ? ((sector.buy ?? 0) / total) * 100 : 0;
         const holdPct = total > 0 ? ((sector.hold ?? 0) / total) * 100 : 0;
@@ -755,92 +777,182 @@ function SectorPanels({
         const strongSellPct = total > 0 ? ((sector.strong_sell ?? 0) / total) * 100 : 0;
 
         const avgMom = sector.avg_momentum ?? 0;
+        const bullishPct = total > 0 ? Math.round((bullish / total) * 100) : 0;
 
         return (
-          <div key={sector.name} className={`glass-card overflow-hidden ${borderClass}`}>
-            {/* AC-1: 48px sector header */}
+          <div key={sector.name} className="glass-card overflow-hidden transition-all duration-200"
+            style={{
+              borderLeft: `3px solid ${sentColor}40`,
+              boxShadow: expanded ? sentGlow : 'none',
+            }}>
+            {/* Sector Header — rich, informative */}
             <button
               onClick={() => toggleSector(sector.name)}
-              className="w-full flex items-center gap-3 px-4 h-[48px] hover:bg-[var(--void-hover)] transition"
+              className="w-full px-4 py-3 hover:bg-white/[0.015] transition-all duration-200 group"
             >
-              {/* Sector name */}
-              <span className="font-semibold text-[var(--text-luminous)] text-sm whitespace-nowrap">{sector.name}</span>
-              {/* Asset count pill */}
-              <span className="text-[9px] px-1.5 py-0.5 rounded-full text-[var(--text-muted)]" style={{ background: 'var(--void-active)' }}>
-                {sector.asset_count}
-              </span>
+              {/* Top row: Name + key stats */}
+              <div className="flex items-center gap-3">
+                {/* Expand indicator */}
+                <div className="w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0 transition-all duration-200"
+                  style={{ background: expanded ? `${sentColor}20` : 'var(--void-active)' }}>
+                  <ChevronRight
+                    className="w-3 h-3 transition-transform duration-200"
+                    style={{ color: expanded ? sentColor : 'var(--text-muted)', transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)' }}
+                  />
+                </div>
 
-              {/* AC-1: Sector sentiment bar */}
-              <div className="flex h-[4px] w-[80px] rounded-[2px] overflow-hidden flex-shrink-0" style={{ border: '1px solid var(--border-void)' }}>
-                <div style={{ width: `${strongBuyPct}%`, background: 'var(--accent-emerald)' }} />
-                <div style={{ width: `${buyPct}%`, background: 'var(--emerald-50)' }} />
-                <div style={{ width: `${holdPct}%`, background: 'var(--void-active)' }} />
-                <div style={{ width: `${sellPct}%`, background: 'var(--rose-50)' }} />
-                <div style={{ width: `${strongSellPct}%`, background: 'var(--accent-rose)' }} />
-              </div>
+                {/* Sector name */}
+                <span className="font-semibold text-[13px] text-[#e2e8f0] whitespace-nowrap group-hover:text-white transition-colors">{sector.name}</span>
 
-              {/* Avg momentum with arrow */}
-              <span className="text-[10px] font-mono tabular-nums flex items-center gap-0.5"
-                style={{ color: avgMom > 0 ? 'var(--accent-emerald)' : avgMom < 0 ? 'var(--accent-rose)' : 'var(--text-muted)' }}>
-                {avgMom > 0 ? (
-                  <svg width="6" height="6" viewBox="0 0 6 6"><path d="M3 0L6 5H0L3 0Z" fill="currentColor" /></svg>
-                ) : avgMom < 0 ? (
-                  <svg width="6" height="6" viewBox="0 0 6 6"><path d="M3 6L0 1H6L3 6Z" fill="currentColor" /></svg>
-                ) : null}
-                {avgMom > 0 ? '+' : ''}{avgMom.toFixed(1)}%
-              </span>
-
-              {/* Spacer */}
-              <div className="flex-1" />
-
-              {/* AC-2: Peek row (best asset) */}
-              {!expanded && bestTicker && (
-                <span className="text-[10px] hidden sm:inline-flex items-center gap-1">
-                  <span className="text-[var(--text-muted)]">Best:</span>
-                  <span className="text-[var(--accent-violet)] font-medium">{bestTicker}</span>
-                  <span style={{ color: bestRet >= 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}>
-                    {bestRet >= 0 ? '+' : ''}{bestRet.toFixed(1)}%
-                  </span>
-                  <span className="text-[var(--text-muted)]">({bestLabel})</span>
+                {/* Asset count */}
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium tabular-nums"
+                  style={{ background: `${sentColor}12`, color: sentColor }}>
+                  {sector.asset_count}
                 </span>
-              )}
 
-              {/* Expand chevron with rotation animation */}
-              <ChevronDown
-                className="w-3 h-3 flex-shrink-0 transition-transform duration-200"
-                style={{
-                  color: 'var(--accent-violet)',
-                  transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)',
-                }}
-              />
+                {/* Sentiment bar — wider, more readable */}
+                <div className="flex h-[5px] w-[100px] rounded-full overflow-hidden flex-shrink-0" style={{ background: 'var(--void-active)' }}>
+                  <div className="transition-all duration-500" style={{ width: `${strongBuyPct}%`, background: '#10b981' }} />
+                  <div className="transition-all duration-500" style={{ width: `${buyPct}%`, background: '#6ee7b7' }} />
+                  <div className="transition-all duration-500" style={{ width: `${holdPct}%`, background: '#475569' }} />
+                  <div className="transition-all duration-500" style={{ width: `${sellPct}%`, background: '#fca5a5' }} />
+                  <div className="transition-all duration-500" style={{ width: `${strongSellPct}%`, background: '#f43f5e' }} />
+                </div>
+
+                {/* Bullish % */}
+                <span className="text-[10px] font-bold tabular-nums" style={{ color: sentColor }}>
+                  {bullishPct}%
+                </span>
+
+                {/* Signal counts — compact badges */}
+                <div className="hidden md:flex items-center gap-1">
+                  {(sector.strong_buy ?? 0) > 0 && (
+                    <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold tabular-nums" style={{ background: '#10b98118', color: '#10b981' }}>
+                      SB {sector.strong_buy}
+                    </span>
+                  )}
+                  {(sector.buy ?? 0) > 0 && (
+                    <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold tabular-nums" style={{ background: '#6ee7b718', color: '#6ee7b7' }}>
+                      B {sector.buy}
+                    </span>
+                  )}
+                  {neutral > 0 && (
+                    <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold tabular-nums" style={{ background: '#47556918', color: '#64748b' }}>
+                      H {neutral}
+                    </span>
+                  )}
+                  {(sector.sell ?? 0) > 0 && (
+                    <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold tabular-nums" style={{ background: '#fca5a518', color: '#fca5a5' }}>
+                      S {sector.sell}
+                    </span>
+                  )}
+                  {(sector.strong_sell ?? 0) > 0 && (
+                    <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold tabular-nums" style={{ background: '#f43f5e18', color: '#f43f5e' }}>
+                      SS {sector.strong_sell}
+                    </span>
+                  )}
+                </div>
+
+                {/* Spacer */}
+                <div className="flex-1" />
+
+                {/* Momentum */}
+                <div className="flex items-center gap-1">
+                  {avgMom > 0 ? (
+                    <ArrowUp className="w-3 h-3 text-[var(--accent-emerald)]" />
+                  ) : avgMom < 0 ? (
+                    <ArrowDown className="w-3 h-3 text-[var(--accent-rose)]" />
+                  ) : null}
+                  <span className="text-[11px] font-bold font-mono tabular-nums"
+                    style={{ color: avgMom > 0 ? '#10b981' : avgMom < 0 ? '#f43f5e' : '#64748b' }}>
+                    {avgMom > 0 ? '+' : ''}{avgMom.toFixed(1)}%
+                  </span>
+                </div>
+
+                {/* Best asset peek */}
+                {!expanded && bestTicker && (
+                  <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-lg" style={{ background: 'var(--void-active)' }}>
+                    <span className="text-[9px] text-[var(--text-muted)]">Top</span>
+                    <span className="text-[10px] font-bold text-[var(--accent-violet)]">{bestTicker}</span>
+                    <span className="text-[10px] font-bold tabular-nums" style={{ color: bestRet >= 0 ? '#10b981' : '#f43f5e' }}>
+                      {bestRet >= 0 ? '+' : ''}{bestRet.toFixed(1)}%
+                    </span>
+                    <span className="text-[8px] px-1 py-0.5 rounded font-semibold"
+                      style={{ background: `${signalLabelColor(bestLabel)}18`, color: signalLabelColor(bestLabel) }}>
+                      {bestLabel}
+                    </span>
+                  </div>
+                )}
+              </div>
             </button>
 
-            {/* AC-4: Expanded content with constellation animation */}
+            {/* Expanded content — premium table */}
             {expanded && (
-              <div className="border-t border-[var(--border-void)]" style={{ animation: 'slide-down 250ms cubic-bezier(0.2,0,0,1) both' }}>
+              <div style={{ animation: 'slide-down 200ms cubic-bezier(0.2,0,0,1) both' }}>
+                {/* Sector summary strip */}
+                <div className="flex items-center gap-4 px-5 py-2 text-[10px]"
+                  style={{ background: `${sentColor}06`, borderTop: `1px solid ${sentColor}15`, borderBottom: '1px solid var(--border-void)' }}>
+                  <div className="flex items-center gap-3">
+                    <span className="text-[var(--text-muted)]">Breakdown:</span>
+                    {[
+                      { label: 'Strong Buy', count: sector.strong_buy ?? 0, color: '#10b981' },
+                      { label: 'Buy', count: sector.buy ?? 0, color: '#6ee7b7' },
+                      { label: 'Hold', count: sector.hold ?? 0, color: '#64748b' },
+                      { label: 'Sell', count: sector.sell ?? 0, color: '#fca5a5' },
+                      { label: 'Strong Sell', count: sector.strong_sell ?? 0, color: '#f43f5e' },
+                    ].filter(x => x.count > 0).map(({ label, count, color: c }) => (
+                      <span key={label} className="flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full" style={{ background: c }} />
+                        <span style={{ color: c }} className="font-medium">{count}</span>
+                        <span className="text-[var(--text-muted)]">{label}</span>
+                      </span>
+                    ))}
+                  </div>
+                  <div className="ml-auto flex items-center gap-1.5 text-[var(--text-muted)]">
+                    <Activity className="w-3 h-3" />
+                    <span>Avg Risk: </span>
+                    <span className="font-bold tabular-nums" style={{
+                      color: (sector.avg_crash_risk ?? 0) > 60 ? '#f43f5e' : (sector.avg_crash_risk ?? 0) > 30 ? '#f59e0b' : '#10b981'
+                    }}>
+                      {(sector.avg_crash_risk ?? 0).toFixed(0)}
+                    </span>
+                  </div>
+                </div>
+
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
-                    <thead className="premium-thead">
-                      <tr className="border-b border-[var(--void-raised)]/50">
-                        <th className="text-left px-4 py-2 text-[10px] text-[var(--text-violet)] font-medium uppercase tracking-[0.06em]">Asset</th>
-                        <th className="text-center px-2 py-2 text-[10px] text-[var(--text-violet)] font-medium w-[60px]">30D</th>
-                        <th className="text-center px-2 py-2 text-[10px] text-[var(--text-violet)] font-medium">Signal</th>
-                        <th className="text-center px-2 py-2 text-[10px] text-[var(--text-violet)] font-medium">Mom</th>
+                    <thead>
+                      <tr style={{ background: 'var(--void-hover)' }}>
+                        <th className="text-left px-4 py-2.5 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[180px]">Asset</th>
+                        <th className="text-center px-1 py-2.5 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[65px]">Chart</th>
+                        <th className="text-center px-2 py-2.5 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[90px]">Signal</th>
+                        <th className="text-center px-2 py-2.5 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[70px]">Mom</th>
                         {horizons.map(h => (
-                          <th key={h} className="text-center px-2 py-2 text-[10px] text-[var(--text-violet)] font-medium">{formatHorizon(h)}</th>
+                          <th key={h} className="text-center px-2 py-2.5 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider">{formatHorizon(h)}</th>
                         ))}
-                        <th className="text-center px-2 py-2 text-[10px] text-[var(--text-violet)] font-medium">Risk</th>
+                        <th className="text-center px-2 py-2.5 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[60px]">Risk</th>
+                        <th className="w-8"></th>
                       </tr>
                     </thead>
                     <tbody>
                       {assets.map((row, i) => (
-                        <SectorSignalRow key={row.asset_label} row={row} horizons={horizons} highlighted={row.asset_label === updatedAsset} delayMs={i * 50} />
+                        <SectorSignalRow
+                          key={row.asset_label}
+                          row={row}
+                          horizons={horizons}
+                          highlighted={row.asset_label === updatedAsset}
+                          delayMs={i * 30}
+                          onNavigateChart={(sym) => navigate(`/charts/${sym}`)}
+                        />
                       ))}
                     </tbody>
                   </table>
                 </div>
                 {assets.length === 0 && (
-                  <p className="px-4 py-3 text-xs" style={{ color: 'var(--text-muted)' }}>No assets match current filter</p>
+                  <div className="px-5 py-6 text-center">
+                    <Shield className="w-5 h-5 mx-auto mb-1.5" style={{ color: 'var(--text-muted)', opacity: 0.4 }} />
+                    <p className="text-[11px] text-[var(--text-muted)]">No assets match current filter</p>
+                  </div>
                 )}
               </div>
             )}
@@ -851,73 +963,114 @@ function SectorPanels({
   );
 }
 
-/* ── Strong Signals View ─────────────────────────────────────────── */
+/* ── Strong Signals View — Premium Cards ──────────────────────────── */
+function StrongSignalPanel({ entries, accent, label, icon }: {
+  entries: StrongSignalEntry[]; accent: string; label: string; icon: React.ReactNode;
+}) {
+  const avgRet = entries.length > 0 ? entries.reduce((s, e) => s + (e.exp_ret ?? 0) * 100, 0) / entries.length : 0;
+  const avgPUp = entries.length > 0 ? entries.reduce((s, e) => s + (e.p_up ?? 0), 0) / entries.length : 0;
+
+  return (
+    <div className="glass-card overflow-hidden" style={{ borderTop: `2px solid ${accent}40` }}>
+      <div className="px-5 py-3.5 flex items-center gap-3"
+        style={{ background: `linear-gradient(135deg, ${accent}08 0%, transparent 60%)`, borderBottom: `1px solid ${accent}15` }}>
+        <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: `${accent}15` }}>
+          {icon}
+        </div>
+        <div>
+          <h3 className="text-sm font-semibold" style={{ color: accent }}>{label}</h3>
+          <p className="text-[10px] text-[var(--text-muted)]">{entries.length} signals</p>
+        </div>
+        <div className="ml-auto flex items-center gap-4">
+          <div className="text-right">
+            <span className="text-[9px] text-[var(--text-muted)] block">Avg Return</span>
+            <span className="text-[12px] font-bold tabular-nums" style={{ color: accent }}>
+              {avgRet >= 0 ? '+' : ''}{avgRet.toFixed(1)}%
+            </span>
+          </div>
+          <div className="text-right">
+            <span className="text-[9px] text-[var(--text-muted)] block">Avg P(up)</span>
+            <span className="text-[12px] font-bold tabular-nums" style={{ color: accent }}>
+              {(avgPUp * 100).toFixed(0)}%
+            </span>
+          </div>
+        </div>
+      </div>
+      {entries.length === 0 ? (
+        <div className="px-5 py-8 text-center">
+          <Shield className="w-6 h-6 mx-auto mb-2" style={{ color: `${accent}30` }} />
+          <p className="text-xs text-[var(--text-muted)]">No {label.toLowerCase()}</p>
+        </div>
+      ) : (
+        <div className="divide-y divide-white/[0.03]">
+          {entries.map((s, i) => {
+            const retPct = s.exp_ret != null ? s.exp_ret * 100 : null;
+            const isStandout = retPct != null && Math.abs(retPct) > 5;
+            const ticker = s.asset_label?.includes('(') ? s.asset_label.split('(').pop()!.replace(')', '').trim() : (s.symbol || s.asset_label || '--');
+            const company = s.asset_label?.includes('(') ? s.asset_label.split('(')[0].trim() : '';
+            return (
+              <div key={i} className="flex items-center gap-3 px-5 py-2.5 hover:bg-white/[0.015] transition-colors">
+                {/* Rank */}
+                <span className="text-[10px] font-bold w-5 text-center tabular-nums" style={{ color: `${accent}60` }}>
+                  {i + 1}
+                </span>
+                {/* Color bar */}
+                <div className="w-1 h-8 rounded-full flex-shrink-0" style={{ background: `${accent}50` }} />
+                {/* Asset info */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[12px] font-bold text-[#e2e8f0]">{ticker}</span>
+                    <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: 'var(--void-active)', color: 'var(--text-secondary)' }}>
+                      {s.sector || 'Other'}
+                    </span>
+                  </div>
+                  {company && (
+                    <span className="text-[9px] text-[var(--text-muted)] truncate max-w-[180px] block leading-tight mt-0.5">{company}</span>
+                  )}
+                </div>
+                {/* Horizon */}
+                <span className="text-[10px] px-2 py-0.5 rounded font-medium" style={{ background: 'var(--void-active)', color: 'var(--text-secondary)' }}>
+                  {s.horizon || '--'}
+                </span>
+                {/* Return */}
+                <span className={`text-right min-w-[55px] tabular-nums font-bold ${isStandout ? 'text-[13px]' : 'text-[11px]'}`} style={{ color: accent }}>
+                  {retPct != null ? `${retPct >= 0 ? '+' : ''}${retPct.toFixed(1)}%` : '--'}
+                </span>
+                {/* Probability bar */}
+                <div className="flex items-center gap-1.5 min-w-[65px]">
+                  <div className="w-10 h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+                    <div className="h-full rounded-full" style={{ width: `${(s.p_up ?? 0) * 100}%`, background: accent }} />
+                  </div>
+                  <span className="text-[10px] tabular-nums text-[var(--text-secondary)]">
+                    {s.p_up != null ? `${(s.p_up * 100).toFixed(0)}%` : '--'}
+                  </span>
+                </div>
+                {/* Momentum */}
+                <MomentumBadge value={s.momentum} />
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StrongSignalsView({ strongBuy, strongSell }: { strongBuy: StrongSignalEntry[]; strongSell: StrongSignalEntry[] }) {
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-      <div className="glass-card overflow-hidden">
-        <div className="px-5 py-3.5 flex items-center gap-2" style={{ borderBottom: '1px solid var(--violet-6)' }}>
-          <TrendingUp className="w-4 h-4" style={{ color: 'var(--accent-emerald)' }} />
-          <h3 className="premium-section-label" style={{ color: 'var(--accent-emerald)' }}>Strong Buy Signals</h3>
-          <span className="ml-auto text-xs" style={{ color: 'var(--text-muted)' }}>{strongBuy.length} assets</span>
-        </div>
-        {strongBuy.length === 0 ? (
-          <p className="px-5 py-8 text-xs text-center" style={{ color: 'var(--text-muted)' }}>No strong buy signals</p>
-        ) : (
-          <div>
-            {strongBuy.map((s, i) => {
-              const retPct = s.exp_ret != null ? s.exp_ret * 100 : null;
-              const isStandout = retPct != null && Math.abs(retPct) > 5;
-              return (
-                <div key={i} className="strong-signal-row" data-sentiment="buy">
-                  <div className="flex-1">
-                    <span className="text-sm" style={{ color: 'var(--text-luminous)', fontWeight: 600 }}>{s.asset_label || '--'}</span>
-                    <span className="text-[10px] ml-2" style={{ color: 'var(--text-muted)' }}>{s.sector}</span>
-                  </div>
-                  <span className="text-caption">{s.horizon || '--'}</span>
-                  <span className={isStandout ? 'text-stat-value' : 'text-xs font-medium'} style={{ color: 'var(--accent-emerald)' }}>
-                    {retPct != null ? `${retPct >= 0 ? '+' : ''}${retPct.toFixed(1)}%` : '--'}
-                  </span>
-                  <span className="text-caption">p={s.p_up != null ? s.p_up.toFixed(2) : '--'}</span>
-                  <MomentumBadge value={s.momentum} />
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      <div className="glass-card overflow-hidden">
-        <div className="px-5 py-3.5 flex items-center gap-2" style={{ borderBottom: '1px solid var(--violet-6)' }}>
-          <TrendingDown className="w-4 h-4" style={{ color: 'var(--accent-rose)' }} />
-          <h3 className="premium-section-label" style={{ color: 'var(--accent-rose)' }}>Strong Sell Signals</h3>
-          <span className="ml-auto text-xs" style={{ color: 'var(--text-muted)' }}>{strongSell.length} assets</span>
-        </div>
-        {strongSell.length === 0 ? (
-          <p className="px-5 py-8 text-xs text-center" style={{ color: 'var(--text-muted)' }}>No strong sell signals</p>
-        ) : (
-          <div>
-            {strongSell.map((s, i) => {
-              const retPct = s.exp_ret != null ? s.exp_ret * 100 : null;
-              const isStandout = retPct != null && Math.abs(retPct) > 5;
-              return (
-                <div key={i} className="strong-signal-row" data-sentiment="sell">
-                  <div className="flex-1">
-                    <span className="text-sm" style={{ color: 'var(--text-luminous)', fontWeight: 600 }}>{s.asset_label || '--'}</span>
-                    <span className="text-[10px] ml-2" style={{ color: 'var(--text-muted)' }}>{s.sector}</span>
-                  </div>
-                  <span className="text-caption">{s.horizon || '--'}</span>
-                  <span className={isStandout ? 'text-stat-value' : 'text-xs font-medium'} style={{ color: 'var(--accent-rose)' }}>
-                    {retPct != null ? `${retPct.toFixed(1)}%` : '--'}
-                  </span>
-                  <span className="text-caption">p={s.p_up != null ? s.p_up.toFixed(2) : '--'}</span>
-                  <MomentumBadge value={s.momentum} />
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      <StrongSignalPanel
+        entries={strongBuy}
+        accent="#10b981"
+        label="Strong Buy Signals"
+        icon={<TrendingUp className="w-4 h-4" style={{ color: '#10b981' }} />}
+      />
+      <StrongSignalPanel
+        entries={strongSell}
+        accent="#f43f5e"
+        label="Strong Sell Signals"
+        icon={<TrendingDown className="w-4 h-4" style={{ color: '#f43f5e' }} />}
+      />
     </div>
   );
 }
@@ -1296,45 +1449,87 @@ function MiniChartPanel({ ticker, onNavigateChart }: { ticker: string; onNavigat
   );
 }
 
-/* ── Sector signal row (cosmic, with sparkline) ──────────────────── */
-function SectorSignalRow({ row, horizons, highlighted, delayMs = 0 }: { row: SummaryRow; horizons: number[]; highlighted?: boolean; delayMs?: number }) {
+/* ── Sector signal row — premium with inline expand ───────────────── */
+function SectorSignalRow({ row, horizons, highlighted, delayMs = 0, onNavigateChart }: {
+  row: SummaryRow; horizons: number[]; highlighted?: boolean; delayMs?: number;
+  onNavigateChart: (sym: string) => void;
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
   const label = (row.nearest_label || 'HOLD').toUpperCase();
   const ticker = extractTicker(row.asset_label);
   const nearestHorizon = Object.values(row.horizon_signals)[0];
+  const labelColor = signalLabelColor(label);
+
   return (
-    <tr className={`cosmic-row constellation-row border-b border-[var(--border-void)] ${highlighted ? 'aurora-upgrade' : ''}`}
-      style={{ animationDelay: `${delayMs}ms` }}>
-      <td className="px-4 py-2 whitespace-nowrap">
-        <span className="font-semibold text-[var(--text-primary)] text-xs">{ticker}</span>
-        {row.asset_label.includes('(') && (
-          <span className="block text-[9px] text-[var(--text-muted)] truncate max-w-[140px] leading-tight">
-            {row.asset_label.split('(')[0].trim()}
-          </span>
-        )}
-      </td>
-      <td className="px-1 py-2 text-center">
-        <Sparkline ticker={ticker} width={60} height={24} />
-      </td>
-      <td className="px-3 py-2 text-center">
-        <SignalStrengthBar label={label} pUp={nearestHorizon?.p_up} kelly={nearestHorizon?.kelly_half} />
-      </td>
-      <td className="px-3 py-2 text-center">
-        <MomentumBadge value={row.momentum_score} />
-      </td>
-      {horizons.map((h) => {
-        const sig = row.horizon_signals[h] || row.horizon_signals[String(h)];
-        return (
-          <td key={h} className="px-2 py-2 text-center">
-            <HorizonCell expRet={sig?.exp_ret} pUp={sig?.p_up} />
+    <>
+      <tr className={`border-b border-white/[0.03] hover:bg-white/[0.015] transition-all duration-150 ${highlighted ? 'aurora-upgrade' : ''} ${isExpanded ? 'bg-white/[0.02]' : ''}`}
+        style={{ animationDelay: `${delayMs}ms` }}>
+        {/* Asset */}
+        <td className="px-4 py-2.5 whitespace-nowrap">
+          <div className="flex items-center gap-2">
+            <div className="w-1 h-7 rounded-full flex-shrink-0" style={{ background: `${labelColor}60` }} />
+            <div>
+              <div className="flex items-center gap-1.5">
+                <span className="font-bold text-[12px] text-[#e2e8f0]">{ticker}</span>
+                <span className="text-[8px] px-1.5 py-0.5 rounded font-semibold leading-none"
+                  style={{ background: `${labelColor}15`, color: labelColor }}>
+                  {label}
+                </span>
+              </div>
+              {row.asset_label.includes('(') && (
+                <span className="text-[9px] text-[var(--text-muted)] truncate max-w-[150px] leading-tight block mt-0.5">
+                  {row.asset_label.split('(')[0].trim()}
+                </span>
+              )}
+            </div>
+          </div>
+        </td>
+        {/* Sparkline */}
+        <td className="px-1 py-2.5 text-center">
+          <Sparkline ticker={ticker} width={60} height={26} />
+        </td>
+        {/* Signal */}
+        <td className="px-2 py-2.5 text-center">
+          <SignalStrengthBar label={label} pUp={nearestHorizon?.p_up} kelly={nearestHorizon?.kelly_half} />
+        </td>
+        {/* Momentum */}
+        <td className="px-2 py-2.5 text-center">
+          <MomentumBadge value={row.momentum_score} />
+        </td>
+        {/* Horizon cells */}
+        {horizons.map((h) => {
+          const sig = row.horizon_signals[h] || row.horizon_signals[String(h)];
+          return (
+            <td key={h} className="px-2 py-2.5 text-center">
+              <HorizonCell expRet={sig?.exp_ret} pUp={sig?.p_up} />
+            </td>
+          );
+        })}
+        {/* Risk */}
+        <td className="px-2 py-2.5">
+          <div className="flex justify-center">
+            <CrashRiskHeat score={row.crash_risk_score} />
+          </div>
+        </td>
+        {/* Actions */}
+        <td className="px-1 py-2.5">
+          <button
+            onClick={() => setIsExpanded(p => !p)}
+            className="p-1 rounded hover:bg-white/[0.05] transition-colors"
+            title="Expand"
+          >
+            <BarChart3 className={`w-3.5 h-3.5 transition-colors ${isExpanded ? 'text-[var(--accent-violet)]' : 'text-[var(--text-muted)]'}`} />
+          </button>
+        </td>
+      </tr>
+      {isExpanded && (
+        <tr>
+          <td colSpan={horizons.length + 5} className="p-0">
+            <MiniChartPanel ticker={ticker} onNavigateChart={() => onNavigateChart(ticker)} />
           </td>
-        );
-      })}
-      <td className="px-3 py-2">
-        <div className="flex justify-center">
-          <CrashRiskHeat score={row.crash_risk_score} />
-        </div>
-      </td>
-    </tr>
+        </tr>
+      )}
+    </>
   );
 }
 

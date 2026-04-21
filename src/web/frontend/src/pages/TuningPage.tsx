@@ -3,7 +3,6 @@ import { useState, useRef, useEffect, useCallback, useSyncExternalStore, useMemo
 import { api } from '../api';
 import type { TuneAsset, ModelAnalytics } from '../api';
 import PageHeader from '../components/PageHeader';
-import LoadingSpinner from '../components/LoadingSpinner';
 import { TuningSkeleton } from '../components/CosmicSkeleton';
 import {
   CheckCircle, XCircle, AlertCircle, RefreshCw, Play, Square, Terminal,
@@ -77,7 +76,6 @@ export default function TuningPage() {
   const [cardFilter, setCardFilter] = useState<CardFilter>('all');
   const [sortKey, setSortKey] = useState<SortKey>('symbol');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
-  const logEndRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -96,10 +94,6 @@ export default function TuningPage() {
     queryFn: () => api.tuneDetail(selectedSymbol!),
     enabled: !!selectedSymbol,
   });
-
-  useEffect(() => {
-    if (showRetunePanel) logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [retuneLogs, showRetunePanel]);
 
   const handleStartRetune = useCallback(() => {
     storeStartRetune(() => {
@@ -273,109 +267,24 @@ export default function TuningPage() {
       )}
 
       {/* ── Mission Control ───────────────────────────────────── */}
-      <div className="glass-card p-5 mb-6 fade-up" style={{
-        background: 'linear-gradient(135deg, var(--violet-4) 0%, rgba(99,102,241,0.03) 50%, var(--violet-4) 100%)',
-      }}>
-        <div className="flex items-center justify-between flex-wrap gap-4">
-          <div className="flex items-center gap-3 flex-wrap">
-            <div className="flex gap-1 p-0.5 rounded-2xl" style={{ background: 'var(--violet-4)' }}>
-              {modeLabels.map(({ id, label }) => (
-                <button key={id}
-                  onClick={() => setRetuneMode(id)}
-                  disabled={retuneStatus === 'running'}
-                  className="px-4 py-2 rounded-2xl text-[13px] font-medium transition-all duration-200 disabled:opacity-50"
-                  style={retuneMode === id ? {
-                    background: 'var(--violet-20)', color: '#b49aff',
-                    border: '1px solid var(--violet-20)', boxShadow: '0 0 8px var(--violet-10)',
-                  } : { background: 'transparent', color: '#94a3b8', border: '1px solid transparent' }}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-
-            {retuneStatus === 'running' ? (
-              <button onClick={handleStopRetune}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-2xl text-sm font-semibold text-white transition-all"
-                style={{
-                  background: 'linear-gradient(135deg, var(--accent-rose) 0%, #e11d48 100%)',
-                  boxShadow: '0 0 0 3px var(--rose-15), 0 4px 16px rgba(255,107,138,0.2)',
-                  animation: 'pulse 1.5s ease-in-out infinite',
-                }}
-              >
-                <Square className="w-3.5 h-3.5" /> Stop
-              </button>
-            ) : (
-              <button onClick={handleStartRetune}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-2xl text-sm font-semibold text-white transition-all hover:scale-[1.02]"
-                style={{
-                  background: 'linear-gradient(135deg, var(--accent-violet) 0%, var(--accent-indigo) 100%)',
-                  boxShadow: '0 4px 16px var(--violet-25)',
-                }}
-              >
-                <Play className="w-3.5 h-3.5" /> Start
-              </button>
-            )}
-            <StatusBadge status={retuneStatus} />
-          </div>
-
-          <div className="flex items-center gap-4 text-xs">
-            {elapsed != null && (
-              <div className="flex items-center gap-1.5" style={{ color: '#b49aff' }}>
-                <Timer className="w-3.5 h-3.5" />
-                <span className="font-mono font-medium">{formatElapsed(elapsed)}</span>
-              </div>
-            )}
-            {retuneStatus === 'running' && retune.totalAssets > 0 && (
-              <>
-                <div className="flex items-center gap-1.5" style={{ color: 'var(--accent-emerald)' }}>
-                  <CheckCircle className="w-3 h-3" /> {retune.successCount}
-                </div>
-                {retune.failCount > 0 && (
-                  <div className="flex items-center gap-1.5" style={{ color: 'var(--accent-rose)' }}>
-                    <XCircle className="w-3 h-3" /> {retune.failCount}
-                  </div>
-                )}
-                {retune.currentAsset && (
-                  <span className="font-mono font-semibold" style={{ color: '#b49aff' }}>{retune.currentAsset}</span>
-                )}
-              </>
-            )}
-            {retuneLogs.length > 0 && (
-              <button
-                onClick={() => setShowPanel(!showRetunePanel)}
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] transition-all"
-                style={{
-                  background: showRetunePanel ? 'var(--violet-15)' : 'var(--violet-6)',
-                  color: showRetunePanel ? '#b49aff' : '#94a3b8',
-                  border: `1px solid ${showRetunePanel ? 'var(--violet-25)' : 'var(--violet-8)'}`,
-                }}
-              >
-                <Terminal className="w-3 h-3" /> Log
-              </button>
-            )}
-          </div>
-        </div>
-
-        {retuneStatus === 'running' && retune.totalAssets > 0 && (
-          <div className="mt-3">
-            <div className="flex items-center justify-between text-[10px] mb-1" style={{ color: '#94a3b8' }}>
-              <span>{retune.currentPhase || 'Processing...'}</span>
-              <span className="font-mono">{retune.totalAssets} assets processed</span>
-            </div>
-            <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--violet-6)' }}>
-              <div className="h-full rounded-full transition-all duration-700 ease-out" style={{
-                width: `${Math.min((retune.totalAssets / Math.max(assets.length, 1)) * 100, 100)}%`,
-                background: 'linear-gradient(90deg, var(--accent-violet), var(--accent-cyan))',
-              }} />
-            </div>
-          </div>
-        )}
-      </div>
+      <MissionControl
+        modes={modeLabels}
+        retuneMode={retuneMode}
+        retuneStatus={retuneStatus}
+        retune={retune}
+        elapsed={elapsed}
+        totalAssetCount={assets.length}
+        retuneLogs={retuneLogs}
+        showRetunePanel={showRetunePanel}
+        onSelectMode={setRetuneMode}
+        onStart={handleStartRetune}
+        onStop={handleStopRetune}
+        onToggleLog={() => setShowPanel(!showRetunePanel)}
+      />
 
       {/* ── Retune Log Panel ──────────────────────────────────── */}
       {showRetunePanel && (
-        <RetunePanel status={retuneStatus} logs={retuneLogs} logEndRef={logEndRef}
+        <RetunePanel status={retuneStatus} logs={retuneLogs}
           onClose={() => setShowPanel(false)} elapsed={elapsed} retune={retune} />
       )}
 
@@ -492,6 +401,262 @@ export default function TuningPage() {
 }
 
 /* ══════════════════════════════════════════════════════════════════
+   Mission Control — premium retune command center
+   ══════════════════════════════════════════════════════════════════ */
+
+function MissionControl({
+  modes, retuneMode, retuneStatus, retune, elapsed, totalAssetCount,
+  retuneLogs, showRetunePanel,
+  onSelectMode, onStart, onStop, onToggleLog,
+}: {
+  modes: readonly { id: RetuneMode; label: string }[];
+  retuneMode: RetuneMode;
+  retuneStatus: RetuneStatus;
+  retune: ReturnType<typeof getRetuneSnapshot>;
+  elapsed: number | null;
+  totalAssetCount: number;
+  retuneLogs: RetuneLogEntry[];
+  showRetunePanel: boolean;
+  onSelectMode: (id: RetuneMode) => void;
+  onStart: () => void;
+  onStop: () => void;
+  onToggleLog: () => void;
+}) {
+  const running = retuneStatus === 'running';
+  const processed = retune.totalAssets;
+  const target = Math.max(totalAssetCount, processed, 1);
+  const pct = Math.min((processed / target) * 100, 100);
+  const ratePerMin = elapsed && elapsed > 0 ? (processed / (elapsed / 60)) : 0;
+  const etaSec = running && ratePerMin > 0
+    ? Math.max(0, ((target - processed) / ratePerMin) * 60)
+    : null;
+
+  const progressColor = pct > 66
+    ? 'linear-gradient(90deg, var(--accent-emerald), var(--accent-cyan))'
+    : pct > 33
+      ? 'linear-gradient(90deg, var(--accent-violet), var(--accent-cyan))'
+      : 'linear-gradient(90deg, var(--accent-violet), var(--accent-indigo))';
+
+  return (
+    <div
+      className="relative overflow-hidden rounded-[22px] p-5 mb-6 fade-up"
+      style={{
+        background:
+          'linear-gradient(180deg, rgba(139,92,246,0.05) 0%, rgba(99,102,241,0.02) 100%)',
+        border: '1px solid var(--violet-10)',
+        boxShadow:
+          '0 1px 0 rgba(255,255,255,0.04) inset, 0 20px 60px -30px rgba(139,92,246,0.25)',
+        backdropFilter: 'blur(14px)',
+        WebkitBackdropFilter: 'blur(14px)',
+      }}
+    >
+      {/* soft top light */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 h-px"
+        style={{ background: 'linear-gradient(90deg, transparent, var(--violet-25), transparent)' }}
+      />
+
+      <div className="flex items-center justify-between flex-wrap gap-4">
+        {/* Left: segmented modes + CTA + status */}
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Apple-style segmented control */}
+          <div
+            className="flex p-1 rounded-full"
+            style={{
+              background: 'rgba(20,20,30,0.5)',
+              border: '1px solid var(--violet-8)',
+            }}
+          >
+            {modes.map(({ id, label }) => {
+              const active = retuneMode === id;
+              return (
+                <button
+                  key={id}
+                  onClick={() => onSelectMode(id)}
+                  disabled={running}
+                  className="px-4 py-1.5 rounded-full text-[12.5px] font-medium transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{
+                    background: active
+                      ? 'linear-gradient(180deg, rgba(139,92,246,0.25), rgba(139,92,246,0.12))'
+                      : 'transparent',
+                    color: active ? '#d7ccff' : '#94a3b8',
+                    boxShadow: active
+                      ? '0 1px 0 rgba(255,255,255,0.08) inset, 0 4px 12px -4px rgba(139,92,246,0.45)'
+                      : 'none',
+                    letterSpacing: '-0.01em',
+                  }}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Primary CTA */}
+          {running ? (
+            <button
+              onClick={onStop}
+              className="flex items-center gap-2 px-5 py-2 rounded-full text-[13px] font-semibold text-white transition-all hover:brightness-110 active:scale-[0.98]"
+              style={{
+                background: 'linear-gradient(180deg, #ff6a87 0%, #e11d48 100%)',
+                boxShadow:
+                  '0 1px 0 rgba(255,255,255,0.15) inset, 0 6px 18px -6px rgba(225,29,72,0.55)',
+                letterSpacing: '-0.01em',
+              }}
+            >
+              <Square className="w-3.5 h-3.5" fill="currentColor" />
+              Stop
+            </button>
+          ) : (
+            <button
+              onClick={onStart}
+              className="flex items-center gap-2 px-5 py-2 rounded-full text-[13px] font-semibold text-white transition-all hover:brightness-110 active:scale-[0.98]"
+              style={{
+                background: 'linear-gradient(180deg, #a78bfa 0%, #6366f1 100%)',
+                boxShadow:
+                  '0 1px 0 rgba(255,255,255,0.2) inset, 0 8px 22px -6px rgba(139,92,246,0.55)',
+                letterSpacing: '-0.01em',
+              }}
+            >
+              <Play className="w-3.5 h-3.5" fill="currentColor" />
+              Start Retune
+            </button>
+          )}
+
+          <StatusBadge status={retuneStatus} />
+        </div>
+
+        {/* Right: live stats */}
+        <div className="flex items-center gap-3 text-[12px]" style={{ color: '#94a3b8' }}>
+          {elapsed != null && (
+            <StatChip icon={<Timer className="w-3.5 h-3.5" />} tone="violet">
+              {formatElapsed(elapsed)}
+            </StatChip>
+          )}
+          {running && processed > 0 && (
+            <>
+              <StatChip icon={<CheckCircle className="w-3.5 h-3.5" />} tone="emerald">
+                {retune.successCount}
+              </StatChip>
+              {retune.failCount > 0 && (
+                <StatChip icon={<XCircle className="w-3.5 h-3.5" />} tone="rose">
+                  {retune.failCount}
+                </StatChip>
+              )}
+              {retune.currentAsset && (
+                <span
+                  className="px-2.5 py-1 rounded-full font-mono text-[11px]"
+                  style={{
+                    background: 'var(--violet-10)',
+                    color: '#c9b8ff',
+                    border: '1px solid var(--violet-15)',
+                    letterSpacing: '0.02em',
+                  }}
+                  title={retune.currentAsset}
+                >
+                  {retune.currentAsset}
+                </span>
+              )}
+            </>
+          )}
+          {retuneLogs.length > 0 && (
+            <button
+              onClick={onToggleLog}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] transition-all"
+              style={{
+                background: showRetunePanel ? 'var(--violet-15)' : 'rgba(255,255,255,0.02)',
+                color: showRetunePanel ? '#c9b8ff' : '#94a3b8',
+                border: `1px solid ${showRetunePanel ? 'var(--violet-25)' : 'var(--violet-8)'}`,
+              }}
+            >
+              <Terminal className="w-3 h-3" /> Log
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Progress — only while running or with partial results */}
+      {(running || processed > 0) && (
+        <div className="mt-4">
+          <div className="flex items-baseline justify-between mb-2">
+            <div className="flex items-center gap-2 text-[12px]" style={{ color: '#c9b8ff' }}>
+              <span
+                className="font-medium truncate max-w-[320px]"
+                style={{ letterSpacing: '-0.01em' }}
+                title={retune.currentPhase || 'Processing'}
+              >
+                {retune.currentPhase || (running ? 'Processing…' : 'Complete')}
+              </span>
+              {etaSec != null && etaSec > 0 && (
+                <span className="text-[11px]" style={{ color: '#7a8ba4' }}>
+                  · ETA {formatElapsed(etaSec)}
+                </span>
+              )}
+            </div>
+            <div
+              className="font-mono text-[12px]"
+              style={{ color: '#c9b8ff', fontVariantNumeric: 'tabular-nums' }}
+            >
+              {processed}
+              <span style={{ color: '#7a8ba4' }}> / {target}</span>
+              <span style={{ color: '#7a8ba4' }}> · {pct.toFixed(0)}%</span>
+              {ratePerMin > 0 && (
+                <span style={{ color: '#7a8ba4' }}> · {ratePerMin.toFixed(1)}/min</span>
+              )}
+            </div>
+          </div>
+          <div
+            className="h-[6px] rounded-full overflow-hidden"
+            style={{
+              background: 'rgba(255,255,255,0.04)',
+              border: '1px solid rgba(255,255,255,0.03)',
+            }}
+          >
+            <div
+              className="h-full rounded-full transition-[width] duration-700 ease-out"
+              style={{
+                width: `${pct}%`,
+                background: progressColor,
+                boxShadow: '0 0 10px rgba(139,92,246,0.4)',
+              }}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StatChip({
+  icon, tone, children,
+}: {
+  icon: React.ReactNode;
+  tone: 'violet' | 'emerald' | 'rose';
+  children: React.ReactNode;
+}) {
+  const palette = {
+    violet: { bg: 'var(--violet-10)', color: '#c9b8ff', border: 'var(--violet-15)' },
+    emerald: { bg: 'var(--emerald-12)', color: 'var(--accent-emerald)', border: 'rgba(52,211,153,0.2)' },
+    rose: { bg: 'var(--rose-12)', color: 'var(--accent-rose)', border: 'rgba(255,107,138,0.2)' },
+  }[tone];
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-mono text-[11.5px]"
+      style={{
+        background: palette.bg,
+        color: palette.color,
+        border: `1px solid ${palette.border}`,
+        fontVariantNumeric: 'tabular-nums',
+      }}
+    >
+      {icon}
+      {children}
+    </span>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════
    Summary Card (Clickable)
    ══════════════════════════════════════════════════════════════════ */
 
@@ -500,7 +665,7 @@ function SummaryCard({ icon, label, value, sub, color, active, onClick }: {
   active?: boolean; onClick?: () => void;
 }) {
   return (
-    <button onClick={onClick} className="glass-card p-4 flex items-center gap-3 text-left transition-all duration-200 hover:scale-[1.02] w-full" style={{
+    <button onClick={onClick} className="glass-card p-4 flex items-center gap-3 text-left transition-all duration-200 hover:-translate-y-[1px] w-full" style={{
       borderLeft: `3px solid ${color}`,
       background: active
         ? `linear-gradient(135deg, ${color}15, ${color}08)`
@@ -603,9 +768,9 @@ function StatusBadge({ status }: { status: RetuneStatus }) {
    Retune Panel
    ══════════════════════════════════════════════════════════════════ */
 
-function RetunePanel({ status, logs, logEndRef, onClose, elapsed, retune }: {
+function RetunePanel({ status, logs, onClose, elapsed, retune }: {
   status: RetuneStatus; logs: RetuneLogEntry[];
-  logEndRef: React.RefObject<HTMLDivElement | null>; onClose: () => void;
+  onClose: () => void;
   elapsed: number | null;
   retune: ReturnType<typeof getRetuneSnapshot>;
 }) {
@@ -624,9 +789,23 @@ function RetunePanel({ status, logs, logEndRef, onClose, elapsed, retune }: {
     setAutoScroll(el.scrollHeight - el.scrollTop - el.clientHeight < 30);
   }, []);
 
+  // Keep the log view pinned to bottom WITHOUT scrolling the page.
+  // Using scrollTop on the internal container avoids scrollIntoView,
+  // which would bubble up to ancestor scroll containers and make the
+  // whole page “bounce” on every new SSE tick.
   useEffect(() => {
-    if (autoScroll) logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logs, autoScroll, logEndRef]);
+    if (!autoScroll) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [logs, autoScroll]);
+
+  const jumpToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    setAutoScroll(true);
+  }, []);
 
   return (
     <div className="glass-card mb-6 overflow-hidden">
@@ -663,9 +842,8 @@ function RetunePanel({ status, logs, logEndRef, onClose, elapsed, retune }: {
             {entry.message}
           </div>
         ))}
-        <div ref={logEndRef} />
         {!autoScroll && (
-          <button onClick={() => { setAutoScroll(true); logEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }}
+          <button onClick={jumpToBottom}
             className="sticky bottom-2 left-full ml-auto px-3 py-1 rounded-full text-[10px] font-medium flex items-center gap-1 transition"
             style={{ background: 'var(--violet-15)', color: '#b49aff', border: '1px solid var(--violet-20)' }}
           >
