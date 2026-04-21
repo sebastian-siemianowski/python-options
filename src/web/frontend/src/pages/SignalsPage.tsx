@@ -13,6 +13,7 @@ import { Sparkline, SparklinePct } from '../components/Sparkline';
 import { SignalLabel, SignalStrengthBar, SignalStrengthMeter, MomentumBadge, CrashRiskHeat, HorizonCell, QualityCell } from '../components/SignalTableVisuals';
 import { ColumnCustomizer, type ColumnDef } from '../components/ColumnCustomizer';
 import SignalDetailPanel from '../components/SignalDetailPanel';
+import { JobRunnerModal, type JobMode } from '../components/JobRunnerModal';
 import {
   ArrowUpCircle, ArrowDownCircle, Filter, ChevronDown, ChevronRight,
   TrendingUp, TrendingDown, Search, X, ExternalLink, BarChart3,
@@ -134,6 +135,7 @@ function SignalsPageInner() {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [expandedSectors, setExpandedSectors] = useState<Set<string>>(new Set());
+  const [jobMode, setJobMode] = useState<JobMode | null>(null);
 
   const [updatedAsset, setUpdatedAsset] = useState<string | null>(null);
 
@@ -442,7 +444,35 @@ function SignalsPageInner() {
       </div>
 
       {/* Export button row */}
-      <div className="flex items-center justify-end mb-3">
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setJobMode('stocks')}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-semibold transition-colors"
+            style={{
+              background: 'rgba(59,130,246,0.12)',
+              color: '#60a5fa',
+              border: '1px solid rgba(59,130,246,0.28)',
+            }}
+            title="Run `make stocks` (refresh prices and regenerate signals)"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            Refresh Stocks
+          </button>
+          <button
+            onClick={() => setJobMode('tune')}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-semibold transition-colors"
+            style={{
+              background: 'rgba(139,92,246,0.12)',
+              color: '#a78bfa',
+              border: '1px solid rgba(139,92,246,0.28)',
+            }}
+            title="Run `make tune` (re-estimate model parameters)"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            Run Tune
+          </button>
+        </div>
         <ExportButton
           filename="signals"
           columns={[
@@ -704,6 +734,11 @@ function SignalsPageInner() {
           onNavigateChart={(sym) => navigate(`/charts/${sym}`)}
         />
       )}
+      <JobRunnerModal
+        open={jobMode !== null}
+        mode={jobMode}
+        onClose={() => setJobMode(null)}
+      />
     </>
   );
 }
@@ -860,7 +895,7 @@ const SECTOR_COLUMN_DEFS: ColumnDef[] = [
   { key: 'risk', label: 'Crash risk' },
   { key: 'horizons', label: 'Horizons' },
 ];
-const SECTOR_COLS_LS_KEY = 'signals-sector-cols-v1';
+const SECTOR_COLS_LS_KEY = 'signals-sector-cols-v2';
 const DEFAULT_SECTOR_VISIBLE_COLS = new Set(SECTOR_COLUMN_DEFS.map((c) => c.key));
 
 function loadSectorVisibleCols(): Set<string> {

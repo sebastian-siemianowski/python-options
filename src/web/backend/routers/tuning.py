@@ -71,7 +71,7 @@ async def retune_stream(mode: str = "retune"):
     Query params:
       mode: "retune" (default), "tune", "calibrate"
     """
-    valid_modes = {"retune", "tune", "calibrate"}
+    valid_modes = {"retune", "tune", "calibrate", "stocks"}
     if mode not in valid_modes:
         mode = "retune"
 
