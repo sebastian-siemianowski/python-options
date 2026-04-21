@@ -9,8 +9,9 @@ import { SignalTableSkeleton } from '../components/CosmicSkeleton';
 import { CosmicErrorCard } from '../components/CosmicErrorState';
 import { SignalsEmpty } from '../components/CosmicEmptyState';
 import { ExportButton } from '../components/ExportButton';
-import { Sparkline } from '../components/Sparkline';
-import { SignalStrengthBar, MomentumBadge, CrashRiskHeat, HorizonCell } from '../components/SignalTableVisuals';
+import { Sparkline, SparklinePct } from '../components/Sparkline';
+import { SignalLabel, SignalStrengthBar, SignalStrengthMeter, MomentumBadge, CrashRiskHeat, HorizonCell, QualityCell } from '../components/SignalTableVisuals';
+import { ColumnCustomizer, type ColumnDef } from '../components/ColumnCustomizer';
 import SignalDetailPanel from '../components/SignalDetailPanel';
 import {
   ArrowUpCircle, ArrowDownCircle, Filter, ChevronDown, ChevronRight,
@@ -28,8 +29,28 @@ const extractTicker = (label: string): string => {
   return label;
 };
 
+/** Determine dominant horizon color for a row (majority of available horizon cells).
+ *  Returns 'greens' if >50% positive exp_ret, 'reds' if >50% negative, 'mixed' otherwise. */
+const rowHorizonColor = (row: SummaryRow): 'greens' | 'reds' | 'mixed' => {
+  const sigs = Object.values(row.horizon_signals || {});
+  if (!sigs.length) return 'mixed';
+  let pos = 0;
+  let neg = 0;
+  for (const s of sigs) {
+    const r = s?.exp_ret;
+    if (typeof r !== 'number' || Number.isNaN(r)) continue;
+    if (r > 0) pos++;
+    else if (r < 0) neg++;
+  }
+  const total = pos + neg;
+  if (total === 0) return 'mixed';
+  if (pos / total > 0.5) return 'greens';
+  if (neg / total > 0.5) return 'reds';
+  return 'mixed';
+};
+
 type ViewMode = 'all' | 'sectors' | 'strong';
-type SignalFilter = 'all' | 'strong_buy' | 'buy' | 'hold' | 'sell' | 'strong_sell';
+type SignalFilter = 'all' | 'bullish' | 'bearish' | 'greens' | 'reds' | 'strong_buy' | 'buy' | 'hold' | 'sell' | 'strong_sell';
 
 type SortColumn = 'asset' | 'sector' | 'signal' | 'momentum' | 'crash_risk' | `horizon_${number}`;
 type SortDir = 'asc' | 'desc';
@@ -234,6 +255,13 @@ function SignalsPageInner() {
     queryFn: () => api.highConviction('sell'),
   });
 
+  const qualityQ = useQuery({
+    queryKey: ['qualityScores'],
+    queryFn: api.qualityScores,
+    staleTime: 60_000,
+  });
+  const qualityScores = qualityQ.data?.scores ?? {};
+
   const rows = data?.summary_rows || [];
   const allHorizons = data?.horizons || [];
   const windowWidth = useWindowWidth();
@@ -294,6 +322,9 @@ function SignalsPageInner() {
       if (debouncedSearch && !fuzzyMatch(row.asset_label, debouncedSearch)) return false;
       if (filter === 'all') return true;
       const label = (row.nearest_label || '').toUpperCase().replace(/\s+/g, '_');
+      if (filter === 'bullish') return label === 'STRONG_BUY' || label === 'BUY';
+      if (filter === 'bearish') return label === 'STRONG_SELL' || label === 'SELL';
+      if (filter === 'greens' || filter === 'reds') return rowHorizonColor(row) === filter;
       return label === filter.toUpperCase();
     });
   }, [rows, debouncedSearch, filter, fuzzyMatch]);
@@ -447,30 +478,76 @@ function SignalsPageInner() {
           ))}
         </div>
 
-        {/* Signal filter */}
-        {view !== 'strong' && (
-          <div className="flex items-center gap-2 glass-card px-2.5 py-1.5">
-            <Filter className="w-3 h-3 text-[var(--text-secondary)] mr-1.5" />
-            {([
-              { key: 'all' as SignalFilter, label: 'All' },
-              { key: 'strong_buy' as SignalFilter, label: 'SB' },
-              { key: 'buy' as SignalFilter, label: 'Buy' },
-              { key: 'hold' as SignalFilter, label: 'Hold' },
-              { key: 'sell' as SignalFilter, label: 'Sell' },
-              { key: 'strong_sell' as SignalFilter, label: 'SS' },
-            ]).map(({ key, label }) => (
-              <button
-                key={key}
-                onClick={() => setFilter(key)}
-                className="filter-pill"
-                data-active={filter === key}
-                data-filter={key}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        )}
+        {/* Signal filter — active across all views */}
+        <div className="flex items-center gap-1.5 glass-card px-2.5 py-1.5">
+          <Filter className="w-3 h-3 text-[var(--text-secondary)] mr-1" />
+          <button
+            onClick={() => setFilter('all')}
+            className="filter-pill"
+            data-active={filter === 'all'}
+          >
+            All
+          </button>
+          <span className="w-px h-3.5 bg-white/[0.06] mx-0.5" aria-hidden="true" />
+          <button
+            onClick={() => setFilter('bullish')}
+            className="filter-pill inline-flex items-center"
+            data-active={filter === 'bullish'}
+            data-filter="bullish"
+            title="Buy + Strong Buy"
+          >
+            <span className="inline-block w-1.5 h-1.5 rounded-full mr-1" style={{ background: '#10b981' }} />
+            Bullish
+          </button>
+          <button
+            onClick={() => setFilter('bearish')}
+            className="filter-pill inline-flex items-center"
+            data-active={filter === 'bearish'}
+            data-filter="bearish"
+            title="Sell + Strong Sell"
+          >
+            <span className="inline-block w-1.5 h-1.5 rounded-full mr-1" style={{ background: '#f43f5e' }} />
+            Bearish
+          </button>
+          <button
+            onClick={() => setFilter('greens')}
+            className="filter-pill inline-flex items-center"
+            data-active={filter === 'greens'}
+            data-filter="greens"
+            title="Majority of horizon cells positive"
+          >
+            <span className="inline-block w-1.5 h-1.5 rounded-full mr-1" style={{ background: '#10b981', boxShadow: '0 0 4px #10b98180' }} />
+            Greens
+          </button>
+          <button
+            onClick={() => setFilter('reds')}
+            className="filter-pill inline-flex items-center"
+            data-active={filter === 'reds'}
+            data-filter="reds"
+            title="Majority of horizon cells negative"
+          >
+            <span className="inline-block w-1.5 h-1.5 rounded-full mr-1" style={{ background: '#f43f5e', boxShadow: '0 0 4px #f43f5e80' }} />
+            Reds
+          </button>
+          <span className="w-px h-3.5 bg-white/[0.06] mx-0.5" aria-hidden="true" />
+          {([
+            { key: 'strong_buy' as SignalFilter, label: 'SB' },
+            { key: 'buy' as SignalFilter, label: 'Buy' },
+            { key: 'hold' as SignalFilter, label: 'Hold' },
+            { key: 'sell' as SignalFilter, label: 'Sell' },
+            { key: 'strong_sell' as SignalFilter, label: 'SS' },
+          ]).map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => setFilter(key)}
+              className="filter-pill"
+              data-active={filter === key}
+              data-filter={key}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
 
         {/* Smart Search with premium focus elevation */}
         <div className="flex items-center gap-2 glass-card px-3 py-2.5 group search-cosmic focus-ring transition-all duration-200" style={{ backdropFilter: 'blur(8px)' }}>
@@ -571,7 +648,7 @@ function SignalsPageInner() {
       )}
 
       {/* Story 3.6: Horizon pill selector */}
-      {view === 'all' && allHorizons.length > 0 && (
+      {(view === 'all' || view === 'sectors') && allHorizons.length > 0 && (
         <div className="flex items-center gap-1.5 mb-3 fade-up-delay-2">
           <span className="text-[10px] text-[var(--text-muted)] mr-1">Horizons</span>
           {allHorizons.map(h => {
@@ -606,12 +683,15 @@ function SignalsPageInner() {
           search={debouncedSearch}
           filter={filter}
           updatedAsset={updatedAsset}
+          qualityScores={qualityScores}
         />
       )}
       {view === 'strong' && (
         <StrongSignalsView
           strongBuy={strongQ.data?.strong_buy || []}
           strongSell={strongQ.data?.strong_sell || []}
+          filter={filter}
+          onNavigateChart={(sym) => navigate(`/charts/${sym}`)}
         />
       )}
       {view === 'all' && (
@@ -620,6 +700,7 @@ function SignalsPageInner() {
           updatedAsset={updatedAsset}
           sortLevels={sortLevels} onSort={handleSort} onRemoveSort={removeSortLevel}
           expandedRow={expandedRow} onExpandRow={setExpandedRow}
+          qualityScores={qualityScores}
           onNavigateChart={(sym) => navigate(`/charts/${sym}`)}
         />
       )}
@@ -768,6 +849,33 @@ function signalLabelColor(label: string): string {
   }
 }
 
+const SECTOR_COLUMN_DEFS: ColumnDef[] = [
+  { key: 'asset', label: 'Asset', locked: true },
+  { key: 'chart', label: 'Chart' },
+  { key: 'pct30d', label: '30D change', hint: '%' },
+  { key: 'signal', label: 'Signal', locked: true },
+  { key: 'strength', label: 'Strength' },
+  { key: 'momentum', label: 'Momentum' },
+  { key: 'quality', label: 'Quality' },
+  { key: 'risk', label: 'Crash risk' },
+  { key: 'horizons', label: 'Horizons' },
+];
+const SECTOR_COLS_LS_KEY = 'signals-sector-cols-v1';
+const DEFAULT_SECTOR_VISIBLE_COLS = new Set(SECTOR_COLUMN_DEFS.map((c) => c.key));
+
+function loadSectorVisibleCols(): Set<string> {
+  try {
+    const raw = localStorage.getItem(SECTOR_COLS_LS_KEY);
+    if (!raw) return new Set(DEFAULT_SECTOR_VISIBLE_COLS);
+    const parsed = JSON.parse(raw) as string[];
+    const set = new Set(parsed);
+    SECTOR_COLUMN_DEFS.forEach((c) => { if (c.locked) set.add(c.key); });
+    return set;
+  } catch {
+    return new Set(DEFAULT_SECTOR_VISIBLE_COLS);
+  }
+}
+
 function SectorPanels({
   sectors,
   expandedSectors,
@@ -776,6 +884,7 @@ function SectorPanels({
   search,
   filter,
   updatedAsset,
+  qualityScores,
 }: {
   sectors: SectorGroup[];
   expandedSectors: Set<string>;
@@ -784,9 +893,66 @@ function SectorPanels({
   search: string;
   filter: SignalFilter;
   updatedAsset: string | null;
+  qualityScores: Record<string, number>;
 }) {
   const [sectorSort, setSectorSort] = useState<SectorSortBy>('momentum');
   const navigate = useNavigate();
+  const [sectorVisibleCols, setSectorVisibleCols] = useState<Set<string>>(() => loadSectorVisibleCols());
+  useEffect(() => {
+    try { localStorage.setItem(SECTOR_COLS_LS_KEY, JSON.stringify(Array.from(sectorVisibleCols))); } catch { /* ignore */ }
+  }, [sectorVisibleCols]);
+  const toggleSectorCol = (key: string) => {
+    setSectorVisibleCols((prev) => {
+      const def = SECTOR_COLUMN_DEFS.find((c) => c.key === key);
+      if (def?.locked) return prev;
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+  const resetSectorCols = () => setSectorVisibleCols(new Set(DEFAULT_SECTOR_VISIBLE_COLS));
+
+  /** Per-row sort within each sector (Task 2). Single-column toggle. */
+  type RowSortCol = 'asset' | 'signal' | 'strength' | 'momentum' | 'quality' | 'risk' | `horizon_${number}`;
+  const [rowSortCol, setRowSortCol] = useState<RowSortCol>('momentum');
+  const [rowSortDir, setRowSortDir] = useState<'asc' | 'desc'>('desc');
+  const onRowSort = (col: RowSortCol) => {
+    if (rowSortCol === col) {
+      setRowSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setRowSortCol(col);
+      setRowSortDir(col === 'asset' ? 'asc' : 'desc');
+    }
+  };
+  const applyRowSort = (arr: SummaryRow[]) => {
+    const signalRank: Record<string, number> = { 'STRONG BUY': 5, 'BUY': 4, 'HOLD': 3, 'SELL': 2, 'STRONG SELL': 1, 'EXIT': 0 };
+    const getter = (r: SummaryRow): number | string => {
+      const col = rowSortCol;
+      if (col === 'asset') return r.asset_label;
+      if (col === 'signal') return signalRank[(r.nearest_label || 'HOLD').toUpperCase()] ?? 3;
+      if (col === 'strength') return r.horizon_signals[Number(Object.keys(r.horizon_signals)[0])]?.p_up ?? 0.5;
+      if (col === 'momentum') return r.momentum_score ?? 0;
+      if (col === 'quality') return qualityScores[extractTicker(r.asset_label)] ?? 50;
+      if (col === 'risk') return r.crash_risk_score ?? 0;
+      if (col.startsWith('horizon_')) {
+        const h = parseInt(col.split('_')[1], 10);
+        return r.horizon_signals[h]?.exp_ret ?? 0;
+      }
+      return 0;
+    };
+    const mult = rowSortDir === 'asc' ? 1 : -1;
+    return [...arr].sort((a, b) => {
+      const av = getter(a);
+      const bv = getter(b);
+      if (typeof av === 'string' && typeof bv === 'string') return av.localeCompare(bv) * mult;
+      return (((av as number) - (bv as number)) || 0) * mult;
+    });
+  };
+  const sortArrow = (col: RowSortCol) =>
+    rowSortCol === col ? (rowSortDir === 'asc' ? ' \u2191' : ' \u2193') : '';
+  const thSortClass = (col: RowSortCol) =>
+    `cursor-pointer select-none hover:text-[var(--text-secondary)] transition-colors ${rowSortCol === col ? 'text-[var(--accent-violet)]' : ''}`;
+
 
   const sorted = useMemo(() => {
     const arr = [...sectors];
@@ -838,17 +1004,29 @@ function SectorPanels({
           </span>
           <span className="text-[var(--text-muted)] tabular-nums">{totalAssets} assets</span>
         </div>
+        <ColumnCustomizer
+          columns={SECTOR_COLUMN_DEFS}
+          visible={sectorVisibleCols}
+          onToggle={toggleSectorCol}
+          onReset={resetSectorCols}
+        />
       </div>
 
       {sorted.map((sector) => {
         const expanded = expandedSectors.has(sector.name);
-        const assets = sector.assets.filter(row => {
-          if (search && !row.asset_label.toLowerCase().includes(search.toLowerCase())) return false;
-          if (filter === 'all') return true;
-          const lbl = (row.nearest_label || '').toUpperCase().replace(/\s+/g, '_');
-          return lbl === filter.toUpperCase();
-        });
-        if (search && assets.length === 0) return null;
+const matchesFilter = (lbl: string, row: SummaryRow) => {
+      if (filter === 'all') return true;
+      if (filter === 'bullish') return lbl === 'STRONG_BUY' || lbl === 'BUY';
+      if (filter === 'bearish') return lbl === 'STRONG_SELL' || lbl === 'SELL';
+      if (filter === 'greens' || filter === 'reds') return rowHorizonColor(row) === filter;
+      return lbl === filter.toUpperCase();
+    };
+    const assets = sector.assets.filter(row => {
+      if (search && !row.asset_label.toLowerCase().includes(search.toLowerCase())) return false;
+      const lbl = (row.nearest_label || '').toUpperCase().replace(/\s+/g, '_');
+      return matchesFilter(lbl, row);
+    });
+    if (assets.length === 0) return null;
 
         const bullish = (sector.strong_buy ?? 0) + (sector.buy ?? 0);
         const bearish = (sector.strong_sell ?? 0) + (sector.sell ?? 0);
@@ -1035,23 +1213,43 @@ function SectorPanels({
                   <table className="w-full text-sm">
                     <thead>
                       <tr style={{ background: 'var(--void-hover)' }}>
-                        <th className="text-left px-4 py-2.5 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[180px]">Asset</th>
-                        <th className="text-center px-1 py-2.5 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[65px]">Chart</th>
-                        <th className="text-center px-2 py-2.5 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[90px]">Signal</th>
-                        <th className="text-center px-2 py-2.5 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[70px]">Mom</th>
-                        {horizons.map(h => (
-                          <th key={h} className="text-center px-2 py-2.5 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider">{formatHorizon(h)}</th>
-                        ))}
-                        <th className="text-center px-2 py-2.5 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[60px]">Risk</th>
-                        <th className="w-8"></th>
+                        <th onClick={() => onRowSort('asset')} className={`text-left px-3 py-2 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[160px] ${thSortClass('asset')}`}>Asset{sortArrow('asset')}</th>
+                        {sectorVisibleCols.has('chart') && (
+                          <th className="text-center px-2 py-2 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[124px]">Chart</th>
+                        )}
+                        {sectorVisibleCols.has('pct30d') && (
+                          <th className="text-center px-1.5 py-2 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[56px]">30D</th>
+                        )}
+                        <th onClick={() => onRowSort('signal')} className={`text-center px-1.5 py-2 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[88px] ${thSortClass('signal')}`}>Signal{sortArrow('signal')}</th>
+                        {sectorVisibleCols.has('strength') && (
+                          <th onClick={() => onRowSort('strength')} className={`text-center px-1 py-2 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[64px] ${thSortClass('strength')}`}>Strength{sortArrow('strength')}</th>
+                        )}
+                        {sectorVisibleCols.has('momentum') && (
+                          <th onClick={() => onRowSort('momentum')} className={`text-center px-1.5 py-2 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[56px] ${thSortClass('momentum')}`}>Mom{sortArrow('momentum')}</th>
+                        )}
+                        {sectorVisibleCols.has('quality') && (
+                          <th onClick={() => onRowSort('quality')} className={`text-center px-1.5 py-2 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[56px] ${thSortClass('quality')}`}>Quality{sortArrow('quality')}</th>
+                        )}
+                        {sectorVisibleCols.has('horizons') && horizons.map(h => {
+                          const col = `horizon_${h}` as RowSortCol;
+                          return (
+                            <th key={h} onClick={() => onRowSort(col)} className={`text-center px-1 py-2 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[56px] ${thSortClass(col)}`}>{formatHorizon(h)}{sortArrow(col)}</th>
+                          );
+                        })}
+                        {sectorVisibleCols.has('risk') && (
+                          <th onClick={() => onRowSort('risk')} className={`text-center px-1.5 py-2 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[56px] ${thSortClass('risk')}`}>Risk{sortArrow('risk')}</th>
+                        )}
+                        <th className="w-6"></th>
                       </tr>
                     </thead>
                     <tbody>
-                      {assets.map((row, i) => (
+                      {applyRowSort(assets).map((row, i) => (
                         <SectorSignalRow
                           key={row.asset_label}
                           row={row}
                           horizons={horizons}
+                          visibleCols={sectorVisibleCols}
+                          qualityScore={qualityScores[extractTicker(row.asset_label)] ?? 50}
                           highlighted={row.asset_label === updatedAsset}
                           delayMs={i * 30}
                           onNavigateChart={(sym) => navigate(`/charts/${sym}`)}
@@ -1076,9 +1274,12 @@ function SectorPanels({
 }
 
 /* ── Strong Signals View — Premium Cards ──────────────────────────── */
-function StrongSignalPanel({ entries, accent, label, icon }: {
+function StrongSignalPanel({ entries, accent, label, icon, onNavigateChart }: {
   entries: StrongSignalEntry[]; accent: string; label: string; icon: React.ReactNode;
+  onNavigateChart: (sym: string) => void;
 }) {
+  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  const signalLabel = accent === '#10b981' ? 'STRONG BUY' : 'STRONG SELL';
   const avgRet = entries.length > 0 ? entries.reduce((s, e) => s + (e.exp_ret ?? 0) * 100, 0) / entries.length : 0;
   const avgPUp = entries.length > 0 ? entries.reduce((s, e) => s + (e.p_up ?? 0), 0) / entries.length : 0;
 
@@ -1120,46 +1321,77 @@ function StrongSignalPanel({ entries, accent, label, icon }: {
             const isStandout = retPct != null && Math.abs(retPct) > 5;
             const ticker = s.asset_label?.includes('(') ? s.asset_label.split('(').pop()!.replace(')', '').trim() : (s.symbol || s.asset_label || '--');
             const company = s.asset_label?.includes('(') ? s.asset_label.split('(')[0].trim() : '';
+            const isExpanded = expandedIdx === i;
+            const horizonKey = s.horizon || '30';
             return (
-              <div key={i} className="flex items-center gap-3 px-5 py-2.5 hover:bg-white/[0.015] transition-colors">
-                {/* Rank */}
-                <span className="text-[10px] font-bold w-5 text-center tabular-nums" style={{ color: `${accent}60` }}>
-                  {i + 1}
-                </span>
-                {/* Color bar */}
-                <div className="w-1 h-8 rounded-full flex-shrink-0" style={{ background: `${accent}50` }} />
-                {/* Asset info */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[12px] font-bold text-[#e2e8f0]">{ticker}</span>
-                    <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: 'var(--void-active)', color: 'var(--text-secondary)' }}>
-                      {s.sector || 'Other'}
+              <React.Fragment key={i}>
+                <button
+                  type="button"
+                  onClick={() => setExpandedIdx(p => (p === i ? null : i))}
+                  aria-expanded={isExpanded}
+                  className="w-full flex items-center gap-3 px-5 py-2.5 text-left transition-colors"
+                  style={{
+                    background: isExpanded ? `${accent}08` : 'transparent',
+                    borderLeft: isExpanded ? `2px solid ${accent}` : '2px solid transparent',
+                  }}
+                >
+                  {/* Rank */}
+                  <span className="text-[10px] font-bold w-5 text-center tabular-nums" style={{ color: `${accent}60` }}>
+                    {i + 1}
+                  </span>
+                  {/* Color bar */}
+                  <div className="w-1 h-8 rounded-full flex-shrink-0" style={{ background: `${accent}50` }} />
+                  {/* Asset info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[12px] font-bold text-[#e2e8f0]">{ticker}</span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: 'var(--void-active)', color: 'var(--text-secondary)' }}>
+                        {s.sector || 'Other'}
+                      </span>
+                    </div>
+                    {company && (
+                      <span className="text-[9px] text-[var(--text-muted)] truncate max-w-[180px] block leading-tight mt-0.5">{company}</span>
+                    )}
+                  </div>
+                  {/* Horizon */}
+                  <span className="text-[10px] px-2 py-0.5 rounded font-medium" style={{ background: 'var(--void-active)', color: 'var(--text-secondary)' }}>
+                    {s.horizon || '--'}
+                  </span>
+                  {/* Return */}
+                  <span className={`text-right min-w-[55px] tabular-nums font-bold ${isStandout ? 'text-[13px]' : 'text-[11px]'}`} style={{ color: accent }}>
+                    {retPct != null ? `${retPct >= 0 ? '+' : ''}${retPct.toFixed(1)}%` : '--'}
+                  </span>
+                  {/* Probability bar */}
+                  <div className="flex items-center gap-1.5 min-w-[65px]">
+                    <div className="w-10 h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+                      <div className="h-full rounded-full" style={{ width: `${(s.p_up ?? 0) * 100}%`, background: accent }} />
+                    </div>
+                    <span className="text-[10px] tabular-nums text-[var(--text-secondary)]">
+                      {s.p_up != null ? `${(s.p_up * 100).toFixed(0)}%` : '--'}
                     </span>
                   </div>
-                  {company && (
-                    <span className="text-[9px] text-[var(--text-muted)] truncate max-w-[180px] block leading-tight mt-0.5">{company}</span>
-                  )}
-                </div>
-                {/* Horizon */}
-                <span className="text-[10px] px-2 py-0.5 rounded font-medium" style={{ background: 'var(--void-active)', color: 'var(--text-secondary)' }}>
-                  {s.horizon || '--'}
-                </span>
-                {/* Return */}
-                <span className={`text-right min-w-[55px] tabular-nums font-bold ${isStandout ? 'text-[13px]' : 'text-[11px]'}`} style={{ color: accent }}>
-                  {retPct != null ? `${retPct >= 0 ? '+' : ''}${retPct.toFixed(1)}%` : '--'}
-                </span>
-                {/* Probability bar */}
-                <div className="flex items-center gap-1.5 min-w-[65px]">
-                  <div className="w-10 h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
-                    <div className="h-full rounded-full" style={{ width: `${(s.p_up ?? 0) * 100}%`, background: accent }} />
-                  </div>
-                  <span className="text-[10px] tabular-nums text-[var(--text-secondary)]">
-                    {s.p_up != null ? `${(s.p_up * 100).toFixed(0)}%` : '--'}
-                  </span>
-                </div>
-                {/* Momentum */}
-                <MomentumBadge value={s.momentum} />
-              </div>
+                  {/* Momentum */}
+                  <MomentumBadge value={s.momentum} />
+                  {/* Chevron */}
+                  <ChevronRight
+                    className="w-3.5 h-3.5 ml-1 transition-all duration-200 flex-shrink-0"
+                    style={{
+                      color: isExpanded ? accent : 'var(--text-muted)',
+                      transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                    }}
+                  />
+                </button>
+                {isExpanded && (
+                  <SignalDetailPanel
+                    ticker={ticker}
+                    signal={signalLabel}
+                    momentum={s.momentum}
+                    crashRisk={undefined}
+                    horizonSignals={{ [horizonKey]: { exp_ret: s.exp_ret, p_up: s.p_up, label: signalLabel } } as any}
+                    onNavigateChart={() => onNavigateChart(ticker)}
+                  />
+                )}
+              </React.Fragment>
             );
           })}
         </div>
@@ -1168,21 +1400,37 @@ function StrongSignalPanel({ entries, accent, label, icon }: {
   );
 }
 
-function StrongSignalsView({ strongBuy, strongSell }: { strongBuy: StrongSignalEntry[]; strongSell: StrongSignalEntry[] }) {
+function StrongSignalsView({ strongBuy, strongSell, filter, onNavigateChart }: {
+  strongBuy: StrongSignalEntry[];
+  strongSell: StrongSignalEntry[];
+  filter: SignalFilter;
+  onNavigateChart: (sym: string) => void;
+}) {
+  const onlyBuy = filter === 'bullish' || filter === 'strong_buy' || filter === 'buy';
+  const onlySell = filter === 'bearish' || filter === 'strong_sell' || filter === 'sell';
+  const gridCls = !onlyBuy && !onlySell
+    ? 'grid grid-cols-1 lg:grid-cols-2 gap-5'
+    : 'grid grid-cols-1 gap-5';
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-      <StrongSignalPanel
-        entries={strongBuy}
-        accent="#10b981"
-        label="Strong Buy Signals"
-        icon={<TrendingUp className="w-4 h-4" style={{ color: '#10b981' }} />}
-      />
-      <StrongSignalPanel
-        entries={strongSell}
-        accent="#f43f5e"
-        label="Strong Sell Signals"
-        icon={<TrendingDown className="w-4 h-4" style={{ color: '#f43f5e' }} />}
-      />
+    <div className={gridCls}>
+      {!onlySell && (
+        <StrongSignalPanel
+          entries={strongBuy}
+          accent="#10b981"
+          label="Strong Buy Signals"
+          icon={<TrendingUp className="w-4 h-4" style={{ color: '#10b981' }} />}
+          onNavigateChart={onNavigateChart}
+        />
+      )}
+      {!onlyBuy && (
+        <StrongSignalPanel
+          entries={strongSell}
+          accent="#f43f5e"
+          label="Strong Sell Signals"
+          icon={<TrendingDown className="w-4 h-4" style={{ color: '#f43f5e' }} />}
+          onNavigateChart={onNavigateChart}
+        />
+      )}
     </div>
   );
 }
@@ -1221,18 +1469,71 @@ function sortColName(col: SortColumn): string {
   return names[col] || col;
 }
 
-function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRemoveSort, expandedRow, onExpandRow, onNavigateChart }: {
+// Column visibility — sortable headers still work; this independently controls rendering.
+const ALL_ASSETS_COLUMN_DEFS: ColumnDef[] = [
+  { key: 'asset', label: 'Asset', locked: true },
+  { key: 'chart', label: 'Chart' },
+  { key: 'pct30d', label: '30D change', hint: '%' },
+  { key: 'sector', label: 'Sector' },
+  { key: 'signal', label: 'Signal', locked: true },
+  { key: 'strength', label: 'Strength' },
+  { key: 'momentum', label: 'Momentum' },
+  { key: 'quality', label: 'Quality' },
+  { key: 'risk', label: 'Crash risk' },
+  { key: 'horizons', label: 'Horizons' },
+];
+const ALL_ASSETS_COLS_LS_KEY = 'signals-visible-cols-v2';
+const DEFAULT_VISIBLE_COLS = new Set(ALL_ASSETS_COLUMN_DEFS.map((c) => c.key));
+
+function loadVisibleCols(): Set<string> {
+  try {
+    const raw = localStorage.getItem(ALL_ASSETS_COLS_LS_KEY);
+    if (!raw) return new Set(DEFAULT_VISIBLE_COLS);
+    const parsed = JSON.parse(raw) as string[];
+    const set = new Set(parsed);
+    // Always force locked columns on
+    ALL_ASSETS_COLUMN_DEFS.forEach((c) => { if (c.locked) set.add(c.key); });
+    return set;
+  } catch {
+    return new Set(DEFAULT_VISIBLE_COLS);
+  }
+}
+
+function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRemoveSort, expandedRow, onExpandRow, qualityScores, onNavigateChart }: {
   rows: SummaryRow[]; horizons: number[]; updatedAsset: string | null;
   sortLevels: { col: SortColumn; dir: SortDir }[];
   onSort: (col: SortColumn, shiftKey: boolean) => void;
   onRemoveSort: (col: SortColumn) => void;
   expandedRow: string | null; onExpandRow: (label: string | null) => void;
+  qualityScores: Record<string, number>;
   onNavigateChart: (symbol: string) => void;
 }) {
   const [page, setPage] = useState(0);
   const [scrolled, setScrolled] = useState(false);
+  const [visibleCols, setVisibleCols] = useState<Set<string>>(() => loadVisibleCols());
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const pageSize = 50;
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        ALL_ASSETS_COLS_LS_KEY,
+        JSON.stringify(Array.from(visibleCols)),
+      );
+    } catch { /* ignore quota / privacy errors */ }
+  }, [visibleCols]);
+
+  const toggleCol = (key: string) => {
+    setVisibleCols((prev) => {
+      const def = ALL_ASSETS_COLUMN_DEFS.find((c) => c.key === key);
+      if (def?.locked) return prev;
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+  const resetCols = () => setVisibleCols(new Set(DEFAULT_VISIBLE_COLS));
   const pageRows = rows.slice(page * pageSize, (page + 1) * pageSize);
   const totalPages = Math.ceil(rows.length / pageSize);
 
@@ -1251,6 +1552,21 @@ function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRe
 
   return (
     <div className="glass-card overflow-hidden fade-up-delay-3">
+      {/* Table toolbar: column visibility (click headers to sort, use Columns to hide/show) */}
+      <div className="flex items-center justify-between gap-3 px-4 h-9 border-b" style={{ borderColor: 'var(--border-void)' }}>
+        <span className="text-[10px] uppercase tracking-[0.08em]" style={{ color: 'var(--text-muted)' }}>
+          {rows.length} asset{rows.length === 1 ? '' : 's'}
+          <span className="ml-2" style={{ color: 'var(--text-muted)', opacity: 0.6 }}>
+            Click a column to sort · Shift+Click to add
+          </span>
+        </span>
+        <ColumnCustomizer
+          columns={ALL_ASSETS_COLUMN_DEFS}
+          visible={visibleCols}
+          onToggle={toggleCol}
+          onReset={resetCols}
+        />
+      </div>
       {/* Story 3.2 AC-5: Sort indicator bar */}
       {sortLevels.length > 0 && (
         <div className="flex items-center gap-2 px-4 h-[28px] text-[10px] text-[var(--text-secondary)]"
@@ -1281,30 +1597,53 @@ function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRe
                   onClick={(e) => onSort('asset', e.shiftKey)}>
                 Asset <SortIndicator col="asset" sortLevels={sortLevels} />
               </th>
-              <th className="text-center px-2 py-3 w-[60px]">
-                <span className="text-[10px] text-[var(--text-violet)] uppercase tracking-[0.06em] font-medium">30D</span>
-              </th>
-              <th className={`text-left px-3 py-3 sortable-th group ${sortLevels.some(s => s.col === 'sector') ? 'active' : ''}`}
-                  style={sortLevels.some(s => s.col === 'sector') ? { color: 'var(--accent-violet)', textShadow: '0 0 8px var(--violet-30)' } : {}}
-                  onClick={(e) => onSort('sector', e.shiftKey)}>
-                Sector <SortIndicator col="sector" sortLevels={sortLevels} />
-              </th>
+              {visibleCols.has('chart') && (
+                <th className="text-center px-2 py-3 w-[124px]">
+                  <span className="text-[10px] text-[var(--text-violet)] uppercase tracking-[0.06em] font-medium">Chart</span>
+                </th>
+              )}
+              {visibleCols.has('pct30d') && (
+                <th className="text-center px-2 py-3 w-[56px]">
+                  <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-[0.06em] font-medium">30D</span>
+                </th>
+              )}
+              {visibleCols.has('sector') && (
+                <th className={`text-left px-3 py-3 sortable-th group ${sortLevels.some(s => s.col === 'sector') ? 'active' : ''}`}
+                    style={sortLevels.some(s => s.col === 'sector') ? { color: 'var(--accent-violet)', textShadow: '0 0 8px var(--violet-30)' } : {}}
+                    onClick={(e) => onSort('sector', e.shiftKey)}>
+                  Sector <SortIndicator col="sector" sortLevels={sortLevels} />
+                </th>
+              )}
               <th className={`text-center px-3 py-3 sortable-th group ${sortLevels.some(s => s.col === 'signal') ? 'active' : ''}`}
                   style={sortLevels.some(s => s.col === 'signal') ? { color: 'var(--accent-violet)', textShadow: '0 0 8px var(--violet-30)' } : {}}
                   onClick={(e) => onSort('signal', e.shiftKey)}>
                 Signal <SortIndicator col="signal" sortLevels={sortLevels} />
               </th>
-              <th className={`text-center px-3 py-3 sortable-th group ${sortLevels.some(s => s.col === 'momentum') ? 'active' : ''}`}
-                  style={sortLevels.some(s => s.col === 'momentum') ? { color: 'var(--accent-violet)', textShadow: '0 0 8px var(--violet-30)' } : {}}
-                  onClick={(e) => onSort('momentum', e.shiftKey)}>
-                Mom <SortIndicator col="momentum" sortLevels={sortLevels} />
-              </th>
-              <th className={`text-center px-3 py-3 sortable-th group ${sortLevels.some(s => s.col === 'crash_risk') ? 'active' : ''}`}
-                  style={sortLevels.some(s => s.col === 'crash_risk') ? { color: 'var(--accent-violet)', textShadow: '0 0 8px var(--violet-30)' } : {}}
-                  onClick={(e) => onSort('crash_risk', e.shiftKey)}>
-                Risk <SortIndicator col="crash_risk" sortLevels={sortLevels} />
-              </th>
-              {horizons.map((h) => {
+              {visibleCols.has('strength') && (
+                <th className="text-center px-2 py-3 w-[64px]">
+                  <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-[0.06em] font-medium">Strength</span>
+                </th>
+              )}
+              {visibleCols.has('momentum') && (
+                <th className={`text-center px-3 py-3 sortable-th group ${sortLevels.some(s => s.col === 'momentum') ? 'active' : ''}`}
+                    style={sortLevels.some(s => s.col === 'momentum') ? { color: 'var(--accent-violet)', textShadow: '0 0 8px var(--violet-30)' } : {}}
+                    onClick={(e) => onSort('momentum', e.shiftKey)}>
+                  Mom <SortIndicator col="momentum" sortLevels={sortLevels} />
+                </th>
+              )}
+              {visibleCols.has('quality') && (
+                <th className="text-center px-2 py-3 w-[56px]">
+                  <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-[0.06em] font-medium">Quality</span>
+                </th>
+              )}
+              {visibleCols.has('risk') && (
+                <th className={`text-center px-3 py-3 sortable-th group ${sortLevels.some(s => s.col === 'crash_risk') ? 'active' : ''}`}
+                    style={sortLevels.some(s => s.col === 'crash_risk') ? { color: 'var(--accent-violet)', textShadow: '0 0 8px var(--violet-30)' } : {}}
+                    onClick={(e) => onSort('crash_risk', e.shiftKey)}>
+                  Risk <SortIndicator col="crash_risk" sortLevels={sortLevels} />
+                </th>
+              )}
+              {visibleCols.has('horizons') && horizons.map((h) => {
                 const hCol = `horizon_${h}` as SortColumn;
                 return (
                   <th key={h} className={`text-center px-3 py-3 sortable-th group ${sortLevels.some(s => s.col === hCol) ? 'active' : ''}`}
@@ -1327,6 +1666,8 @@ function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRe
                   row={row}
                   ticker={ticker}
                   horizons={horizons}
+                  visibleCols={visibleCols}
+                  qualityScore={qualityScores[ticker] ?? 50}
                   highlighted={row.asset_label === updatedAsset}
                   isExpanded={isExpanded}
                   onToggleExpand={() => onExpandRow(isExpanded ? null : row.asset_label)}
@@ -1366,8 +1707,10 @@ function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRe
 }
 
 /* ── Story 3.1: Cosmic Signal Row ────────────────────────────────── */
-function CosmicSignalRow({ row, ticker, horizons, highlighted, isExpanded, onToggleExpand, onNavigateChart }: {
+function CosmicSignalRow({ row, ticker, horizons, visibleCols, qualityScore, highlighted, isExpanded, onToggleExpand, onNavigateChart }: {
   row: SummaryRow; ticker: string; horizons: number[];
+  visibleCols: Set<string>;
+  qualityScore: number;
   highlighted?: boolean; isExpanded: boolean;
   onToggleExpand: () => void; onNavigateChart: () => void;
 }) {
@@ -1408,28 +1751,57 @@ function CosmicSignalRow({ row, ticker, horizons, highlighted, isExpanded, onTog
             </div>
           </div>
         </td>
-        {/* AC-1: Sparkline */}
-        <td className="px-1 py-2 text-center">
-          <Sparkline ticker={ticker} width={60} height={28} />
-        </td>
+        {/* AC-1: Sparkline — wider for clarity */}
+        {visibleCols.has('chart') && (
+          <td className="px-2 py-2 text-center">
+            <Sparkline ticker={ticker} width={108} height={32} />
+          </td>
+        )}
+        {/* 30D pct change */}
+        {visibleCols.has('pct30d') && (
+          <td className="px-1.5 py-2 text-center">
+            <SparklinePct ticker={ticker} />
+          </td>
+        )}
         {/* Sector */}
-        <td className="px-3 py-2 text-[10px] text-[var(--text-secondary)] max-w-[100px] truncate">{row.sector}</td>
-        {/* AC-2: Signal with strength bar */}
-        <td className="px-3 py-2 text-center">
-          <SignalStrengthBar label={label} pUp={pUp} kelly={kellyVal} />
-        </td>
-        {/* AC-3: Momentum badge */}
-        <td className="px-3 py-2 text-center">
-          <MomentumBadge value={row.momentum_score} />
-        </td>
-        {/* AC-4: Crash risk heat */}
-        <td className="px-3 py-2">
+        {visibleCols.has('sector') && (
+          <td className="px-3 py-2 text-[10px] text-[var(--text-secondary)] max-w-[100px] truncate">{row.sector}</td>
+        )}
+        {/* AC-2: Signal label + strength split */}
+        <td className="px-2 py-2">
           <div className="flex justify-center">
-            <CrashRiskHeat score={row.crash_risk_score} />
+            <SignalLabel label={label.toUpperCase()} />
           </div>
         </td>
+        {visibleCols.has('strength') && (
+          <td className="px-1 py-2">
+            <div className="flex justify-center">
+              <SignalStrengthMeter label={label} pUp={pUp} kelly={kellyVal} />
+            </div>
+          </td>
+        )}
+        {/* AC-3: Momentum badge */}
+        {visibleCols.has('momentum') && (
+          <td className="px-3 py-2 text-center">
+            <MomentumBadge value={row.momentum_score} />
+          </td>
+        )}
+        {/* Quality score tile */}
+        {visibleCols.has('quality') && (
+          <td className="px-2 py-2">
+            <QualityCell score={qualityScore} />
+          </td>
+        )}
+        {/* AC-4: Crash risk heat */}
+        {visibleCols.has('risk') && (
+          <td className="px-3 py-2">
+            <div className="flex justify-center">
+              <CrashRiskHeat score={row.crash_risk_score} />
+            </div>
+          </td>
+        )}
         {/* AC-5: Horizon cells */}
-        {horizons.map((h) => {
+        {visibleCols.has('horizons') && horizons.map((h) => {
           const sig = row.horizon_signals[h] || row.horizon_signals[String(h)];
           return (
             <td key={h} className="px-2 py-2 text-center">
@@ -1450,7 +1822,7 @@ function CosmicSignalRow({ row, ticker, horizons, highlighted, isExpanded, onTog
       </tr>
       {isExpanded && (
         <tr>
-          <td colSpan={horizons.length + 7} className="p-0">
+          <td colSpan={1000} className="p-0">
             <SignalDetailPanel
               ticker={ticker}
               signal={row.nearest_label}
@@ -1588,8 +1960,11 @@ function MiniChartPanel({ ticker, onNavigateChart }: { ticker: string; onNavigat
 }
 
 /* ── Sector signal row — premium with inline expand ───────────────── */
-function SectorSignalRow({ row, horizons, highlighted, delayMs = 0, onNavigateChart }: {
-  row: SummaryRow; horizons: number[]; highlighted?: boolean; delayMs?: number;
+function SectorSignalRow({ row, horizons, visibleCols, qualityScore, highlighted, delayMs = 0, onNavigateChart }: {
+  row: SummaryRow; horizons: number[];
+  visibleCols: Set<string>;
+  qualityScore: number;
+  highlighted?: boolean; delayMs?: number;
   onNavigateChart: (sym: string) => void;
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -1614,7 +1989,7 @@ function SectorSignalRow({ row, horizons, highlighted, delayMs = 0, onNavigateCh
           borderBottom: '1px solid rgba(255,255,255,0.035)',
         }}>
         {/* Asset */}
-        <td className="px-4 py-2.5 whitespace-nowrap">
+        <td className="px-3 py-2 whitespace-nowrap">
           <div className="flex items-center gap-2">
             <div className="w-1 h-7 rounded-full flex-shrink-0" style={{ background: `${labelColor}60` }} />
             <div>
@@ -1626,42 +2001,69 @@ function SectorSignalRow({ row, horizons, highlighted, delayMs = 0, onNavigateCh
                 </span>
               </div>
               {row.asset_label.includes('(') && (
-                <span className="text-[9px] text-[var(--text-muted)] truncate max-w-[150px] leading-tight block mt-0.5">
+                <span className="text-[9px] text-[var(--text-muted)] truncate max-w-[140px] leading-tight block mt-0.5">
                   {row.asset_label.split('(')[0].trim()}
                 </span>
               )}
             </div>
           </div>
         </td>
-        {/* Sparkline */}
-        <td className="px-1 py-2.5 text-center">
-          <Sparkline ticker={ticker} width={60} height={26} />
+        {/* Sparkline — wider for clarity */}
+        {visibleCols.has('chart') && (
+          <td className="px-2 py-2 text-center">
+            <Sparkline ticker={ticker} width={108} height={32} />
+          </td>
+        )}
+        {/* 30D pct change */}
+        {visibleCols.has('pct30d') && (
+          <td className="px-1.5 py-2 text-center">
+            <SparklinePct ticker={ticker} />
+          </td>
+        )}
+        {/* Signal label + strength split */}
+        <td className="px-1.5 py-2">
+          <div className="flex justify-center">
+            <SignalLabel label={label.toUpperCase()} />
+          </div>
         </td>
-        {/* Signal */}
-        <td className="px-2 py-2.5 text-center">
-          <SignalStrengthBar label={label} pUp={nearestHorizon?.p_up} kelly={nearestHorizon?.kelly_half} />
-        </td>
+        {visibleCols.has('strength') && (
+          <td className="px-1 py-2">
+            <div className="flex justify-center">
+              <SignalStrengthMeter label={label} pUp={nearestHorizon?.p_up} kelly={nearestHorizon?.kelly_half} />
+            </div>
+          </td>
+        )}
         {/* Momentum */}
-        <td className="px-2 py-2.5 text-center">
-          <MomentumBadge value={row.momentum_score} />
-        </td>
+        {visibleCols.has('momentum') && (
+          <td className="px-1.5 py-2 text-center">
+            <MomentumBadge value={row.momentum_score} />
+          </td>
+        )}
+        {/* Quality */}
+        {visibleCols.has('quality') && (
+          <td className="px-1.5 py-2">
+            <QualityCell score={qualityScore} />
+          </td>
+        )}
         {/* Horizon cells */}
-        {horizons.map((h) => {
+        {visibleCols.has('horizons') && horizons.map((h) => {
           const sig = row.horizon_signals[h] || row.horizon_signals[String(h)];
           return (
-            <td key={h} className="px-2 py-2.5 text-center">
+            <td key={h} className="px-1 py-2 text-center">
               <HorizonCell expRet={sig?.exp_ret} pUp={sig?.p_up} />
             </td>
           );
         })}
         {/* Risk */}
-        <td className="px-2 py-2.5">
-          <div className="flex justify-center">
-            <CrashRiskHeat score={row.crash_risk_score} />
-          </div>
-        </td>
+        {visibleCols.has('risk') && (
+          <td className="px-1.5 py-2">
+            <div className="flex justify-center">
+              <CrashRiskHeat score={row.crash_risk_score} />
+            </div>
+          </td>
+        )}
         {/* Actions */}
-        <td className="px-1 py-2.5">
+        <td className="px-1 py-2">
           <ChevronRight
             className="w-3.5 h-3.5 transition-all duration-200"
             style={{
@@ -1673,7 +2075,7 @@ function SectorSignalRow({ row, horizons, highlighted, delayMs = 0, onNavigateCh
       </tr>
       {isExpanded && (
         <tr>
-          <td colSpan={horizons.length + 5} className="p-0">
+          <td colSpan={1000} className="p-0">
             <SignalDetailPanel
               ticker={ticker}
               signal={row.nearest_label}
