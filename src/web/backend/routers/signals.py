@@ -103,6 +103,16 @@ async def quality_scores():
     return get_all_quality_scores()
 
 
+@router.get("/ema-states")
+async def ema_states():
+    """
+    Per-symbol EMA snapshot (9 / 50 / 600) used by the high-conviction
+    "below EMA" filters on the front-end.
+    """
+    from web.backend.services.ema_states import get_all_ema_states
+    return get_all_ema_states()
+
+
 @router.get("/intrinsic-values")
 async def intrinsic_values():
     """Buffett/Munger intrinsic value estimates with current prices and valuation gaps."""

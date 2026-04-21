@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, useMemo, useEffect, useRef, useCallback, Component, type ReactNode, type ErrorInfo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
-import type { SummaryRow, SectorGroup, StrongSignalEntry, HighConvictionSignal, SignalSummaryData, SignalStats } from '../api';
+import type { SummaryRow, SectorGroup, StrongSignalEntry, HighConvictionSignal, SignalSummaryData, SignalStats, EmaState } from '../api';
 import PageHeader from '../components/PageHeader';
 import { SignalTableSkeleton } from '../components/CosmicSkeleton';
 import { CosmicErrorCard } from '../components/CosmicErrorState';
@@ -264,6 +264,13 @@ function SignalsPageInner() {
   });
   const qualityScores = qualityQ.data?.scores ?? {};
 
+  const emaQ = useQuery({
+    queryKey: ['emaStates'],
+    queryFn: api.emaStates,
+    staleTime: 5 * 60_000,
+  });
+  const emaStates = emaQ.data?.states ?? {};
+
   const rows = data?.summary_rows || [];
   const allHorizons = data?.horizons || [];
   const windowWidth = useWindowWidth();
@@ -433,6 +440,7 @@ function SignalsPageInner() {
           color="green"
           isLoading={buyQ.isLoading}
           onNavigateChart={(sym) => navigate(`/charts/${sym}`)}
+          emaStates={emaStates}
         />
         <HighConvictionPanel
           title="High Conviction SELL"
@@ -440,6 +448,7 @@ function SignalsPageInner() {
           color="red"
           isLoading={sellQ.isLoading}
           onNavigateChart={(sym) => navigate(`/charts/${sym}`)}
+          emaStates={emaStates}
         />
       </div>
 
@@ -2258,21 +2267,190 @@ function SegmentedMeter({
   );
 }
 
+// ─── Premium EMA "below" filter bar ─────────────────────────────────────
+//
+// Three iOS-style toggle pills — Below 9 / 50 / 600 — each with a live
+// match count, a soft inset glow when active, and a sliding accent dot.
+// Right edge surfaces total matches and a "Clear" affordance.
+function EmaFilterBar({
+  accent,
+  accentSoft,
+  filters,
+  onChange,
+  counts,
+  anyActive,
+  onClear,
+  emaLoaded,
+  matchingTotal,
+}: {
+  accent: string;
+  accentSoft: string;
+  filters: { p9: boolean; p50: boolean; p600: boolean };
+  onChange: (next: { p9: boolean; p50: boolean; p600: boolean }) => void;
+  counts: { c9: number; c50: number; c600: number; withData: number; total: number };
+  anyActive: boolean;
+  onClear: () => void;
+  emaLoaded: boolean;
+  matchingTotal: number;
+}) {
+  const items: Array<{
+    key: 'p9' | 'p50' | 'p600';
+    label: string;
+    period: string;
+    count: number;
+  }> = [
+    { key: 'p9',   label: 'Below', period: 'EMA 9',   count: counts.c9 },
+    { key: 'p50',  label: 'Below', period: 'EMA 50',  count: counts.c50 },
+    { key: 'p600', label: 'Below', period: 'EMA 600', count: counts.c600 },
+  ];
+
+  return (
+    <div
+      className="px-6 py-3 flex items-center gap-3 flex-wrap"
+      style={{
+        background: 'linear-gradient(180deg, rgba(255,255,255,0.018) 0%, rgba(255,255,255,0.005) 100%)',
+        borderTop: '1px solid rgba(255,255,255,0.04)',
+        borderBottom: '1px solid rgba(255,255,255,0.04)',
+      }}
+    >
+      {/* Section label */}
+      <div className="flex items-center gap-1.5 pr-1">
+        <Filter className="w-3 h-3 text-[var(--text-muted)]" />
+        <span
+          className="text-[9.5px] font-semibold uppercase tracking-[0.14em]"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          Trend Filters
+        </span>
+      </div>
+
+      {/* Pills */}
+      <div className="flex items-center gap-1.5">
+        {items.map((it) => {
+          const on = filters[it.key];
+          const empty = emaLoaded && it.count === 0;
+          return (
+            <button
+              key={it.key}
+              type="button"
+              onClick={() => onChange({ ...filters, [it.key]: !on })}
+              disabled={!emaLoaded}
+              aria-pressed={on}
+              className="group relative inline-flex items-center gap-1.5 rounded-full pl-2.5 pr-1.5 py-1 transition-all"
+              style={{
+                background: on
+                  ? `linear-gradient(180deg, ${accent}28, ${accent}12)`
+                  : 'rgba(255,255,255,0.025)',
+                border: `1px solid ${on ? accent + '70' : 'rgba(255,255,255,0.06)'}`,
+                boxShadow: on
+                  ? `0 0 0 1px ${accent}25 inset, 0 6px 18px -8px ${accent}80, 0 0 24px -6px ${accent}55`
+                  : '0 1px 0 rgba(255,255,255,0.03) inset',
+                color: on ? '#fff' : 'var(--text-secondary)',
+                cursor: emaLoaded ? 'pointer' : 'wait',
+                opacity: emaLoaded ? 1 : 0.5,
+                transition: 'background 220ms cubic-bezier(.2,.8,.2,1), border-color 220ms, box-shadow 220ms, color 220ms',
+              }}
+              title={
+                emaLoaded
+                  ? `Show only tickers trading below ${it.period}`
+                  : 'Loading EMA data…'
+              }
+            >
+              {/* Accent dot — fades + scales when active */}
+              <span
+                aria-hidden
+                className="rounded-full"
+                style={{
+                  width: 6,
+                  height: 6,
+                  background: on ? accent : 'rgba(255,255,255,0.18)',
+                  boxShadow: on ? `0 0 8px ${accent}` : 'none',
+                  transform: on ? 'scale(1.05)' : 'scale(1)',
+                  transition: 'background 220ms, box-shadow 220ms, transform 220ms',
+                }}
+              />
+              <span
+                className="text-[10px] font-medium uppercase tracking-[0.1em]"
+                style={{ color: on ? `${accent}` : 'var(--text-muted)' }}
+              >
+                {it.label}
+              </span>
+              <span
+                className="text-[11px] font-semibold tabular-nums"
+                style={{ color: on ? '#fff' : 'var(--text-secondary)' }}
+              >
+                {it.period}
+              </span>
+              {/* Live count badge */}
+              <span
+                className="ml-0.5 inline-flex items-center justify-center rounded-full px-1.5 min-w-[20px] h-[18px] text-[10px] font-semibold tabular-nums transition-all"
+                style={{
+                  background: on ? `${accent}` : empty ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.07)',
+                  color: on ? '#0b0c12' : empty ? 'var(--text-muted)' : 'var(--text-secondary)',
+                  boxShadow: on ? `0 1px 0 rgba(255,255,255,0.18) inset` : 'none',
+                }}
+              >
+                {emaLoaded ? it.count : '—'}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Spacer */}
+      <div className="flex-1" />
+
+      {/* Right edge: matches + clear */}
+      {anyActive && (
+        <div className="flex items-center gap-2 transition-all">
+          <span className="text-[10.5px] text-[var(--text-muted)]">
+            <span className="tabular-nums" style={{ color: accent }}>{matchingTotal}</span> match{matchingTotal === 1 ? '' : 'es'}
+          </span>
+          <button
+            type="button"
+            onClick={onClear}
+            className="inline-flex items-center gap-1 rounded-full pl-2 pr-2 py-1 text-[10px] font-medium uppercase tracking-wider transition-all"
+            style={{
+              background: 'rgba(255,255,255,0.04)',
+              border: `1px solid ${accentSoft}`,
+              color: 'var(--text-secondary)',
+            }}
+          >
+            <X className="w-3 h-3" />
+            Clear
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function HighConvictionPanel({
-  title, signals, color, isLoading, onNavigateChart,
+  title, signals, color, isLoading, onNavigateChart, emaStates,
 }: {
   title: string;
   signals: HighConvictionSignal[];
   color: 'green' | 'red';
   isLoading: boolean;
   onNavigateChart: (sym: string) => void;
+  emaStates: Record<string, EmaState>;
 }) {
   const [sortCol, setSortCol] = useState<HCSortCol>('exp_ret');
   const [sortDir, setSortDir] = useState<HCSortDir>('desc');
   const [expandedTicker, setExpandedTicker] = useState<string | null>(null);
   const [expandedView, setExpandedView] = useState<'details' | 'chart'>('chart');
   const [tvRange, setTvRange] = useState<string>('3M');
+  // Track which timeframes have been activated so we can keep them mounted
+  // (avoids re-initializing the TradingView iframe every time the user switches)
+  const [activatedRanges, setActivatedRanges] = useState<Set<string>>(() => new Set(['3M']));
+  const activateRange = useCallback((label: string) => {
+    setActivatedRanges((prev) => (prev.has(label) ? prev : new Set(prev).add(label)));
+  }, []);
   const [searchTerm, setSearchTerm] = useState('');
+  // EMA-below filters — combine with AND. null = no filter on that period.
+  const [emaFilters, setEmaFilters] = useState<{ p9: boolean; p50: boolean; p600: boolean }>(
+    { p9: false, p50: false, p600: false }
+  );
 
   // TradingView range → (interval, range) param pairs
   const TV_RANGES: { label: string; range: string; interval: string }[] = [
@@ -2299,6 +2477,16 @@ function HighConvictionPanel({
 
   // Reset tab to chart when row changes (chart is the default view)
   useEffect(() => { setExpandedView('chart'); }, [expandedTicker]);
+
+  // Esc collapses the expanded row
+  useEffect(() => {
+    if (!expandedTicker) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setExpandedTicker(null);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [expandedTicker]);
 
   const Icon = color === 'green' ? TrendingUp : TrendingDown;
   const accent = color === 'green' ? '#10b981' : '#f43f5e';
@@ -2334,12 +2522,47 @@ function HighConvictionPanel({
     return Array.from(map.values());
   }, [signals]);
 
-  // Filter
+  // Filter — search + EMA toggles
+  const passesEma = useCallback((ticker: string) => {
+    if (!emaFilters.p9 && !emaFilters.p50 && !emaFilters.p600) return true;
+    const st = emaStates[ticker];
+    if (!st) return false; // no EMA data → can't satisfy a "below EMA" filter
+    if (emaFilters.p9 && st.below_9 !== true) return false;
+    if (emaFilters.p50 && st.below_50 !== true) return false;
+    if (emaFilters.p600 && st.below_600 !== true) return false;
+    return true;
+  }, [emaFilters, emaStates]);
+
   const filtered = useMemo(() => {
-    if (!searchTerm) return grouped;
     const q = searchTerm.toLowerCase();
-    return grouped.filter(g => g.ticker.toLowerCase().includes(q) || g.asset_label.toLowerCase().includes(q) || g.sector.toLowerCase().includes(q));
-  }, [grouped, searchTerm]);
+    return grouped.filter(g => {
+      if (q && !(g.ticker.toLowerCase().includes(q) || g.asset_label.toLowerCase().includes(q) || g.sector.toLowerCase().includes(q))) {
+        return false;
+      }
+      return passesEma(g.ticker);
+    });
+  }, [grouped, searchTerm, passesEma]);
+
+  // Live counts per EMA period (after the search filter, ignoring other EMA toggles)
+  const emaCounts = useMemo(() => {
+    const q = searchTerm.toLowerCase();
+    const base = q
+      ? grouped.filter(g => g.ticker.toLowerCase().includes(q) || g.asset_label.toLowerCase().includes(q) || g.sector.toLowerCase().includes(q))
+      : grouped;
+    let c9 = 0, c50 = 0, c600 = 0, withData = 0;
+    for (const g of base) {
+      const st = emaStates[g.ticker];
+      if (!st) continue;
+      withData += 1;
+      if (st.below_9 === true) c9 += 1;
+      if (st.below_50 === true) c50 += 1;
+      if (st.below_600 === true) c600 += 1;
+    }
+    return { c9, c50, c600, withData, total: base.length };
+  }, [grouped, searchTerm, emaStates]);
+
+  const anyEmaActive = emaFilters.p9 || emaFilters.p50 || emaFilters.p600;
+  const clearEmaFilters = useCallback(() => setEmaFilters({ p9: false, p50: false, p600: false }), []);
 
   // Sort
   const sorted = useMemo(() => {
@@ -2486,16 +2709,86 @@ function HighConvictionPanel({
         </div>
       </div>
 
-      {/* Loading state */}
+      {/* ─── Premium EMA filter bar ───────────────────────────────────── */}
+      <EmaFilterBar
+        accent={accent}
+        accentSoft={accentSoft}
+        filters={emaFilters}
+        onChange={setEmaFilters}
+        counts={emaCounts}
+        anyActive={anyEmaActive}
+        onClear={clearEmaFilters}
+        emaLoaded={Object.keys(emaStates).length > 0}
+        matchingTotal={sorted.length}
+      />
+
+      {/* Loading state — premium skeleton */}
       {isLoading ? (
-        <div className="px-5 py-10 flex items-center justify-center gap-2">
-          <div className="w-4 h-4 border-2 border-[var(--void-raised)] rounded-full animate-spin" style={{ borderTopColor: accent }} />
-          <span className="text-[11px] text-[var(--text-muted)]">Loading signals...</span>
+        <div className="px-5 py-6 space-y-2">
+          {[0, 1, 2, 3, 4].map((i) => (
+            <div
+              key={i}
+              className="flex items-center gap-3 rounded-xl px-3 py-3"
+              style={{
+                background: 'rgba(255,255,255,0.02)',
+                border: '1px solid rgba(255,255,255,0.04)',
+                animation: `hcShimmer 1.4s ease-in-out ${i * 0.12}s infinite`,
+              }}
+            >
+              <div className="w-[3px] h-7 rounded-full" style={{ background: `${accent}55` }} />
+              <div className="flex-1 space-y-1.5">
+                <div className="h-2.5 rounded" style={{ width: '18%', background: 'rgba(255,255,255,0.06)' }} />
+                <div className="h-1.5 rounded" style={{ width: '32%', background: 'rgba(255,255,255,0.04)' }} />
+              </div>
+              <div className="h-2 rounded" style={{ width: 60, background: 'rgba(255,255,255,0.05)' }} />
+              <div className="h-2 rounded" style={{ width: 80, background: `${accent}22` }} />
+              <div className="h-2 rounded" style={{ width: 40, background: 'rgba(255,255,255,0.05)' }} />
+            </div>
+          ))}
+          <style>{`@keyframes hcShimmer { 0%, 100% { opacity: 0.5 } 50% { opacity: 1 } }`}</style>
         </div>
       ) : sorted.length === 0 ? (
-        <div className="px-5 py-10 text-center">
-          <Shield className="w-8 h-8 mx-auto mb-2" style={{ color: `${accent}40` }} />
-          <p className="text-xs text-[var(--text-muted)]">{searchTerm ? 'No matching signals' : 'No active signals'}</p>
+        <div className="px-5 py-14 text-center flex flex-col items-center gap-3">
+          <div
+            className="relative w-16 h-16 rounded-full flex items-center justify-center"
+            style={{
+              background: `radial-gradient(circle at center, ${accent}18, transparent 70%)`,
+            }}
+          >
+            <div
+              className="absolute inset-2 rounded-full"
+              style={{
+                border: `1px dashed ${accent}40`,
+              }}
+            />
+            {searchTerm ? (
+              <Search className="w-6 h-6 relative" style={{ color: `${accent}aa` }} />
+            ) : (
+              <Shield className="w-6 h-6 relative" style={{ color: `${accent}aa` }} />
+            )}
+          </div>
+          <div>
+            <p className="text-[13px] font-semibold" style={{ color: 'var(--text-secondary)' }}>
+              {searchTerm ? 'Nothing matches your filter' : 'No high-conviction signals yet'}
+            </p>
+            <p className="text-[11px] text-[var(--text-muted)] mt-1">
+              {searchTerm ? 'Try a different ticker, company, or sector.' : 'Run tune to generate fresh signals.'}
+            </p>
+          </div>
+          {searchTerm && (
+            <button
+              type="button"
+              onClick={() => setSearchTerm('')}
+              className="text-[10px] uppercase tracking-wider font-semibold px-3 py-1.5 rounded-lg transition-colors"
+              style={{
+                color: accent,
+                background: `${accent}15`,
+                border: `1px solid ${accent}30`,
+              }}
+            >
+              Clear filter
+            </button>
+          )}
         </div>
       ) : (
         <div
@@ -2526,7 +2819,7 @@ function HighConvictionPanel({
               </tr>
             </thead>
             <tbody>
-              {sorted.map((g) => {
+              {sorted.map((g, rowIdx) => {
                 const isExpanded = expandedTicker === g.ticker;
                 const companyName = g.asset_label.includes('(') ? g.asset_label.split('(')[0].trim() : '';
                 const returnIsUp = g.bestReturn >= 0;
@@ -2538,6 +2831,7 @@ function HighConvictionPanel({
                       style={{
                         background: isExpanded ? `linear-gradient(90deg, ${accent}0f, transparent 55%)` : 'transparent',
                         borderBottom: '1px solid rgba(255,255,255,0.035)',
+                        animation: `hcRowIn 320ms cubic-bezier(0.2, 0.8, 0.2, 1) ${Math.min(rowIdx, 14) * 24}ms both`,
                       }}
                       onMouseEnter={(e) => { if (!isExpanded) e.currentTarget.style.background = 'rgba(255,255,255,0.025)'; }}
                       onMouseLeave={(e) => { if (!isExpanded) e.currentTarget.style.background = 'transparent'; }}
@@ -2719,9 +3013,9 @@ function HighConvictionPanel({
                             </div>
 
                             {expandedView === 'chart' && (() => {
-                              const active = TV_RANGES.find((r) => r.label === tvRange) ?? TV_RANGES[3];
                               const tvSym = toTvSymbol(g.ticker);
-                              const iframeSrc = `https://s.tradingview.com/widgetembed/?frameElementId=tv_${encodeURIComponent(g.ticker)}&symbol=${encodeURIComponent(tvSym)}&interval=${active.interval}&range=${active.range}&hidesidetoolbar=0&hidetoptoolbar=0&symboledit=1&saveimage=0&toolbarbg=0f0f1a&theme=dark&style=1&timezone=Etc/UTC&withdateranges=1&hideideas=1&hideideasbutton=1&locale=en`;
+                              const buildSrc = (interval: string, range: string) =>
+                                `https://s.tradingview.com/widgetembed/?frameElementId=tv_${encodeURIComponent(g.ticker)}_${range}&symbol=${encodeURIComponent(tvSym)}&interval=${interval}&range=${range}&hidesidetoolbar=0&hidetoptoolbar=0&symboledit=1&saveimage=0&toolbarbg=0f0f1a&theme=dark&style=1&timezone=Etc/UTC&withdateranges=1&hideideas=1&hideideasbutton=1&locale=en`;
                               return (
                                 <div
                                   className="rounded-2xl overflow-hidden"
@@ -2753,21 +3047,36 @@ function HighConvictionPanel({
                                     >
                                       {TV_RANGES.map((r) => {
                                         const isActive = r.label === tvRange;
+                                        const isPreloaded = activatedRanges.has(r.label);
                                         return (
                                           <button
                                             key={r.label}
                                             type="button"
-                                            onClick={() => setTvRange(r.label)}
-                                            className="px-2.5 py-1 rounded text-[10px] font-bold tabular-nums transition-all"
+                                            onClick={() => { activateRange(r.label); setTvRange(r.label); }}
+                                            onMouseEnter={() => activateRange(r.label)}
+                                            onFocus={() => activateRange(r.label)}
+                                            className="relative px-2.5 py-1 rounded text-[10px] font-bold tabular-nums transition-all"
                                             style={{
                                               background: isActive ? accent : 'transparent',
                                               color: isActive ? 'var(--void-bg)' : 'var(--text-secondary)',
                                               boxShadow: isActive ? `0 2px 6px -2px ${accent}aa` : 'none',
                                               letterSpacing: '0.02em',
                                             }}
-                                            title={`${r.label} · ${r.interval === 'D' ? 'Daily' : r.interval === 'W' ? 'Weekly' : `${r.interval}m`} candles`}
+                                            title={`${r.label} · ${r.interval === 'D' ? 'Daily' : r.interval === 'W' ? 'Weekly' : `${r.interval}m`} candles${isPreloaded && !isActive ? ' · preloaded' : ''}`}
                                           >
                                             {r.label}
+                                            {isPreloaded && !isActive && (
+                                              <span
+                                                aria-hidden
+                                                className="absolute top-0.5 right-0.5 rounded-full"
+                                                style={{
+                                                  width: 3,
+                                                  height: 3,
+                                                  background: accent,
+                                                  opacity: 0.7,
+                                                }}
+                                              />
+                                            )}
                                           </button>
                                         );
                                       })}
@@ -2789,73 +3098,178 @@ function HighConvictionPanel({
                                       <ExternalLink className="w-3 h-3" />
                                     </a>
                                   </div>
-                                  {/* Iframe */}
-                                  <iframe
-                                    key={`${g.ticker}_${tvRange}`}
-                                    title={`TradingView ${g.ticker}`}
-                                    src={iframeSrc}
-                                    width="100%"
-                                    height="520"
-                                    frameBorder={0}
-                                    allowTransparency={true}
-                                    scrolling="no"
-                                    style={{ display: 'block', border: 0 }}
-                                  />
+                                  {/* Iframe stack — keeps each activated timeframe mounted so switching is instant */}
+                                  <div style={{ position: 'relative', width: '100%', height: 520 }}>
+                                    {TV_RANGES.map((r) => {
+                                      if (!activatedRanges.has(r.label)) return null;
+                                      const isActive = r.label === tvRange;
+                                      return (
+                                        <iframe
+                                          key={`${g.ticker}_${r.label}`}
+                                          title={`TradingView ${g.ticker} ${r.label}`}
+                                          src={buildSrc(r.interval, r.range)}
+                                          frameBorder={0}
+                                          allowTransparency={true}
+                                          scrolling="no"
+                                          style={{
+                                            position: 'absolute',
+                                            inset: 0,
+                                            width: '100%',
+                                            height: '100%',
+                                            border: 0,
+                                            visibility: isActive ? 'visible' : 'hidden',
+                                            pointerEvents: isActive ? 'auto' : 'none',
+                                            zIndex: isActive ? 2 : 1,
+                                          }}
+                                        />
+                                      );
+                                    })}
+                                  </div>
                                 </div>
                               );
                             })()}
 
                             {expandedView === 'details' && (
                             <>
-                            <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${Math.min(g.signals.length, 4)}, 1fr)` }}>
+                            <div
+                              className="grid gap-3"
+                              style={{ gridTemplateColumns: `repeat(${Math.min(g.signals.length, 4)}, minmax(0, 1fr))` }}
+                            >
                               {g.signals.map((s, i) => {
                                 const strength = (s as Record<string, unknown>).signal_strength as number ?? 0;
                                 const conviction = (s as Record<string, unknown>).conviction_probability as number ?? s.probability_up;
                                 const profitPln = s.expected_profit_pln;
+                                const expRet = s.expected_return_pct ?? 0;
+                                const expSign = expRet >= 0 ? '+' : '';
                                 return (
-                                  <div key={i} className="rounded-lg p-3" style={{ background: 'var(--void-base)', border: `1px solid ${accentSoft}` }}>
-                                    <div className="flex items-center justify-between mb-2">
-                                      <span className="text-xs font-bold" style={{ color: accent }}>{formatHorizon(s.horizon_days)}</span>
-                                      <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium" style={{ background: accentSoft, color: accent }}>
-                                        {s.signal_type || 'STRONG'}
-                                      </span>
-                                    </div>
-                                    <div className="space-y-1.5">
-                                      <div className="flex items-center justify-between">
-                                        <span className="text-[9px] text-[var(--text-muted)]">Expected Return</span>
-                                        <span className="text-[11px] font-bold tabular-nums" style={{ color: accent }}>
-                                          {s.expected_return_pct != null ? `${s.expected_return_pct >= 0 ? '+' : ''}${s.expected_return_pct.toFixed(2)}%` : '--'}
+                                  <div
+                                    key={i}
+                                    className="relative rounded-2xl overflow-hidden"
+                                    style={{
+                                      background: 'linear-gradient(180deg, rgba(255,255,255,0.02) 0%, rgba(255,255,255,0.005) 100%), #06070b',
+                                      border: '1px solid rgba(255,255,255,0.06)',
+                                      boxShadow: `0 1px 0 rgba(255,255,255,0.03) inset, 0 12px 32px -16px ${accent}55`,
+                                    }}
+                                  >
+                                    {/* top accent bar */}
+                                    <div
+                                      aria-hidden
+                                      className="absolute inset-x-0 top-0 h-[2px]"
+                                      style={{ background: `linear-gradient(90deg, ${accent}, ${accent}33)` }}
+                                    />
+
+                                    <div className="p-4">
+                                      {/* Header: horizon + signal type chip */}
+                                      <div className="flex items-start justify-between mb-3">
+                                        <div>
+                                          <div className="text-[9px] uppercase font-semibold text-[var(--text-muted)]" style={{ letterSpacing: '0.12em' }}>
+                                            Horizon
+                                          </div>
+                                          <div
+                                            className="text-[16px] font-bold tabular-nums tracking-tight"
+                                            style={{ color: 'var(--text-primary)', letterSpacing: '-0.02em' }}
+                                          >
+                                            {formatHorizon(s.horizon_days)}
+                                          </div>
+                                        </div>
+                                        <span
+                                          className="text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider"
+                                          style={{
+                                            background: `${accent}20`,
+                                            color: accent,
+                                            border: `1px solid ${accent}40`,
+                                            letterSpacing: '0.08em',
+                                          }}
+                                        >
+                                          {s.signal_type || 'STRONG'}
                                         </span>
                                       </div>
-                                      <div className="flex items-center justify-between">
-                                        <span className="text-[9px] text-[var(--text-muted)]">P(up)</span>
-                                        <span className="text-[10px] font-medium tabular-nums text-[var(--text-secondary)]">{(s.probability_up * 100).toFixed(1)}%</span>
+
+                                      {/* Hero metric: Expected Return */}
+                                      <div className="mb-3">
+                                        <div className="text-[9px] uppercase font-semibold text-[var(--text-muted)]" style={{ letterSpacing: '0.12em' }}>
+                                          Expected Return
+                                        </div>
+                                        <div
+                                          className="inline-flex items-baseline gap-1 tabular-nums"
+                                          style={{ color: accent }}
+                                        >
+                                          <span className="text-[26px] font-bold tracking-tight leading-none" style={{ letterSpacing: '-0.03em' }}>
+                                            {s.expected_return_pct != null ? `${expSign}${expRet.toFixed(2)}` : '—'}
+                                          </span>
+                                          {s.expected_return_pct != null && (
+                                            <span className="text-[12px] font-semibold opacity-60">%</span>
+                                          )}
+                                        </div>
                                       </div>
-                                      <div className="flex items-center justify-between">
-                                        <span className="text-[9px] text-[var(--text-muted)]">P(down)</span>
-                                        <span className="text-[10px] font-medium tabular-nums text-[var(--text-secondary)]">{(s.probability_down * 100).toFixed(1)}%</span>
+
+                                      {/* Arc gauges row */}
+                                      <div
+                                        className="grid grid-cols-2 gap-2 rounded-xl p-2.5 mb-3"
+                                        style={{
+                                          background: 'rgba(255,255,255,0.02)',
+                                          border: '1px solid rgba(255,255,255,0.04)',
+                                        }}
+                                      >
+                                        <div className="flex items-center gap-2">
+                                          <ArcGauge value={s.probability_up} color={accent} size={30} />
+                                          <div className="min-w-0">
+                                            <div className="text-[8px] uppercase font-semibold text-[var(--text-muted)]" style={{ letterSpacing: '0.1em' }}>
+                                              P(up)
+                                            </div>
+                                            <div className="text-[12px] font-bold tabular-nums" style={{ color: 'var(--text-primary)' }}>
+                                              {(s.probability_up * 100).toFixed(1)}%
+                                            </div>
+                                          </div>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                          <ArcGauge value={s.probability_down} color="#64748b" size={30} />
+                                          <div className="min-w-0">
+                                            <div className="text-[8px] uppercase font-semibold text-[var(--text-muted)]" style={{ letterSpacing: '0.1em' }}>
+                                              P(down)
+                                            </div>
+                                            <div className="text-[12px] font-bold tabular-nums" style={{ color: 'var(--text-secondary)' }}>
+                                              {(s.probability_down * 100).toFixed(1)}%
+                                            </div>
+                                          </div>
+                                        </div>
                                       </div>
-                                      <div className="flex items-center justify-between">
-                                        <span className="text-[9px] text-[var(--text-muted)]">Strength</span>
-                                        <span className="text-[10px] font-medium tabular-nums text-[var(--text-secondary)]">{strength.toFixed(3)}</span>
-                                      </div>
-                                      <div className="flex items-center justify-between">
-                                        <span className="text-[9px] text-[var(--text-muted)]">Conviction</span>
-                                        <span className="text-[10px] font-medium tabular-nums text-[var(--text-secondary)]">{(conviction * 100).toFixed(1)}%</span>
-                                      </div>
-                                      {profitPln != null && profitPln !== 0 && (
-                                        <div className="flex items-center justify-between pt-1 mt-1" style={{ borderTop: `1px solid ${accentSoft}` }}>
-                                          <span className="text-[9px] text-[var(--text-muted)]">Est. Profit (PLN)</span>
-                                          <span className="text-[10px] font-bold tabular-nums" style={{ color: accent }}>
-                                            {profitPln > 0 ? '+' : ''}{profitPln.toLocaleString('en', { maximumFractionDigits: 0 })}
+
+                                      {/* Strength + Conviction rows */}
+                                      <div className="space-y-2">
+                                        <div className="flex items-center justify-between">
+                                          <span className="text-[9px] uppercase font-semibold text-[var(--text-muted)]" style={{ letterSpacing: '0.1em' }}>
+                                            Strength
+                                          </span>
+                                          <div className="flex items-center gap-2">
+                                            <SegmentedMeter value={Math.min(strength * 2, 1)} color={accent} segments={5} />
+                                            <span className="text-[10px] font-semibold tabular-nums" style={{ color: 'var(--text-secondary)' }}>
+                                              {strength.toFixed(2)}
+                                            </span>
+                                          </div>
+                                        </div>
+                                        <div className="flex items-center justify-between">
+                                          <span className="text-[9px] uppercase font-semibold text-[var(--text-muted)]" style={{ letterSpacing: '0.1em' }}>
+                                            Conviction
+                                          </span>
+                                          <span className="text-[11px] font-bold tabular-nums" style={{ color: accent }}>
+                                            {(conviction * 100).toFixed(1)}%
                                           </span>
                                         </div>
-                                      )}
-                                    </div>
-                                    {/* Strength bar */}
-                                    <div className="mt-2">
-                                      <div className="w-full h-1 rounded-full bg-white/[0.06] overflow-hidden">
-                                        <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(strength * 200, 100)}%`, background: accent }} />
+                                        {profitPln != null && profitPln !== 0 && (
+                                          <div
+                                            className="flex items-center justify-between pt-2 mt-2"
+                                            style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}
+                                          >
+                                            <span className="text-[9px] uppercase font-semibold text-[var(--text-muted)]" style={{ letterSpacing: '0.1em' }}>
+                                              Est. Profit
+                                            </span>
+                                            <span className="text-[12px] font-bold tabular-nums" style={{ color: accent }}>
+                                              {profitPln > 0 ? '+' : ''}{profitPln.toLocaleString('en', { maximumFractionDigits: 0 })}
+                                              <span className="text-[9px] opacity-60 ml-1">PLN</span>
+                                            </span>
+                                          </div>
+                                        )}
                                       </div>
                                     </div>
                                   </div>
@@ -2864,10 +3278,10 @@ function HighConvictionPanel({
                             </div>
                             {/* Generated timestamp */}
                             {g.signals[0] && (g.signals[0] as Record<string, unknown>).generated_at && (
-                              <div className="flex items-center gap-1 mt-2">
+                              <div className="flex items-center gap-1.5 mt-3 px-1">
                                 <Clock className="w-3 h-3 text-[var(--text-muted)]" />
-                                <span className="text-[9px] text-[var(--text-muted)]">
-                                  Generated: {new Date(String((g.signals[0] as Record<string, unknown>).generated_at)).toLocaleString()}
+                                <span className="text-[10px] text-[var(--text-muted)]" style={{ letterSpacing: '0.02em' }}>
+                                  Generated <span className="font-mono text-[var(--text-secondary)]">{new Date(String((g.signals[0] as Record<string, unknown>).generated_at)).toLocaleString()}</span>
                                 </span>
                               </div>
                             )}
@@ -2884,6 +3298,7 @@ function HighConvictionPanel({
           </table>
         </div>
       )}
+      <style>{`@keyframes hcRowIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }`}</style>
     </div>
   );
 }

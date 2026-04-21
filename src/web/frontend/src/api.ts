@@ -32,6 +32,7 @@ export const api = {
     fetchApi<{ signals: HighConvictionSignal[]; count: number }>(`/api/signals/high-conviction/${type}`),
   qualityScores: () => fetchApi<QualityScoresData>('/api/signals/quality-scores'),
   intrinsicValues: () => fetchApi<IntrinsicValuesData>('/api/signals/intrinsic-values'),
+  emaStates: () => fetchApi<EmaStatesData>('/api/signals/ema-states'),
 
   // Risk
   riskDashboard: () => fetchApi<RiskDashboard>('/api/risk/dashboard'),
@@ -151,6 +152,22 @@ export interface IntrinsicFormula {
 export interface IntrinsicValuesData {
   valuations: Record<string, IntrinsicValuation>;
   formula: IntrinsicFormula;
+}
+
+export interface EmaState {
+  price: number;
+  ema9: number | null;
+  ema50: number | null;
+  ema600: number | null;
+  below_9: boolean | null;
+  below_50: boolean | null;
+  below_600: boolean | null;
+}
+export interface EmaStatesData {
+  states: Record<string, EmaState>;
+  count: number;
+  periods: number[];
+  built_at: number;
 }
 
 export interface OverviewData {
