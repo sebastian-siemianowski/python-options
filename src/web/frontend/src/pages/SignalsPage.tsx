@@ -18,8 +18,9 @@ import {
   ArrowUpCircle, ArrowDownCircle, Filter, ChevronDown, ChevronRight,
   TrendingUp, TrendingDown, Search, X, ExternalLink, BarChart3,
   Target, Shield, ShieldCheck, ArrowUp, ArrowDown, Clock, DollarSign,
-  Activity, Eye, Layers, ChevronUp, AlertTriangle, Zap,
+  Activity, Eye, Layers, ChevronUp, AlertTriangle, Zap, Loader2,
 } from 'lucide-react';
+import MiniPriceChart from '../components/MiniPriceChart';
 import { formatHorizon, responsiveHorizons } from '../utils/horizons';
 
 import { useWebSocket, type WSStatus } from '../hooks/useWebSocket';
@@ -2383,6 +2384,16 @@ function SmaReversalsPanel({
   const [hideFalseBreaks, setHideFalseBreaks] = useState<boolean>(true);
   const [search, setSearch] = useState<string>('');
   const [showAll, setShowAll] = useState<boolean>(false);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!expandedKey) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setExpandedKey(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [expandedKey]);
 
   const labelMap = useMemo(() => {
     const m = new Map<string, string>();
@@ -2662,14 +2673,31 @@ function SmaReversalsPanel({
         )}
         {!isLoading && displayed.length > 0 && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
-            {displayed.map((r) => (
-              <ReversalRow
-                key={`${r.symbol}-${r.period}`}
-                r={r}
-                label={labelMap.get(r.symbol) ?? labelMap.get(r.symbol.replace(/=/g, '_')) ?? r.symbol}
-                onClick={() => onNavigateChart(r.symbol)}
-              />
-            ))}
+            {displayed.map((r) => {
+              const key = `${r.symbol}-${r.period}`;
+              const isExpanded = expandedKey === key;
+              const label = labelMap.get(r.symbol) ?? labelMap.get(r.symbol.replace(/=/g, '_')) ?? r.symbol;
+              return (
+                <React.Fragment key={key}>
+                  <ReversalRow
+                    r={r}
+                    label={label}
+                    isExpanded={isExpanded}
+                    onClick={() => setExpandedKey((prev) => (prev === key ? null : key))}
+                  />
+                  {isExpanded && (
+                    <div className="md:col-span-2">
+                      <ReversalDetailPanel
+                        r={r}
+                        label={label}
+                        onClose={() => setExpandedKey(null)}
+                        onOpenFullChart={() => onNavigateChart(r.symbol)}
+                      />
+                    </div>
+                  )}
+                </React.Fragment>
+              );
+            })}
           </div>
         )}
         {!isLoading && filtered.length > 20 && (
@@ -2707,7 +2735,7 @@ function GradeBadge({ grade, count }: { grade: 'A' | 'B' | 'C'; count: number })
   );
 }
 
-function ReversalRow({ r, label, onClick }: { r: SmaReversal; label: string; onClick: () => void }) {
+function ReversalRow({ r, label, onClick, isExpanded = false }: { r: SmaReversal; label: string; onClick: () => void; isExpanded?: boolean }) {
   const isBull = r.direction === 'bull';
   const accent = isBull ? '#10b981' : '#f43f5e';
   const accentSoft = isBull ? '#34d399' : '#fb7185';
@@ -2739,15 +2767,21 @@ function ReversalRow({ r, label, onClick }: { r: SmaReversal; label: string; onC
       title={tooltip}
       className="group relative w-full text-left rounded-xl px-3 py-2.5 transition-all duration-200"
       style={{
-        background: 'linear-gradient(180deg, rgba(255,255,255,0.025), rgba(255,255,255,0.008))',
-        border: '1px solid rgba(255,255,255,0.06)',
-        boxShadow: '0 1px 0 rgba(255,255,255,0.03) inset',
+        background: isExpanded
+          ? `linear-gradient(180deg, ${accent}14, ${accent}04)`
+          : 'linear-gradient(180deg, rgba(255,255,255,0.025), rgba(255,255,255,0.008))',
+        border: `1px solid ${isExpanded ? `${accent}70` : 'rgba(255,255,255,0.06)'}`,
+        boxShadow: isExpanded
+          ? `0 1px 0 rgba(255,255,255,0.04) inset, 0 8px 28px -14px ${accent}80`
+          : '0 1px 0 rgba(255,255,255,0.03) inset',
       }}
       onMouseEnter={(e) => {
+        if (isExpanded) return;
         (e.currentTarget as HTMLButtonElement).style.borderColor = `${accent}55`;
         (e.currentTarget as HTMLButtonElement).style.boxShadow = `0 1px 0 rgba(255,255,255,0.04) inset, 0 6px 22px -12px ${accent}70`;
       }}
       onMouseLeave={(e) => {
+        if (isExpanded) return;
         (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(255,255,255,0.06)';
         (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 1px 0 rgba(255,255,255,0.03) inset';
       }}
@@ -2918,6 +2952,192 @@ function ReversalRow({ r, label, onClick }: { r: SmaReversal; label: string; onC
         </div>
       </div>
     </button>
+  );
+}
+
+
+function ReversalDetailPanel({ r, label, onClose, onOpenFullChart }: {
+  r: SmaReversal;
+  label: string;
+  onClose: () => void;
+  onOpenFullChart: () => void;
+}) {
+  const ohlcvQ = useQuery({
+    queryKey: ['sma-reversal-ohlcv', r.symbol, 365],
+    queryFn: () => api.chartOhlcv(r.symbol, 365),
+    staleTime: 120_000,
+  });
+  const indQ = useQuery({
+    queryKey: ['sma-reversal-indicators', r.symbol, 365],
+    queryFn: () => api.chartIndicators(r.symbol, 365),
+    staleTime: 120_000,
+  });
+  const forecastQ = useQuery({
+    queryKey: ['sma-reversal-forecast', r.symbol],
+    queryFn: () => api.chartForecast(r.symbol),
+    staleTime: 120_000,
+  });
+
+  const isBull = r.direction === 'bull';
+  const accent = isBull ? '#10b981' : '#f43f5e';
+  const displayLabel = label.replace(/\s*\([^)]+\)\s*$/, '').trim();
+  const showLabel = displayLabel && displayLabel !== r.symbol;
+  const edge = r.historical_edge;
+
+  const fmtPx = (v: number | null | undefined): string => {
+    if (v == null || !isFinite(v)) return '—';
+    const abs = Math.abs(v);
+    if (abs < 1) return v.toFixed(4);
+    if (abs < 100) return v.toFixed(2);
+    return v.toFixed(2);
+  };
+
+  const stats: Array<{ label: string; value: string; sub?: string; color?: string }> = [
+    { label: 'Entry', value: fmtPx(r.price) },
+    { label: 'Stop', value: fmtPx(r.stop_price), color: '#fb7185' },
+    { label: 'Target', value: fmtPx(r.target_price), color: '#34d399' },
+    { label: 'R : R', value: r.risk_reward != null ? r.risk_reward.toFixed(2) : '—' },
+    {
+      label: 'Win %',
+      value: edge?.win_rate != null ? `${(edge.win_rate * 100).toFixed(0)}%` : '—',
+      sub: edge?.samples ? `n=${edge.samples}` : undefined,
+    },
+    { label: 'Age', value: `${r.days_since_cross}d`, sub: `since cross` },
+  ];
+
+  return (
+    <div
+      className="mx-0.5 my-0.5 rounded-2xl overflow-hidden"
+      style={{
+        background: 'linear-gradient(160deg, rgba(13,5,30,0.96) 0%, rgba(10,18,42,0.96) 100%)',
+        border: '1px solid rgba(167,139,250,0.18)',
+        boxShadow: `0 20px 60px -24px rgba(0,0,0,0.85), 0 0 0 1px rgba(255,255,255,0.02), inset 0 1px 0 rgba(167,139,250,0.08), 0 0 46px -20px ${accent}4D`,
+      }}
+    >
+      {/* Header */}
+      <div
+        className="flex items-center justify-between px-5 py-3"
+        style={{ borderBottom: '1px solid rgba(167,139,250,0.10)' }}
+      >
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="flex flex-col min-w-0">
+            <span className="text-[15px] font-semibold text-[#f1f5f9] tracking-tight leading-tight">{r.symbol}</span>
+            {showLabel && (
+              <span className="text-[10px] text-[var(--text-muted)] font-medium truncate max-w-[260px]">{displayLabel}</span>
+            )}
+          </div>
+          <span
+            className="px-2 py-0.5 rounded text-[10px] font-semibold tracking-wide uppercase tabular-nums whitespace-nowrap"
+            style={{ background: `${accent}1F`, border: `1px solid ${accent}55`, color: accent }}
+          >
+            {isBull ? 'Bull' : 'Bear'} · SMA {r.period}
+          </span>
+          {r.grade && (
+            <span
+              className="px-2 py-0.5 rounded text-[10px] font-bold tabular-nums whitespace-nowrap"
+              style={{
+                background:
+                  r.grade === 'A'
+                    ? 'linear-gradient(180deg, rgba(16,185,129,0.30), rgba(16,185,129,0.08))'
+                    : r.grade === 'B'
+                    ? 'linear-gradient(180deg, rgba(167,139,250,0.28), rgba(167,139,250,0.08))'
+                    : 'rgba(100,116,139,0.20)',
+                border:
+                  r.grade === 'A'
+                    ? '1px solid rgba(16,185,129,0.55)'
+                    : r.grade === 'B'
+                    ? '1px solid rgba(167,139,250,0.50)'
+                    : '1px solid rgba(100,116,139,0.35)',
+                color: r.grade === 'C' ? '#cbd5e1' : '#ffffff',
+              }}
+            >
+              Grade {r.grade}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          <button
+            onClick={onOpenFullChart}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all"
+            style={{ background: 'rgba(167,139,250,0.10)', border: '1px solid rgba(167,139,250,0.25)', color: '#c4b5fd' }}
+            onMouseEnter={(e) => ((e.currentTarget as HTMLButtonElement).style.background = 'rgba(167,139,250,0.18)')}
+            onMouseLeave={(e) => ((e.currentTarget as HTMLButtonElement).style.background = 'rgba(167,139,250,0.10)')}
+          >
+            <ExternalLink className="w-3 h-3" />
+            Full Chart
+          </button>
+          <button
+            onClick={onClose}
+            aria-label="Close detail"
+            className="p-1.5 rounded-lg transition-all text-[var(--text-muted)] hover:text-[#f1f5f9] hover:bg-white/[0.05]"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* Stats strip */}
+      <div className="grid grid-cols-3 md:grid-cols-6 gap-1.5 px-4 pt-3 pb-1">
+        {stats.map((s, i) => (
+          <div
+            key={i}
+            className="rounded-lg px-2.5 py-2"
+            style={{
+              background: 'rgba(167,139,250,0.05)',
+              border: '1px solid rgba(167,139,250,0.10)',
+            }}
+          >
+            <div className="text-[8.5px] uppercase tracking-[0.08em] text-[var(--text-muted)] font-semibold mb-0.5">
+              {s.label}
+            </div>
+            <div className="text-[13px] font-semibold tabular-nums leading-tight" style={{ color: s.color ?? '#f1f5f9' }}>
+              {s.value}
+            </div>
+            {s.sub && <div className="text-[9px] text-[var(--text-muted)] tabular-nums mt-0.5">{s.sub}</div>}
+          </div>
+        ))}
+      </div>
+
+      {/* Chart */}
+      <div className="px-4 pb-4 pt-2">
+        {ohlcvQ.isLoading ? (
+          <div className="h-[320px] flex items-center justify-center gap-2 text-[11px] text-[var(--text-muted)]">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            Loading chart…
+          </div>
+        ) : ohlcvQ.error || !ohlcvQ.data?.data?.length ? (
+          <div className="h-[320px] flex items-center justify-center text-[11px] text-[var(--text-muted)]">
+            No chart data available for {r.symbol}
+          </div>
+        ) : (
+          <MiniPriceChart
+            ohlcv={ohlcvQ.data.data}
+            indicators={indQ.data?.indicators}
+            forecast={forecastQ.data}
+            height={320}
+          />
+        )}
+      </div>
+
+      {/* Grade reasons footer */}
+      {r.grade_reasons && r.grade_reasons.length > 0 && (
+        <div
+          className="px-5 py-2.5 flex flex-wrap gap-1.5 text-[10px]"
+          style={{ borderTop: '1px solid rgba(167,139,250,0.08)', background: 'rgba(0,0,0,0.25)' }}
+        >
+          <span className="text-[var(--text-muted)] font-medium uppercase tracking-wider text-[8.5px] self-center mr-1">Why</span>
+          {r.grade_reasons.map((reason, i) => (
+            <span
+              key={i}
+              className="px-2 py-0.5 rounded-full text-[9.5px] font-medium"
+              style={{ background: 'rgba(167,139,250,0.06)', border: '1px solid rgba(167,139,250,0.15)', color: '#c4b5fd' }}
+            >
+              {reason}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
