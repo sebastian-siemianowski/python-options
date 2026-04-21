@@ -2164,7 +2164,35 @@ function HighConvictionPanel({
   const [sortCol, setSortCol] = useState<HCSortCol>('exp_ret');
   const [sortDir, setSortDir] = useState<HCSortDir>('desc');
   const [expandedTicker, setExpandedTicker] = useState<string | null>(null);
+  const [expandedView, setExpandedView] = useState<'details' | 'chart'>('chart');
+  const [tvRange, setTvRange] = useState<string>('3M');
   const [searchTerm, setSearchTerm] = useState('');
+
+  // TradingView range → (interval, range) param pairs
+  const TV_RANGES: { label: string; range: string; interval: string }[] = [
+    { label: '1D',  range: '1D',  interval: '5' },
+    { label: '5D',  range: '5D',  interval: '30' },
+    { label: '1M',  range: '1M',  interval: '60' },
+    { label: '3M',  range: '3M',  interval: 'D' },
+    { label: '6M',  range: '6M',  interval: 'D' },
+    { label: '1Y',  range: '12M', interval: 'D' },
+    { label: '5Y',  range: '60M', interval: 'W' },
+    { label: 'ALL', range: 'ALL', interval: 'W' },
+  ];
+
+  // Map ticker to TradingView symbol format
+  const toTvSymbol = useCallback((ticker: string): string => {
+    if (ticker.endsWith('.TO')) return `TSX:${ticker.slice(0, -3)}`;
+    if (ticker.endsWith('.V')) return `TSXV:${ticker.slice(0, -2)}`;
+    if (ticker.endsWith('.L')) return `LSE:${ticker.slice(0, -2)}`;
+    if (ticker.endsWith('.WA')) return `GPW:${ticker.slice(0, -3)}`;
+    if (ticker.endsWith('.DE')) return `FWB:${ticker.slice(0, -3)}`;
+    if (ticker.endsWith('.PA')) return `EURONEXT:${ticker.slice(0, -3)}`;
+    return ticker;
+  }, []);
+
+  // Reset tab to chart when row changes (chart is the default view)
+  useEffect(() => { setExpandedView('chart'); }, [expandedTicker]);
 
   const Icon = color === 'green' ? TrendingUp : TrendingDown;
   const accent = color === 'green' ? '#10b981' : '#f43f5e';
@@ -2396,15 +2424,102 @@ function HighConvictionPanel({
                         </div>
                       </td>
                     </tr>
-                    {/* Expanded detail */}
+                    {/* Expanded detail — tabbed: Signal Details | Chart (TradingView) */}
                     {isExpanded && (
                       <tr>
-                        <td colSpan={7} style={{ background: `${accentSoft}` }}>
+                        <td colSpan={7} style={{ background: `${accentSoft}`, borderBottom: `1px solid ${accentSoft}` }}>
                           <div className="px-4 py-3">
-                            <div className="flex items-center gap-2 mb-2">
-                              <Eye className="w-3 h-3" style={{ color: accentMid }} />
-                              <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: accent }}>Signal Details by Horizon</span>
+                            {/* Tab bar */}
+                            <div className="flex items-center gap-1 mb-3">
+                              <button
+                                type="button"
+                                onClick={() => setExpandedView('details')}
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-semibold uppercase tracking-wider transition-colors"
+                                style={{
+                                  background: expandedView === 'details' ? accent : 'transparent',
+                                  color: expandedView === 'details' ? 'var(--void-bg)' : accent,
+                                  border: `1px solid ${expandedView === 'details' ? accent : accentSoft}`,
+                                }}
+                              >
+                                <Eye className="w-3 h-3" />
+                                Signal Details
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setExpandedView('chart')}
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-semibold uppercase tracking-wider transition-colors"
+                                style={{
+                                  background: expandedView === 'chart' ? accent : 'transparent',
+                                  color: expandedView === 'chart' ? 'var(--void-bg)' : accent,
+                                  border: `1px solid ${expandedView === 'chart' ? accent : accentSoft}`,
+                                }}
+                              >
+                                <BarChart3 className="w-3 h-3" />
+                                Chart
+                              </button>
+                              <span className="ml-auto text-[9px] uppercase tracking-wider text-[var(--text-muted)] font-semibold">
+                                {g.ticker} · {g.asset_label.includes('(') ? g.asset_label.split('(')[0].trim() : g.asset_label}
+                              </span>
                             </div>
+
+                            {expandedView === 'chart' && (() => {
+                              const active = TV_RANGES.find(r => r.label === tvRange) ?? TV_RANGES[3];
+                              const tvSym = toTvSymbol(g.ticker);
+                              const iframeSrc = `https://s.tradingview.com/widgetembed/?frameElementId=tv_${encodeURIComponent(g.ticker)}&symbol=${encodeURIComponent(tvSym)}&interval=${active.interval}&range=${active.range}&hidesidetoolbar=0&hidetoptoolbar=0&symboledit=1&saveimage=0&toolbarbg=0f0f1a&theme=dark&style=1&timezone=Etc/UTC&withdateranges=1&hideideas=1&hideideasbutton=1&locale=en`;
+                              return (
+                              <div className="rounded-lg overflow-hidden" style={{ background: 'var(--void-base)', border: `1px solid ${accentSoft}` }}>
+                                {/* Timeframe buttons */}
+                                <div className="flex items-center gap-1 px-2 py-1.5" style={{ borderBottom: `1px solid ${accentSoft}`, background: 'var(--void-base)' }}>
+                                  <span className="text-[9px] uppercase tracking-wider text-[var(--text-muted)] font-semibold mr-1">Timeframe</span>
+                                  {TV_RANGES.map((r) => {
+                                    const isActive = r.label === tvRange;
+                                    return (
+                                      <button
+                                        key={r.label}
+                                        type="button"
+                                        onClick={() => setTvRange(r.label)}
+                                        className="px-2 py-0.5 rounded text-[10px] font-semibold tabular-nums transition-colors"
+                                        style={{
+                                          background: isActive ? accent : 'transparent',
+                                          color: isActive ? 'var(--void-bg)' : 'var(--text-secondary)',
+                                          border: `1px solid ${isActive ? accent : 'rgba(255,255,255,0.08)'}`,
+                                        }}
+                                        title={`${r.label} · interval ${r.interval}`}
+                                      >
+                                        {r.label}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                                <iframe
+                                  key={`${g.ticker}_${tvRange}`}
+                                  title={`TradingView ${g.ticker}`}
+                                  src={iframeSrc}
+                                  width="100%"
+                                  height="460"
+                                  frameBorder={0}
+                                  allowTransparency={true}
+                                  scrolling="no"
+                                  style={{ display: 'block', border: 0 }}
+                                />
+                                <div className="flex items-center justify-between px-3 py-1.5 text-[9px] text-[var(--text-muted)]" style={{ borderTop: `1px solid ${accentSoft}` }}>
+                                  <span>Symbol: <span className="font-mono text-[var(--text-secondary)]">{tvSym}</span> · Range: <span className="font-mono text-[var(--text-secondary)]">{active.range}</span></span>
+                                  <a
+                                    href={`https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvSym)}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 hover:text-[var(--text-primary)] transition-colors"
+                                  >
+                                    Open on TradingView
+                                    <ExternalLink className="w-2.5 h-2.5" />
+                                  </a>
+                                </div>
+                              </div>
+                              );
+                            })()}
+
+                            {expandedView === 'details' && (
+                            <>
                             <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${Math.min(g.signals.length, 4)}, 1fr)` }}>
                               {g.signals.map((s, i) => {
                                 const strength = (s as Record<string, unknown>).signal_strength as number ?? 0;
@@ -2468,6 +2583,8 @@ function HighConvictionPanel({
                                   Generated: {new Date(String((g.signals[0] as Record<string, unknown>).generated_at)).toLocaleString()}
                                 </span>
                               </div>
+                            )}
+                            </>
                             )}
                           </div>
                         </td>
