@@ -1,38 +1,61 @@
 """
-SMA Reversal Detection Service — Buy-Signal Quality Engine
-===========================================================
+SMA Reversal Detection Service — Elite Buy-Signal Quality Engine
+=================================================================
 
-Answers the question: *"Should I buy this stock right now?"*
+Answers the question: *"Should I buy this stock right now, and if so, at
+what size and with what expectation?"*
 
-World-class quant logic for detecting SMA (9/50/600) reversals, plus a
-per-setup grading system built from confluence of:
+This module is a quant research engine, not a moving-average screener.
+For every fresh cross of close vs. SMA (9 / 50 / 600) we compute:
 
-1. **Crossover freshness** — true sign-change on (close − SMA) within the
-   last `_LOOKBACK_BARS` closes (not just "below + turning up")
-2. **Regime filter** — bull setups require price > SMA-200 ("don't fight
-   the elephant"); bear setups require price < SMA-200
-3. **Persistence** — K of last M closes on the new side (whipsaw reject)
-4. **ATR-normalised distance** — reject overextended entries (> 3σ from
-   SMA ⇒ chasing; edge evaporates)
-5. **Volume confirmation** — cross on ≥ 1× 20-bar avg volume
-6. **Trend alignment** — SMA slope in the direction of the trade
-7. **Stop / target / risk-reward** — stop = min(10-bar swing low,
-   entry − 2·ATR); target = 2R above entry ⇒ R:R
-8. **Historical edge** — backtest every past crossover on the *same*
-   symbol; report win-rate + median forward return (10-bar horizon)
-9. **Composite score 0-100** — blended from the seven sub-scores; false
-   breaks (re-cross within 3 bars) get a 0.6× penalty
-10. **Grade A / B / C** — hard confluence gates:
-      • A = regime_ok + persistence_ok + !overextended + !false_break
-            + R:R ≥ 2.0 + win_rate ≥ 0.55 (N ≥ 5)
-      • B = regime_ok + persistence_ok + !overextended + !false_break
-            + R:R ≥ 1.5
-      • C = everything else that still passes persistence
-      • ``null`` otherwise (setup not tradeable)
+**Regime / filters**
+1. **Trend regime** — SMA-200 level *and slope*. Being above a falling
+   SMA-200 is not a bull regime; it is a dead cat.
+2. **Volatility regime** — realized-vol ratio (20d / 252d). Extreme vol
+   dampens the score because mean-reversion edge decays in panics.
+3. **Overextension** — |price − SMA| / ATR > 3 is a chase.
+4. **Persistence** — K of last M closes on the new side (whipsaw reject).
+5. **False break** — re-cross within 3 bars ⇒ 0.6× score penalty.
 
-All numbers are derived from the same symbol's own price history — no
-cross-sectional assumptions — so the signal is robust to idiosyncratic
-volatility and cross-asset regime differences.
+**Trade geometry (makes R:R informative)**
+6. **Stop** — ``min(10-bar swing low, entry − 2·ATR)`` (bull).
+7. **Structural target** — prior 50-bar swing high (bull) / low (bear)
+   when meaningfully distant; otherwise 2R projection. R:R therefore
+   varies per setup.
+8. **Pullback quality** — distance (in ATRs) from the 20-bar peak when
+   the cross fired. Healthy reversals come on a moderate pullback, not
+   after a deep drawdown.
+9. **Multi-timeframe alignment** — for each cross, how many of the
+   *other* two SMAs confirm the direction.
+
+**Honest historical edge (per-symbol backtest)**
+10. Walk the symbol's own history, find every past crossing of this
+    same period / direction. Crucially, we **condition on the same
+    regime + overextension filters** we use today — so the edge
+    reported is the true edge of *this grade of setup*, not a noisy
+    unconditional average. We also report:
+    - ``expectancy_r`` (mean return in 2-ATR-stop units — THE metric)
+    - ``profit_factor`` (Σwins / |Σlosses|)
+    - ``median_mae_atr`` (typical adverse excursion — stop survival)
+    - ``stop_hit_rate`` (fraction of past winners that dipped through
+      the 2-ATR stop before resolving)
+    - ``recency_weighted_win_rate`` (2-year half-life — markets change)
+
+**Sizing**
+11. **Kelly fraction** — ``p − (1−p)/R``, capped at 25%.
+
+**Composite score & grade**
+12. Score is a weighted blend of seven components, dampened by the vol
+    regime and boosted by MTF alignment.
+13. **Grade A** — the elite gate:
+    - regime_ok (price AND slope aligned)
+    - persistence_ok AND !false_break AND !overextended
+    - R:R ≥ 2.0
+    - win_rate ≥ 55% (n ≥ 5)
+    - expectancy_r ≥ 0.20
+    - stop_hit_rate ≤ 0.45 (stop survives historically)
+14. **Grade B** — tradeable: same base gates + R:R ≥ 1.5.
+15. **Grade C** — watch-list: passes persistence.
 
 Cached in-memory; invalidated when any underlying CSV mtime changes.
 """
@@ -43,7 +66,7 @@ import glob
 import math
 import os
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from web.backend.services.data_service import PRICES_DIR
 
@@ -57,18 +80,39 @@ _ATR_PERIOD = 14
 _VOLUME_BASELINE = 20
 _SLOPE_WINDOW = 5
 
-# Buy-signal quality
+# Regime
 _REGIME_PERIOD = 200
+_REGIME_SLOPE_WINDOW = 20
 _OVEREXTENDED_ATR = 3.0
+
+# Volatility regime
+_VOL_REGIME_WINDOW = 20
+_VOL_REGIME_BASELINE = 252
+_VOL_REGIME_HIGH = 1.30
+_VOL_REGIME_EXTREME = 1.80
+
+# Trade geometry
 _STOP_ATR_MULT = 2.0
 _TARGET_R_MULT = 2.0
 _SWING_LOOKBACK = 10
-_EDGE_FORWARD_DAYS = 10
+_STRUCTURAL_TARGET_WINDOW = 50
+_STRUCTURAL_TARGET_MIN_ATR = 0.5  # target must be >= this many ATRs away
+_PULLBACK_WINDOW = 20
+
+# Historical edge — horizon matched to SMA period
+_EDGE_FORWARD_BY_PERIOD: Dict[int, int] = {9: 10, 50: 20, 600: 60}
+_EDGE_DEFAULT_FORWARD = 10
 _EDGE_MIN_SAMPLES = 5
+_EDGE_HALF_LIFE_BARS = 504  # ~2 years
+
+# Sizing
+_KELLY_CAP = 0.25
 
 # Grade gates
 _GRADE_A_RR = 2.0
 _GRADE_A_WINRATE = 0.55
+_GRADE_A_EXPECTANCY_R = 0.20
+_GRADE_A_STOP_HIT_MAX = 0.45
 _GRADE_B_RR = 1.5
 
 # Score weights (sum to 1.0)
@@ -77,6 +121,11 @@ _W_SLOPE = 0.20
 _W_VOLUME = 0.20
 _W_PERSISTENCE = 0.15
 _W_FRESHNESS = 0.15
+
+# Score modifiers
+_VOL_SCORE_MULT = {"normal": 1.0, "high": 0.9, "extreme": 0.7, "unknown": 1.0}
+_MTF_SCORE_FLOOR = 0.95  # at alignment=0 we multiply by 0.95
+_MTF_SCORE_CEIL = 1.05  # at alignment=1.0 we multiply by 1.05
 
 _CACHE_TTL_SEC = 300
 
@@ -132,81 +181,338 @@ def _clip01(x: float) -> float:
     return x
 
 
-# ── historical edge (per-symbol backtest of the exact setup) ──────────────
-
-def _historical_edge(
-    close_list: List[float],
-    sma_list: List[float],
-    direction: str,
-    forward: int = _EDGE_FORWARD_DAYS,
-) -> Dict[str, Any]:
-    """
-    Walk the series and find every past crossover of the same kind.
-    For each, compute the `forward`-bar forward return from the close at
-    the cross bar. Report sample size, win rate and median.
-    """
-    n = len(close_list)
-    if n != len(sma_list) or n < forward + 2:
-        return {"samples": 0, "win_rate": None, "median_fwd_pct": None,
-                "mean_fwd_pct": None, "std_fwd_pct": None}
-
-    fwd_returns: List[float] = []
-    for i in range(1, n - forward):
-        s_prev, s_cur = sma_list[i - 1], sma_list[i]
-        if s_prev is None or s_cur is None:
+def _series_to_list(s: Any) -> List[Optional[float]]:
+    """Convert pandas Series to list[float|None], mapping NaN/Inf -> None."""
+    out: List[Optional[float]] = []
+    for v in s.tolist():
+        if v is None:
+            out.append(None)
             continue
         try:
-            if math.isnan(s_prev) or math.isnan(s_cur):
+            fv = float(v)
+        except (TypeError, ValueError):
+            out.append(None)
+            continue
+        if math.isnan(fv) or math.isinf(fv):
+            out.append(None)
+        else:
+            out.append(fv)
+    return out
+
+
+def _median_sorted(xs: Sequence[float]) -> float:
+    n = len(xs)
+    mid = n // 2
+    if n % 2 == 1:
+        return xs[mid]
+    return 0.5 * (xs[mid - 1] + xs[mid])
+
+
+# ── Edge statistics (honest per-symbol backtest) ──────────────────────────
+
+def _historical_edge(
+    close: List[Optional[float]],
+    sma: List[Optional[float]],
+    atr: List[Optional[float]],
+    regime: List[Optional[float]],
+    direction: str,
+    forward: int = _EDGE_DEFAULT_FORWARD,
+    stop_mult: float = _STOP_ATR_MULT,
+    overextended_atr: float = _OVEREXTENDED_ATR,
+) -> Dict[str, Any]:
+    """
+    Walk the symbol's own history. For every past SMA crossing that
+    would *also* have passed our regime + overextension filters, compute:
+        - forward return over `forward` bars
+        - R-multiple return assuming a `stop_mult`×ATR stop
+        - maximum adverse excursion (in ATRs)
+        - whether the 2-ATR stop was hit during the forward window
+
+    Returns a dict with conditional stats (the true edge of this
+    grade of setup) and an `unconditional_samples` count for context.
+    """
+    empty: Dict[str, Any] = {
+        "samples": 0,
+        "unconditional_samples": 0,
+        "win_rate": None,
+        "median_fwd_pct": None,
+        "mean_fwd_pct": None,
+        "std_fwd_pct": None,
+        "expectancy_r": None,
+        "profit_factor": None,
+        "median_mae_atr": None,
+        "stop_hit_rate": None,
+        "recency_weighted_win_rate": None,
+    }
+
+    n = len(close)
+    if n < forward + 2 or len(sma) != n or len(atr) != n or len(regime) != n:
+        return empty
+
+    rows: List[Dict[str, Any]] = []
+    unconditional_samples = 0
+
+    for i in range(1, n - forward):
+        s_prev, s_cur = sma[i - 1], sma[i]
+        c_prev, c_cur = close[i - 1], close[i]
+        if s_prev is None or s_cur is None or c_prev is None or c_cur is None:
+            continue
+
+        prev_sign = 1 if c_prev > s_prev else (-1 if c_prev < s_prev else 0)
+        cur_sign = 1 if c_cur > s_cur else (-1 if c_cur < s_cur else 0)
+
+        if direction == "bull":
+            if not (prev_sign <= 0 and cur_sign > 0):
                 continue
-        except TypeError:
-            continue
-        c_prev, c_cur = close_list[i - 1], close_list[i]
-        sign_prev = 0 if c_prev == s_prev else (1 if c_prev > s_prev else -1)
-        sign_cur = 0 if c_cur == s_cur else (1 if c_cur > s_cur else -1)
+        else:
+            if not (prev_sign >= 0 and cur_sign < 0):
+                continue
 
-        is_cross = False
-        if direction == "bull" and sign_prev <= 0 and sign_cur > 0:
-            is_cross = True
-        elif direction == "bear" and sign_prev >= 0 and sign_cur < 0:
-            is_cross = True
-        if not is_cross:
+        c0 = c_cur
+        c_end = close[i + forward]
+        if c_end is None or c0 <= 0:
             continue
 
-        c0 = close_list[i]
-        c1 = close_list[i + forward]
-        if c0 is None or c1 is None or c0 == 0:
+        unconditional_samples += 1
+
+        # Conditional filters — same as live-setup gates
+        r0 = regime[i]
+        a0 = atr[i]
+        if r0 is None or a0 is None or a0 <= 0:
             continue
-        fwd_returns.append((c1 - c0) / c0 * 100.0)
+        if direction == "bull" and c0 <= r0:
+            continue
+        if direction == "bear" and c0 >= r0:
+            continue
+        if abs((c0 - s_cur) / a0) > overextended_atr:
+            continue
 
-    samples = len(fwd_returns)
-    if samples < _EDGE_MIN_SAMPLES:
-        return {"samples": samples, "win_rate": None, "median_fwd_pct": None,
-                "mean_fwd_pct": None, "std_fwd_pct": None}
+        # Forward window
+        window = close[i + 1 : i + 1 + forward]
+        if any(x is None for x in window):
+            continue
+        # Safe because we just verified non-None
+        win_vals: List[float] = [x for x in window if x is not None]
+        if len(win_vals) != forward:
+            continue
 
+        fwd_pct = (c_end - c0) / c0 * 100.0
+        stop_dist = stop_mult * a0
+        if stop_dist <= 0:
+            continue
+
+        if direction == "bull":
+            worst = min([c0] + win_vals)
+            mae = (c0 - worst) / a0  # >= 0
+            r_mult = (c_end - c0) / stop_dist
+        else:
+            best = max([c0] + win_vals)
+            mae = (best - c0) / a0
+            r_mult = (c0 - c_end) / stop_dist
+
+        stop_hit = mae >= stop_mult
+
+        rows.append({
+            "age_bars": n - 1 - i,
+            "fwd_pct": fwd_pct,
+            "r_mult": r_mult,
+            "mae": mae,
+            "stop_hit": stop_hit,
+        })
+
+    cs = len(rows)
+    if cs < _EDGE_MIN_SAMPLES:
+        out = dict(empty)
+        out["samples"] = cs
+        out["unconditional_samples"] = unconditional_samples
+        return out
+
+    # Win definition: positive return for bull, negative for bear
     if direction == "bull":
-        wins = sum(1 for r in fwd_returns if r > 0)
+        wins = sum(1 for r in rows if r["fwd_pct"] > 0)
     else:
-        wins = sum(1 for r in fwd_returns if r < 0)
-    sorted_r = sorted(fwd_returns)
-    mid = samples // 2
-    if samples % 2 == 1:
-        median = sorted_r[mid]
+        wins = sum(1 for r in rows if r["fwd_pct"] < 0)
+    win_rate = wins / cs
+
+    r_mults = [r["r_mult"] for r in rows]
+    expectancy_r = sum(r_mults) / cs
+
+    pos_sum = sum(v for v in r_mults if v > 0)
+    neg_sum = sum(v for v in r_mults if v < 0)
+    if neg_sum < 0:
+        profit_factor: Optional[float] = pos_sum / abs(neg_sum)
     else:
-        median = 0.5 * (sorted_r[mid - 1] + sorted_r[mid])
-    mean = sum(fwd_returns) / samples
-    var = sum((r - mean) ** 2 for r in fwd_returns) / samples
-    std = math.sqrt(var) if var > 0 else 0.0
+        profit_factor = None
+
+    fwd_pct_list = [r["fwd_pct"] for r in rows]
+    sorted_fwd = sorted(fwd_pct_list)
+    median_fwd = _median_sorted(sorted_fwd)
+    mean_fwd = sum(fwd_pct_list) / cs
+    var = sum((x - mean_fwd) ** 2 for x in fwd_pct_list) / cs
+    std_fwd = math.sqrt(var) if var > 0 else 0.0
+
+    mae_list = sorted(r["mae"] for r in rows)
+    median_mae = _median_sorted(mae_list)
+
+    stop_hit_rate = sum(1 for r in rows if r["stop_hit"]) / cs
+
+    # Recency-weighted win-rate — 2-year half-life
+    weights = [0.5 ** (r["age_bars"] / _EDGE_HALF_LIFE_BARS) for r in rows]
+    tot_w = sum(weights)
+    if tot_w > 0:
+        if direction == "bull":
+            rw_win = sum(w for r, w in zip(rows, weights) if r["fwd_pct"] > 0)
+        else:
+            rw_win = sum(w for r, w in zip(rows, weights) if r["fwd_pct"] < 0)
+        rw_win_rate: Optional[float] = rw_win / tot_w
+    else:
+        rw_win_rate = None
 
     return {
-        "samples": samples,
-        "win_rate": round(wins / samples, 3),
-        "median_fwd_pct": round(median, 3),
-        "mean_fwd_pct": round(mean, 3),
-        "std_fwd_pct": round(std, 3),
+        "samples": cs,
+        "unconditional_samples": unconditional_samples,
+        "win_rate": round(win_rate, 3),
+        "median_fwd_pct": round(median_fwd, 3),
+        "mean_fwd_pct": round(mean_fwd, 3),
+        "std_fwd_pct": round(std_fwd, 3),
+        "expectancy_r": round(expectancy_r, 3),
+        "profit_factor": round(profit_factor, 3) if profit_factor is not None else None,
+        "median_mae_atr": round(median_mae, 3),
+        "stop_hit_rate": round(stop_hit_rate, 3),
+        "recency_weighted_win_rate": round(rw_win_rate, 3) if rw_win_rate is not None else None,
     }
 
 
-# ── detection ─────────────────────────────────────────────────────────────
+# ── Regime / volatility helpers ───────────────────────────────────────────
+
+def _vol_regime(close_series: Any) -> Tuple[Optional[float], str]:
+    """Return (ratio_20d_over_252d, regime_str). Needs >= _VOL_REGIME_BASELINE bars."""
+    import pandas as pd
+    s = pd.Series(close_series).astype(float)
+    rets = s.pct_change().dropna()
+    if len(rets) < _VOL_REGIME_BASELINE:
+        return None, "unknown"
+    rv_short = rets.iloc[-_VOL_REGIME_WINDOW:].std()
+    rv_long = rets.iloc[-_VOL_REGIME_BASELINE:].std()
+    if rv_long is None or rv_long == 0 or not math.isfinite(float(rv_long)):
+        return None, "unknown"
+    if rv_short is None or not math.isfinite(float(rv_short)):
+        return None, "unknown"
+    ratio = float(rv_short) / float(rv_long)
+    if ratio >= _VOL_REGIME_EXTREME:
+        return ratio, "extreme"
+    if ratio >= _VOL_REGIME_HIGH:
+        return ratio, "high"
+    return ratio, "normal"
+
+
+def _regime_slope_pct(regime_sma_series: Any) -> float:
+    """SMA-200 slope as % change over _REGIME_SLOPE_WINDOW bars. 0 if insufficient."""
+    now = _safe_float(regime_sma_series.iloc[-1])
+    if now is None or len(regime_sma_series) <= _REGIME_SLOPE_WINDOW:
+        return 0.0
+    ago = _safe_float(regime_sma_series.iloc[-1 - _REGIME_SLOPE_WINDOW])
+    if ago is None or ago == 0.0:
+        return 0.0
+    return (now - ago) / abs(ago) * 100.0
+
+
+def _pullback_atr(
+    close_series: Any, cross_idx: int, atr_val: Optional[float], direction: str,
+) -> Optional[float]:
+    """Distance in ATRs from the 20-bar peak (bull) / trough (bear) at cross_idx."""
+    if atr_val is None or atr_val <= 0 or cross_idx < 1:
+        return None
+    start = max(0, cross_idx - _PULLBACK_WINDOW + 1)
+    window = close_series.iloc[start : cross_idx + 1]
+    if len(window) == 0:
+        return None
+    c0 = _safe_float(close_series.iloc[cross_idx])
+    if c0 is None:
+        return None
+    if direction == "bull":
+        peak = _safe_float(window.max())
+        if peak is None:
+            return None
+        return max(0.0, (peak - c0) / atr_val)
+    trough = _safe_float(window.min())
+    if trough is None:
+        return None
+    return max(0.0, (c0 - trough) / atr_val)
+
+
+def _mtf_alignment(
+    close_series: Any,
+    latest_price: float,
+    direction: str,
+    all_periods: Sequence[int],
+    current_period: int,
+) -> Optional[float]:
+    """Fraction of *other* SMAs whose price relationship confirms direction."""
+    n = len(close_series)
+    confirms = 0
+    checks = 0
+    for p in all_periods:
+        if p == current_period or n < p:
+            continue
+        sma_now = _safe_float(close_series.rolling(p).mean().iloc[-1])
+        if sma_now is None:
+            continue
+        checks += 1
+        if direction == "bull" and latest_price > sma_now:
+            confirms += 1
+        elif direction == "bear" and latest_price < sma_now:
+            confirms += 1
+    if checks == 0:
+        return None
+    return confirms / checks
+
+
+def _structural_target(
+    close_series: Any,
+    high_series: Any,
+    low_series: Any,
+    latest_price: float,
+    stop_price: float,
+    atr_val: float,
+    direction: str,
+) -> Tuple[float, bool]:
+    """Return (target_price, used_structural_level).
+
+    Structural level = 50-bar prior swing high (bull) or low (bear),
+    used only if meaningfully distant (>= 0.5*ATR beyond entry).
+    Otherwise fall back to 2R projection.
+    """
+    risk = abs(latest_price - stop_price)
+    fallback = (latest_price + _TARGET_R_MULT * risk) if direction == "bull" \
+        else (latest_price - _TARGET_R_MULT * risk)
+    import pandas as pd
+    window = _STRUCTURAL_TARGET_WINDOW
+    # Exclude the current bar (don't use today's high/low as resistance)
+    if direction == "bull":
+        src = high_series if high_series is not None else close_series
+        src = pd.Series(src).astype(float)
+        if len(src) < 2:
+            return fallback, False
+        level = _safe_float(src.iloc[-window - 1 : -1].max()) if len(src) > 1 else None
+        if level is None:
+            return fallback, False
+        if level > latest_price + _STRUCTURAL_TARGET_MIN_ATR * atr_val:
+            return level, True
+        return fallback, False
+    src = low_series if low_series is not None else close_series
+    src = pd.Series(src).astype(float)
+    if len(src) < 2:
+        return fallback, False
+    level = _safe_float(src.iloc[-window - 1 : -1].min()) if len(src) > 1 else None
+    if level is None:
+        return fallback, False
+    if level < latest_price - _STRUCTURAL_TARGET_MIN_ATR * atr_val:
+        return level, True
+    return fallback, False
+
+
+# ── Detection ─────────────────────────────────────────────────────────────
 
 def detect_reversals(
     close: "Any",
@@ -216,7 +522,8 @@ def detect_reversals(
     dates: "Optional[Any]" = None,
     periods: Tuple[int, ...] = _SMA_PERIODS,
 ) -> List[Dict[str, Any]]:
-    """Pure detection function (symbol-agnostic)."""
+    """Pure detection function — returns one record per SMA period with a
+    fresh cross in the last `_LOOKBACK_BARS` bars."""
     import pandas as pd
 
     close = pd.Series(close).astype(float).reset_index(drop=True)
@@ -234,6 +541,8 @@ def detect_reversals(
         tr = pd.concat([(h - l), (h - prev_c).abs(), (l - prev_c).abs()], axis=1).max(axis=1)
         atr = tr.rolling(_ATR_PERIOD, min_periods=max(2, _ATR_PERIOD // 2)).mean()
     else:
+        h = None
+        l = None
         atr = close.pct_change().rolling(_ATR_PERIOD, min_periods=5).std() * close
 
     # Volume baseline
@@ -244,19 +553,17 @@ def detect_reversals(
         v = None
         v_avg = None
 
-    # Regime (SMA-200 proxy; truncated if series too short)
+    # Regime SMA
     reg_period = min(_REGIME_PERIOD, max(20, n // 2))
     regime_sma = close.rolling(reg_period).mean()
+    regime_slope_pct = _regime_slope_pct(regime_sma)
 
-    # Swing high/low for structural stops
-    if low is not None:
-        swing_low = pd.Series(low).astype(float).reset_index(drop=True).rolling(_SWING_LOOKBACK).min()
-    else:
-        swing_low = close.rolling(_SWING_LOOKBACK).min()
-    if high is not None:
-        swing_high = pd.Series(high).astype(float).reset_index(drop=True).rolling(_SWING_LOOKBACK).max()
-    else:
-        swing_high = close.rolling(_SWING_LOOKBACK).max()
+    # Vol regime
+    vol_ratio, vol_regime_str = _vol_regime(close)
+
+    # Swing levels for structural stops
+    swing_low = (l if l is not None else close).rolling(_SWING_LOOKBACK).min()
+    swing_high = (h if h is not None else close).rolling(_SWING_LOOKBACK).max()
 
     latest_idx = n - 1
     latest_price = _safe_float(close.iloc[-1])
@@ -267,6 +574,11 @@ def detect_reversals(
     atr_val = _safe_float(atr.iloc[-1])
     swing_low_val = _safe_float(swing_low.iloc[-1])
     swing_high_val = _safe_float(swing_high.iloc[-1])
+
+    # Precompute list forms once per symbol for _historical_edge
+    close_list = _series_to_list(close)
+    atr_list = _series_to_list(atr)
+    regime_list = _series_to_list(regime_sma)
 
     for period in periods:
         if n < period + _LOOKBACK_BARS + 1:
@@ -343,28 +655,39 @@ def detect_reversals(
         if cross_dir == "bear" and any(s > 0 for s in post):
             false_break = True
 
-        # Regime
-        if regime_now is not None:
-            regime_ok = (cross_dir == "bull" and latest_price > regime_now) or \
-                        (cross_dir == "bear" and latest_price < regime_now)
-        else:
-            regime_ok = False
+        # Regime — price AND slope must align
+        regime_price_ok = regime_now is not None and (
+            (cross_dir == "bull" and latest_price > regime_now)
+            or (cross_dir == "bear" and latest_price < regime_now)
+        )
+        regime_slope_ok = (
+            (cross_dir == "bull" and regime_slope_pct > 0.0)
+            or (cross_dir == "bear" and regime_slope_pct < 0.0)
+        )
+        regime_ok = bool(regime_price_ok and regime_slope_ok)
 
         overextended = atr_distance is not None and abs(atr_distance) > _OVEREXTENDED_ATR
 
-        # Stop / target geometry
+        # Pullback & MTF alignment
+        pullback_atr_val = _pullback_atr(close, cross_idx, atr_val, cross_dir)
+        mtf_alignment_val = _mtf_alignment(close, latest_price, cross_dir, periods, period)
+
+        # Stop / structural target
         stop_price: Optional[float] = None
         target_price: Optional[float] = None
         risk_reward: Optional[float] = None
+        used_structural = False
         if atr_val is not None and atr_val > 0:
             if cross_dir == "bull":
                 vol_stop = latest_price - _STOP_ATR_MULT * atr_val
                 struct_stop = swing_low_val if swing_low_val is not None else vol_stop
                 stop_price = min(vol_stop, struct_stop)
                 if stop_price is not None and stop_price < latest_price:
+                    target_price, used_structural = _structural_target(
+                        close, h, l, latest_price, stop_price, atr_val, "bull",
+                    )
                     risk = latest_price - stop_price
-                    target_price = latest_price + _TARGET_R_MULT * risk
-                    risk_reward = _TARGET_R_MULT
+                    risk_reward = (target_price - latest_price) / risk if risk > 0 else None
                 else:
                     stop_price = None
             else:
@@ -372,17 +695,32 @@ def detect_reversals(
                 struct_stop = swing_high_val if swing_high_val is not None else vol_stop
                 stop_price = max(vol_stop, struct_stop)
                 if stop_price is not None and stop_price > latest_price:
+                    target_price, used_structural = _structural_target(
+                        close, h, l, latest_price, stop_price, atr_val, "bear",
+                    )
                     risk = stop_price - latest_price
-                    target_price = latest_price - _TARGET_R_MULT * risk
-                    risk_reward = _TARGET_R_MULT
+                    risk_reward = (latest_price - target_price) / risk if risk > 0 else None
                 else:
                     stop_price = None
 
-        # Historical edge on this symbol's own past
-        close_list = close.tolist()
-        sma_list_raw = sma.tolist()
-        edge = _historical_edge(close_list, sma_list_raw, cross_dir,
-                                forward=_EDGE_FORWARD_DAYS)
+        # Historical edge — horizon matched to SMA period
+        forward_bars = _EDGE_FORWARD_BY_PERIOD.get(period, _EDGE_DEFAULT_FORWARD)
+        # Clamp so we have data
+        forward_bars = max(1, min(forward_bars, max(1, n // 4)))
+        sma_list = _series_to_list(sma)
+        edge = _historical_edge(
+            close_list, sma_list, atr_list, regime_list,
+            cross_dir, forward=forward_bars,
+            stop_mult=_STOP_ATR_MULT, overextended_atr=_OVEREXTENDED_ATR,
+        )
+
+        # Kelly fraction (capped)
+        win_rate = edge.get("win_rate")
+        kelly_fraction: Optional[float] = None
+        if win_rate is not None and risk_reward is not None and risk_reward > 0:
+            p = float(win_rate)
+            raw = p - (1.0 - p) / float(risk_reward)
+            kelly_fraction = max(0.0, min(_KELLY_CAP, raw))
 
         # Composite score
         if atr_distance is not None:
@@ -407,32 +745,53 @@ def detect_reversals(
         )
         if false_break:
             score *= 0.6
+        # Vol-regime dampening
+        score *= _VOL_SCORE_MULT.get(vol_regime_str, 1.0)
+        # MTF alignment bonus/malus
+        if mtf_alignment_val is not None:
+            score *= _MTF_SCORE_FLOOR + (_MTF_SCORE_CEIL - _MTF_SCORE_FLOOR) * mtf_alignment_val
 
         # Grade
         grade: Optional[str] = None
         grade_reasons: List[str] = []
+        expectancy_r = edge.get("expectancy_r")
+        stop_hit_rate = edge.get("stop_hit_rate")
+
         base_pass = (
-            passes_persistence and not false_break
-            and not overextended and regime_ok
+            passes_persistence
+            and not false_break
+            and not overextended
+            and regime_ok
             and risk_reward is not None
         )
-        win_rate = edge.get("win_rate")
+
         if base_pass and risk_reward is not None:
-            if risk_reward >= _GRADE_A_RR and win_rate is not None and win_rate >= _GRADE_A_WINRATE:
+            gate_a = (
+                risk_reward >= _GRADE_A_RR
+                and win_rate is not None and win_rate >= _GRADE_A_WINRATE
+                and expectancy_r is not None and expectancy_r >= _GRADE_A_EXPECTANCY_R
+                and (stop_hit_rate is None or stop_hit_rate <= _GRADE_A_STOP_HIT_MAX)
+            )
+            if gate_a:
                 grade = "A"
                 grade_reasons = [
-                    "regime aligned", "persistence confirmed", "not overextended",
+                    "regime+slope aligned", "persistence confirmed", "not overextended",
                     f"R:R {risk_reward:.1f}",
-                    f"win-rate {win_rate:.0%} (n={edge['samples']})",
+                    f"win {win_rate:.0%} (n={edge['samples']})",
+                    f"E[R] {expectancy_r:.2f}",
                 ]
+                if stop_hit_rate is not None:
+                    grade_reasons.append(f"stop-hit {stop_hit_rate:.0%}")
             elif risk_reward >= _GRADE_B_RR:
                 grade = "B"
                 grade_reasons = [
-                    "regime aligned", "persistence confirmed", "not overextended",
+                    "regime+slope aligned", "persistence confirmed", "not overextended",
                     f"R:R {risk_reward:.1f}",
                 ]
                 if win_rate is not None:
                     grade_reasons.append(f"edge {win_rate:.0%} (n={edge['samples']})")
+                if expectancy_r is not None:
+                    grade_reasons.append(f"E[R] {expectancy_r:.2f}")
             else:
                 grade = "C"
                 grade_reasons = ["persistence ok", f"R:R {risk_reward:.1f}"]
@@ -471,15 +830,24 @@ def detect_reversals(
             "cross_index_from_end": int(days_since),
 
             "regime_sma": round(regime_now, 4) if regime_now is not None else None,
+            "regime_slope_pct": round(regime_slope_pct, 4),
             "regime_ok": bool(regime_ok),
+            "vol_regime": vol_regime_str,
+            "vol_ratio": round(vol_ratio, 3) if vol_ratio is not None else None,
             "overextended": bool(overextended),
+            "pullback_atr": round(pullback_atr_val, 3) if pullback_atr_val is not None else None,
+            "mtf_alignment": round(mtf_alignment_val, 3) if mtf_alignment_val is not None else None,
+
             "stop_price": round(stop_price, 4) if stop_price is not None else None,
             "target_price": round(target_price, 4) if target_price is not None else None,
             "risk_reward": round(risk_reward, 2) if risk_reward is not None else None,
+            "used_structural_target": bool(used_structural),
+            "kelly_fraction": round(kelly_fraction, 3) if kelly_fraction is not None else None,
+
             "grade": grade,
             "grade_reasons": grade_reasons,
             "historical_edge": edge,
-            "edge_forward_days": _EDGE_FORWARD_DAYS,
+            "edge_forward_days": forward_bars,
         }
         out.append(rec)
 
@@ -602,8 +970,20 @@ def get_all_sma_reversals(force: bool = False) -> Dict[str, Any]:
         "persistence_window": _PERSISTENCE_M,
         "persistence_threshold": _PERSISTENCE_K,
         "regime_period": _REGIME_PERIOD,
+        "regime_slope_window": _REGIME_SLOPE_WINDOW,
         "overextended_atr": _OVEREXTENDED_ATR,
-        "edge_forward_days": _EDGE_FORWARD_DAYS,
+        "edge_forward_days": _EDGE_DEFAULT_FORWARD,
+        "edge_forward_by_period": dict(_EDGE_FORWARD_BY_PERIOD),
+        "vol_regime_window": _VOL_REGIME_WINDOW,
+        "vol_regime_baseline": _VOL_REGIME_BASELINE,
+        "pullback_window": _PULLBACK_WINDOW,
+        "structural_target_window": _STRUCTURAL_TARGET_WINDOW,
+        "grade_a_rr": _GRADE_A_RR,
+        "grade_a_winrate": _GRADE_A_WINRATE,
+        "grade_a_expectancy_r": _GRADE_A_EXPECTANCY_R,
+        "grade_a_stop_hit_max": _GRADE_A_STOP_HIT_MAX,
+        "grade_b_rr": _GRADE_B_RR,
+        "kelly_cap": _KELLY_CAP,
         "total": len(reversals),
         "built_at": _cache["built_at"],
     }

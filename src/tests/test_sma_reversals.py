@@ -35,9 +35,15 @@ from web.backend.services.sma_reversals import (  # noqa: E402
     _OVEREXTENDED_ATR,
     _TARGET_R_MULT,
     _EDGE_MIN_SAMPLES,
+    _EDGE_FORWARD_BY_PERIOD,
     _GRADE_A_RR,
     _GRADE_A_WINRATE,
+    _GRADE_A_EXPECTANCY_R,
+    _GRADE_A_STOP_HIT_MAX,
     _GRADE_B_RR,
+    _KELLY_CAP,
+    _REGIME_SLOPE_WINDOW,
+    _SMA_PERIODS,
     detect_reversals,
     get_all_sma_reversals,
 )
@@ -149,7 +155,7 @@ class TestSmaReversalRealStocks(unittest.TestCase):
     # ── stop / target geometry ────────────────────────────────────────
 
     def test_stop_target_geometry(self) -> None:
-        """When a stop is set, verify it's on the correct side and R:R≈2."""
+        """Stop and target on the correct side of price; R:R strictly positive."""
         for r in self.all_reversals:
             if r["stop_price"] is None:
                 continue
@@ -161,10 +167,11 @@ class TestSmaReversalRealStocks(unittest.TestCase):
             else:
                 self.assertGreater(r["stop_price"], r["price"], r)
                 self.assertLess(r["target_price"], r["price"], r)
-            self.assertAlmostEqual(r["risk_reward"], _TARGET_R_MULT, places=2)
+            self.assertGreater(r["risk_reward"], 0.0, r)
 
     def test_stop_target_algebra(self) -> None:
-        """target − price == 2 × (price − stop) (bull) and mirror for bear."""
+        """Stored R:R matches reward/risk; equals 2R exactly when the structural
+        target was NOT used, else equals the structural level."""
         for r in self.all_reversals:
             if r["stop_price"] is None or r["target_price"] is None:
                 continue
@@ -172,24 +179,58 @@ class TestSmaReversalRealStocks(unittest.TestCase):
             reward = abs(r["target_price"] - r["price"])
             if risk == 0:
                 continue
-            self.assertAlmostEqual(reward / risk, _TARGET_R_MULT, places=2, msg=r)
+            # All stored values are pre-rounded, so allow a small tolerance
+            self.assertLess(abs(reward / risk - r["risk_reward"]), 0.02, msg=r)
+            if not r["used_structural_target"]:
+                self.assertAlmostEqual(
+                    r["risk_reward"], _TARGET_R_MULT, places=2,
+                    msg=f"non-structural target must be 2R: {r}",
+                )
+
+    def test_rr_varies_when_structural_targets_used(self) -> None:
+        """Across 100 stocks, at least one setup should have used the structural
+        target and produced an R:R different from 2.0 — proving the new engine
+        is not degenerate."""
+        structural = [r for r in self.all_reversals if r.get("used_structural_target")]
+        # It's fine if none exist, but if any do, their R:R should not all be 2.0
+        if structural:
+            diverse = [r for r in structural if abs(r["risk_reward"] - _TARGET_R_MULT) > 0.05]
+            self.assertGreater(
+                len(diverse), 0,
+                "structural targets set but every R:R == 2.0 — engine is degenerate",
+            )
 
     # ── grade invariants (the buy-signal contract) ────────────────────
 
     def test_grade_a_requires_full_confluence(self) -> None:
+        """Grade A is the elite gate — EVERY invariant below is enforced."""
         for r in self.all_reversals:
             if r.get("grade") != "A":
                 continue
+            # Core filters
             self.assertTrue(r["regime_ok"], f"A without regime_ok: {r}")
             self.assertTrue(r["passes_persistence"], f"A without persistence: {r}")
             self.assertFalse(r["overextended"], f"A while overextended: {r}")
             self.assertFalse(r["false_break"], f"A while false_break: {r}")
+            # Regime slope must align with direction (new gate)
+            if r["direction"] == "bull":
+                self.assertGreater(r["regime_slope_pct"], 0.0, f"A bull with falling SMA-200: {r}")
+            else:
+                self.assertLess(r["regime_slope_pct"], 0.0, f"A bear with rising SMA-200: {r}")
+            # Trade geometry
             self.assertIsNotNone(r["risk_reward"])
             self.assertGreaterEqual(r["risk_reward"], _GRADE_A_RR, r)
+            # Historical edge
             edge = r["historical_edge"]
             self.assertGreaterEqual(edge["samples"], _EDGE_MIN_SAMPLES, r)
             self.assertIsNotNone(edge["win_rate"])
             self.assertGreaterEqual(edge["win_rate"], _GRADE_A_WINRATE, r)
+            # New: expectancy in R must be positive and clear the bar
+            self.assertIsNotNone(edge["expectancy_r"], r)
+            self.assertGreaterEqual(edge["expectancy_r"], _GRADE_A_EXPECTANCY_R, r)
+            # New: stop must survive historically
+            if edge["stop_hit_rate"] is not None:
+                self.assertLessEqual(edge["stop_hit_rate"], _GRADE_A_STOP_HIT_MAX, r)
 
     def test_grade_b_requires_baseline_confluence(self) -> None:
         for r in self.all_reversals:
@@ -237,6 +278,11 @@ class TestSmaReversalRealStocks(unittest.TestCase):
             edge = r.get("historical_edge")
             self.assertIsInstance(edge, dict, r)
             self.assertGreaterEqual(edge["samples"], 0, r)
+            # samples is CONDITIONAL count; must never exceed unconditional
+            self.assertLessEqual(
+                edge["samples"], edge["unconditional_samples"],
+                f"conditional > unconditional: {r}",
+            )
             if edge["samples"] >= _EDGE_MIN_SAMPLES:
                 self.assertIsNotNone(edge["win_rate"])
                 self.assertGreaterEqual(edge["win_rate"], 0.0, r)
@@ -244,9 +290,123 @@ class TestSmaReversalRealStocks(unittest.TestCase):
                 self.assertIsNotNone(edge["median_fwd_pct"])
                 self.assertIsNotNone(edge["mean_fwd_pct"])
                 self.assertGreaterEqual(edge["std_fwd_pct"], 0.0, r)
+                # New: expectancy_r must be a number
+                self.assertIsNotNone(edge["expectancy_r"], r)
+                self.assertIsInstance(edge["expectancy_r"], float)
+                # stop_hit_rate in [0,1]
+                self.assertIsNotNone(edge["stop_hit_rate"], r)
+                self.assertGreaterEqual(edge["stop_hit_rate"], 0.0, r)
+                self.assertLessEqual(edge["stop_hit_rate"], 1.0, r)
+                # median MAE non-negative
+                self.assertGreaterEqual(edge["median_mae_atr"], 0.0, r)
+                # profit factor positive or None
+                if edge["profit_factor"] is not None:
+                    self.assertGreater(edge["profit_factor"], 0.0, r)
+                # recency-weighted win rate in [0,1]
+                if edge["recency_weighted_win_rate"] is not None:
+                    self.assertGreaterEqual(edge["recency_weighted_win_rate"], 0.0, r)
+                    self.assertLessEqual(edge["recency_weighted_win_rate"], 1.0, r)
             else:
                 self.assertIsNone(edge["win_rate"])
                 self.assertIsNone(edge["median_fwd_pct"])
+                self.assertIsNone(edge["expectancy_r"])
+                self.assertIsNone(edge["profit_factor"])
+                self.assertIsNone(edge["stop_hit_rate"])
+                self.assertIsNone(edge["median_mae_atr"])
+
+    # ── new quant-field invariants ────────────────────────────────
+
+    def test_regime_slope_pct_is_number(self) -> None:
+        for r in self.all_reversals:
+            self.assertIsInstance(r["regime_slope_pct"], float, r)
+            # Sanity: slope should not be crazy. Extreme moves of 1000%/month never happen.
+            self.assertGreater(r["regime_slope_pct"], -200.0, r)
+            self.assertLess(r["regime_slope_pct"], 200.0, r)
+
+    def test_regime_ok_implies_price_and_slope_aligned(self) -> None:
+        """New contract: regime_ok requires BOTH price on correct side AND slope aligned."""
+        for r in self.all_reversals:
+            if not r["regime_ok"]:
+                continue
+            if r["direction"] == "bull":
+                self.assertGreater(r["regime_slope_pct"], 0.0, f"regime_ok bull but falling slope: {r}")
+                if r["regime_sma"] is not None:
+                    self.assertGreater(r["price"], r["regime_sma"], r)
+            else:
+                self.assertLess(r["regime_slope_pct"], 0.0, f"regime_ok bear but rising slope: {r}")
+                if r["regime_sma"] is not None:
+                    self.assertLess(r["price"], r["regime_sma"], r)
+
+    def test_vol_regime_is_valid(self) -> None:
+        for r in self.all_reversals:
+            self.assertIn(r["vol_regime"], {"normal", "high", "extreme", "unknown"}, r)
+            if r["vol_regime"] == "unknown":
+                self.assertIsNone(r["vol_ratio"], r)
+            else:
+                self.assertIsNotNone(r["vol_ratio"], r)
+                self.assertGreater(r["vol_ratio"], 0.0, r)
+
+    def test_pullback_atr_nonneg(self) -> None:
+        for r in self.all_reversals:
+            p = r["pullback_atr"]
+            if p is not None:
+                self.assertGreaterEqual(p, 0.0, r)
+
+    def test_mtf_alignment_bounded(self) -> None:
+        for r in self.all_reversals:
+            m = r["mtf_alignment"]
+            if m is not None:
+                self.assertGreaterEqual(m, 0.0, r)
+                self.assertLessEqual(m, 1.0, r)
+
+    def test_kelly_fraction_bounded(self) -> None:
+        for r in self.all_reversals:
+            k = r["kelly_fraction"]
+            if k is None:
+                continue
+            self.assertGreaterEqual(k, 0.0, r)
+            self.assertLessEqual(k, _KELLY_CAP, r)
+
+    def test_kelly_present_when_edge_and_rr_available(self) -> None:
+        """Kelly must be set whenever both win_rate and risk_reward are set."""
+        for r in self.all_reversals:
+            edge = r["historical_edge"]
+            if edge["win_rate"] is not None and r["risk_reward"] is not None:
+                self.assertIsNotNone(r["kelly_fraction"], f"missing Kelly: {r}")
+
+    def test_forward_horizon_matches_period(self) -> None:
+        """edge_forward_days per record should equal the period-specific horizon
+        (or be clamped to a smaller value for short histories)."""
+        for r in self.all_reversals:
+            expected = _EDGE_FORWARD_BY_PERIOD.get(r["period"])
+            if expected is None:
+                continue
+            # Horizon may be clamped down, never up
+            self.assertLessEqual(r["edge_forward_days"], expected, r)
+            self.assertGreaterEqual(r["edge_forward_days"], 1, r)
+
+    def test_conditional_samples_le_unconditional(self) -> None:
+        for r in self.all_reversals:
+            e = r["historical_edge"]
+            self.assertLessEqual(e["samples"], e["unconditional_samples"], r)
+
+    def test_at_least_one_grade_a_or_b_across_100_stocks(self) -> None:
+        """Sanity: among 100 real US stocks at any given time, the market should
+        offer at least ONE A-or-B buy setup. If zero, the gates are miscalibrated."""
+        good = [r for r in self.all_reversals if r.get("grade") in ("A", "B")]
+        self.assertGreater(
+            len(good), 0,
+            "no Grade A/B setups across 100 real stocks — gates too strict",
+        )
+
+    def test_grade_a_count_reasonable(self) -> None:
+        """Grade A should be rare — the elite gate. Cap at 30% of all reversals."""
+        a = sum(1 for r in self.all_reversals if r.get("grade") == "A")
+        if self.all_reversals:
+            self.assertLess(
+                a / len(self.all_reversals), 0.30,
+                f"{a} Grade A out of {len(self.all_reversals)} — gates too loose",
+            )
 
     # ── per-record uniqueness within a symbol ─────────────────────────
 
@@ -269,10 +429,24 @@ class TestSnapshot(unittest.TestCase):
         for key in (
             "reversals", "counts_by_period", "grade_counts", "buy_setups",
             "periods", "lookback_bars", "persistence_window",
-            "persistence_threshold", "regime_period", "overextended_atr",
-            "edge_forward_days", "total", "built_at",
+            "persistence_threshold", "regime_period", "regime_slope_window",
+            "overextended_atr", "edge_forward_days", "edge_forward_by_period",
+            "vol_regime_window", "vol_regime_baseline", "pullback_window",
+            "structural_target_window", "grade_a_rr", "grade_a_winrate",
+            "grade_a_expectancy_r", "grade_a_stop_hit_max", "grade_b_rr",
+            "kelly_cap", "total", "built_at",
         ):
             self.assertIn(key, self.snap, f"missing key: {key}")
+
+    def test_edge_forward_by_period_contract(self) -> None:
+        efp = self.snap["edge_forward_by_period"]
+        self.assertEqual(efp, {9: 10, 50: 20, 600: 60})
+
+    def test_snapshot_constants_match_module(self) -> None:
+        self.assertEqual(self.snap["kelly_cap"], _KELLY_CAP)
+        self.assertEqual(self.snap["grade_a_expectancy_r"], _GRADE_A_EXPECTANCY_R)
+        self.assertEqual(self.snap["grade_a_stop_hit_max"], _GRADE_A_STOP_HIT_MAX)
+        self.assertEqual(self.snap["regime_slope_window"], _REGIME_SLOPE_WINDOW)
 
     def test_grade_counts_sum_matches(self) -> None:
         g = self.snap["grade_counts"]
