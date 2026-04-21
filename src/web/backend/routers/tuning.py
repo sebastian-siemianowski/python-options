@@ -3,6 +3,7 @@ Tuning router — tuning cache, PIT calibration status, model weights, retune SS
 """
 
 import asyncio
+import json
 import os
 import sys
 from typing import Optional
@@ -78,10 +79,8 @@ async def retune_stream(mode: str = "retune"):
     async def event_generator():
         process = None
         try:
-            yield f"data: {_sse_json('start', f'Starting make {mode}...')}\n\n"
-
             process = await asyncio.create_subprocess_exec(
-                "make", mode,
+                sys.executable, "-u", "-m", "web.backend.job_driver", mode,
                 cwd=REPO_ROOT,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
@@ -91,13 +90,13 @@ async def retune_stream(mode: str = "retune"):
                     "TERM": "dumb",
                     "NO_COLOR": "1",
                     "COLUMNS": "120",
-                    "TUNING_QUIET": "0",
+                    "PYTHONPATH": f"{os.path.join(REPO_ROOT, 'src')}{os.pathsep}{os.environ.get('PYTHONPATH', '')}",
                 },
             )
 
-            asset_count = 0
-            success_count = 0
+            done_count = 0
             fail_count = 0
+            total_expected = 0
             while True:
                 line = await process.stdout.readline()
                 if not line:
@@ -106,25 +105,42 @@ async def retune_stream(mode: str = "retune"):
                 if not text:
                     continue
 
-                # Detect asset progress lines (tune_ux.py outputs progress)
-                if any(marker in text for marker in ["✓", "✗", "tuning", "Tuning", "Processing"]):
-                    asset_count += 1
-                    if "✓" in text:
-                        success_count += 1
-                    elif "✗" in text:
-                        fail_count += 1
-                    yield f"data: {_sse_json('progress', text, asset_count, success_count, fail_count)}\n\n"
-                elif any(marker in text for marker in ["Step", "RETUNE", "═"]):
-                    yield f"data: {_sse_json('phase', text)}\n\n"
+                if text.startswith("@@EVT@@ "):
+                    # Semantic event from driver — forward as typed SSE event
+                    try:
+                        payload = json.loads(text[len("@@EVT@@ "):])
+                    except json.JSONDecodeError:
+                        continue
+                    ev = payload.get("event")
+                    if ev == "start":
+                        total_expected = int(payload.get("total_expected", 0))
+                        yield f"data: {json.dumps({'type': 'start', 'mode': payload.get('mode'), 'total': total_expected})}\n\n"
+                    elif ev == "phase":
+                        yield f"data: {json.dumps({'type': 'phase', 'title': payload.get('title', '')})}\n\n"
+                    elif ev == "asset":
+                        status = payload.get("status", "ok")
+                        if status == "fail":
+                            fail_count += 1
+                        else:
+                            done_count += 1
+                        yield f"data: {json.dumps({'type': 'asset', 'symbol': payload.get('symbol'), 'status': status, 'detail': payload.get('detail'), 'done': done_count, 'fail': fail_count, 'total': total_expected})}\n\n"
+                    elif ev == "heartbeat":
+                        yield f"data: {json.dumps({'type': 'heartbeat', 'done': payload.get('done', 0), 'total': payload.get('total', 0), 'elapsed_s': payload.get('elapsed_s', 0)})}\n\n"
+                    elif ev == "done":
+                        status = "completed" if payload.get("status") == "ok" else "failed"
+                        yield f"data: {json.dumps({'type': status, 'done': payload.get('done', 0), 'total': payload.get('total', 0), 'elapsed_s': payload.get('elapsed_s', 0), 'exit_code': payload.get('exit_code', -1)})}\n\n"
+                elif text.startswith("@@LOG@@ "):
+                    # Raw log pass-through (only shown in collapsible log viewer)
+                    yield f"data: {json.dumps({'type': 'log', 'message': _strip_ansi(text[len('@@LOG@@ '):])})}\n\n"
                 else:
-                    yield f"data: {_sse_json('log', text)}\n\n"
+                    # Unstructured line (e.g. driver crash message)
+                    yield f"data: {json.dumps({'type': 'log', 'message': _strip_ansi(text)})}\n\n"
 
             await process.wait()
-            status = "completed" if process.returncode == 0 else "failed"
-            yield f"data: {_sse_json(status, f'make {mode} finished (exit code {process.returncode})', asset_count, success_count, fail_count)}\n\n"
+            if process.returncode != 0:
+                yield f"data: {json.dumps({'type': 'failed', 'exit_code': process.returncode})}\n\n"
 
         except asyncio.CancelledError:
-            # Client disconnected — kill the subprocess gracefully
             if process and process.returncode is None:
                 try:
                     process.terminate()
@@ -136,7 +152,7 @@ async def retune_stream(mode: str = "retune"):
                         pass
             return
         except Exception as e:
-            yield f"data: {_sse_json('error', str(e))}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
             if process and process.returncode is None:
                 try:
                     process.terminate()
