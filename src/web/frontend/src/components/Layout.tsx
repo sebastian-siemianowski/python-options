@@ -400,14 +400,14 @@ export default function Layout() {
                 onMouseEnter={(e) => showTooltip(item, e.currentTarget as HTMLElement)}
                 onMouseLeave={hideTooltip}
               >
-                {/* Left accent rail — Apple-like active indicator */}
+                {/* Left accent rail — thick 3px gradient rail for active */}
                 {isActive && !collapsed && (
                   <span
                     aria-hidden
-                    className="absolute left-0 top-1/2 -translate-y-1/2 w-[2px] h-5 rounded-full"
+                    className="absolute -left-[1px] top-[8px] bottom-[8px] w-[3px] rounded-full z-10"
                     style={{
                       background: 'linear-gradient(180deg, var(--accent-violet-bright), var(--accent-cyan))',
-                      boxShadow: '0 0 8px rgba(139,92,246,0.6)',
+                      boxShadow: '0 0 12px rgba(139,92,246,0.7), 0 0 4px rgba(56,217,245,0.5)',
                     }}
                   />
                 )}
@@ -422,16 +422,23 @@ export default function Layout() {
                       : 'hover:bg-[rgba(139,92,246,0.06)]'
                   }`}
                   style={{
-                    color: isActive ? 'var(--accent-violet-bright)' : 'var(--text-muted)',
-                    background: isActive ? 'linear-gradient(90deg, rgba(139,92,246,0.14), rgba(139,92,246,0.04))' : undefined,
-                    border: isActive ? '1px solid rgba(139,92,246,0.22)' : '1px solid transparent',
-                    boxShadow: isActive ? 'inset 0 1px 0 rgba(255,255,255,0.04)' : undefined,
+                    color: isActive ? '#ffffff' : 'var(--text-muted)',
+                    background: isActive
+                      ? 'linear-gradient(90deg, rgba(139,92,246,0.22), rgba(139,92,246,0.06) 70%)'
+                      : undefined,
+                    border: isActive ? '1px solid rgba(139,92,246,0.32)' : '1px solid transparent',
+                    boxShadow: isActive
+                      ? 'inset 0 1px 0 rgba(255,255,255,0.08), 0 0 20px -4px rgba(139,92,246,0.3)'
+                      : undefined,
                   }}
                 >
                   <Icon
                     className="w-[17px] h-[17px] flex-shrink-0"
-                    strokeWidth={isActive ? 2.25 : 1.9}
-                    style={{ opacity: isActive ? 1 : 0.78 }}
+                    strokeWidth={isActive ? 2.4 : 1.9}
+                    style={{
+                      color: isActive ? 'var(--accent-violet-bright)' : undefined,
+                      opacity: isActive ? 1 : 0.78,
+                    }}
                   />
 
                   {!collapsed && (
@@ -439,8 +446,9 @@ export default function Layout() {
                       <span
                         className="flex-1 truncate"
                         style={{
-                          color: isActive ? 'var(--accent-violet-bright)' : 'var(--text-secondary)',
+                          color: isActive ? '#ffffff' : 'var(--text-secondary)',
                           letterSpacing: '-0.005em',
+                          fontWeight: isActive ? 600 : 500,
                         }}
                       >
                         {item.label}

@@ -378,6 +378,65 @@ body {
   transform: translateY(-2px);
 }
 
+/* ================================================================
+   HERO SURFACE -- dense, Apple "Vision Pro" material, no hover lift
+   ================================================================ */
+.hero-surface {
+  position: relative;
+  background:
+    radial-gradient(1200px 300px at 20% -10%, rgba(139,92,246,0.10), transparent 60%),
+    radial-gradient(900px 260px at 90% 110%, rgba(56,217,245,0.06), transparent 60%),
+    linear-gradient(180deg, rgba(20,20,36,0.86) 0%, rgba(12,12,24,0.94) 100%);
+  backdrop-filter: blur(28px) saturate(1.4);
+  -webkit-backdrop-filter: blur(28px) saturate(1.4);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 24px;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.07),
+    inset 0 0 0 1px rgba(139,92,246,0.04),
+    0 30px 80px -24px rgba(0,0,0,0.7);
+  overflow: hidden;
+}
+.hero-surface::before {
+  content: '';
+  position: absolute; top: 0; left: 8%; right: 8%; height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(139,92,246,0.35) 30%, rgba(56,217,245,0.35) 70%, transparent);
+  pointer-events: none;
+}
+
+/* Display numeral utilities (tabular, tight tracking, SF-Pro feel) */
+.num-hero {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' on, 'cv11' on, 'ss01' on;
+  letter-spacing: -0.04em;
+  font-weight: 600;
+  line-height: 0.92;
+}
+.num-display {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  font-weight: 600;
+  line-height: 1;
+}
+.label-micro {
+  font-size: 9.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--text-muted);
+  opacity: 0.72;
+}
+.stat-col-divider {
+  position: relative;
+}
+.stat-col-divider::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 14%; bottom: 14%;
+  width: 1px;
+  background: linear-gradient(180deg, transparent, rgba(255,255,255,0.08), transparent);
+}
+
 /* Colored glows - premium palette with layered shadows */
 .glow-green {
   box-shadow:
