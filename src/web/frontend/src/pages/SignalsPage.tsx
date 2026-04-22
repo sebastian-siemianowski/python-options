@@ -19,11 +19,13 @@ import {
   TrendingUp, TrendingDown, Search, X, ExternalLink, BarChart3,
   Target, Shield, ShieldCheck, ArrowUp, ArrowDown, Clock, DollarSign,
   Activity, Eye, Layers, ChevronUp, AlertTriangle, Zap, Loader2,
+  Star, Plus,
 } from 'lucide-react';
 import MiniPriceChart from '../components/MiniPriceChart';
 import { formatHorizon, responsiveHorizons } from '../utils/horizons';
 
 import { useWebSocket, type WSStatus } from '../hooks/useWebSocket';
+import { useWatchlist } from '../hooks/useWatchlist';
 
 /** Extract ticker from "Company Name (TICKER)" */
 const extractTicker = (label: string): string => {
@@ -490,6 +492,19 @@ function SignalsPageInner() {
       {/* ── v1 PREMIUM HERO BAND ─────────────────────────────────────── */}
       <SignalsHero stats={stats} rows={rows} horizons={horizons} filteredCount={filteredRows.length} wsStatus={wsStatus} />
 
+      {/* Watchlist — always-visible, user-curated tickers persisted server-side */}
+      <div className="mb-5 fade-up-delay-1">
+        <WatchlistView
+          allRows={sortedRows}
+          horizons={horizons}
+          updatedAsset={updatedAsset}
+          sortLevels={sortLevels}
+          onSort={handleSort}
+          onRemoveSort={removeSortLevel}
+          qualityScores={qualityScores}
+          onNavigateChart={(sym) => navigate(`/charts/${sym}`)}
+        />
+      </div>
 
       {/* High Conviction Panels — full positions with rich data */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-8 fade-up-delay-1">
@@ -1667,6 +1682,294 @@ function StrongSignalsView({ strongBuy, strongSell, filter, onNavigateChart }: {
           accent="#f43f5e"
           label="Strong Sell Signals"
           icon={<TrendingDown className="w-4 h-4" style={{ color: '#f43f5e' }} />}
+          onNavigateChart={onNavigateChart}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ── Watchlist View — user-curated tickers with full detail ─────── */
+function WatchlistView({
+  allRows,
+  horizons,
+  updatedAsset,
+  sortLevels,
+  onSort,
+  onRemoveSort,
+  qualityScores,
+  onNavigateChart,
+}: {
+  allRows: SummaryRow[];
+  horizons: number[];
+  updatedAsset: string | null;
+  sortLevels: { col: SortColumn; dir: SortDir }[];
+  onSort: (col: SortColumn, shift: boolean) => void;
+  onRemoveSort: (col: SortColumn) => void;
+  qualityScores: Record<string, number>;
+  onNavigateChart: (sym: string) => void;
+}) {
+  const { symbols, isLoading, add, remove } = useWatchlist();
+  const [input, setInput] = useState('');
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Build a set of tickers for O(1) lookup. Also build a ticker → row map so
+  // we can tell which watchlist symbols are present in the current signal set.
+  const { watchlistRows, missingSymbols } = useMemo(() => {
+    const set = new Set(symbols);
+    const rowsForWatchlist: SummaryRow[] = [];
+    const found = new Set<string>();
+    for (const r of allRows) {
+      const ticker = extractTicker(r.asset_label);
+      if (set.has(ticker)) {
+        rowsForWatchlist.push(r);
+        found.add(ticker);
+      }
+    }
+    const missing = symbols.filter((s) => !found.has(s));
+    return { watchlistRows: rowsForWatchlist, missingSymbols: missing };
+  }, [allRows, symbols]);
+
+  const submit = useCallback(() => {
+    const sym = input.trim().toUpperCase();
+    if (!sym) return;
+    add.mutate(sym, {
+      onSuccess: () => setInput(''),
+    });
+  }, [input, add]);
+
+  const onKey = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        submit();
+      }
+    },
+    [submit],
+  );
+
+  const addErrorMsg = add.error?.message;
+
+  return (
+    <div className="flex flex-col gap-5 fade-up-delay-3">
+      {/* ── Management card: input + chips ───────────────────────────── */}
+      <div
+        className="overflow-hidden"
+        style={{
+          background:
+            'linear-gradient(180deg, rgba(255,255,255,0.025) 0%, rgba(255,255,255,0.008) 100%)',
+          border: '1px solid rgba(255,255,255,0.06)',
+          borderRadius: '16px',
+          boxShadow:
+            '0 1px 0 rgba(255,255,255,0.04) inset, 0 8px 28px -14px rgba(0,0,0,0.6), 0 1px 0 rgba(0,0,0,0.4)',
+          backdropFilter: 'blur(12px)',
+        }}
+      >
+        {/* Header */}
+        <div className="flex items-center gap-2 px-4 py-3 border-b border-white/[0.04]">
+          <div
+            className="w-7 h-7 rounded-lg flex items-center justify-center"
+            style={{ background: 'var(--violet-15)', color: '#a78bfa' }}
+          >
+            <Star className="w-4 h-4" />
+          </div>
+          <div className="flex-1">
+            <div className="text-sm font-semibold text-[#e2e8f0] leading-tight">Watchlist</div>
+            <div className="text-[11px] text-[var(--text-secondary)] leading-tight">
+              Persisted server-side — survives restarts.
+            </div>
+          </div>
+          <div
+            className="px-2 py-0.5 rounded-md text-[11px] font-medium tabular-nums"
+            style={{ background: 'rgba(167,139,250,0.10)', color: '#c4b5fd' }}
+            title={`${symbols.length} tracked — ${watchlistRows.length} with live signals`}
+          >
+            {symbols.length} tracked
+          </div>
+        </div>
+
+        {/* Add row */}
+        <div className="px-4 py-3">
+          <div className="flex items-center gap-2">
+            <div
+              className="flex items-center gap-2 flex-1 px-3 py-[7px] focus-ring transition-all duration-200"
+              style={{
+                background: 'rgba(255,255,255,0.02)',
+                border: '1px solid rgba(255,255,255,0.06)',
+                borderRadius: '10px',
+              }}
+            >
+              <Search className="w-3.5 h-3.5 text-[var(--text-secondary)]" />
+              <input
+                ref={inputRef}
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value.toUpperCase())}
+                onKeyDown={onKey}
+                placeholder="Add ticker (e.g. AAPL, BTC-USD, EURUSD=X)"
+                spellCheck={false}
+                autoCapitalize="characters"
+                autoCorrect="off"
+                className="flex-1 bg-transparent outline-none text-sm text-[#e2e8f0] placeholder:text-[var(--text-secondary)]"
+                disabled={add.isPending}
+              />
+              {input && (
+                <button
+                  type="button"
+                  onClick={() => setInput('')}
+                  className="text-[var(--text-secondary)] hover:text-[#e2e8f0]"
+                  title="Clear"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={submit}
+              disabled={!input.trim() || add.isPending}
+              className="inline-flex items-center gap-1.5 px-3 py-[7px] rounded-[10px] text-sm font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{
+                background: 'var(--violet-15)',
+                color: '#c4b5fd',
+                border: '1px solid rgba(167,139,250,0.25)',
+              }}
+            >
+              {add.isPending ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Plus className="w-3.5 h-3.5" />
+              )}
+              Add
+            </button>
+          </div>
+          {addErrorMsg && (
+            <div
+              className="mt-2 flex items-center gap-1.5 text-[11px]"
+              style={{ color: '#fca5a5' }}
+            >
+              <AlertTriangle className="w-3 h-3" />
+              {addErrorMsg}
+            </div>
+          )}
+
+          {/* Chips */}
+          {symbols.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {symbols.map((sym) => {
+                const isMissing = missingSymbols.includes(sym);
+                return (
+                  <span
+                    key={sym}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium tabular-nums transition-all"
+                    style={{
+                      background: isMissing
+                        ? 'rgba(251,191,36,0.08)'
+                        : 'rgba(167,139,250,0.08)',
+                      color: isMissing ? '#fcd34d' : '#c4b5fd',
+                      border: isMissing
+                        ? '1px solid rgba(251,191,36,0.22)'
+                        : '1px solid rgba(167,139,250,0.22)',
+                    }}
+                    title={
+                      isMissing
+                        ? `${sym} — not in current signal set`
+                        : sym
+                    }
+                  >
+                    {isMissing && <AlertTriangle className="w-3 h-3" />}
+                    {sym}
+                    <button
+                      type="button"
+                      onClick={() => remove.mutate(sym)}
+                      disabled={remove.isPending}
+                      className="ml-0.5 opacity-70 hover:opacity-100 disabled:opacity-30"
+                      title={`Remove ${sym}`}
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Table / empty state ─────────────────────────────────────── */}
+      {isLoading ? (
+        <div className="text-center py-8 text-sm text-[var(--text-secondary)]">
+          Loading watchlist…
+        </div>
+      ) : symbols.length === 0 ? (
+        <div
+          className="flex flex-col items-center justify-center text-center py-16 px-6"
+          style={{
+            background:
+              'linear-gradient(180deg, rgba(255,255,255,0.02) 0%, rgba(255,255,255,0.005) 100%)',
+            border: '1px dashed rgba(255,255,255,0.08)',
+            borderRadius: '16px',
+          }}
+        >
+          <div
+            className="w-14 h-14 rounded-2xl flex items-center justify-center mb-4"
+            style={{ background: 'var(--violet-15)', color: '#a78bfa' }}
+          >
+            <Star className="w-7 h-7" />
+          </div>
+          <h3 className="text-base font-semibold text-[#e2e8f0] mb-1">
+            Your watchlist is empty
+          </h3>
+          <p className="text-sm text-[var(--text-secondary)] max-w-sm">
+            Add tickers above to track them with the same level of detail as the
+            main view. Your list persists across server restarts.
+          </p>
+          <button
+            type="button"
+            onClick={() => inputRef.current?.focus()}
+            className="mt-4 inline-flex items-center gap-1.5 px-3 py-[7px] rounded-[10px] text-sm font-medium"
+            style={{
+              background: 'var(--violet-15)',
+              color: '#c4b5fd',
+              border: '1px solid rgba(167,139,250,0.25)',
+            }}
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Add your first ticker
+          </button>
+        </div>
+      ) : watchlistRows.length === 0 ? (
+        <div
+          className="flex flex-col items-center justify-center text-center py-12 px-6"
+          style={{
+            background:
+              'linear-gradient(180deg, rgba(255,255,255,0.02) 0%, rgba(255,255,255,0.005) 100%)',
+            border: '1px dashed rgba(251,191,36,0.18)',
+            borderRadius: '16px',
+          }}
+        >
+          <AlertTriangle className="w-8 h-8 mb-3" style={{ color: '#fcd34d' }} />
+          <h3 className="text-base font-semibold text-[#e2e8f0] mb-1">
+            No live signals for your watchlist
+          </h3>
+          <p className="text-sm text-[var(--text-secondary)] max-w-md">
+            None of your saved tickers are in the current signal set. They are
+            still persisted — add them to the engine or refresh signals to see
+            them here.
+          </p>
+        </div>
+      ) : (
+        <AllAssetsTable
+          rows={watchlistRows}
+          horizons={horizons}
+          updatedAsset={updatedAsset}
+          sortLevels={sortLevels}
+          onSort={onSort}
+          onRemoveSort={onRemoveSort}
+          expandedRow={expanded}
+          onExpandRow={setExpanded}
+          qualityScores={qualityScores}
           onNavigateChart={onNavigateChart}
         />
       )}

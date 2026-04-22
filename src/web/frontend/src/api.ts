@@ -108,7 +108,36 @@ export const api = {
   indicatorsRunBacktest: (mode: 'quick' | 'full' = 'full') =>
     postApi<IndicatorBacktestStart>(`/api/indicators/backtest?mode=${mode}`),
   indicatorsBacktestStatus: () => fetchApi<IndicatorBacktestStatus>('/api/indicators/backtest/status'),
+
+  // Watchlist — user-curated tickers persisted server-side.
+  watchlistGet: () => fetchApi<WatchlistResponse>('/api/watchlist'),
+  watchlistAdd: async (symbol: string): Promise<WatchlistResponse> => {
+    const res = await fetch('/api/watchlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol }),
+    });
+    if (!res.ok) {
+      let detail = `${res.status} ${res.statusText}`;
+      try { const body = await res.json(); if (body?.detail) detail = body.detail; } catch { /* ignore */ }
+      throw new Error(detail);
+    }
+    return res.json();
+  },
+  watchlistRemove: async (symbol: string): Promise<WatchlistResponse> => {
+    const res = await fetch(`/api/watchlist/${encodeURIComponent(symbol)}`, { method: 'DELETE' });
+    if (!res.ok) {
+      let detail = `${res.status} ${res.statusText}`;
+      try { const body = await res.json(); if (body?.detail) detail = body.detail; } catch { /* ignore */ }
+      throw new Error(detail);
+    }
+    return res.json();
+  },
 };
+
+export interface WatchlistResponse {
+  symbols: string[];
+}
 
 // ── Types ───────────────────────────────────────────────────────────
 

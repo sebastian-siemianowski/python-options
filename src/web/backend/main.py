@@ -33,6 +33,7 @@ from web.backend.routers import (
     services,
     diagnostics,
     indicators,
+    watchlist,
 )
 
 
@@ -73,6 +74,7 @@ if os.path.isdir(plots_dir):
 
 app.include_router(overview.router, prefix="/api", tags=["overview"])
 app.include_router(signals.router, prefix="/api/signals", tags=["signals"])
+app.include_router(watchlist.router, prefix="/api/watchlist", tags=["watchlist"])
 app.include_router(risk.router, prefix="/api/risk", tags=["risk"])
 app.include_router(charts.router, prefix="/api/charts", tags=["charts"])
 app.include_router(tuning.router, prefix="/api/tune", tags=["tuning"])
