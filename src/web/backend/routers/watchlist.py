@@ -157,3 +157,25 @@ def remove_symbol(symbol: str) -> WatchlistResponse:
         symbols = [s for s in symbols if s != sym]
         _save(symbols)
         return WatchlistResponse(symbols=symbols)
+
+
+class ProxyMapResponse(BaseModel):
+    # Map of user-facing symbol -> primary symbol actually tuned / present in
+    # signals output.  Needed so the watchlist UI can match chips like
+    # "DFNG" (proxies to "ITA") or "XAGUSD=X" (proxies to "SI=F") against
+    # the signals set and avoid showing false "not matched" warnings.
+    proxies: dict[str, str]
+
+
+@router.get("/proxy-map", response_model=ProxyMapResponse)
+def get_proxy_map() -> ProxyMapResponse:
+    try:
+        # Import lazily so this module has no hard dependency on ingestion at
+        # import time (the ingestion module pulls heavy numeric deps).
+        from ingestion.data_utils import PROXY_OVERRIDES  # type: ignore
+    except Exception:
+        return ProxyMapResponse(proxies={})
+    # Defensive copy as plain dict of str->str.
+    return ProxyMapResponse(
+        proxies={str(k).upper(): str(v) for k, v in PROXY_OVERRIDES.items()}
+    )

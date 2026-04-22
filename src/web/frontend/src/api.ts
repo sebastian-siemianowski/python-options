@@ -111,6 +111,8 @@ export const api = {
 
   // Watchlist — user-curated tickers persisted server-side.
   watchlistGet: () => fetchApi<WatchlistResponse>('/api/watchlist'),
+  watchlistProxyMap: () =>
+    fetchApi<WatchlistProxyMapResponse>('/api/watchlist/proxy-map'),
   watchlistAdd: async (symbol: string): Promise<WatchlistResponse> => {
     const res = await fetch('/api/watchlist', {
       method: 'POST',
@@ -137,6 +139,10 @@ export const api = {
 
 export interface WatchlistResponse {
   symbols: string[];
+}
+
+export interface WatchlistProxyMapResponse {
+  proxies: Record<string, string>;
 }
 
 // ── Types ───────────────────────────────────────────────────────────

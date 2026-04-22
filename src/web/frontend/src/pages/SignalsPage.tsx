@@ -1709,27 +1709,47 @@ function WatchlistView({
   qualityScores: Record<string, number>;
   onNavigateChart: (sym: string) => void;
 }) {
-  const { symbols, isLoading, add, remove } = useWatchlist();
+  const { symbols, proxyMap, isLoading, add, remove } = useWatchlist();
   const [input, setInput] = useState('');
   const [expanded, setExpanded] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Build a set of tickers for O(1) lookup. Also build a ticker → row map so
   // we can tell which watchlist symbols are present in the current signal set.
+  // Some watchlist tickers are proxied under the hood (e.g. DFNG → ITA,
+  // XAGUSD=X → SI=F, GLDE → GLD), so a signal row labelled with the primary
+  // ticker must still count as "found" for the proxied watchlist entry. We
+  // build a symbol → [acceptable tickers] map using the server-provided
+  // PROXY_OVERRIDES, and match a row against any of them.
   const { watchlistRows, missingSymbols } = useMemo(() => {
-    const set = new Set(symbols);
+    const acceptableBySymbol = new Map<string, Set<string>>();
+    const accepted = new Set<string>();
+    for (const s of symbols) {
+      const targets = new Set<string>([s]);
+      const primary = proxyMap[s];
+      if (primary) targets.add(primary);
+      acceptableBySymbol.set(s, targets);
+      for (const t of targets) accepted.add(t);
+    }
     const rowsForWatchlist: SummaryRow[] = [];
-    const found = new Set<string>();
+    const foundRowTickers = new Set<string>();
     for (const r of allRows) {
       const ticker = extractTicker(r.asset_label);
-      if (set.has(ticker)) {
+      if (accepted.has(ticker)) {
         rowsForWatchlist.push(r);
-        found.add(ticker);
+        foundRowTickers.add(ticker);
       }
     }
-    const missing = symbols.filter((s) => !found.has(s));
+    const missing = symbols.filter((s) => {
+      const targets = acceptableBySymbol.get(s);
+      if (!targets) return true;
+      for (const t of targets) {
+        if (foundRowTickers.has(t)) return false;
+      }
+      return true;
+    });
     return { watchlistRows: rowsForWatchlist, missingSymbols: missing };
-  }, [allRows, symbols]);
+  }, [allRows, symbols, proxyMap]);
 
   const submit = useCallback(() => {
     const sym = input.trim().toUpperCase();

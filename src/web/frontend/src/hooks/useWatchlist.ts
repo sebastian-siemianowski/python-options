@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, type WatchlistResponse } from '../api';
+import { api, type WatchlistResponse, type WatchlistProxyMapResponse } from '../api';
 
 const WATCHLIST_KEY = ['watchlist'] as const;
+const WATCHLIST_PROXY_KEY = ['watchlist', 'proxy-map'] as const;
 
 /**
  * React Query hook for the server-side watchlist.
@@ -17,6 +18,16 @@ export function useWatchlist() {
     queryKey: WATCHLIST_KEY,
     queryFn: api.watchlistGet,
     staleTime: 60_000,
+  });
+
+  // Map of user-facing symbol -> primary (tuned) symbol.  Used by consumers
+  // (e.g. the Signals watchlist panel) to match chips like "DFNG" against
+  // signal rows labelled with the proxy primary ("ITA") so valid entries
+  // don't show a false "not matched" warning.
+  const proxyQuery = useQuery<WatchlistProxyMapResponse>({
+    queryKey: WATCHLIST_PROXY_KEY,
+    queryFn: api.watchlistProxyMap,
+    staleTime: 10 * 60_000,
   });
 
   const add = useMutation<WatchlistResponse, Error, string, { previous?: WatchlistResponse }>({
@@ -61,6 +72,7 @@ export function useWatchlist() {
 
   return {
     symbols: query.data?.symbols ?? [],
+    proxyMap: proxyQuery.data?.proxies ?? {},
     isLoading: query.isLoading,
     isError: query.isError,
     error: query.error,
