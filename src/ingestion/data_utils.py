@@ -4263,14 +4263,12 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
         out: Dict[str, pd.DataFrame] = {}
         fetch_syms = chunk_syms
         try:
-            # threads=True is critical for speed: with threads=False, yfinance
-            # fetches each symbol in the chunk SEQUENTIALLY (benchmarked at
-            # ~0.2s/sym), which on a 504-symbol universe x 10-yr history causes
-            # the "snail pace" the user sees after `make retune`.
-            # We keep the outer ThreadPoolExecutor capped (see below) so that
-            # outer_workers * chunk_size concurrent requests stays reasonable
-            # and avoids Yahoo rate-limiting silent-empty responses.
-            df = yf.download(fetch_syms, start=start, end=end, auto_adjust=True, group_by="ticker", progress=False, threads=True, timeout=YFINANCE_TIMEOUT)
+            # Keep threads=False: yfinance's internal threading combined with
+            # our outer ThreadPoolExecutor (12 workers) triggers silent Yahoo
+            # rate-limiting at production scale (503+ symbols). Benchmarked
+            # empirically: threads=False + outer=12 → 195/497 in Pass 1;
+            # threads=True + outer=4 → 29/503 in Pass 1.
+            df = yf.download(fetch_syms, start=start, end=end, auto_adjust=True, group_by="ticker", progress=False, threads=False, timeout=YFINANCE_TIMEOUT)
         except Exception:
             df = None
         if df is None or df.empty:
@@ -4299,17 +4297,10 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
         return out
 
     chunks = [remaining_primaries[i:i + chunk_size] for i in range(0, len(remaining_primaries), chunk_size) if remaining_primaries[i:i + chunk_size]]
-    # Because _download_chunk now passes threads=True to yfinance, each chunk
-    # already fans out internally. Capping the outer pool at 4 keeps the total
-    # concurrent Yahoo requests at ~4 * chunk_size (e.g. 64 with chunk_size=16),
-    # which historically has been the sweet spot before Yahoo starts silently
-    # returning empty frames. Before this cap, outer=12 * inner threads caused
-    # the "5 ok / 499 pending" behaviour on large universes.
-    effective_workers = min(max_workers, 4)
     if log and chunks:
-        log(f"  Launching {len(chunks)} chunk(s) with {min(effective_workers, len(chunks))} workers…")
+        log(f"  Launching {len(chunks)} chunk(s) with {min(max_workers, len(chunks))} workers…")
 
-    with ThreadPoolExecutor(max_workers=min(effective_workers, max(1, len(chunks)))) as ex:
+    with ThreadPoolExecutor(max_workers=min(max_workers, max(1, len(chunks)))) as ex:
         future_map = {ex.submit(_download_chunk, c): c for c in chunks}
         for fut in as_completed(future_map):
             chunk_syms = future_map[fut]
