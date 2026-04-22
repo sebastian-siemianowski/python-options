@@ -114,9 +114,9 @@ async def retune_stream(mode: str = "retune"):
                     ev = payload.get("event")
                     if ev == "start":
                         total_expected = int(payload.get("total_expected", 0))
-                        yield f"data: {json.dumps({'type': 'start', 'mode': payload.get('mode'), 'total': total_expected})}\n\n"
+                        yield f"data: {json.dumps({'type': 'start', 'mode': payload.get('mode'), 'total': total_expected, 'phase_count': payload.get('phase_count', 1)})}\n\n"
                     elif ev == "phase":
-                        yield f"data: {json.dumps({'type': 'phase', 'title': payload.get('title', '')})}\n\n"
+                        yield f"data: {json.dumps({'type': 'phase', 'title': payload.get('title', ''), 'step': payload.get('step'), 'total_steps': payload.get('total_steps'), 'kind': payload.get('kind')})}\n\n"
                     elif ev == "asset":
                         status = payload.get("status", "ok")
                         if status == "fail":
@@ -124,11 +124,19 @@ async def retune_stream(mode: str = "retune"):
                         else:
                             done_count += 1
                         yield f"data: {json.dumps({'type': 'asset', 'symbol': payload.get('symbol'), 'status': status, 'detail': payload.get('detail'), 'done': done_count, 'fail': fail_count, 'total': total_expected})}\n\n"
+                    elif ev == "model":
+                        # Per-asset model selection (e.g. 'Student-t+EVTH').
+                        yield f"data: {json.dumps({'type': 'model', 'symbol': payload.get('symbol'), 'model': payload.get('model')})}\n\n"
+                    elif ev == "refresh":
+                        yield f"data: {json.dumps({'type': 'refresh', 'pass': payload.get('pass'), 'total_passes': payload.get('total_passes'), 'ok': payload.get('ok'), 'pending': payload.get('pending')})}\n\n"
                     elif ev == "heartbeat":
-                        yield f"data: {json.dumps({'type': 'heartbeat', 'done': payload.get('done', 0), 'total': payload.get('total', 0), 'elapsed_s': payload.get('elapsed_s', 0)})}\n\n"
+                        yield f"data: {json.dumps({'type': 'heartbeat', 'done': payload.get('done', 0), 'total': payload.get('total', 0), 'elapsed_s': payload.get('elapsed_s', 0), 'phase_step': payload.get('phase_step'), 'phase_title': payload.get('phase_title')})}\n\n"
+                    elif ev == "error":
+                        # Structured error extracted from a Python traceback.
+                        yield f"data: {json.dumps({'type': 'error', 'error_type': payload.get('error_type'), 'message': payload.get('message', '')})}\n\n"
                     elif ev == "done":
                         status = "completed" if payload.get("status") == "ok" else "failed"
-                        yield f"data: {json.dumps({'type': status, 'done': payload.get('done', 0), 'total': payload.get('total', 0), 'elapsed_s': payload.get('elapsed_s', 0), 'exit_code': payload.get('exit_code', -1)})}\n\n"
+                        yield f"data: {json.dumps({'type': status, 'done': payload.get('done', 0), 'total': payload.get('total', 0), 'elapsed_s': payload.get('elapsed_s', 0), 'exit_code': payload.get('exit_code', -1), 'error': payload.get('error')})}\n\n"
                 elif text.startswith("@@LOG@@ "):
                     # Raw log pass-through (only shown in collapsible log viewer)
                     yield f"data: {json.dumps({'type': 'log', 'message': _strip_ansi(text[len('@@LOG@@ '):])})}\n\n"

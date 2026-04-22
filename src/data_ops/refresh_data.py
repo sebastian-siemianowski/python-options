@@ -685,6 +685,21 @@ def main():
     parser.add_argument("--years", type=int, default=10, help="Years of history (default: 10)")
     parser.add_argument("--quiet", action="store_true", help="Suppress output")
     parser.add_argument("--skip-trim", action="store_true", help="Skip trimming, only download")
+    parser.add_argument(
+        "--fail-threshold",
+        type=int,
+        default=-1,
+        help=(
+            "Maximum tolerated failed symbols before exiting 1. "
+            "Default (-1) = tolerate up to max(3, 1%% of universe); useful for "
+            "forex/odd tickers that Yahoo occasionally drops."
+        ),
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Require zero failures to exit 0 (overrides --fail-threshold).",
+    )
 
     args = parser.parse_args()
 
@@ -733,7 +748,31 @@ def main():
             if os.getenv('DEBUG'):
                 console.print(f"[dim]Metals temperature unavailable: {e}[/dim]")
 
-    sys.exit(0 if failed_count == 0 else 1)
+    # Determine acceptable failure threshold. Yahoo regularly drops a handful of
+    # odd forex/exotic tickers; failing the entire pipeline (and by extension
+    # `make retune`) for 1 missing symbol out of hundreds is a poor experience.
+    total = len(all_symbols)
+    if args.strict:
+        threshold = 0
+    elif args.fail_threshold >= 0:
+        threshold = args.fail_threshold
+    else:
+        threshold = max(3, total // 100)  # max(3, 1% of universe)
+
+    if failed_count > threshold:
+        if not args.quiet:
+            console.print(
+                f"[red]Exiting non-zero: {failed_count} failures exceed "
+                f"threshold of {threshold}[/red]"
+            )
+        sys.exit(1)
+
+    if failed_count > 0 and not args.quiet:
+        console.print(
+            f"[dim]{failed_count} symbol(s) unavailable — within tolerance "
+            f"({threshold}); continuing.[/dim]"
+        )
+    sys.exit(0)
 
 
 if __name__ == "__main__":

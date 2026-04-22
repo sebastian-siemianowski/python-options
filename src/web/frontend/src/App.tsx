@@ -1,5 +1,7 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient } from '@tanstack/react-query';
+import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
+import { createSyncStoragePersister } from '@tanstack/query-sync-storage-persister';
 import Layout from './components/Layout';
 import ToastContainer from './components/ToastContainer';
 import { ToastProvider } from './stores/toastStore';
@@ -20,16 +22,41 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 2 * 60_000,     // 2 minutes - stale-while-revalidate
-      gcTime: 10 * 60_000,       // 10 minutes garbage collection
+      gcTime: 24 * 60 * 60_000,  // 24h - keep in memory long enough to persist
       refetchOnWindowFocus: true, // Background refresh on tab return
+      refetchOnMount: 'always',   // Re-fetch when component remounts (shows cached, refreshes in bg)
       retry: 1,
     },
   },
 });
 
+// Persist the query cache to localStorage so data is instantly available on
+// page reload. Queries show cached data immediately, then refresh in the
+// background when stale.
+const persister = createSyncStoragePersister({
+  storage: window.localStorage,
+  key: 'python-options-query-cache',
+  throttleTime: 1_000,
+});
+
+// Bump this when query response shapes change to invalidate stale caches
+// across all users after a deploy.
+const CACHE_BUSTER = 'v1';
+
 export default function App() {
   return (
-    <QueryClientProvider client={queryClient}>
+    <PersistQueryClientProvider
+      client={queryClient}
+      persistOptions={{
+        persister,
+        maxAge: 24 * 60 * 60_000, // 24 hours
+        buster: CACHE_BUSTER,
+        dehydrateOptions: {
+          // Only persist successful queries to avoid caching error states.
+          shouldDehydrateQuery: (q) => q.state.status === 'success',
+        },
+      }}
+    >
       <ToastProvider>
         <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
           <Routes>
@@ -52,6 +79,6 @@ export default function App() {
           <ToastContainer />
         </BrowserRouter>
       </ToastProvider>
-    </QueryClientProvider>
+    </PersistQueryClientProvider>
   );
 }

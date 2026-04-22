@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { X, CheckCircle2, XCircle, Loader2, ChevronDown, ChevronRight, Play, Activity } from 'lucide-react';
+import { X, CheckCircle2, XCircle, Loader2, ChevronDown, ChevronRight, Play, Activity, Download, Sparkles } from 'lucide-react';
 
 export type JobMode = 'tune' | 'stocks' | 'retune' | 'calibrate';
 
@@ -7,6 +7,8 @@ type EventType =
   | 'start'
   | 'phase'
   | 'asset'
+  | 'model'
+  | 'refresh'
   | 'heartbeat'
   | 'log'
   | 'completed'
@@ -26,6 +28,23 @@ interface JobEvent {
   total?: number;
   elapsed_s?: number;
   exit_code?: number;
+  // Multi-phase metadata (retune pipeline: refresh -> backup -> tune)
+  step?: number;
+  total_steps?: number;
+  phase_count?: number;
+  kind?: string;
+  phase_step?: number;
+  phase_title?: string;
+  // Per-asset model selection (emitted from tune logs).
+  model?: string;
+  // Refresh pass telemetry (emitted from refresh logs).
+  pass?: number;
+  total_passes?: number;
+  ok?: number;
+  pending?: number;
+  // Structured error surface.
+  error_type?: string;
+  error?: string;
 }
 
 interface LogLine {
@@ -37,11 +56,23 @@ interface AssetEntry {
   symbol: string;
   status: 'ok' | 'fail';
   detail?: string;
+  model?: string;
 }
 
 interface PhaseEntry {
   id: number;
   title: string;
+  step?: number;
+  totalSteps?: number;
+  kind?: string;
+  startedAt: number;
+}
+
+interface RefreshPassState {
+  pass: number;
+  totalPasses: number;
+  ok: number;
+  pending: number;
 }
 
 const MODE_LABELS: Record<JobMode, { title: string; desc: string; color: string }> = {
@@ -68,6 +99,10 @@ export function JobRunnerPanel({
   const [elapsedSec, setElapsedSec] = useState(0);
   const [showRawLog, setShowRawLog] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Rich telemetry derived from subprocess logs.
+  const [refreshPass, setRefreshPass] = useState<RefreshPassState | null>(null);
+  const [modelBySymbol, setModelBySymbol] = useState<Record<string, string>>({});
+  const [modelCounts, setModelCounts] = useState<Record<string, number>>({});
 
   const esRef = useRef<EventSource | null>(null);
   const preRef = useRef<HTMLDivElement | null>(null);
@@ -84,6 +119,8 @@ export function JobRunnerPanel({
     counters: { done: number; fail: number; total: number };
     elapsed: number | null;
     finalStatus: 'completed' | 'failed' | 'error' | null;
+    modelUpdates: Record<string, string>;
+    refreshPass: RefreshPassState | null;
   }>({
     newAssets: [],
     newPhases: [],
@@ -91,6 +128,8 @@ export function JobRunnerPanel({
     counters: { done: 0, fail: 0, total: 0 },
     elapsed: null,
     finalStatus: null,
+    modelUpdates: {},
+    refreshPass: null,
   });
   const flushRef = useRef<number | null>(null);
 
@@ -119,6 +158,26 @@ export function JobRunnerPanel({
       });
       b.newLogs = [];
     }
+    if (Object.keys(b.modelUpdates).length > 0) {
+      const updates = b.modelUpdates;
+      b.modelUpdates = {};
+      setModelBySymbol((prev) => ({ ...prev, ...updates }));
+      setModelCounts((prev) => {
+        const next = { ...prev };
+        for (const [sym, model] of Object.entries(updates)) {
+          // Only count each symbol once — if we already have a model for it,
+          // skip (tune occasionally re-prints the same selection).
+          if (prev[sym] === undefined || prev[sym] !== model) {
+            next[model] = (next[model] ?? 0) + 1;
+          }
+        }
+        return next;
+      });
+    }
+    if (b.refreshPass) {
+      setRefreshPass(b.refreshPass);
+      b.refreshPass = null;
+    }
     setCounters(b.counters);
     if (b.elapsed !== null) {
       setElapsedSec(b.elapsed);
@@ -140,6 +199,9 @@ export function JobRunnerPanel({
     setCounters({ done: 0, fail: 0, total: 0 });
     setElapsedSec(0);
     setErrorMsg(null);
+    setRefreshPass(null);
+    setModelBySymbol({});
+    setModelCounts({});
     logIdRef.current = 0;
     phaseIdRef.current = 0;
     startTimeRef.current = Date.now();
@@ -150,6 +212,8 @@ export function JobRunnerPanel({
       counters: { done: 0, fail: 0, total: 0 },
       elapsed: null,
       finalStatus: null,
+      modelUpdates: {},
+      refreshPass: null,
     };
 
     const es = new EventSource(`/api/tune/retune/stream?mode=${mode}`);
@@ -180,7 +244,14 @@ export function JobRunnerPanel({
         case 'phase':
           if (data.title) {
             phaseIdRef.current += 1;
-            buf.newPhases.push({ id: phaseIdRef.current, title: data.title });
+            buf.newPhases.push({
+              id: phaseIdRef.current,
+              title: data.title,
+              step: data.step,
+              totalSteps: data.total_steps,
+              kind: data.kind,
+              startedAt: Date.now(),
+            });
           }
           break;
 
@@ -190,13 +261,35 @@ export function JobRunnerPanel({
               symbol: data.symbol,
               status: data.status === 'fail' ? 'fail' : 'ok',
               detail: data.detail,
+              model: data.model,
             });
+            if (data.model) {
+              buf.modelUpdates[data.symbol] = data.model;
+            }
           }
           buf.counters = {
             done: data.done ?? buf.counters.done,
             fail: data.fail ?? buf.counters.fail,
             total: data.total ?? buf.counters.total,
           };
+          break;
+
+        case 'model':
+          if (data.symbol && data.model) {
+            buf.modelUpdates[data.symbol] = data.model;
+          }
+          break;
+
+        case 'refresh':
+          if (typeof data.pass === 'number') {
+            const prev = buf.refreshPass;
+            buf.refreshPass = {
+              pass: data.pass,
+              totalPasses: data.total_passes ?? prev?.totalPasses ?? 1,
+              ok: data.ok ?? prev?.ok ?? 0,
+              pending: data.pending ?? prev?.pending ?? 0,
+            };
+          }
           break;
 
         case 'heartbeat':
@@ -217,12 +310,20 @@ export function JobRunnerPanel({
           }
           break;
 
+        case 'error':
+          // Non-terminal: structured error extracted from a traceback during
+          // the run. Surface the message but keep the EventSource open so the
+          // subsequent `failed` terminal event can still arrive.
+          setErrorMsg(
+            data.message || data.error_type || 'Unknown error'
+          );
+          break;
+
         case 'completed':
         case 'failed':
-        case 'error':
           buf.finalStatus = data.type;
-          if (data.type === 'error' && data.message) {
-            setErrorMsg(data.message);
+          if (data.type === 'failed' && data.error) {
+            setErrorMsg((prev) => prev || data.error || null);
           }
           es.close();
           esRef.current = null;
@@ -279,14 +380,50 @@ export function JobRunnerPanel({
     onClose();
   };
 
-  const formatElapsed = (s: number) => {
-    const m = Math.floor(s / 60);
+  // Stable mm:ss for header. Integer-only; safe for float server elapsed_s.
+  const formatElapsed = (raw: number) => {
+    const s = Math.max(0, Math.round(Number(raw) || 0));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
     const ss = (s % 60).toString().padStart(2, '0');
+    if (h > 0) {
+      const mm = m.toString().padStart(2, '0');
+      return `${h}:${mm}:${ss}`;
+    }
     return `${m}:${ss}`;
+  };
+
+  // Human-friendly "2m 34s" / "1h 05m" for banners/tooltips.
+  const formatDuration = (raw: number) => {
+    const s = Math.max(0, Math.round(Number(raw) || 0));
+    if (s < 60) return `${s}s`;
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const ss = s % 60;
+    if (h > 0) return `${h}h ${m.toString().padStart(2, '0')}m`;
+    return ss === 0 ? `${m}m` : `${m}m ${ss.toString().padStart(2, '0')}s`;
   };
 
   const recentAssets = useMemo(() => assets.slice(-32).reverse(), [assets]);
   const currentPhase = phases.length > 0 ? phases[phases.length - 1] : null;
+
+  // Top-N model distribution chips during the tune phase.
+  const topModels = useMemo(() => {
+    const entries = Object.entries(modelCounts);
+    if (entries.length === 0) return [] as Array<{ name: string; count: number; hue: number }>;
+    entries.sort((a, b) => b[1] - a[1]);
+    // Deterministic hash -> hue for stable coloring.
+    const hashHue = (s: string) => {
+      let h = 0;
+      for (let i = 0; i < s.length; i += 1) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+      return h % 360;
+    };
+    return entries.slice(0, 6).map(([name, count]) => ({ name, count, hue: hashHue(name) }));
+  }, [modelCounts]);
+  const totalModelled = useMemo(
+    () => Object.values(modelCounts).reduce((acc, v) => acc + v, 0),
+    [modelCounts],
+  );
 
   const progressPct = counters.total > 0
     ? Math.min(100, ((counters.done + counters.fail) / counters.total) * 100)
@@ -303,60 +440,108 @@ export function JobRunnerPanel({
     status === 'failed' || status === 'error' ? '#f43f5e' :
     'var(--text-muted)';
 
+  const statusLabel =
+    status === 'running' ? 'Running' :
+    status === 'completed' ? 'Complete' :
+    status === 'failed' ? 'Failed' :
+    status === 'error' ? 'Error' :
+    'Idle';
+
+  // Throughput: completed assets per minute. Skip tiny-elapsed noise.
+  const processed = counters.done + counters.fail;
+  const throughput = elapsedSec >= 5 && processed > 0
+    ? processed / (elapsedSec / 60)
+    : null;
+  const avgPerAsset = processed > 0 ? elapsedSec / processed : null;
+  const successRate = processed > 0 ? (counters.done / processed) * 100 : null;
+
   const eta = (() => {
-    if (!isRunning || counters.done === 0 || counters.total === 0) return null;
-    const rate = counters.done / Math.max(elapsedSec, 1);
-    const remaining = counters.total - counters.done - counters.fail;
+    if (!isRunning || processed === 0 || counters.total === 0) return null;
+    const rate = processed / Math.max(elapsedSec, 1);
+    const remaining = counters.total - processed;
     if (rate <= 0 || remaining <= 0) return null;
-    const secs = Math.round(remaining / rate);
-    return formatElapsed(secs);
+    return Math.round(remaining / rate);
   })();
 
   return (
     <div
-      className="mb-3 rounded-lg border overflow-hidden"
+      className="mb-3 rounded-xl border overflow-hidden"
       style={{
-        background: 'var(--void-bg)',
+        background:
+          'linear-gradient(180deg, rgba(10,12,20,0.96) 0%, rgba(6,7,14,0.98) 100%)',
         borderColor: `${modeColor}33`,
-        boxShadow: `0 4px 16px ${modeColor}1a`,
+        boxShadow: `0 12px 40px -16px ${modeColor}40, 0 0 0 1px rgba(255,255,255,0.02), inset 0 1px 0 rgba(255,255,255,0.03)`,
       }}
     >
       {/* Header */}
       <div
-        className="flex items-center justify-between px-4 py-2.5"
-        style={{ background: `${modeColor}0f`, borderBottom: '1px solid rgba(255,255,255,0.06)' }}
+        className="flex items-center justify-between px-4 py-3"
+        style={{
+          background: `linear-gradient(180deg, ${modeColor}14, ${modeColor}06)`,
+          borderBottom: '1px solid rgba(255,255,255,0.05)',
+        }}
       >
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 min-w-0">
           <div
-            className="w-7 h-7 rounded-md flex items-center justify-center"
-            style={{ background: `${modeColor}22`, color: modeColor }}
+            className="relative w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
+            style={{
+              background: `linear-gradient(180deg, ${modeColor}2a, ${modeColor}14)`,
+              color: modeColor,
+              border: `1px solid ${modeColor}33`,
+              boxShadow: isRunning ? `0 0 18px -2px ${modeColor}55` : undefined,
+            }}
           >
-            {isRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> :
-             status === 'completed' ? <CheckCircle2 className="w-3.5 h-3.5" /> :
-             status === 'failed' || status === 'error' ? <XCircle className="w-3.5 h-3.5" /> :
-             <Play className="w-3.5 h-3.5" />}
+            {isRunning ? <Loader2 className="w-4 h-4 animate-spin" /> :
+             status === 'completed' ? <CheckCircle2 className="w-4 h-4" /> :
+             status === 'failed' || status === 'error' ? <XCircle className="w-4 h-4" /> :
+             <Play className="w-4 h-4" />}
+            {isRunning && (
+              <span
+                className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full animate-pulse"
+                style={{ background: modeColor, boxShadow: `0 0 6px ${modeColor}` }}
+              />
+            )}
           </div>
-          <div>
-            <div className="text-[13px] font-semibold text-[var(--text-primary)] leading-tight">
+          <div className="min-w-0">
+            <div className="text-[13px] font-semibold text-[var(--text-primary)] leading-tight tracking-tight truncate">
               {info.title}
             </div>
-            <div className="text-[11px] text-[var(--text-muted)] leading-tight">{info.desc}</div>
+            <div className="text-[11px] text-[var(--text-muted)] leading-tight truncate">{info.desc}</div>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5 shrink-0">
           <span
-            className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full font-semibold"
-            style={{ background: `${statusColor}22`, color: statusColor }}
+            className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.08em] px-2 py-0.5 rounded-full font-semibold"
+            style={{
+              background: `${statusColor}1F`,
+              color: statusColor,
+              border: `1px solid ${statusColor}33`,
+            }}
           >
-            {status}
+            {isRunning && (
+              <span
+                className="w-1.5 h-1.5 rounded-full animate-pulse"
+                style={{ background: statusColor }}
+              />
+            )}
+            {statusLabel}
           </span>
-          <span className="text-[11px] text-[var(--text-muted)] font-mono tabular-nums">
-            {formatElapsed(elapsedSec)}
-            {eta && <span style={{ opacity: 0.6 }}> · eta {eta}</span>}
-          </span>
+          <div className="flex flex-col items-end leading-tight">
+            <span
+              className="text-[12px] text-[var(--text-primary)] font-semibold font-mono tabular-nums"
+              title={`Elapsed ${formatDuration(elapsedSec)}`}
+            >
+              {formatElapsed(elapsedSec)}
+            </span>
+            {eta !== null && (
+              <span className="text-[10px] text-[var(--text-muted)] tabular-nums">
+                eta {formatElapsed(eta)}
+              </span>
+            )}
+          </div>
           <button
             onClick={handleClose}
-            className="p-1 rounded hover:bg-white/[0.06] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+            className="p-1.5 rounded-md hover:bg-white/[0.06] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
             aria-label="Close"
             title={isRunning ? 'Cancel and close' : 'Close'}
           >
@@ -366,16 +551,36 @@ export function JobRunnerPanel({
       </div>
 
       {/* Progress bar */}
-      <div className="h-1" style={{ background: 'rgba(255,255,255,0.04)' }}>
+      <div
+        className="relative h-[3px] overflow-hidden"
+        style={{ background: 'rgba(255,255,255,0.04)' }}
+      >
         <div
-          className="h-full transition-all duration-300"
+          className="h-full transition-[width] duration-500 ease-out"
           style={{
             width: `${progressPct}%`,
-            background: status === 'failed' || status === 'error' ? '#f43f5e' : modeColor,
-            boxShadow: `0 0 8px ${modeColor}66`,
+            background:
+              status === 'failed' || status === 'error'
+                ? 'linear-gradient(90deg, #f43f5e, #fb7185)'
+                : `linear-gradient(90deg, ${modeColor}, ${modeColor}cc)`,
+            boxShadow: `0 0 10px ${modeColor}66`,
           }}
         />
+        {isRunning && progressPct > 0 && progressPct < 100 && (
+          <div
+            aria-hidden="true"
+            className="absolute top-0 bottom-0 pointer-events-none"
+            style={{
+              left: 0,
+              width: `${progressPct}%`,
+              background:
+                'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.22) 50%, transparent 100%)',
+              animation: 'jobShimmer 1.6s linear infinite',
+            }}
+          />
+        )}
       </div>
+      <style>{`@keyframes jobShimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }`}</style>
 
       {/* Body */}
       <div className="p-4 space-y-3">
@@ -383,13 +588,14 @@ export function JobRunnerPanel({
         <div className="grid grid-cols-4 gap-2">
           <StatTile
             label="Processed"
-            value={counters.done + counters.fail}
+            value={processed}
             suffix={counters.total > 0 ? `/ ${counters.total}` : undefined}
             color="var(--text-primary)"
           />
           <StatTile
             label="Successful"
             value={counters.done}
+            suffix={successRate !== null ? `${successRate.toFixed(0)}%` : undefined}
             color="#10b981"
             dot={isRunning && counters.done > 0}
           />
@@ -399,39 +605,300 @@ export function JobRunnerPanel({
             color={counters.fail > 0 ? '#f43f5e' : 'var(--text-muted)'}
           />
           <StatTile
-            label="Progress"
-            value={`${Math.round(progressPct)}%`}
+            label={throughput !== null ? 'Throughput' : 'Progress'}
+            value={throughput !== null ? throughput.toFixed(1) : `${Math.round(progressPct)}%`}
+            suffix={throughput !== null ? '/ min' : undefined}
             color={modeColor}
+            tooltip={
+              throughput !== null
+                ? `${throughput.toFixed(1)} assets/min · avg ${avgPerAsset ? avgPerAsset.toFixed(1) : '—'}s per asset`
+                : undefined
+            }
           />
         </div>
 
         {/* Current phase */}
         {currentPhase && (
           <div
-            className="flex items-center gap-2 px-3 py-2 rounded"
+            className="rounded-lg overflow-hidden"
             style={{
-              background: `${modeColor}0f`,
-              border: `1px solid ${modeColor}22`,
+              background: `linear-gradient(180deg, ${modeColor}12, ${modeColor}04)`,
+              border: `1px solid ${modeColor}26`,
             }}
           >
-            {isRunning ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" style={{ color: modeColor }} />
-            ) : (
-              <Activity className="w-3.5 h-3.5 shrink-0" style={{ color: modeColor }} />
-            )}
-            <div className="flex-1 min-w-0">
-              <div className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] font-semibold leading-tight">
-                Current phase
-              </div>
-              <div className="text-[12px] font-medium text-[var(--text-primary)] truncate">
-                {currentPhase.title}
+            <div className="flex items-center gap-2.5 px-3 py-2.5">
+              {isRunning ? (
+                <Loader2
+                  className="w-4 h-4 animate-spin shrink-0"
+                  style={{ color: modeColor }}
+                />
+              ) : (
+                <Activity
+                  className="w-4 h-4 shrink-0"
+                  style={{ color: modeColor }}
+                />
+              )}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] uppercase tracking-[0.08em] text-[var(--text-muted)] font-semibold">
+                    {currentPhase.totalSteps && currentPhase.totalSteps > 1
+                      ? `Step ${currentPhase.step ?? 1} of ${currentPhase.totalSteps}`
+                      : 'Current phase'}
+                  </span>
+                  {currentPhase.kind && currentPhase.kind !== 'work' && (
+                    <span
+                      className="text-[9px] uppercase tracking-[0.1em] px-1.5 py-[1px] rounded-full font-semibold"
+                      style={{
+                        background: `${modeColor}1f`,
+                        color: modeColor,
+                        border: `1px solid ${modeColor}2a`,
+                      }}
+                    >
+                      {currentPhase.kind.replace('_', ' ')}
+                    </span>
+                  )}
+                </div>
+                <div className="text-[13px] font-medium text-[var(--text-primary)] truncate mt-0.5 tracking-tight">
+                  {currentPhase.title}
+                </div>
               </div>
             </div>
-            {phases.length > 1 && (
-              <span className="text-[10px] text-[var(--text-muted)] tabular-nums">
-                {phases.length} total
-              </span>
+            {/* Multi-step stepper: only shown for pipelines with >1 phase */}
+            {currentPhase.totalSteps && currentPhase.totalSteps > 1 && (
+              <div
+                className="flex items-stretch gap-0 px-3 pb-2.5"
+                role="list"
+                aria-label="Pipeline steps"
+              >
+                {Array.from({ length: currentPhase.totalSteps }).map((_, i) => {
+                  const step = i + 1;
+                  const cur = currentPhase.step ?? 1;
+                  const isDone = step < cur;
+                  const isActive = step === cur;
+                  // Prefer the most-recent title seen for each step index.
+                  const title = [...phases]
+                    .reverse()
+                    .find((p) => p.step === step)?.title;
+                  return (
+                    <div
+                      key={step}
+                      role="listitem"
+                      className="flex-1 min-w-0"
+                      style={{
+                        paddingRight: step < currentPhase.totalSteps! ? 6 : 0,
+                      }}
+                      title={title || `Step ${step}`}
+                    >
+                      <div
+                        className="h-[3px] rounded-full transition-all duration-500 ease-out"
+                        style={{
+                          background:
+                            isDone || isActive
+                              ? `linear-gradient(90deg, ${modeColor}, ${modeColor}cc)`
+                              : 'rgba(255,255,255,0.06)',
+                          boxShadow:
+                            isActive && isRunning
+                              ? `0 0 8px ${modeColor}66`
+                              : undefined,
+                          opacity: isDone ? 0.6 : 1,
+                        }}
+                      />
+                      <div className="flex items-center gap-1 mt-1.5">
+                        {isDone && (
+                          <CheckCircle2
+                            className="w-2.5 h-2.5 shrink-0"
+                            style={{ color: modeColor, opacity: 0.7 }}
+                          />
+                        )}
+                        {isActive && isRunning && (
+                          <span
+                            className="w-1.5 h-1.5 rounded-full animate-pulse shrink-0"
+                            style={{
+                              background: modeColor,
+                              boxShadow: `0 0 4px ${modeColor}`,
+                            }}
+                          />
+                        )}
+                        <span
+                          className="text-[10px] truncate tracking-tight"
+                          style={{
+                            color: isActive
+                              ? 'var(--text-primary)'
+                              : 'var(--text-muted)',
+                            fontWeight: isActive ? 600 : 500,
+                          }}
+                        >
+                          {title || `Step ${step}`}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             )}
+          </div>
+        )}
+
+        {/* Refresh pass monitor — appears when backend is in the download phase */}
+        {isRunning && refreshPass && currentPhase?.kind === 'download' && (() => {
+          const { pass, totalPasses, ok, pending } = refreshPass;
+          const processedRefresh = ok + pending;
+          const passFrac = totalPasses > 0 ? Math.min(1, pass / totalPasses) : 0;
+          const okFrac = processedRefresh > 0 ? ok / processedRefresh : 0;
+          return (
+            <div
+              className="rounded-xl px-3 py-2.5"
+              style={{
+                background:
+                  'linear-gradient(180deg, rgba(96,165,250,0.07) 0%, rgba(96,165,250,0.02) 100%)',
+                border: '1px solid rgba(96,165,250,0.22)',
+              }}
+            >
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-2">
+                  <Download className="w-3.5 h-3.5" style={{ color: '#60a5fa' }} />
+                  <span className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] font-semibold">
+                    Refresh pass
+                  </span>
+                  <span
+                    className="text-[11px] font-semibold tabular-nums"
+                    style={{ color: '#bfdbfe' }}
+                  >
+                    {pass} <span style={{ color: 'var(--text-muted)', fontWeight: 500 }}>/ {totalPasses}</span>
+                  </span>
+                </div>
+                <div className="flex items-center gap-3 text-[10px] tabular-nums">
+                  <span style={{ color: '#10b981' }}>
+                    <span style={{ fontWeight: 700 }}>{ok}</span>
+                    <span style={{ opacity: 0.7 }}> ok</span>
+                  </span>
+                  <span style={{ color: pending > 0 ? '#fbbf24' : 'var(--text-muted)' }}>
+                    <span style={{ fontWeight: 700 }}>{pending}</span>
+                    <span style={{ opacity: 0.7 }}> pending</span>
+                  </span>
+                </div>
+              </div>
+              {/* Pass progress bar */}
+              <div
+                className="h-1 rounded-full overflow-hidden mb-1"
+                style={{ background: 'rgba(96,165,250,0.12)' }}
+              >
+                <div
+                  style={{
+                    width: `${passFrac * 100}%`,
+                    height: '100%',
+                    background: 'linear-gradient(90deg, #60a5fa 0%, #818cf8 100%)',
+                    transition: 'width 420ms cubic-bezier(0.22, 1, 0.36, 1)',
+                  }}
+                />
+              </div>
+              {/* Ok / pending split bar */}
+              {processedRefresh > 0 && (
+                <div
+                  className="h-[3px] rounded-full overflow-hidden flex"
+                  style={{ background: 'rgba(148,163,184,0.12)' }}
+                >
+                  <div
+                    style={{
+                      width: `${okFrac * 100}%`,
+                      background: 'linear-gradient(90deg, #10b981 0%, #34d399 100%)',
+                      transition: 'width 420ms cubic-bezier(0.22, 1, 0.36, 1)',
+                    }}
+                  />
+                  <div
+                    style={{
+                      flex: 1,
+                      background:
+                        'repeating-linear-gradient(-45deg, rgba(251,191,36,0.55) 0 4px, rgba(251,191,36,0.22) 4px 8px)',
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* Model mix — during tune, shows top distributions as a stacked chip bar */}
+        {isRunning && topModels.length > 0 && currentPhase?.kind === 'tune' && (
+          <div
+            className="rounded-xl px-3 py-2.5"
+            style={{
+              background:
+                'linear-gradient(180deg, rgba(139,92,246,0.07) 0%, rgba(139,92,246,0.02) 100%)',
+              border: '1px solid rgba(139,92,246,0.22)',
+            }}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-3.5 h-3.5" style={{ color: modeColor }} />
+                <span className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] font-semibold">
+                  Model mix
+                </span>
+                <span className="text-[11px] font-semibold tabular-nums text-[var(--text-primary)]">
+                  {totalModelled}
+                </span>
+                <span className="text-[10px] text-[var(--text-muted)]">
+                  assets fitted
+                </span>
+              </div>
+              <span className="text-[10px] text-[var(--text-muted)] tabular-nums">
+                {Object.keys(modelCounts).length} distributions
+              </span>
+            </div>
+            {/* Stacked proportional bar */}
+            <div
+              className="h-1.5 rounded-full overflow-hidden flex mb-2"
+              style={{ background: 'rgba(148,163,184,0.10)' }}
+            >
+              {topModels.map((m) => {
+                const frac = totalModelled > 0 ? m.count / totalModelled : 0;
+                return (
+                  <div
+                    key={m.name}
+                    style={{
+                      width: `${frac * 100}%`,
+                      background: `linear-gradient(90deg, hsl(${m.hue} 72% 58%) 0%, hsl(${(m.hue + 18) % 360} 72% 66%) 100%)`,
+                      transition: 'width 420ms cubic-bezier(0.22, 1, 0.36, 1)',
+                    }}
+                    title={`${m.name} · ${m.count} (${(frac * 100).toFixed(0)}%)`}
+                  />
+                );
+              })}
+            </div>
+            {/* Chips */}
+            <div className="flex flex-wrap gap-1.5">
+              {topModels.map((m) => {
+                const frac = totalModelled > 0 ? m.count / totalModelled : 0;
+                return (
+                  <div
+                    key={m.name}
+                    className="flex items-center gap-1.5 rounded-full px-2 py-[3px]"
+                    style={{
+                      background: `hsla(${m.hue}, 72%, 58%, 0.10)`,
+                      border: `1px solid hsla(${m.hue}, 72%, 58%, 0.32)`,
+                    }}
+                  >
+                    <span
+                      className="w-1.5 h-1.5 rounded-full"
+                      style={{ background: `hsl(${m.hue} 72% 60%)` }}
+                    />
+                    <span
+                      className="text-[10.5px] font-medium tracking-tight"
+                      style={{ color: 'var(--text-primary)' }}
+                    >
+                      {m.name}
+                    </span>
+                    <span
+                      className="text-[10px] tabular-nums"
+                      style={{ color: 'var(--text-muted)' }}
+                    >
+                      {m.count}
+                      <span style={{ opacity: 0.6 }}> · {(frac * 100).toFixed(0)}%</span>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
 
@@ -446,30 +913,69 @@ export function JobRunnerPanel({
                 showing {recentAssets.length} of {assets.length}
               </span>
             </div>
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(120px,1fr))] gap-1">
-              {recentAssets.map((a, i) => (
-                <div
-                  key={`${a.symbol}-${i}`}
-                  className="flex items-center gap-1.5 px-2 py-1 rounded text-[11px] font-mono"
-                  style={{
-                    background: a.status === 'ok' ? 'rgba(16,185,129,0.06)' : 'rgba(244,63,94,0.08)',
-                    border: `1px solid ${a.status === 'ok' ? 'rgba(16,185,129,0.2)' : 'rgba(244,63,94,0.28)'}`,
-                  }}
-                  title={a.detail ? `${a.symbol} - ${a.detail}` : a.symbol}
-                >
-                  {a.status === 'ok' ? (
-                    <CheckCircle2 className="w-3 h-3 shrink-0" style={{ color: '#10b981' }} />
-                  ) : (
-                    <XCircle className="w-3 h-3 shrink-0" style={{ color: '#f43f5e' }} />
-                  )}
-                  <span className="text-[var(--text-primary)] font-semibold truncate">{a.symbol}</span>
-                  {a.detail && (
-                    <span className="text-[var(--text-muted)] ml-auto shrink-0" style={{ fontSize: '10px' }}>
-                      {a.detail}
-                    </span>
-                  )}
-                </div>
-              ))}
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(132px,1fr))] gap-1">
+              {recentAssets.map((a, i) => {
+                const model = a.model ?? modelBySymbol[a.symbol];
+                return (
+                  <div
+                    key={`${a.symbol}-${i}`}
+                    className="flex flex-col gap-[2px] px-2 py-1 rounded text-[11px] font-mono"
+                    style={{
+                      background:
+                        a.status === 'ok'
+                          ? 'rgba(16,185,129,0.06)'
+                          : 'rgba(244,63,94,0.08)',
+                      border: `1px solid ${a.status === 'ok' ? 'rgba(16,185,129,0.2)' : 'rgba(244,63,94,0.28)'}`,
+                    }}
+                    title={
+                      model
+                        ? `${a.symbol} · ${model}`
+                        : a.detail
+                        ? `${a.symbol} — ${a.detail}`
+                        : a.symbol
+                    }
+                  >
+                    <div className="flex items-center gap-1.5">
+                      {a.status === 'ok' ? (
+                        <CheckCircle2
+                          className="w-3 h-3 shrink-0"
+                          style={{ color: '#10b981' }}
+                        />
+                      ) : (
+                        <XCircle
+                          className="w-3 h-3 shrink-0"
+                          style={{ color: '#f43f5e' }}
+                        />
+                      )}
+                      <span className="text-[var(--text-primary)] font-semibold truncate">
+                        {a.symbol}
+                      </span>
+                      {a.detail && !model && (
+                        <span
+                          className="text-[var(--text-muted)] ml-auto shrink-0"
+                          style={{ fontSize: '10px' }}
+                        >
+                          {a.detail}
+                        </span>
+                      )}
+                    </div>
+                    {model && (
+                      <span
+                        className="truncate tracking-tight"
+                        style={{
+                          fontSize: '9.5px',
+                          color: modeColor,
+                          opacity: 0.82,
+                          paddingLeft: 18,
+                          letterSpacing: '-0.01em',
+                        }}
+                      >
+                        {model}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
@@ -494,7 +1000,14 @@ export function JobRunnerPanel({
           >
             <CheckCircle2 className="w-3.5 h-3.5" />
             <span className="font-medium">
-              Completed · {counters.done} successful{counters.fail > 0 ? `, ${counters.fail} failed` : ''} in {formatElapsed(elapsedSec)}
+              Completed · {counters.done} successful
+              {counters.fail > 0 ? `, ${counters.fail} failed` : ''}
+              {' '}in {formatDuration(elapsedSec)}
+              {avgPerAsset !== null && processed > 1 && (
+                <span style={{ opacity: 0.75 }}>
+                  {' '}· {avgPerAsset.toFixed(1)}s per asset
+                </span>
+              )}
             </span>
           </div>
         )}
@@ -509,7 +1022,7 @@ export function JobRunnerPanel({
           >
             <XCircle className="w-3.5 h-3.5" />
             <span className="font-medium">
-              {status === 'error' ? (errorMsg || 'Stream error') : `Failed after ${formatElapsed(elapsedSec)}`}
+              {status === 'error' ? (errorMsg || 'Stream error') : `Failed after ${formatDuration(elapsedSec)}`}
             </span>
           </div>
         )}
@@ -556,32 +1069,39 @@ function StatTile({
   suffix,
   color,
   dot,
+  tooltip,
 }: {
   label: string;
   value: number | string;
   suffix?: string;
   color: string;
   dot?: boolean;
+  tooltip?: string;
 }) {
   return (
     <div
-      className="px-3 py-2 rounded"
+      className="px-3 py-2 rounded-lg transition-colors"
       style={{
-        background: 'rgba(255,255,255,0.02)',
-        border: '1px solid rgba(255,255,255,0.05)',
+        background:
+          'linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.015))',
+        border: '1px solid rgba(255,255,255,0.06)',
       }}
+      title={tooltip}
     >
-      <div className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] font-semibold">
+      <div className="text-[10px] uppercase tracking-[0.08em] text-[var(--text-muted)] font-semibold">
         {label}
       </div>
-      <div className="flex items-baseline gap-1.5 mt-0.5">
+      <div className="flex items-baseline gap-1.5 mt-1">
         {dot && (
           <span
             className="w-1.5 h-1.5 rounded-full animate-pulse shrink-0"
             style={{ background: color, boxShadow: `0 0 6px ${color}`, alignSelf: 'center' }}
           />
         )}
-        <span className="text-[16px] font-semibold tabular-nums leading-none" style={{ color }}>
+        <span
+          className="text-[17px] font-semibold tabular-nums leading-none tracking-tight"
+          style={{ color, fontVariantNumeric: 'tabular-nums' }}
+        >
           {value}
         </span>
         {suffix && (

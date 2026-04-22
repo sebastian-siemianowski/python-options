@@ -505,7 +505,9 @@ clear:
 	@echo "Data cache cleared successfully!"
 
 stocks: .venv/.deps_installed
+	@echo "Step 1/2: Refreshing market data..."
 	@.venv/bin/python src/data_ops/refresh_data.py --skip-trim --retries 5 --workers 12 --batch-size 16 $(ARGS)
+	@echo "Step 2/2: Generating signals..."
 	@$(MAKE) fx-plnjpy
 
 # ┌──────────────────────────────────────────────────────────────────────────────┐

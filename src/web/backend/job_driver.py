@@ -7,26 +7,28 @@ Emits one-line JSON records prefixed with ``@@EVT@@`` for semantic events and
 
 Event types:
     {event: "start",     mode, total_expected}
-    {event: "phase",     title}
+    {event: "phase",     title, step?, total_steps?, kind?}
     {event: "asset",     symbol, status: "ok"|"fail", detail?}
-    {event: "heartbeat", done, total, elapsed_s}
+    {event: "heartbeat", done, total, elapsed_s, phase_done?, phase_total?}
     {event: "done",      status: "ok"|"fail", done, total, elapsed_s, exit_code}
 
 The driver watches the filesystem (price CSVs for stocks, tune JSONs for
 tune/retune/calibrate) and synthesizes asset events from file mtime changes.
-This yields a clean, mode-agnostic event stream that the UI can render as
-structured components.
+For multi-step pipelines (like `retune` which chains refresh -> backup -> tune),
+the driver parses Make-level phase markers from stdout and switches the
+watcher target dynamically so progress always reflects the active stage.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Dict, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PRICES_DIR = REPO_ROOT / "src" / "data" / "prices"
@@ -59,7 +61,6 @@ def _scan(dir_path: Path, suffix: str) -> Dict[str, Tuple[float, int]]:
             if not name.endswith(suffix):
                 continue
             symbol = name[: -len(suffix)]
-            # stocks prices use e.g. AAPL_1d.csv → strip _1d
             if symbol.endswith("_1d"):
                 symbol = symbol[:-3]
             try:
@@ -85,78 +86,214 @@ def _estimate_total(mode: str) -> int:
         return max(1, len(_scan(TUNE_DIR, ".json")))
 
 
-def _watch_dir(
-    dir_path: Path,
-    suffix: str,
-    baseline: Dict[str, Tuple[float, int]],
-    done_symbols: Set[str],
-    stop_flag: threading.Event,
-    poll_interval: float = 0.8,
-) -> None:
-    """Emit asset events whenever a file in dir_path changes after baseline."""
-    while not stop_flag.is_set():
-        current = _scan(dir_path, suffix)
-        for symbol, (mtime, size) in current.items():
-            if symbol in done_symbols:
-                continue
-            prev = baseline.get(symbol)
-            if prev is None or mtime > prev[0] + 0.01 or size != prev[1]:
-                done_symbols.add(symbol)
-                _emit(
-                    {
-                        "event": "asset",
-                        "symbol": symbol,
-                        "status": "ok",
-                        "detail": f"{size // 1024}k" if size > 1024 else f"{size}B",
-                    }
-                )
-        stop_flag.wait(poll_interval)
+# ---------------------------------------------------------------------------
+# Phase plan: ordered list of expected stages for each mode.
+#
+# Each phase declares how to detect it (a regex pattern), which directory it
+# writes to, and a human-readable title. The driver walks phases in order,
+# advancing whenever the make/tune subprocess prints a matching marker. This
+# gives the UI a truthful, per-step view (e.g. during `retune`, users see
+# "Refreshing market data (1/3)" before "Fitting models (3/3)", instead of a
+# stuck "Fitting models" bar while data is actually downloading).
+# ---------------------------------------------------------------------------
 
 
-def _heartbeat(
+class Phase:
+    __slots__ = ("title", "kind", "dir", "suffix", "marker")
+
+    def __init__(
+        self,
+        title: str,
+        kind: str,
+        dir_: Optional[Path],
+        suffix: Optional[str],
+        marker: Optional[re.Pattern],
+    ) -> None:
+        self.title = title
+        self.kind = kind
+        self.dir = dir_
+        self.suffix = suffix
+        self.marker = marker
+
+
+def _phase_plan(mode: str) -> List[Phase]:
+    if mode == "stocks":
+        # Makefile `stocks` target prints `Step N/2: ...` markers. Include
+        # fallbacks that match signals.py banners so the tune phase still
+        # activates if the outer echo is filtered or delayed.
+        return [
+            Phase(
+                "Refreshing market data",
+                "download",
+                PRICES_DIR,
+                ".csv",
+                re.compile(r"Step 1/2:\s*Refreshing", re.IGNORECASE),
+            ),
+            Phase(
+                "Generating signals",
+                "tune",
+                None,
+                None,
+                re.compile(
+                    r"Step 2/2:\s*Generating"
+                    r"|▸\s*VALIDATION"
+                    r"|▸\s*PROCESSING"
+                    r"|\d+\s+assets\s+requested",
+                    re.IGNORECASE,
+                ),
+            ),
+        ]
+    if mode == "tune":
+        return [
+            Phase("Fitting models", "tune", TUNE_DIR, ".json", None),
+        ]
+    if mode == "calibrate":
+        return [
+            Phase("Calibrating models", "tune", TUNE_DIR, ".json", None),
+        ]
+    if mode == "retune":
+        # Makefile `retune` target prints these markers in order.
+        return [
+            Phase(
+                "Refreshing market data",
+                "download",
+                PRICES_DIR,
+                ".csv",
+                re.compile(r"Step 1/3:\s*Refreshing", re.IGNORECASE),
+            ),
+            Phase(
+                "Backing up previous tune",
+                "backup",
+                None,
+                None,
+                re.compile(r"Step 2/3:\s*Backing up", re.IGNORECASE),
+            ),
+            Phase(
+                "Fitting models",
+                "tune",
+                TUNE_DIR,
+                ".json",
+                re.compile(r"Step 3/3:\s*Running tune", re.IGNORECASE),
+            ),
+        ]
+    return [Phase("Working", "work", None, None, None)]
+
+
+class _WatcherState:
+    """Mutable state shared with the background watcher thread.
+
+    The main parser thread can swap the watched directory mid-run by updating
+    ``dir``, ``suffix``, and ``baseline``. The watcher reads these under a lock.
+    """
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.dir: Optional[Path] = None
+        self.suffix: Optional[str] = None
+        self.baseline: Dict[str, Tuple[float, int]] = {}
+        self.done_symbols: Set[str] = set()
+        self.stop = threading.Event()
+
+
+def _watch_loop(state: _WatcherState, poll_interval: float = 0.8) -> None:
+    while not state.stop.is_set():
+        with state.lock:
+            dir_path = state.dir
+            suffix = state.suffix
+            baseline = state.baseline
+            done = state.done_symbols
+        if dir_path is not None and suffix is not None:
+            current = _scan(dir_path, suffix)
+            for symbol, (mtime, size) in current.items():
+                if symbol in done:
+                    continue
+                prev = baseline.get(symbol)
+                if prev is None or mtime > prev[0] + 0.01 or size != prev[1]:
+                    with state.lock:
+                        state.done_symbols.add(symbol)
+                    _emit(
+                        {
+                            "event": "asset",
+                            "symbol": symbol,
+                            "status": "ok",
+                            "detail": f"{size // 1024}k" if size > 1024 else f"{size}B",
+                        }
+                    )
+        state.stop.wait(poll_interval)
+
+
+def _heartbeat_loop(
     total: int,
-    done_symbols: Set[str],
+    state: _WatcherState,
     start_ts: float,
-    stop_flag: threading.Event,
+    current_phase: List[Phase],
+    current_idx: List[int],
     interval: float = 1.0,
 ) -> None:
-    """Periodically emit heartbeat events with progress counts."""
-    while not stop_flag.wait(interval):
-        _emit(
-            {
-                "event": "heartbeat",
-                "done": len(done_symbols),
-                "total": total,
-                "elapsed_s": round(time.time() - start_ts, 1),
-            }
-        )
+    while not state.stop.wait(interval):
+        with state.lock:
+            phase_done = len(state.done_symbols)
+        payload = {
+            "event": "heartbeat",
+            "done": phase_done,
+            "total": total,
+            "elapsed_s": round(time.time() - start_ts, 1),
+        }
+        if current_phase:
+            payload["phase_step"] = current_idx[0] + 1
+            payload["phase_title"] = current_phase[0].title
+        _emit(payload)
 
 
 def _run(mode: str) -> int:
     total = _estimate_total(mode)
-    _emit({"event": "start", "mode": mode, "total_expected": total})
+    plan = _phase_plan(mode)
+    _emit({"event": "start", "mode": mode, "total_expected": total, "phase_count": len(plan)})
 
-    # Pick watcher target based on mode
-    if mode == "stocks":
-        watch_dir, suffix, phase_title = PRICES_DIR, ".csv", "Downloading prices"
-    else:
-        watch_dir, suffix, phase_title = TUNE_DIR, ".json", "Fitting models"
-
-    baseline = _scan(watch_dir, suffix)
-    _emit({"event": "phase", "title": phase_title})
-
-    done_symbols: Set[str] = set()
-    stop_flag = threading.Event()
+    state = _WatcherState()
     start_ts = time.time()
+    current_phase_box: List[Phase] = []
+    current_idx_box = [0]
 
-    watcher = threading.Thread(
-        target=_watch_dir,
-        args=(watch_dir, suffix, baseline, done_symbols, stop_flag),
-        daemon=True,
-    )
+    def activate_phase(index: int) -> None:
+        """Switch to phase[index]: swap watcher dir + baseline, emit event."""
+        if index < 0 or index >= len(plan):
+            return
+        phase = plan[index]
+        with state.lock:
+            # Take a fresh baseline snapshot so we only count files that change
+            # during this phase, not pre-existing ones.
+            if phase.dir is not None and phase.suffix is not None:
+                state.dir = phase.dir
+                state.suffix = phase.suffix
+                state.baseline = _scan(phase.dir, phase.suffix)
+                state.done_symbols = set()
+            else:
+                # Non-filesystem phase (e.g. "Backing up") - pause watcher.
+                state.dir = None
+                state.suffix = None
+                state.baseline = {}
+                state.done_symbols = set()
+        current_phase_box.clear()
+        current_phase_box.append(phase)
+        current_idx_box[0] = index
+        _emit(
+            {
+                "event": "phase",
+                "title": phase.title,
+                "kind": phase.kind,
+                "step": index + 1,
+                "total_steps": len(plan),
+            }
+        )
+
+    # Activate first phase immediately so the UI has a label from t=0.
+    activate_phase(0)
+
+    watcher = threading.Thread(target=_watch_loop, args=(state,), daemon=True)
     hb = threading.Thread(
-        target=_heartbeat,
-        args=(total, done_symbols, start_ts, stop_flag),
+        target=_heartbeat_loop,
+        args=(total, state, start_ts, current_phase_box, current_idx_box),
         daemon=True,
     )
     watcher.start()
@@ -180,43 +317,273 @@ def _run(mode: str) -> int:
         bufsize=1,
     )
 
+    # Secondary markers inside the tune phase that give users a feel for
+    # internal progress without having to parse asset-level output.
+    sub_markers = [
+        (re.compile(r"loading tuning cache|loading.*cache", re.IGNORECASE), "Loading tune cache"),
+        (re.compile(r"assigning regimes|regime labels", re.IGNORECASE), "Assigning regimes"),
+        (re.compile(r"computing bma|bayesian model averag", re.IGNORECASE), "Computing BMA weights"),
+        (re.compile(r"writing cache|saving .*tune", re.IGNORECASE), "Writing cache"),
+        (re.compile(r"pit calibration|calibrat(ing|ion)", re.IGNORECASE), "Calibrating PIT"),
+    ]
+
+    # Data-extraction regexes for log enrichment.
+    # Tune logs emit the model pick in two ways:
+    #   (a) Inline banner:  `  ✓ GBPJPY=X → φ-Gaussian-Unified`
+    #   (b) Boxed symbol followed by a header+top-pick table, e.g.
+    #         │    ALB    │
+    #         │ Company · Sector │
+    #         φ-T(ν=20)   45%   -11597   628
+    #         Model     Weight    BIC      Hyv
+    model_rx_inline = re.compile(r"^\s*✓\s*(\S+)\s+(?:→|->)\s+(.+?)\s*$")
+    # Box content for a ticker (single token, no spaces) within │ … │.
+    box_symbol_rx = re.compile(
+        r"^\s*[│┃]\s+([A-Z0-9][A-Z0-9._=^\-]{0,14})\s+[│┃]\s*$"
+    )
+    # Header line that marks the previous non-empty line as the top-pick.
+    model_header_rx = re.compile(
+        r"^\s*Model\s+Weight\s+BIC\s+Hyv\s*$", re.IGNORECASE
+    )
+    # Top-pick line shape: "MODEL_NAME   NN%   -NNNN   NNNN" (flexible whitespace).
+    model_pick_rx = re.compile(
+        r"^\s*(.+?)\s{2,}(\d{1,3})%\s+(-?\d+)\s+(\d+)\s*$"
+    )
+    # Refresh logs emit: `    Pass 2/5  (400 symbols)`, `    ● 192 ok  ·  305 pending`,
+    # and `    ✓ 530/532 complete` when a pass finishes with no pending.
+    pass_rx = re.compile(r"Pass\s+(\d+)\s*/\s*(\d+)")
+    pass_progress_rx = re.compile(
+        r"●\s*(\d+)\s*ok\s*[·|/•]\s*(\d+)\s*pending", re.IGNORECASE
+    )
+    pass_complete_rx = re.compile(
+        r"✓\s*(\d+)\s*/\s*(\d+)\s*complete", re.IGNORECASE
+    )
+    # Symbols known to have failed (parsed from refresh errors / tune fallbacks).
+    fail_rx = re.compile(r"^\s*(?:✗|✘|FAILED|ERROR)[:\s]+(\S+)", re.IGNORECASE)
+    # Python traceback capture so the UI can show the actual failure reason.
+    traceback_start_rx = re.compile(r"^\s*Traceback\s*\(most recent call last\)")
+    exception_line_rx = re.compile(
+        r"^\s*([A-Z][A-Za-z0-9_]*(?:Error|Exception|Warning|Interrupt))\s*:\s*(.*)$"
+    )
+
+    last_sub_marker: Optional[str] = None
+    seen_models: Set[str] = set()
+    current_pass: Tuple[int, int] = (0, 0)
+    # Boxed-symbol/model-pick state for the two-line pattern above.
+    last_boxed_symbol: Optional[str] = None
+    prev_nonempty_line: str = ""
+    # Traceback capture state.
+    in_traceback: bool = False
+    traceback_lines: list = []
+    last_error: Optional[str] = None
+
     try:
         assert proc.stdout is not None
-        for line in proc.stdout:
-            line = line.rstrip("\n")
+        for raw in proc.stdout:
+            line = raw.rstrip("\n")
             if line:
                 _emit_log(line)
+
+            # Phase transitions: check each remaining phase's marker.
+            for i in range(current_idx_box[0] + 1, len(plan)):
+                marker = plan[i].marker
+                if marker is not None and marker.search(line):
+                    activate_phase(i)
+                    last_sub_marker = None
+                    seen_models.clear()
+                    current_pass = (0, 0)
+                    last_boxed_symbol = None
+                    prev_nonempty_line = ""
+                    break
+
+            current_phase = plan[current_idx_box[0]]
+
+            # Sub-phase hints (only within a tune-kind phase, where they fit).
+            if current_phase.kind == "tune":
+                for pat, label in sub_markers:
+                    if pat.search(line) and label != last_sub_marker:
+                        last_sub_marker = label
+                        _emit(
+                            {
+                                "event": "phase",
+                                "title": f"{current_phase.title} — {label}",
+                                "kind": "tune_sub",
+                                "step": current_idx_box[0] + 1,
+                                "total_steps": len(plan),
+                            }
+                        )
+                        break
+
+                # Per-asset model selection. Two formats supported:
+                #   (a) Inline banner: `✓ SYMBOL → ModelName`
+                #   (b) Boxed symbol followed by top-pick + `Model Weight BIC Hyv` header.
+                m = model_rx_inline.match(line)
+                if m:
+                    symbol = m.group(1)
+                    model_name = m.group(2).strip()
+                    key = f"{symbol}::{model_name}"
+                    if key not in seen_models:
+                        seen_models.add(key)
+                        _emit(
+                            {
+                                "event": "model",
+                                "symbol": symbol,
+                                "model": model_name,
+                            }
+                        )
+                else:
+                    # Track the most recent boxed ticker.
+                    mb = box_symbol_rx.match(line)
+                    if mb:
+                        last_boxed_symbol = mb.group(1)
+                    elif model_header_rx.match(line) and last_boxed_symbol and prev_nonempty_line:
+                        mp_pick = model_pick_rx.match(prev_nonempty_line)
+                        if mp_pick:
+                            model_name = mp_pick.group(1).strip()
+                            symbol = last_boxed_symbol
+                            key = f"{symbol}::{model_name}"
+                            if key not in seen_models:
+                                seen_models.add(key)
+                                _emit(
+                                    {
+                                        "event": "model",
+                                        "symbol": symbol,
+                                        "model": model_name,
+                                    }
+                                )
+                                # Also emit an asset-completion event so the
+                                # overall processed counter advances during tune.
+                                _emit(
+                                    {
+                                        "event": "asset",
+                                        "symbol": symbol,
+                                        "status": "ok",
+                                        "detail": model_name,
+                                        "model": model_name,
+                                    }
+                                )
+
+            # Refresh-phase enrichment: pass number + ok/pending counters.
+            if current_phase.kind == "download":
+                mp = pass_rx.search(line)
+                if mp:
+                    p, total_p = int(mp.group(1)), int(mp.group(2))
+                    if (p, total_p) != current_pass:
+                        current_pass = (p, total_p)
+                        _emit(
+                            {
+                                "event": "refresh",
+                                "pass": p,
+                                "total_passes": total_p,
+                            }
+                        )
+                mpp = pass_progress_rx.search(line)
+                if mpp:
+                    ok_n = int(mpp.group(1))
+                    pending_n = int(mpp.group(2))
+                    _emit(
+                        {
+                            "event": "refresh",
+                            "pass": current_pass[0] or 1,
+                            "total_passes": current_pass[1] or 1,
+                            "ok": ok_n,
+                            "pending": pending_n,
+                        }
+                    )
+                else:
+                    mpc = pass_complete_rx.search(line)
+                    if mpc:
+                        ok_n = int(mpc.group(1))
+                        total_n = int(mpc.group(2))
+                        _emit(
+                            {
+                                "event": "refresh",
+                                "pass": current_pass[0] or 1,
+                                "total_passes": current_pass[1] or 1,
+                                "ok": ok_n,
+                                "pending": max(0, total_n - ok_n),
+                            }
+                        )
+
+            # Track the last non-empty rendered line for boxed-model lookups.
+            if line.strip():
+                prev_nonempty_line = line
+
+            # Python traceback capture so the UI can show failure reason.
+            if traceback_start_rx.match(line):
+                in_traceback = True
+                traceback_lines = [line]
+            elif in_traceback:
+                traceback_lines.append(line)
+                mex = exception_line_rx.match(line)
+                # An exception summary line ends the traceback.
+                if mex:
+                    last_error = f"{mex.group(1)}: {mex.group(2).strip()}"[:500]
+                    in_traceback = False
+                    _emit(
+                        {
+                            "event": "error",
+                            "error_type": mex.group(1),
+                            "message": mex.group(2).strip()[:500],
+                        }
+                    )
+                    traceback_lines = []
+                # Safety: don't accumulate unbounded if no summary arrives.
+                elif len(traceback_lines) > 80:
+                    in_traceback = False
+                    traceback_lines = []
+
+            # Failure detection (cross-phase).
+            mf = fail_rx.match(line)
+            if mf:
+                sym = mf.group(1).rstrip(",:;")
+                _emit(
+                    {
+                        "event": "asset",
+                        "symbol": sym,
+                        "status": "fail",
+                        "detail": "error",
+                    }
+                )
+
         rc = proc.wait()
     finally:
-        stop_flag.set()
+        state.stop.set()
         watcher.join(timeout=2.0)
         hb.join(timeout=2.0)
 
-    # Final sweep to catch any files that landed in the last polling gap
-    final = _scan(watch_dir, suffix)
-    for symbol, (mtime, size) in final.items():
-        if symbol in done_symbols:
-            continue
-        prev = baseline.get(symbol)
-        if prev is None or mtime > prev[0] + 0.01 or size != prev[1]:
-            done_symbols.add(symbol)
-            _emit(
-                {
-                    "event": "asset",
-                    "symbol": symbol,
-                    "status": "ok",
-                    "detail": f"{size // 1024}k" if size > 1024 else f"{size}B",
-                }
-            )
+    # Final sweep to catch files that landed in the last polling gap, using
+    # whatever directory the final phase was watching.
+    with state.lock:
+        final_dir = state.dir
+        final_suffix = state.suffix
+        final_baseline = state.baseline
+        final_done = state.done_symbols
+    if final_dir is not None and final_suffix is not None:
+        final = _scan(final_dir, final_suffix)
+        for symbol, (mtime, size) in final.items():
+            if symbol in final_done:
+                continue
+            prev = final_baseline.get(symbol)
+            if prev is None or mtime > prev[0] + 0.01 or size != prev[1]:
+                final_done.add(symbol)
+                _emit(
+                    {
+                        "event": "asset",
+                        "symbol": symbol,
+                        "status": "ok",
+                        "detail": f"{size // 1024}k" if size > 1024 else f"{size}B",
+                    }
+                )
 
     _emit(
         {
             "event": "done",
             "status": "ok" if rc == 0 else "fail",
-            "done": len(done_symbols),
+            "done": len(final_done),
             "total": total,
             "elapsed_s": round(time.time() - start_ts, 1),
             "exit_code": rc,
+            "error": last_error,
         }
     )
     return rc
