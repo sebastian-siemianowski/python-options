@@ -2219,6 +2219,21 @@ DEFAULT_ASSET_UNIVERSE = [
     "MSTR",  # MicroStrategy Inc
 
     # -------------------------
+    # Watchlist additions — canonical (exchange-suffixed) forms required by
+    # Yahoo. The non-suffixed raw forms above ("BAYN", "SAF", "TKA", "XAGUSD",
+    # "MAGD", "BABY", "FACC", "EXA", "HAG", "VOW3", …) are kept for backward
+    # compatibility but will not fetch from Yahoo. Use the suffixed symbols
+    # below going forward; the ticker alias map in
+    # ``src/web/backend/routers/ticker_aliases.py`` routes user input to them.
+    # -------------------------
+    "SAF.PA",     # Safran SA (Euronext Paris)
+    "XAGUSD=X",   # Silver / USD spot (Yahoo FX)
+    "MAGD.L",     # Amundi Magnificent 7 UCITS ETF (LSE)
+    "MVF.AX",     # Monash IVF Group (ASX); user alias BABY routes here
+    "SNT.WA",     # Synektik SA (Warsaw GPW)
+    "SW",         # Smurfit WestRock (NYSE)
+
+    # -------------------------
     # VanEck ETFs
     # -------------------------
     "AFK",    # VanEck Africa Index ETF
@@ -4150,11 +4165,60 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
     else:
         target_end = datetime.now().date()
     
+    # Compute requested range span so we can detect truncated / corrupt caches.
+    # Example: caller asks for a 10-year window but cache only has 6 rows covering
+    # one week (previously caused by a bulk-download response that overwrote a
+    # full history with a partial slice). In that case we must re-download the
+    # whole series, not trust the stub.
+    try:
+        _req_start_date = pd.to_datetime(start).date() if start else None
+    except Exception:
+        _req_start_date = None
+    if _req_start_date is not None:
+        _requested_span_days = (target_end - _req_start_date).days
+    else:
+        _requested_span_days = 0
+
     for primary, orig_list in list(primary_to_originals.items()):
         disk = _load_disk_prices(primary)
         if disk is not None and not disk.empty:
             # Check if cache is stale (doesn't extend close enough to the target end date)
             cache_max_date = pd.to_datetime(disk.index.max()).date()
+            cache_min_date = pd.to_datetime(disk.index.min()).date()
+            cache_span_days = (cache_max_date - cache_min_date).days
+            cache_row_count = len(disk)
+
+            # Corrupt-cache detector: if the caller asked for a long history
+            # (> 365 days) but the cache only has a tiny slice (< 60 rows AND
+            # spans < 90 days), treat it as corrupt and force a full re-fetch.
+            # This auto-heals the "TSLA has only 6 rows" class of bug without
+            # manual intervention. Skip the check in OFFLINE_MODE since there
+            # we can't re-download anyway. Also skip when the cache file was
+            # written in the last 6h — if we just re-fetched and still only
+            # got a few rows, the symbol genuinely has little data (e.g. a
+            # recently-IPO'd ticker or a thin FX pair) and re-trying would
+            # just waste Yahoo quota on every refresh.
+            _recently_refetched = False
+            try:
+                _mtime = os.path.getmtime(_price_cache_path(primary))
+                _recently_refetched = (datetime.now().timestamp() - _mtime) < 6 * 3600
+            except Exception:
+                pass
+            if (
+                not skip_downloads
+                and not _recently_refetched
+                and _requested_span_days > 365
+                and cache_row_count < 60
+                and cache_span_days < 90
+            ):
+                if log:
+                    log(
+                        f"    [!] Cache for {primary} looks truncated "
+                        f"({cache_row_count} rows, spans {cache_span_days}d) "
+                        f"while request is {_requested_span_days}d — re-fetching."
+                    )
+                continue
+
             # Allow 3 days buffer for weekends/holidays, but require recent data
             # EXCEPTION: In OFFLINE_MODE (skip_downloads), accept stale cache
             if (target_end - cache_max_date).days > 3 and not skip_downloads:
@@ -4199,7 +4263,14 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
         out: Dict[str, pd.DataFrame] = {}
         fetch_syms = chunk_syms
         try:
-            df = yf.download(fetch_syms, start=start, end=end, auto_adjust=True, group_by="ticker", progress=False, threads=False, timeout=YFINANCE_TIMEOUT)
+            # threads=True is critical for speed: with threads=False, yfinance
+            # fetches each symbol in the chunk SEQUENTIALLY (benchmarked at
+            # ~0.2s/sym), which on a 504-symbol universe x 10-yr history causes
+            # the "snail pace" the user sees after `make retune`.
+            # We keep the outer ThreadPoolExecutor capped (see below) so that
+            # outer_workers * chunk_size concurrent requests stays reasonable
+            # and avoids Yahoo rate-limiting silent-empty responses.
+            df = yf.download(fetch_syms, start=start, end=end, auto_adjust=True, group_by="ticker", progress=False, threads=True, timeout=YFINANCE_TIMEOUT)
         except Exception:
             df = None
         if df is None or df.empty:
@@ -4228,10 +4299,17 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
         return out
 
     chunks = [remaining_primaries[i:i + chunk_size] for i in range(0, len(remaining_primaries), chunk_size) if remaining_primaries[i:i + chunk_size]]
+    # Because _download_chunk now passes threads=True to yfinance, each chunk
+    # already fans out internally. Capping the outer pool at 4 keeps the total
+    # concurrent Yahoo requests at ~4 * chunk_size (e.g. 64 with chunk_size=16),
+    # which historically has been the sweet spot before Yahoo starts silently
+    # returning empty frames. Before this cap, outer=12 * inner threads caused
+    # the "5 ok / 499 pending" behaviour on large universes.
+    effective_workers = min(max_workers, 4)
     if log and chunks:
-        log(f"  Launching {len(chunks)} chunk(s) with {min(max_workers, len(chunks))} workers…")
+        log(f"  Launching {len(chunks)} chunk(s) with {min(effective_workers, len(chunks))} workers…")
 
-    with ThreadPoolExecutor(max_workers=min(max_workers, max(1, len(chunks)))) as ex:
+    with ThreadPoolExecutor(max_workers=min(effective_workers, max(1, len(chunks)))) as ex:
         future_map = {ex.submit(_download_chunk, c): c for c in chunks}
         for fut in as_completed(future_map):
             chunk_syms = future_map[fut]
@@ -4240,9 +4318,13 @@ def download_prices_bulk(symbols: List[str], start: Optional[str], end: Optional
             except Exception:
                 out = {}
             for primary, sym_df in out.items():
-                # Store full OHLCV data using standardized format
-                _store_disk_prices(primary, sym_df)
-                
+                # CRITICAL: use _merge_and_store (not _store_disk_prices) so a
+                # partial yfinance response — e.g. a multi-symbol call that
+                # only returned the last few days for this ticker — does NOT
+                # overwrite years of previously-cached history. Merging keeps
+                # whatever we already had and only adds / updates new rows.
+                _merge_and_store(primary, sym_df)
+
                 # Extract Close series for return value
                 ser = get_price_series(sym_df, "Close")
                 if not ser.empty:

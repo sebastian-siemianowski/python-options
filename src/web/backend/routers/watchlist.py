@@ -18,6 +18,8 @@ from typing import List
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from .ticker_aliases import canonicalize
+
 router = APIRouter()
 
 # ── Persistence ──────────────────────────────────────────────────────────────
@@ -36,6 +38,12 @@ _lock = threading.Lock()
 
 
 def _load() -> List[str]:
+    """Read stored symbols from disk, canonicalizing and deduping on the fly.
+
+    Older entries may have been written before the alias map existed (e.g. a
+    raw ``"BAYN"`` instead of ``"BAYN.DE"``). We transparently heal them on
+    read so the watchlist UI and the signals engine agree on symbol form.
+    """
     if not os.path.isfile(_WATCHLIST_PATH):
         return []
     try:
@@ -43,11 +51,33 @@ def _load() -> List[str]:
             data = json.load(f)
     except (OSError, json.JSONDecodeError):
         return []
+    raw: List[str]
     if isinstance(data, list):
-        return [s for s in data if isinstance(s, str)]
-    if isinstance(data, dict) and isinstance(data.get("symbols"), list):
-        return [s for s in data["symbols"] if isinstance(s, str)]
-    return []
+        raw = [s for s in data if isinstance(s, str)]
+    elif isinstance(data, dict) and isinstance(data.get("symbols"), list):
+        raw = [s for s in data["symbols"] if isinstance(s, str)]
+    else:
+        return []
+
+    # Canonicalize + dedupe while preserving insertion order.
+    seen: set[str] = set()
+    healed: List[str] = []
+    for sym in raw:
+        canon = canonicalize(sym)
+        if not canon or not _SYMBOL_RX.match(canon):
+            continue
+        if canon in seen:
+            continue
+        seen.add(canon)
+        healed.append(canon)
+
+    # Persist if anything changed so the on-disk file self-heals over time.
+    if healed != raw:
+        try:
+            _save(healed)
+        except OSError:
+            pass
+    return healed
 
 
 def _save(symbols: List[str]) -> None:
@@ -59,7 +89,10 @@ def _save(symbols: List[str]) -> None:
 
 
 def _normalize(symbol: str) -> str:
-    sym = (symbol or "").strip().upper()
+    # Apply the alias map FIRST so user-friendly inputs like "BAYN" or "HO"
+    # resolve to their Yahoo form ("BAYN.DE", "HO.PA") before validation.
+    # Unknown symbols fall through as upper-cased pass-through.
+    sym = canonicalize(symbol)
     if not _SYMBOL_RX.match(sym):
         raise HTTPException(
             status_code=400,
