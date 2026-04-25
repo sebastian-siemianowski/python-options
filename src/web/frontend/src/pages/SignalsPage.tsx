@@ -1,6 +1,6 @@
 import React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState, useMemo, useEffect, useRef, useCallback, Component, type ReactNode, type ErrorInfo } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback, Component, Fragment, type ReactNode, type ErrorInfo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import type { SummaryRow, SectorGroup, StrongSignalEntry, HighConvictionSignal, SignalSummaryData, SignalStats, EmaState, SmaReversal, SmaReversalsData } from '../api';
@@ -19,7 +19,7 @@ import {
   TrendingUp, TrendingDown, Search, X, ExternalLink, BarChart3,
   Target, Shield, ShieldCheck, ArrowUp, ArrowDown, Clock, DollarSign,
   Activity, Eye, Layers, ChevronUp, AlertTriangle, Zap, Loader2,
-  Star, Plus,
+  Star, Plus, SlidersHorizontal,
 } from 'lucide-react';
 import MiniPriceChart from '../components/MiniPriceChart';
 import { formatHorizon, responsiveHorizons } from '../utils/horizons';
@@ -157,6 +157,25 @@ function SignalsPageInner() {
   const [jobMode, setJobMode] = useState<JobMode | null>(null);
 
   const [updatedAsset, setUpdatedAsset] = useState<string | null>(null);
+
+  // Sector-view controls (lifted out of SectorPanels so the entire Signals
+  // filter surface lives in one unified premium card). SectorPanels reads
+  // sectorSort + sectorVisibleCols as props.
+  const [sectorSort, setSectorSort] = useState<SectorSortBy>('momentum');
+  const [sectorVisibleCols, setSectorVisibleCols] = useState<Set<string>>(() => loadSectorVisibleCols());
+  useEffect(() => {
+    try { localStorage.setItem(SECTOR_COLS_LS_KEY, JSON.stringify(Array.from(sectorVisibleCols))); } catch { /* ignore */ }
+  }, [sectorVisibleCols]);
+  const toggleSectorCol = (key: string) => {
+    setSectorVisibleCols((prev) => {
+      const def = SECTOR_COLUMN_DEFS.find((c) => c.key === key);
+      if (def?.locked) return prev;
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+  const resetSectorCols = () => setSectorVisibleCols(new Set(DEFAULT_SECTOR_VISIBLE_COLS));
 
   // Story 3.4: Change tracking for aurora trails + ticker tape
   type ChangeEntry = { asset: string; from: string; to: string; time: number };
@@ -398,6 +417,13 @@ function SignalsPageInner() {
       .map(sec => ({ ...sec, assets: sec.assets.filter(a => passesEma(a.asset_label)) }))
       .filter(sec => sec.assets.length > 0);
   }, [rawSectors, emaFilters, passesEma]);
+
+  // Global sector totals shown in the unified filter card footer.
+  const sectorTotals = useMemo(() => ({
+    assets: sectors.reduce((s, sec) => s + sec.asset_count, 0),
+    bullish: sectors.reduce((s, sec) => s + (sec.strong_buy ?? 0) + (sec.buy ?? 0), 0),
+    bearish: sectors.reduce((s, sec) => s + (sec.strong_sell ?? 0) + (sec.sell ?? 0), 0),
+  }), [sectors]);
 
   /** Story 3.2: Multi-level sorted rows */
   const sortedRows = useMemo(() => {
@@ -856,15 +882,164 @@ function SignalsPageInner() {
               Clear
             </button>
           )}
-
-          {view === 'sectors' && (
-            <>
-              <div className="h-4 w-px bg-white/[0.05]" aria-hidden />
-              <button onClick={expandAll} className="text-[10px] text-[var(--accent-violet)] hover:underline">Expand all</button>
-              <button onClick={collapseAll} className="text-[10px] text-[var(--text-muted)] hover:underline">Collapse all</button>
-            </>
-          )}
         </div>
+
+        {/* ── Row 3 ─ Sort (sectors only) + Horizons ──
+            Labels are tiny uppercase muted, pills themselves carry the active
+            violet glow. This lets the entire control surface read as one
+            cohesive hierarchy (what → when) with zero dividers fighting the
+            content. */}
+        {(view === 'sectors' || ((view === 'all' || view === 'sectors') && allHorizons.length > 0)) && (
+          <div
+            className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5"
+            style={{ borderTop: '1px solid rgba(255,255,255,0.03)', background: 'rgba(255,255,255,0.006)' }}
+          >
+            {view === 'sectors' && (
+              <>
+                <span className="text-[9.5px] font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">
+                  Sort
+                </span>
+                <div className="flex items-center gap-1">
+                  {SECTOR_SORT_OPTIONS.map(({ key, label, icon }) => {
+                    const active = sectorSort === key;
+                    return (
+                      <button
+                        key={key}
+                        onClick={() => setSectorSort(key)}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[8px] text-[11px] font-medium transition-all duration-[160ms] active:scale-[0.97]"
+                        style={active
+                          ? {
+                              color: 'var(--accent-violet)',
+                              background: 'var(--violet-15)',
+                              border: '1px solid var(--border-glow)',
+                              boxShadow: '0 0 0 1px rgba(167,139,250,0.20), inset 0 1px 0 rgba(255,255,255,0.05)',
+                            }
+                          : {
+                              color: 'var(--text-secondary)',
+                              background: 'rgba(255,255,255,0.02)',
+                              border: '1px solid rgba(255,255,255,0.05)',
+                            }
+                        }
+                        title={`Sort sectors by ${label}`}
+                      >
+                        {icon}
+                        <span className="hidden sm:inline">{label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {(view === 'sectors' && allHorizons.length > 0) && <div className="h-4 w-px bg-white/[0.05]" aria-hidden />}
+              </>
+            )}
+
+            {(view === 'all' || view === 'sectors') && allHorizons.length > 0 && (
+              <>
+                <span className="text-[9.5px] font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">
+                  Horizons
+                </span>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {allHorizons.map(h => {
+                    const active = horizons.includes(h);
+                    return (
+                      <button
+                        key={h}
+                        onClick={() => toggleHorizon(h)}
+                        className="px-2.5 py-1 rounded-[8px] text-[11px] font-medium tabular-nums transition-all duration-[160ms] active:scale-[0.97]"
+                        style={active
+                          ? {
+                              color: 'var(--accent-violet)',
+                              background: 'var(--violet-15)',
+                              border: '1px solid var(--border-glow)',
+                              boxShadow: '0 0 0 1px rgba(167,139,250,0.20), inset 0 1px 0 rgba(255,255,255,0.05)',
+                            }
+                          : {
+                              color: 'var(--text-secondary)',
+                              background: 'rgba(255,255,255,0.02)',
+                              border: '1px solid rgba(255,255,255,0.05)',
+                            }
+                        }
+                        title={`Toggle ${formatHorizon(h)} column`}
+                      >
+                        {formatHorizon(h)}
+                      </button>
+                    );
+                  })}
+                  {horizonOverride && (
+                    <button
+                      onClick={resetHorizons}
+                      className="text-[10px] text-[var(--text-muted)] hover:text-[var(--accent-rose)] transition-colors ml-0.5"
+                      title="Reset horizon selection"
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── Footer strip (sectors view only) ─ totals on left, utilities on
+            right. Designed as a quiet status bar: monospace numerics, muted
+            labels, violet reserved exclusively for active/actionable items.
+            This replaces the standalone toolbar that used to live inside
+            SectorPanels. */}
+        {view === 'sectors' && (
+          <div
+            className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2"
+            style={{ borderTop: '1px solid rgba(255,255,255,0.03)', background: 'rgba(0,0,0,0.12)' }}
+          >
+            <div className="flex items-center gap-3 text-[10.5px] tabular-nums text-[var(--text-muted)]">
+              <span>
+                <span className="text-[var(--text-secondary)] font-medium">{sectorTotals.assets}</span> assets
+              </span>
+              <span className="text-white/20">·</span>
+              <span>
+                <span className="text-[var(--text-secondary)] font-medium">{sectors.length}</span> sectors
+              </span>
+              <span className="text-white/20">·</span>
+              <span className="inline-flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full" style={{ background: '#10b981' }} />
+                <span className="text-[var(--text-muted)]">Bullish</span>
+                <span className="text-[#10b981] font-medium">{sectorTotals.bullish}</span>
+              </span>
+              <span className="text-white/20">·</span>
+              <span className="inline-flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full" style={{ background: '#f43f5e' }} />
+                <span className="text-[var(--text-muted)]">Bearish</span>
+                <span className="text-[#f43f5e] font-medium">{sectorTotals.bearish}</span>
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2 ml-auto">
+              <button
+                onClick={expandAll}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10.5px] font-medium transition-all duration-[160ms]"
+                style={{ color: 'var(--accent-violet)', background: 'rgba(167,139,250,0.08)', border: '1px solid rgba(167,139,250,0.18)' }}
+                title="Expand all sectors"
+              >
+                <ChevronDown className="w-3 h-3" />
+                Expand all
+              </button>
+              <button
+                onClick={collapseAll}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10.5px] font-medium transition-all duration-[160ms]"
+                style={{ color: 'var(--text-secondary)', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)' }}
+                title="Collapse all sectors"
+              >
+                <ChevronUp className="w-3 h-3" />
+                Collapse all
+              </button>
+              <div className="h-4 w-px bg-white/[0.05]" aria-hidden />
+              <ColumnCustomizer
+                columns={SECTOR_COLUMN_DEFS}
+                visible={sectorVisibleCols}
+                onToggle={toggleSectorCol}
+                onReset={resetSectorCols}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Story 3.4: Ticker tape */}
@@ -901,31 +1076,10 @@ function SignalsPageInner() {
         </div>
       )}
 
-      {/* Story 3.6: Horizon pill selector */}
-      {(view === 'all' || view === 'sectors') && allHorizons.length > 0 && (
-        <div className="flex items-center gap-1.5 mb-3 fade-up-delay-2">
-          <span className="text-[10px] text-[var(--text-muted)] mr-1">Horizons</span>
-          {allHorizons.map(h => {
-            const active = horizons.includes(h);
-            return (
-              <button key={h} onClick={() => toggleHorizon(h)}
-                className="px-2 py-0.5 rounded-full text-[10px] font-medium transition-all duration-120"
-                style={active
-                  ? { color: 'var(--accent-violet)', background: 'var(--violet-15)', border: '1px solid var(--border-glow)' }
-                  : { color: 'var(--text-secondary)', background: 'var(--void-active)', border: '1px solid transparent' }
-                }
-              >
-                {formatHorizon(h)}
-              </button>
-            );
-          })}
-          {horizonOverride && (
-            <button onClick={resetHorizons} className="text-[9px] text-[var(--text-muted)] hover:text-[var(--accent-rose)] transition-colors ml-1">
-              Reset
-            </button>
-          )}
-        </div>
-      )}
+      {/* Horizons + colour filters are now consolidated into the main filter
+          bar above. The standalone row that used to live here was removed to
+          eliminate duplicated Greens/Reds controls and produce a single,
+          cohesive filter surface. */}
 
       {/* Content */}
       {view === 'sectors' && (
@@ -933,6 +1087,8 @@ function SignalsPageInner() {
           sectors={sectors}
           expandedSectors={expandedSectors}
           toggleSector={toggleSector}
+          sectorSort={sectorSort}
+          sectorVisibleCols={sectorVisibleCols}
           horizons={horizons}
           search={debouncedSearch}
           filter={filter}
@@ -1134,6 +1290,8 @@ function SectorPanels({
   sectors,
   expandedSectors,
   toggleSector,
+  sectorSort,
+  sectorVisibleCols,
   horizons,
   search,
   filter,
@@ -1143,28 +1301,15 @@ function SectorPanels({
   sectors: SectorGroup[];
   expandedSectors: Set<string>;
   toggleSector: (name: string) => void;
+  sectorSort: SectorSortBy;
+  sectorVisibleCols: Set<string>;
   horizons: number[];
   search: string;
   filter: SignalFilter;
   updatedAsset: string | null;
   qualityScores: Record<string, number>;
 }) {
-  const [sectorSort, setSectorSort] = useState<SectorSortBy>('momentum');
   const navigate = useNavigate();
-  const [sectorVisibleCols, setSectorVisibleCols] = useState<Set<string>>(() => loadSectorVisibleCols());
-  useEffect(() => {
-    try { localStorage.setItem(SECTOR_COLS_LS_KEY, JSON.stringify(Array.from(sectorVisibleCols))); } catch { /* ignore */ }
-  }, [sectorVisibleCols]);
-  const toggleSectorCol = (key: string) => {
-    setSectorVisibleCols((prev) => {
-      const def = SECTOR_COLUMN_DEFS.find((c) => c.key === key);
-      if (def?.locked) return prev;
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
-  };
-  const resetSectorCols = () => setSectorVisibleCols(new Set(DEFAULT_SECTOR_VISIBLE_COLS));
 
   /** Per-row sort within each sector (Task 2). Single-column toggle. */
   type RowSortCol = 'asset' | 'signal' | 'strength' | 'momentum' | 'quality' | 'risk' | `horizon_${number}`;
@@ -1221,50 +1366,11 @@ function SectorPanels({
     }
   }, [sectors, sectorSort]);
 
-  // Global sector stats
-  const totalAssets = sectors.reduce((s, sec) => s + sec.asset_count, 0);
-  const totalBullish = sectors.reduce((s, sec) => s + (sec.strong_buy ?? 0) + (sec.buy ?? 0), 0);
-  const totalBearish = sectors.reduce((s, sec) => s + (sec.strong_sell ?? 0) + (sec.sell ?? 0), 0);
-
   return (
     <div className="space-y-3">
-      {/* Sort bar — pill selector with global stats */}
-      <div className="flex items-center gap-3 mb-1">
-        <div className="flex items-center gap-1 glass-card px-2 py-1.5">
-          {SECTOR_SORT_OPTIONS.map(({ key, label, icon }) => (
-            <button key={key}
-              onClick={() => setSectorSort(key)}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all duration-200 ${
-                sectorSort === key
-                  ? 'bg-[var(--accent-violet)]/15 text-[var(--text-violet)] shadow-[0_0_8px_var(--violet-15)]'
-                  : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-white/[0.02]'
-              }`}
-            >
-              {icon}
-              <span className="hidden sm:inline">{label}</span>
-            </button>
-          ))}
-        </div>
-        <div className="flex items-center gap-4 ml-auto text-[10px]">
-          <span className="flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-emerald)]" />
-            <span className="text-[var(--text-muted)]">Bullish</span>
-            <span className="font-bold text-[var(--accent-emerald)] tabular-nums">{totalBullish}</span>
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-rose)]" />
-            <span className="text-[var(--text-muted)]">Bearish</span>
-            <span className="font-bold text-[var(--accent-rose)] tabular-nums">{totalBearish}</span>
-          </span>
-          <span className="text-[var(--text-muted)] tabular-nums">{totalAssets} assets</span>
-        </div>
-        <ColumnCustomizer
-          columns={SECTOR_COLUMN_DEFS}
-          visible={sectorVisibleCols}
-          onToggle={toggleSectorCol}
-          onReset={resetSectorCols}
-        />
-      </div>
+      {/* Sort / Expand / Columns / totals all moved to the unified premium
+          filter card in SignalsPageInner. SectorPanels now renders sector
+          content only. */}
 
       {sorted.map((sector) => {
         const expanded = expandedSectors.has(sector.name);
@@ -1751,6 +1857,228 @@ function WatchlistView({
     return { watchlistRows: rowsForWatchlist, missingSymbols: missing };
   }, [allRows, symbols, proxyMap]);
 
+  // ── Watchlist-local filters (no pagination — user disliked paging) ───
+  // Signal class: STRONG_BUY/BUY/SELL/STRONG_SELL/HOLD via nearest_label.
+  // Horizon colour: whole-row majority of exp_ret signs via rowHorizonColor —
+  // a ticker can be "bullish" today (label) yet "reds" across horizons, so
+  // both axes are useful filters.
+  type WlClass = 'bullish' | 'bearish' | 'neutral';
+  type WlColor = 'greens' | 'reds' | 'mixed';
+  type WlSignal = 'all' | WlClass | WlColor;
+  type WlSort = 'signal' | 'momentum' | 'risk' | 'alpha';
+  const [wlSignal, setWlSignal] = useState<WlSignal>('all');
+  const [wlSector, setWlSector] = useState<string>('all');
+  const [wlQuery, setWlQuery] = useState<string>('');
+  const [wlSort, setWlSort] = useState<WlSort>('signal');
+  const [wlMissingOnly, setWlMissingOnly] = useState<boolean>(false);
+  // Manage drawer is HIDDEN by default once the user has a populated list —
+  // it auto-opens only when the watchlist is empty (first-run experience)
+  // or when the user explicitly clicks the "+ Add" button. This keeps the
+  // panel's resting state clean and content-first (see Watchlist.md).
+  const [manageOpen, setManageOpen] = useState<boolean>(false);
+  // Chip color mode in the Manage Drawer.
+  //   'signal'   — nearest-label bullish/bearish (green/red).
+  //   'horizon'  — whole-row greens vs reds verdict.
+  //   'bigmoves' — only large 1w movers get color; small ones are muted grey
+  //                so the eye locks onto Big Greens / Big Reds instantly.
+  const [chipColorMode, setChipColorMode] = useState<'signal' | 'horizon' | 'bigmoves'>('signal');
+  // Refine popover — search / sector / sort are collapsed behind a single
+  // trigger so the two primary rows (insight bar, segmented control) can
+  // breathe.
+  const [refineOpen, setRefineOpen] = useState<boolean>(false);
+  // When the user clicks a column header inside the watchlist table, we
+  // let the parent's sortLevels drive the row order (allRows arrive
+  // pre-sorted). The wlSort dropdown becomes a no-op until the user picks
+  // a preset again, at which point the override is cleared. This resolves
+  // the historic "sorting doesn't work" bug where column clicks had no
+  // visible effect on the watchlist table (see Watchlist.md §10).
+  const [wlSortOverride, setWlSortOverride] = useState<boolean>(false);
+  useEffect(() => {
+    if (symbols.length === 0) setManageOpen(true);
+  }, [symbols.length]);
+
+  const sectorOptions = useMemo(() => {
+    const s = new Set<string>();
+    for (const r of watchlistRows) {
+      if (r.sector) s.add(r.sector);
+    }
+    return Array.from(s).sort((a, b) => a.localeCompare(b));
+  }, [watchlistRows]);
+
+  const classifyRow = useCallback((row: SummaryRow): WlClass => {
+    const lbl = (row.nearest_label || '').toUpperCase();
+    if (lbl === 'STRONG_BUY' || lbl === 'BUY') return 'bullish';
+    if (lbl === 'STRONG_SELL' || lbl === 'SELL') return 'bearish';
+    return 'neutral';
+  }, []);
+
+  // Ticker (as it appears in signal rows, accounting for proxies) → row, so
+  // chip rendering can look up the signal bucket for coloring.
+  const rowByTicker = useMemo(() => {
+    const m = new Map<string, SummaryRow>();
+    for (const r of watchlistRows) {
+      m.set(extractTicker(r.asset_label), r);
+    }
+    return m;
+  }, [watchlistRows]);
+
+  // Resolve a watchlist symbol to its signal row (via proxy if needed).
+  const rowForSymbol = useCallback(
+    (sym: string): SummaryRow | undefined => {
+      const direct = rowByTicker.get(sym);
+      if (direct) return direct;
+      const primary = proxyMap[sym];
+      if (primary) return rowByTicker.get(primary);
+      return undefined;
+    },
+    [rowByTicker, proxyMap],
+  );
+
+  // 1-week implied return (exp_ret at horizon=7) per watchlist symbol.
+  // Used to scale chip color intensity — stronger moves render with deeper
+  // saturation so the eye can rank conviction at a glance.
+  const exp1w = useCallback(
+    (sym: string): number => {
+      const row = rowForSymbol(sym);
+      if (!row) return 0;
+      const sigs = row.horizon_signals as Record<string | number, { exp_ret?: number } | undefined>;
+      const sig = sigs?.[7] || sigs?.['7'];
+      const r = sig?.exp_ret;
+      return Number.isFinite(r) ? (r as number) : 0;
+    },
+    [rowForSymbol],
+  );
+
+  // Max |1w exp_ret| across the current watchlist — normalises intensity
+  // so the strongest mover anchors full saturation. Floor at 0.5% to avoid
+  // hyper-amplifying tiny moves on a quiet day.
+  const maxAbs1w = useMemo(() => {
+    let m = 0.005;
+    for (const sym of symbols) {
+      const v = Math.abs(exp1w(sym));
+      if (v > m) m = v;
+    }
+    return m;
+  }, [symbols, exp1w]);
+
+  const signalCounts = useMemo(() => {
+    let bull = 0, bear = 0, neut = 0, green = 0, red = 0, mixed = 0;
+    for (const r of watchlistRows) {
+      const c = classifyRow(r);
+      if (c === 'bullish') bull++;
+      else if (c === 'bearish') bear++;
+      else neut++;
+      const hc = rowHorizonColor(r);
+      if (hc === 'greens') green++;
+      else if (hc === 'reds') red++;
+      else mixed++;
+    }
+    return { bull, bear, neut, green, red, mixed };
+  }, [watchlistRows, classifyRow]);
+
+  const filteredWatchlistRows = useMemo(() => {
+    if (wlMissingOnly) return [];
+    const q = wlQuery.trim().toLowerCase();
+    const rows = watchlistRows.filter((r) => {
+      if (wlSignal !== 'all') {
+        if (wlSignal === 'bullish' || wlSignal === 'bearish' || wlSignal === 'neutral') {
+          if (classifyRow(r) !== wlSignal) return false;
+        } else {
+          if (rowHorizonColor(r) !== wlSignal) return false;
+        }
+      }
+      if (wlSector !== 'all' && r.sector !== wlSector) return false;
+      if (q && !(r.asset_label || '').toLowerCase().includes(q)) return false;
+      return true;
+    });
+    // When the user has clicked a column header (sort override), we want the
+    // parent's sortLevels to win — and the parent already handed us rows in
+    // sortLevels order. Since `watchlistRows` is derived from `allRows` with
+    // `filter` (order-preserving), we can simply skip the preset sort.
+    if (wlSortOverride) return rows;
+    const sorted = rows.slice();
+    const signalRank = (r: SummaryRow) => {
+      const lbl = (r.nearest_label || '').toUpperCase();
+      if (lbl === 'STRONG_BUY') return 0;
+      if (lbl === 'BUY') return 1;
+      if (lbl === 'HOLD' || lbl === 'EXIT' || !lbl) return 2;
+      if (lbl === 'SELL') return 3;
+      if (lbl === 'STRONG_SELL') return 4;
+      return 2;
+    };
+    if (wlSort === 'signal') {
+      sorted.sort((a, b) => signalRank(a) - signalRank(b) || (a.asset_label || '').localeCompare(b.asset_label || ''));
+    } else if (wlSort === 'momentum') {
+      sorted.sort((a, b) => (b.momentum_score ?? -Infinity) - (a.momentum_score ?? -Infinity));
+    } else if (wlSort === 'risk') {
+      sorted.sort((a, b) => (a.crash_risk_score ?? Infinity) - (b.crash_risk_score ?? Infinity));
+    } else {
+      sorted.sort((a, b) => (a.asset_label || '').localeCompare(b.asset_label || ''));
+    }
+    return sorted;
+  }, [watchlistRows, wlSignal, wlSector, wlQuery, wlSort, wlMissingOnly, wlSortOverride, classifyRow]);
+
+  // Wrap the parent's `onSort` so a column-header click inside the watchlist
+  // table also flips the override flag. The parent handler still runs so the
+  // main Signals table stays in sync — this matches the "most-recent intent
+  // wins" contract documented in Watchlist.md §10.
+  const handleWatchlistSort = useCallback(
+    (col: SortColumn, shift: boolean) => {
+      setWlSortOverride(true);
+      onSort(col, shift);
+    },
+    [onSort],
+  );
+
+  // Changing the Sort preset is an explicit reset of the override.
+  const setWlSortPreset = useCallback((key: WlSort) => {
+    setWlSort(key);
+    setWlSortOverride(false);
+  }, []);
+
+  // Suggested tickers for the first-run empty state. Keeping this tiny and
+  // opinionated: one mega-cap tech, one AI darling, one benchmark ETF.
+  const suggestedTickers = useMemo(() => ['AAPL', 'NVDA', 'SPY'], []);
+
+  // Keyboard shortcuts. `/` focuses the ticker input (also opens the manage
+  // drawer), `A` toggles the drawer, `Esc` closes it when open. We attach to
+  // `window` but ignore when the user is typing into a text field.
+  useEffect(() => {
+    const isTypingTarget = (t: EventTarget | null) => {
+      const el = t as HTMLElement | null;
+      if (!el) return false;
+      const tag = el.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
+    };
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && manageOpen) {
+        setManageOpen(false);
+        return;
+      }
+      if (isTypingTarget(e.target)) return;
+      if (e.key === '/') {
+        e.preventDefault();
+        setManageOpen(true);
+        setTimeout(() => inputRef.current?.focus(), 60);
+      } else if (e.key === 'a' || e.key === 'A') {
+        setManageOpen((v) => !v);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [manageOpen]);
+
+  const hasActiveFilter = wlSignal !== 'all' || wlSector !== 'all' || wlQuery.trim().length > 0 || wlSort !== 'signal' || wlMissingOnly || wlSortOverride;
+  const hasRefinement = wlSector !== 'all' || wlQuery.trim().length > 0 || wlSort !== 'signal';
+  const clearFilters = useCallback(() => {
+    setWlSignal('all');
+    setWlSector('all');
+    setWlQuery('');
+    setWlSort('signal');
+    setWlMissingOnly(false);
+    setWlSortOverride(false);
+  }, []);
+
   const submit = useCallback(() => {
     const sym = input.trim().toUpperCase();
     if (!sym) return;
@@ -1772,148 +2100,560 @@ function WatchlistView({
   const addErrorMsg = add.error?.message;
 
   return (
-    <div className="flex flex-col gap-5 fade-up-delay-3">
-      {/* ── Management card: input + chips ───────────────────────────── */}
+    <div className="flex flex-col gap-3 fade-up-delay-3">
+      {/* ─────────────────────────────────────────────────────────────────
+         TIER 1 — Insight Bar
+         A single headline line. Anchors the panel. Clickable count phrases
+         filter the list; "+ Add" toggles the slide-up manage drawer.
+         See Watchlist.md §3.
+         ───────────────────────────────────────────────────────────────── */}
       <div
-        className="overflow-hidden"
+        className="flex flex-wrap items-center gap-2 px-4 py-3"
         style={{
           background:
-            'linear-gradient(180deg, rgba(255,255,255,0.025) 0%, rgba(255,255,255,0.008) 100%)',
+            'linear-gradient(180deg, rgba(255,255,255,0.028) 0%, rgba(255,255,255,0.008) 100%)',
           border: '1px solid rgba(255,255,255,0.06)',
           borderRadius: '16px',
           boxShadow:
-            '0 1px 0 rgba(255,255,255,0.04) inset, 0 8px 28px -14px rgba(0,0,0,0.6), 0 1px 0 rgba(0,0,0,0.4)',
-          backdropFilter: 'blur(12px)',
+            '0 1px 0 rgba(255,255,255,0.05) inset, 0 10px 32px -18px rgba(0,0,0,0.55)',
+          backdropFilter: 'blur(14px)',
         }}
       >
-        {/* Header */}
-        <div className="flex items-center gap-2 px-4 py-3 border-b border-white/[0.04]">
+        {/* Anchor: Star + label + tracked count */}
+        <div className="flex items-center gap-2.5">
           <div
-            className="w-7 h-7 rounded-lg flex items-center justify-center"
-            style={{ background: 'var(--violet-15)', color: '#a78bfa' }}
+            className="w-8 h-8 rounded-[10px] flex items-center justify-center"
+            style={{
+              background:
+                'linear-gradient(180deg, rgba(167,139,250,0.18) 0%, rgba(167,139,250,0.08) 100%)',
+              color: '#c4b5fd',
+              boxShadow:
+                '0 0 0 1px rgba(167,139,250,0.22), 0 6px 18px -10px rgba(167,139,250,0.55)',
+            }}
           >
             <Star className="w-4 h-4" />
           </div>
-          <div className="flex-1">
-            <div className="text-sm font-semibold text-[#e2e8f0] leading-tight">Watchlist</div>
-            <div className="text-[11px] text-[var(--text-secondary)] leading-tight">
-              Persisted server-side — survives restarts.
+          <div className="leading-tight">
+            <div className="text-[13px] font-semibold text-[#e2e8f0] tracking-[-0.01em]">
+              Watchlist
             </div>
-          </div>
-          <div
-            className="px-2 py-0.5 rounded-md text-[11px] font-medium tabular-nums"
-            style={{ background: 'rgba(167,139,250,0.10)', color: '#c4b5fd' }}
-            title={`${symbols.length} tracked — ${watchlistRows.length} with live signals`}
-          >
-            {symbols.length} tracked
+            <div className="text-[11px] text-[var(--text-secondary)] tabular-nums">
+              {symbols.length} tracked
+              {watchlistRows.length !== symbols.length && (
+                <> · {watchlistRows.length} live</>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* Add row */}
-        <div className="px-4 py-3">
-          <div className="flex items-center gap-2">
-            <div
-              className="flex items-center gap-2 flex-1 px-3 py-[7px] focus-ring transition-all duration-200"
-              style={{
-                background: 'rgba(255,255,255,0.02)',
-                border: '1px solid rgba(255,255,255,0.06)',
-                borderRadius: '10px',
-              }}
-            >
-              <Search className="w-3.5 h-3.5 text-[var(--text-secondary)]" />
-              <input
-                ref={inputRef}
-                type="text"
-                value={input}
-                onChange={(e) => setInput(e.target.value.toUpperCase())}
-                onKeyDown={onKey}
-                placeholder="Add ticker (e.g. AAPL, BTC-USD, EURUSD=X)"
-                spellCheck={false}
-                autoCapitalize="characters"
-                autoCorrect="off"
-                className="flex-1 bg-transparent outline-none text-sm text-[#e2e8f0] placeholder:text-[var(--text-secondary)]"
-                disabled={add.isPending}
-              />
-              {input && (
+        {/* Headline verdict: bullish · greens · missing. Each is a chip
+            that filters the list when clicked (one-click quick filter). */}
+        {symbols.length > 0 && (
+          <div
+            className="flex flex-wrap items-center gap-1.5 ml-1 md:ml-3"
+            aria-label="Watchlist summary"
+          >
+            {([
+              {
+                key: 'bullish' as const,
+                value: signalCounts.bull,
+                label: 'bullish',
+                accent: '#34d399',
+                tint: 'rgba(52,211,153,0.10)',
+                border: 'rgba(52,211,153,0.26)',
+                onClick: () => {
+                  setWlMissingOnly(false);
+                  setWlSignal(wlSignal === 'bullish' ? 'all' : 'bullish');
+                },
+                active: wlSignal === 'bullish',
+              },
+              {
+                key: 'greens' as const,
+                value: signalCounts.green,
+                label: 'all greens',
+                accent: '#6ee7b7',
+                tint: 'rgba(110,231,183,0.10)',
+                border: 'rgba(110,231,183,0.26)',
+                onClick: () => {
+                  setWlMissingOnly(false);
+                  setWlSignal(wlSignal === 'greens' ? 'all' : 'greens');
+                },
+                active: wlSignal === 'greens',
+              },
+              ...(signalCounts.bear > 0
+                ? [{
+                    key: 'bearish' as const,
+                    value: signalCounts.bear,
+                    label: 'bearish',
+                    accent: '#f87171',
+                    tint: 'rgba(248,113,113,0.10)',
+                    border: 'rgba(248,113,113,0.26)',
+                    onClick: () => {
+                      setWlMissingOnly(false);
+                      setWlSignal(wlSignal === 'bearish' ? 'all' : 'bearish');
+                    },
+                    active: wlSignal === 'bearish',
+                  }]
+                : []),
+              ...(missingSymbols.length > 0
+                ? [{
+                    key: 'missing' as const,
+                    value: missingSymbols.length,
+                    label: 'missing',
+                    accent: '#fcd34d',
+                    tint: 'rgba(251,191,36,0.10)',
+                    border: 'rgba(251,191,36,0.26)',
+                    onClick: () => {
+                      const next = !wlMissingOnly;
+                      setWlMissingOnly(next);
+                      if (next) setWlSignal('all');
+                    },
+                    active: wlMissingOnly,
+                  }]
+                : []),
+            ]).map((phrase, idx, arr) => (
+              <Fragment key={phrase.key}>
                 <button
                   type="button"
-                  onClick={() => setInput('')}
-                  className="text-[var(--text-secondary)] hover:text-[#e2e8f0]"
-                  title="Clear"
+                  onClick={phrase.onClick}
+                  className="group inline-flex items-baseline gap-1 px-2 py-0.5 rounded-md transition-all duration-[140ms] active:scale-[0.97]"
+                  style={{
+                    background: phrase.active ? phrase.tint : 'transparent',
+                    boxShadow: phrase.active ? `inset 0 0 0 1px ${phrase.border}` : 'none',
+                  }}
+                  title={phrase.active ? `Clear ${phrase.label} filter` : `Show ${phrase.label}`}
+                  aria-pressed={phrase.active}
                 >
-                  <X className="w-3.5 h-3.5" />
+                  <span
+                    className="text-[15px] font-semibold tabular-nums leading-none transition-colors"
+                    style={{ color: phrase.active ? phrase.accent : '#e2e8f0' }}
+                  >
+                    {phrase.value}
+                  </span>
+                  <span
+                    className="text-[12px] transition-colors"
+                    style={{
+                      color: phrase.active
+                        ? phrase.accent
+                        : 'var(--text-secondary)',
+                    }}
+                  >
+                    {phrase.label}
+                  </span>
                 </button>
-              )}
-            </div>
+                {idx < arr.length - 1 && (
+                  <span className="text-[var(--text-secondary)] opacity-40 text-[13px] leading-none">·</span>
+                )}
+              </Fragment>
+            ))}
+          </div>
+        )}
+
+        {/* Right cluster: Refine + Add */}
+        <div className="ml-auto flex items-center gap-1.5">
+          {symbols.length > 0 && (
             <button
               type="button"
-              onClick={submit}
-              disabled={!input.trim() || add.isPending}
-              className="inline-flex items-center gap-1.5 px-3 py-[7px] rounded-[10px] text-sm font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+              onClick={() => setRefineOpen((v) => !v)}
+              className="inline-flex items-center gap-1.5 px-2.5 py-[7px] rounded-[10px] text-[12px] font-medium transition-all duration-[140ms] active:scale-[0.97]"
               style={{
-                background: 'var(--violet-15)',
-                color: '#c4b5fd',
-                border: '1px solid rgba(167,139,250,0.25)',
+                background: refineOpen || hasRefinement ? 'rgba(255,255,255,0.05)' : 'transparent',
+                border: `1px solid ${refineOpen || hasRefinement ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.04)'}`,
+                color: hasRefinement ? '#c4b5fd' : 'var(--text-secondary)',
               }}
+              title={refineOpen ? 'Hide refine controls' : 'Search, sort, filter by sector'}
+              aria-expanded={refineOpen}
             >
-              {add.isPending ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Plus className="w-3.5 h-3.5" />
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+              Refine
+              {hasRefinement && (
+                <span
+                  className="inline-block rounded-full"
+                  style={{ width: 5, height: 5, background: '#a78bfa' }}
+                />
               )}
-              Add
             </button>
-          </div>
-          {addErrorMsg && (
-            <div
-              className="mt-2 flex items-center gap-1.5 text-[11px]"
-              style={{ color: '#fca5a5' }}
-            >
-              <AlertTriangle className="w-3 h-3" />
-              {addErrorMsg}
-            </div>
           )}
+          <button
+            type="button"
+            onClick={() => {
+              setManageOpen((v) => !v);
+              if (!manageOpen) setTimeout(() => inputRef.current?.focus(), 80);
+            }}
+            className="inline-flex items-center gap-1.5 px-3 py-[7px] rounded-[10px] text-[12px] font-medium transition-all duration-[140ms] active:scale-[0.97] hover:-translate-y-[1px]"
+            style={{
+              background:
+                'linear-gradient(180deg, rgba(167,139,250,0.20) 0%, rgba(167,139,250,0.10) 100%)',
+              color: '#e9d5ff',
+              border: '1px solid rgba(167,139,250,0.30)',
+              boxShadow:
+                '0 1px 0 rgba(255,255,255,0.08) inset, 0 6px 18px -10px rgba(167,139,250,0.55)',
+            }}
+            title={manageOpen ? 'Close manage drawer (A)' : 'Add / manage tickers (A)'}
+            aria-expanded={manageOpen}
+          >
+            {manageOpen ? (
+              <X className="w-3.5 h-3.5" />
+            ) : (
+              <Plus className="w-3.5 h-3.5" />
+            )}
+            {manageOpen ? 'Close' : 'Add'}
+          </button>
+        </div>
+      </div>
 
-          {/* Chips */}
-          {symbols.length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-1.5">
-              {symbols.map((sym) => {
-                const isMissing = missingSymbols.includes(sym);
-                return (
-                  <span
-                    key={sym}
-                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium tabular-nums transition-all"
-                    style={{
-                      background: isMissing
-                        ? 'rgba(251,191,36,0.08)'
-                        : 'rgba(167,139,250,0.08)',
-                      color: isMissing ? '#fcd34d' : '#c4b5fd',
-                      border: isMissing
-                        ? '1px solid rgba(251,191,36,0.22)'
-                        : '1px solid rgba(167,139,250,0.22)',
-                    }}
-                    title={
-                      isMissing
-                        ? `${sym} — not in current signal set`
-                        : sym
-                    }
+      {/* ─────────────────────────────────────────────────────────────────
+         MANAGE DRAWER — slides open when manageOpen.
+         Uses a CSS grid-rows trick for a smooth height transition.
+         ───────────────────────────────────────────────────────────────── */}
+      <div
+        className="grid transition-[grid-template-rows] duration-[260ms] ease-[cubic-bezier(0.16,1,0.3,1)]"
+        style={{ gridTemplateRows: manageOpen ? '1fr' : '0fr' }}
+        aria-hidden={!manageOpen}
+      >
+        <div className="overflow-hidden">
+          <div
+            className="p-4"
+            style={{
+              background:
+                'linear-gradient(180deg, rgba(255,255,255,0.022) 0%, rgba(255,255,255,0.006) 100%)',
+              border: '1px solid rgba(255,255,255,0.06)',
+              borderRadius: '16px',
+              boxShadow:
+                '0 1px 0 rgba(255,255,255,0.05) inset, 0 8px 28px -14px rgba(0,0,0,0.6)',
+              backdropFilter: 'blur(12px)',
+            }}
+          >
+            {/* Input row */}
+            <div className="flex items-center gap-2">
+              <div
+                className="flex items-center gap-2 flex-1 px-3 py-[8px] focus-ring transition-all duration-200"
+                style={{
+                  background: 'rgba(255,255,255,0.02)',
+                  border: '1px solid rgba(255,255,255,0.06)',
+                  borderRadius: '10px',
+                }}
+              >
+                <Search className="w-3.5 h-3.5 text-[var(--text-secondary)]" />
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value.toUpperCase())}
+                  onKeyDown={onKey}
+                  placeholder="Add ticker (AAPL, BTC-USD, EURUSD=X)…"
+                  spellCheck={false}
+                  autoCapitalize="characters"
+                  autoCorrect="off"
+                  className="flex-1 bg-transparent outline-none text-sm text-[#e2e8f0] placeholder:text-[var(--text-secondary)]"
+                  disabled={add.isPending}
+                />
+                {input && (
+                  <button
+                    type="button"
+                    onClick={() => setInput('')}
+                    className="text-[var(--text-secondary)] hover:text-[#e2e8f0]"
+                    title="Clear"
                   >
-                    {isMissing && <AlertTriangle className="w-3 h-3" />}
-                    {sym}
-                    <button
-                      type="button"
-                      onClick={() => remove.mutate(sym)}
-                      disabled={remove.isPending}
-                      className="ml-0.5 opacity-70 hover:opacity-100 disabled:opacity-30"
-                      title={`Remove ${sym}`}
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  </span>
-                );
-              })}
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={submit}
+                disabled={!input.trim() || add.isPending}
+                className="inline-flex items-center gap-1.5 px-3 py-[8px] rounded-[10px] text-sm font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.97]"
+                style={{
+                  background:
+                    'linear-gradient(180deg, rgba(167,139,250,0.22) 0%, rgba(167,139,250,0.10) 100%)',
+                  color: '#e9d5ff',
+                  border: '1px solid rgba(167,139,250,0.30)',
+                }}
+              >
+                {add.isPending ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Plus className="w-3.5 h-3.5" />
+                )}
+                Track
+              </button>
             </div>
-          )}
+            {addErrorMsg && (
+              <div
+                className="mt-2 flex items-center gap-1.5 text-[11px]"
+                style={{ color: '#fca5a5' }}
+              >
+                <AlertTriangle className="w-3 h-3" />
+                {addErrorMsg}
+              </div>
+            )}
+
+            {/* Suggestions when empty */}
+            {symbols.length === 0 && (
+              <div className="mt-3">
+                <div className="text-[10px] uppercase tracking-[0.12em] font-semibold text-[var(--text-secondary)] mb-2">
+                  Try one of these
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {suggestedTickers.map((sym) => (
+                    <button
+                      key={sym}
+                      type="button"
+                      onClick={() => add.mutate(sym)}
+                      disabled={add.isPending}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium transition-all active:scale-[0.97] hover:-translate-y-[1px] disabled:opacity-40"
+                      style={{
+                        background: 'rgba(167,139,250,0.08)',
+                        color: '#c4b5fd',
+                        border: '1px solid rgba(167,139,250,0.22)',
+                      }}
+                      title={`Track ${sym}`}
+                    >
+                      <Plus className="w-3 h-3" />
+                      {sym}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Chips grid — color-coded by current signal state OR by
+                whole-row horizon verdict (greens vs reds) depending on
+                `chipColorMode`. A small segmented toggle lets the user flip
+                between the two lenses. */}
+            {symbols.length > 0 && (
+              <>
+                <div className="mt-3 flex items-center gap-2">
+                  <span className="text-[10px] uppercase tracking-[0.12em] font-semibold text-[var(--text-secondary)]">
+                    Color by
+                  </span>
+                  <div
+                    className="inline-flex items-center rounded-[10px] p-0.5 gap-0.5"
+                    style={{
+                      background: 'rgba(255,255,255,0.025)',
+                      border: '1px solid rgba(255,255,255,0.05)',
+                    }}
+                    role="tablist"
+                    aria-label="Chip color mode"
+                  >
+                    {([
+                      { k: 'signal' as const, label: 'Signal', accent: '#a78bfa', bg: 'rgba(167,139,250,0.14)', border: 'rgba(167,139,250,0.28)' },
+                      { k: 'horizon' as const, label: 'Greens / Reds', accent: '#6ee7b7', bg: 'rgba(110,231,183,0.14)', border: 'rgba(110,231,183,0.28)' },
+                      { k: 'bigmoves' as const, label: 'Big Greens / Big Reds', accent: '#fde68a', bg: 'rgba(253,230,138,0.14)', border: 'rgba(253,230,138,0.32)' },
+                    ]).map((opt) => {
+                      const active = chipColorMode === opt.k;
+                      return (
+                        <button
+                          key={opt.k}
+                          type="button"
+                          role="tab"
+                          aria-selected={active}
+                          onClick={() => setChipColorMode(opt.k)}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-[4px] rounded-[8px] text-[11px] font-medium transition-all duration-[140ms] ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97]"
+                          style={{
+                            background: active ? opt.bg : 'transparent',
+                            color: active ? opt.accent : 'var(--text-secondary)',
+                            boxShadow: active ? `0 0 0 1px ${opt.border}` : 'none',
+                          }}
+                          title={
+                            opt.k === 'signal'
+                              ? 'Color chips by nearest-horizon signal (bullish / bearish)'
+                              : opt.k === 'horizon'
+                              ? 'Color chips by whole-row verdict (all greens vs all reds)'
+                              : 'Highlight only big 1-week movers (≥1.5%); small ones go neutral grey'
+                          }
+                        >
+                          {opt.k === 'horizon' && (
+                            <span className="inline-flex items-center gap-0.5">
+                              <span className="inline-block rounded-full" style={{ width: 6, height: 6, background: '#34d399' }} />
+                              <span className="inline-block rounded-full" style={{ width: 6, height: 6, background: '#ef4444' }} />
+                            </span>
+                          )}
+                          {opt.k === 'bigmoves' && (
+                            <span className="inline-flex items-center gap-0.5">
+                              <span className="inline-block rounded-full" style={{ width: 8, height: 8, background: '#10b981', boxShadow: '0 0 0 1.5px rgba(16,185,129,0.45)' }} />
+                              <span className="inline-block rounded-full" style={{ width: 8, height: 8, background: '#ef4444', boxShadow: '0 0 0 1.5px rgba(239,68,68,0.45)' }} />
+                            </span>
+                          )}
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {symbols.map((sym) => {
+                    const isMissing = missingSymbols.includes(sym);
+                    const row = isMissing ? undefined : rowForSymbol(sym);
+                    // 1w intensity in [0..1] — |exp_ret_7d| normalised by the
+                    // strongest mover. sqrt curve amplifies mid-range so the
+                    // difference between a 0.5% and 2% mover is unmistakable.
+                    const r7d = isMissing ? 0 : exp1w(sym);
+                    const raw = Math.min(1, Math.abs(r7d) / maxAbs1w);
+                    const intensity = Math.max(0.08, Math.sqrt(raw));
+                    // Tier the chip into 4 visual buckets so adjacent chips
+                    // are obviously distinct, not a smooth alpha gradient.
+                    const tier = intensity < 0.30 ? 0 : intensity < 0.55 ? 1 : intensity < 0.80 ? 2 : 3;
+                    const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+                    let bg = 'rgba(148,163,184,0.06)';
+                    let color = '#cbd5e1';
+                    let border = 'rgba(148,163,184,0.20)';
+                    let dot: string | null = null;
+                    let chipTitleSuffix = '';
+                    let fontWeight: 400 | 500 | 600 | 700 = 500;
+                    if (isMissing) {
+                      bg = 'rgba(251,191,36,0.08)';
+                      color = '#fcd34d';
+                      border = 'rgba(251,191,36,0.26)';
+                    } else if (row && chipColorMode === 'bigmoves') {
+                      // Big Greens / Big Reds lens — ignore the row verdict;
+                      // gate purely on |1w move|. Below 1.5% → neutral grey.
+                      // 1.5–3% → medium tint. ≥3% → vivid, bold, glowing.
+                      const absR = Math.abs(r7d);
+                      const sign = r7d >= 0 ? 1 : -1;
+                      let bigTier: 0 | 1 | 2 = 0;
+                      if (absR >= 0.03) bigTier = 2;
+                      else if (absR >= 0.015) bigTier = 1;
+                      if (bigTier === 0) {
+                        bg = 'rgba(148,163,184,0.05)';
+                        color = '#64748b';
+                        border = 'rgba(148,163,184,0.16)';
+                        dot = null;
+                        fontWeight = 400;
+                        chipTitleSuffix = ` — 1w ${(r7d * 100).toFixed(2)}% (small)`;
+                      } else if (sign > 0) {
+                        const bgA = bigTier === 2 ? 0.55 : 0.28;
+                        const brA = bigTier === 2 ? 0.95 : 0.55;
+                        bg = `rgba(16,185,129,${bgA})`;
+                        color = bigTier === 2 ? '#d1fae5' : '#34d399';
+                        border = `rgba(16,185,129,${brA})`;
+                        dot = '#10b981';
+                        fontWeight = bigTier === 2 ? 700 : 600;
+                        chipTitleSuffix = ` — BIG green 1w +${(r7d * 100).toFixed(2)}%`;
+                      } else {
+                        const bgA = bigTier === 2 ? 0.55 : 0.28;
+                        const brA = bigTier === 2 ? 0.95 : 0.55;
+                        bg = `rgba(239,68,68,${bgA})`;
+                        color = bigTier === 2 ? '#fee2e2' : '#f87171';
+                        border = `rgba(239,68,68,${brA})`;
+                        dot = '#ef4444';
+                        fontWeight = bigTier === 2 ? 700 : 600;
+                        chipTitleSuffix = ` — BIG red 1w ${(r7d * 100).toFixed(2)}%`;
+                      }
+                    } else if (row && chipColorMode === 'horizon') {
+                      // Greens vs Reds lens — 4 tiers, wide alpha range so
+                      // strongest movers are clearly separated from the rest.
+                      const hc = rowHorizonColor(row);
+                      const bgA = lerp(0.06, 0.55, intensity);
+                      const brA = lerp(0.20, 0.95, intensity);
+                      fontWeight = tier >= 2 ? 700 : tier === 1 ? 600 : 500;
+                      if (hc === 'greens') {
+                        bg = `rgba(16,185,129,${bgA.toFixed(3)})`;
+                        // Step palette: tier 0 → pale, tier 3 → vivid white-green.
+                        color = ['#86efac', '#6ee7b7', '#34d399', '#a7f3d0'][tier];
+                        border = `rgba(16,185,129,${brA.toFixed(3)})`;
+                        dot = '#10b981';
+                        chipTitleSuffix = ` — all greens (1w +${(Math.abs(r7d) * 100).toFixed(2)}%)`;
+                      } else if (hc === 'reds') {
+                        // Pure red, not orange.
+                        bg = `rgba(239,68,68,${bgA.toFixed(3)})`;
+                        color = ['#fca5a5', '#f87171', '#ef4444', '#fecaca'][tier];
+                        border = `rgba(239,68,68,${brA.toFixed(3)})`;
+                        dot = '#ef4444';
+                        chipTitleSuffix = ` — all reds (1w −${(Math.abs(r7d) * 100).toFixed(2)}%)`;
+                      } else {
+                        bg = 'rgba(148,163,184,0.06)';
+                        color = '#94a3b8';
+                        border = 'rgba(148,163,184,0.20)';
+                        dot = null;
+                        chipTitleSuffix = ' — mixed';
+                      }
+                    } else if (row) {
+                      const cls = classifyRow(row);
+                      // Bullish/bearish lens — same 4-tier scheme.
+                      const bgA = lerp(0.04, 0.42, intensity);
+                      const brA = lerp(0.16, 0.80, intensity);
+                      fontWeight = tier >= 2 ? 700 : tier === 1 ? 600 : 500;
+                      if (cls === 'bullish') {
+                        bg = `rgba(52,211,153,${bgA.toFixed(3)})`;
+                        color = ['#a7f3d0', '#6ee7b7', '#34d399', '#d1fae5'][tier];
+                        border = `rgba(52,211,153,${brA.toFixed(3)})`;
+                        dot = '#34d399';
+                        chipTitleSuffix = ` — 1w +${(r7d * 100).toFixed(2)}%`;
+                      } else if (cls === 'bearish') {
+                        bg = `rgba(239,68,68,${bgA.toFixed(3)})`;
+                        color = ['#fecaca', '#fca5a5', '#f87171', '#fee2e2'][tier];
+                        border = `rgba(239,68,68,${brA.toFixed(3)})`;
+                        dot = '#ef4444';
+                        chipTitleSuffix = ` — 1w ${(r7d * 100).toFixed(2)}%`;
+                      }
+                    }
+                    return (
+                      <span
+                        key={sym}
+                        className="group inline-flex items-center gap-1 pl-2 pr-1 py-1 rounded-md text-[11px] tabular-nums transition-all duration-[140ms] hover:-translate-y-[1px]"
+                        style={{ background: bg, color, border: `1px solid ${border}`, fontWeight }}
+                        title={
+                          isMissing
+                            ? `${sym} — not in current signal set`
+                            : row
+                            ? `${sym} — ${row.nearest_label || 'HOLD'}${chipTitleSuffix}`
+                            : sym
+                        }
+                      >
+                        {isMissing ? (
+                          <AlertTriangle className="w-3 h-3" />
+                        ) : dot ? (
+                          <span
+                            className="inline-block rounded-full"
+                            style={{
+                              width: 6,
+                              height: 6,
+                              background: dot,
+                              // Halo grows with 1w intensity — subtle for weak
+                              // signals, prominent glow for strongest movers.
+                              boxShadow: `0 0 0 2px ${dot}${Math.round(lerp(0x14, 0x55, intensity)).toString(16).padStart(2, '0')}`,
+                            }}
+                          />
+                        ) : null}
+                        <span>{sym}</span>
+                        <button
+                          type="button"
+                          onClick={() => remove.mutate(sym)}
+                          disabled={remove.isPending}
+                          className="ml-0.5 w-4 h-4 inline-flex items-center justify-center rounded opacity-60 hover:opacity-100 hover:bg-white/5 disabled:opacity-30"
+                          title={`Remove ${sym}`}
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            {/* Keyboard shortcut hint row */}
+            <div className="mt-3 pt-3 border-t border-white/[0.04] flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-[var(--text-secondary)]">
+              <span className="inline-flex items-center gap-1">
+                <kbd className="px-1.5 py-px rounded bg-white/[0.05] border border-white/[0.06] text-[10px] font-mono">/</kbd>
+                focus input
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <kbd className="px-1.5 py-px rounded bg-white/[0.05] border border-white/[0.06] text-[10px] font-mono">A</kbd>
+                toggle drawer
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <kbd className="px-1.5 py-px rounded bg-white/[0.05] border border-white/[0.06] text-[10px] font-mono">Esc</kbd>
+                close
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <kbd className="px-1.5 py-px rounded bg-white/[0.05] border border-white/[0.06] text-[10px] font-mono">Enter</kbd>
+                track ticker
+              </span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1924,39 +2664,73 @@ function WatchlistView({
         </div>
       ) : symbols.length === 0 ? (
         <div
-          className="flex flex-col items-center justify-center text-center py-16 px-6"
+          className="relative overflow-hidden flex flex-col items-center justify-center text-center py-16 px-6"
           style={{
             background:
-              'linear-gradient(180deg, rgba(255,255,255,0.02) 0%, rgba(255,255,255,0.005) 100%)',
-            border: '1px dashed rgba(255,255,255,0.08)',
-            borderRadius: '16px',
+              'linear-gradient(180deg, rgba(167,139,250,0.04) 0%, rgba(167,139,250,0.01) 60%, rgba(255,255,255,0.005) 100%)',
+            border: '1px dashed rgba(167,139,250,0.18)',
+            borderRadius: '20px',
           }}
         >
           <div
-            className="w-14 h-14 rounded-2xl flex items-center justify-center mb-4"
-            style={{ background: 'var(--violet-15)', color: '#a78bfa' }}
+            aria-hidden
+            className="absolute inset-0 pointer-events-none"
+            style={{
+              background:
+                'radial-gradient(420px 180px at 50% 0%, rgba(167,139,250,0.10), transparent 70%)',
+            }}
+          />
+          <div
+            className="relative w-16 h-16 rounded-[22px] flex items-center justify-center mb-5"
+            style={{
+              background:
+                'linear-gradient(180deg, rgba(167,139,250,0.22) 0%, rgba(167,139,250,0.08) 100%)',
+              color: '#c4b5fd',
+              boxShadow:
+                '0 0 0 1px rgba(167,139,250,0.26), 0 12px 36px -12px rgba(167,139,250,0.55), inset 0 1px 0 rgba(255,255,255,0.08)',
+            }}
           >
             <Star className="w-7 h-7" />
           </div>
-          <h3 className="text-base font-semibold text-[#e2e8f0] mb-1">
-            Your watchlist is empty
+          <h3 className="relative text-[17px] font-semibold text-[#e2e8f0] mb-1 tracking-[-0.01em]">
+            Build your watchlist
           </h3>
-          <p className="text-sm text-[var(--text-secondary)] max-w-sm">
-            Add tickers above to track them with the same level of detail as the
-            main view. Your list persists across server restarts.
+          <p className="relative text-[13px] text-[var(--text-secondary)] max-w-sm mb-5 leading-relaxed">
+            Pin tickers you care about for a focused view. Signals, momentum, and risk
+            — just for them.
           </p>
+          <div className="relative flex flex-wrap items-center justify-center gap-1.5 mb-5">
+            {suggestedTickers.map((sym) => (
+              <button
+                key={sym}
+                type="button"
+                onClick={() => add.mutate(sym)}
+                disabled={add.isPending}
+                className="inline-flex items-center gap-1 px-3 py-[7px] rounded-[10px] text-[12px] font-medium transition-all duration-[140ms] active:scale-[0.97] hover:-translate-y-[1px] disabled:opacity-40"
+                style={{
+                  background: 'rgba(167,139,250,0.10)',
+                  color: '#c4b5fd',
+                  border: '1px solid rgba(167,139,250,0.26)',
+                }}
+                title={`Track ${sym}`}
+              >
+                <Plus className="w-3.5 h-3.5" />
+                {sym}
+              </button>
+            ))}
+          </div>
           <button
             type="button"
-            onClick={() => inputRef.current?.focus()}
-            className="mt-4 inline-flex items-center gap-1.5 px-3 py-[7px] rounded-[10px] text-sm font-medium"
+            onClick={() => { setManageOpen(true); setTimeout(() => inputRef.current?.focus(), 80); }}
+            className="relative inline-flex items-center gap-1.5 px-3 py-[7px] rounded-[10px] text-[12px] font-medium transition-all active:scale-[0.97]"
             style={{
-              background: 'var(--violet-15)',
-              color: '#c4b5fd',
-              border: '1px solid rgba(167,139,250,0.25)',
+              background: 'transparent',
+              color: 'var(--text-secondary)',
+              border: '1px solid rgba(255,255,255,0.08)',
             }}
           >
-            <Plus className="w-3.5 h-3.5" />
-            Add your first ticker
+            <Search className="w-3.5 h-3.5" />
+            Or add your own
           </button>
         </div>
       ) : watchlistRows.length === 0 ? (
@@ -1980,18 +2754,344 @@ function WatchlistView({
           </p>
         </div>
       ) : (
-        <AllAssetsTable
-          rows={watchlistRows}
-          horizons={horizons}
-          updatedAsset={updatedAsset}
-          sortLevels={sortLevels}
-          onSort={onSort}
-          onRemoveSort={onRemoveSort}
-          expandedRow={expanded}
-          onExpandRow={setExpanded}
-          qualityScores={qualityScores}
-          onNavigateChart={onNavigateChart}
-        />
+        <>
+          {/* ── Unified segmented control ──────────────────────────────
+             One row. Six segments. No duplicate groups. Missing is a
+             segment here (only when missingSymbols.length > 0). Color
+             accent per Watchlist.md §8. Sticky at top of the list for
+             glanceable context as user scrolls. */}
+          <div
+            className="flex flex-wrap items-center gap-2 px-3 py-2 sticky top-0 z-10"
+            style={{
+              background:
+                'linear-gradient(180deg, rgba(15,23,42,0.72) 0%, rgba(15,23,42,0.55) 100%)',
+              border: '1px solid rgba(255,255,255,0.06)',
+              borderRadius: '14px',
+              boxShadow:
+                '0 1px 0 rgba(255,255,255,0.04) inset, 0 8px 28px -18px rgba(0,0,0,0.6)',
+              backdropFilter: 'blur(14px)',
+            }}
+            role="tablist"
+            aria-label="Watchlist view"
+          >
+            <div
+              className="inline-flex items-center rounded-[11px] p-0.5 gap-0.5"
+              style={{
+                background: 'rgba(255,255,255,0.025)',
+                border: '1px solid rgba(255,255,255,0.05)',
+              }}
+            >
+              {([
+                { k: 'all' as const, label: 'All', count: watchlistRows.length, accent: '#e2e8f0', bg: 'rgba(226,232,240,0.10)', border: 'rgba(226,232,240,0.20)', dot: null as string | null },
+                { k: 'bullish' as const, label: 'Bullish', count: signalCounts.bull, accent: '#34d399', bg: 'rgba(52,211,153,0.12)', border: 'rgba(52,211,153,0.28)', dot: '#34d399' },
+                { k: 'bearish' as const, label: 'Bearish', count: signalCounts.bear, accent: '#f87171', bg: 'rgba(248,113,113,0.12)', border: 'rgba(248,113,113,0.28)', dot: '#f87171' },
+                { k: 'greens' as const, label: 'Greens', count: signalCounts.green, accent: '#6ee7b7', bg: 'rgba(110,231,183,0.12)', border: 'rgba(110,231,183,0.28)', dot: '#6ee7b7' },
+                { k: 'reds' as const, label: 'Reds', count: signalCounts.red, accent: '#fca5a5', bg: 'rgba(252,165,165,0.12)', border: 'rgba(252,165,165,0.28)', dot: '#fca5a5' },
+              ]).map((seg) => {
+                const active = !wlMissingOnly && wlSignal === seg.k;
+                return (
+                  <button
+                    key={seg.k}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => {
+                      setWlMissingOnly(false);
+                      setWlSignal(seg.k as WlSignal);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-[5px] rounded-[9px] text-[11px] font-medium transition-all duration-[180ms] ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97]"
+                    style={{
+                      background: active ? seg.bg : 'transparent',
+                      color: active ? seg.accent : 'var(--text-secondary)',
+                      boxShadow: active ? `0 0 0 1px ${seg.border}` : 'none',
+                    }}
+                    title={`${seg.label} (${seg.count})`}
+                  >
+                    {seg.dot && (
+                      <span
+                        className="inline-block rounded-full transition-opacity"
+                        style={{
+                          width: 6,
+                          height: 6,
+                          background: seg.dot,
+                          opacity: active ? 1 : 0.55,
+                        }}
+                      />
+                    )}
+                    {seg.label}
+                    <span
+                      className="tabular-nums transition-opacity"
+                      style={{ opacity: active ? 0.9 : 0.55 }}
+                    >
+                      {seg.count}
+                    </span>
+                  </button>
+                );
+              })}
+              {missingSymbols.length > 0 && (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={wlMissingOnly}
+                  onClick={() => {
+                    const next = !wlMissingOnly;
+                    setWlMissingOnly(next);
+                    if (next) setWlSignal('all');
+                  }}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-[5px] rounded-[9px] text-[11px] font-medium transition-all duration-[180ms] ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97]"
+                  style={{
+                    background: wlMissingOnly ? 'rgba(251,191,36,0.14)' : 'transparent',
+                    color: wlMissingOnly ? '#fcd34d' : 'var(--text-secondary)',
+                    boxShadow: wlMissingOnly ? '0 0 0 1px rgba(251,191,36,0.30)' : 'none',
+                  }}
+                  title={`Missing (${missingSymbols.length})`}
+                >
+                  <AlertTriangle className="w-3 h-3" />
+                  Missing
+                  <span
+                    className="tabular-nums transition-opacity"
+                    style={{ opacity: wlMissingOnly ? 0.9 : 0.55 }}
+                  >
+                    {missingSymbols.length}
+                  </span>
+                </button>
+              )}
+            </div>
+
+            {/* Sorted-by indicator (shown only when column-click override
+                is active, i.e. user clicked a column header). */}
+            {wlSortOverride && sortLevels.length > 0 && (
+              <div
+                className="inline-flex items-center gap-1 px-2 py-[3px] rounded-[8px] text-[10px]"
+                style={{
+                  background: 'rgba(167,139,250,0.08)',
+                  color: '#c4b5fd',
+                  border: '1px solid rgba(167,139,250,0.22)',
+                }}
+                title="Column-click sort active. Switch the sort dropdown in Refine to reset."
+              >
+                <span className="opacity-80">sorted by column</span>
+                <button
+                  type="button"
+                  onClick={() => { setWlSortOverride(false); }}
+                  className="opacity-70 hover:opacity-100 -mr-0.5"
+                  title="Reset to preset sort"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            )}
+
+            {/* Right cluster: result count + clear */}
+            <div className="ml-auto flex items-center gap-1.5">
+              {hasActiveFilter && (
+                <button
+                  type="button"
+                  onClick={clearFilters}
+                  className="inline-flex items-center gap-1 px-2 py-[4px] rounded-[8px] text-[10px] font-medium transition-all active:scale-[0.97]"
+                  style={{
+                    background: 'transparent',
+                    border: '1px solid rgba(255,255,255,0.06)',
+                    color: 'var(--text-secondary)',
+                  }}
+                  title="Reset all watchlist filters"
+                >
+                  <X className="w-3 h-3" />
+                  Clear
+                </button>
+              )}
+              <div
+                className="text-[11px] tabular-nums"
+                style={{ color: 'var(--text-secondary)' }}
+                title={`${wlMissingOnly ? missingSymbols.length : filteredWatchlistRows.length} shown of ${watchlistRows.length} with live signals`}
+              >
+                {wlMissingOnly ? missingSymbols.length : filteredWatchlistRows.length}
+                <span className="opacity-50"> / {watchlistRows.length}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* ── Refine popover ─────────────────────────────────────────
+             Collapsed by default. Opens from the "Refine" button in the
+             Insight Bar. Holds search, sector, and preset sort. Uses the
+             same grid-template-rows trick as the Manage drawer. */}
+          <div
+            className="grid transition-[grid-template-rows] duration-[260ms] ease-[cubic-bezier(0.16,1,0.3,1)]"
+            style={{ gridTemplateRows: refineOpen ? '1fr' : '0fr' }}
+            aria-hidden={!refineOpen}
+          >
+            <div className="overflow-hidden">
+              <div
+                className="flex flex-wrap items-center gap-2 px-3 py-2 mt-1"
+                style={{
+                  background: 'rgba(255,255,255,0.015)',
+                  border: '1px solid rgba(255,255,255,0.05)',
+                  borderRadius: '12px',
+                }}
+              >
+                <div
+                  className="flex items-center gap-1.5 px-2 py-[5px] flex-1 min-w-[180px]"
+                  style={{
+                    background: 'rgba(255,255,255,0.02)',
+                    border: '1px solid rgba(255,255,255,0.06)',
+                    borderRadius: '10px',
+                  }}
+                >
+                  <Search className="w-3.5 h-3.5 text-[var(--text-secondary)]" />
+                  <input
+                    type="text"
+                    value={wlQuery}
+                    onChange={(e) => setWlQuery(e.target.value)}
+                    placeholder="Filter by name or ticker…"
+                    spellCheck={false}
+                    className="flex-1 bg-transparent outline-none text-[12px] text-[#e2e8f0] placeholder:text-[var(--text-secondary)]"
+                  />
+                  {wlQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setWlQuery('')}
+                      className="text-[var(--text-secondary)] hover:text-[#e2e8f0]"
+                      title="Clear search"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+                {sectorOptions.length > 0 && (
+                  <select
+                    value={wlSector}
+                    onChange={(e) => setWlSector(e.target.value)}
+                    className="text-[11px] px-2 py-[5px] rounded-[10px] outline-none"
+                    style={{
+                      background: 'rgba(255,255,255,0.02)',
+                      border: '1px solid rgba(255,255,255,0.06)',
+                      color: wlSector === 'all' ? 'var(--text-secondary)' : '#e2e8f0',
+                    }}
+                    title="Filter by sector"
+                  >
+                    <option value="all">All sectors</option>
+                    {sectorOptions.map((s) => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                )}
+                <select
+                  value={wlSort}
+                  onChange={(e) => setWlSortPreset(e.target.value as WlSort)}
+                  className="text-[11px] px-2 py-[5px] rounded-[10px] outline-none"
+                  style={{
+                    background: 'rgba(255,255,255,0.02)',
+                    border: '1px solid rgba(255,255,255,0.06)',
+                    color: '#e2e8f0',
+                  }}
+                  title="Preset sort order (column click overrides)"
+                >
+                  <option value="signal">Sort: Signal (best first)</option>
+                  <option value="momentum">Sort: Momentum</option>
+                  <option value="risk">Sort: Risk (low first)</option>
+                  <option value="alpha">Sort: Alphabetical</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {wlMissingOnly ? (
+            <div
+              className="flex flex-col gap-3 px-4 py-4"
+              style={{
+                background:
+                  'linear-gradient(180deg, rgba(251,191,36,0.05) 0%, rgba(251,191,36,0.01) 100%)',
+                border: '1px dashed rgba(251,191,36,0.22)',
+                borderRadius: '14px',
+              }}
+            >
+              <div className="flex items-center gap-2 text-[13px] font-medium" style={{ color: '#fcd34d' }}>
+                <AlertTriangle className="w-4 h-4" />
+                Missing from current signal set ({missingSymbols.length})
+              </div>
+              {missingSymbols.length === 0 ? (
+                <div className="text-[11px] text-[var(--text-secondary)]">
+                  All watchlist tickers have a live signal row.
+                </div>
+              ) : (
+                <div className="flex flex-wrap gap-1.5">
+                  {missingSymbols.map((sym) => (
+                    <span
+                      key={sym}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium tabular-nums"
+                      style={{
+                        background: 'rgba(251,191,36,0.08)',
+                        color: '#fcd34d',
+                        border: '1px solid rgba(251,191,36,0.22)',
+                      }}
+                      title={`${sym} — not tuned or not in latest signal snapshot`}
+                    >
+                      <AlertTriangle className="w-3 h-3" />
+                      {sym}
+                      <button
+                        type="button"
+                        onClick={() => remove.mutate(sym)}
+                        disabled={remove.isPending}
+                        className="ml-0.5 opacity-70 hover:opacity-100 disabled:opacity-30"
+                        title={`Remove ${sym}`}
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="text-[11px] text-[var(--text-secondary)]">
+                These tickers exist in your watchlist but no row was emitted for
+                them. That usually means they haven't been tuned yet or the
+                latest snapshot is still refreshing.
+              </div>
+            </div>
+          ) : filteredWatchlistRows.length === 0 ? (
+            <div
+              className="flex flex-col items-center justify-center text-center py-10 px-6"
+              style={{
+                background:
+                  'linear-gradient(180deg, rgba(255,255,255,0.02) 0%, rgba(255,255,255,0.005) 100%)',
+                border: '1px dashed rgba(255,255,255,0.08)',
+                borderRadius: '14px',
+              }}
+            >
+              <Filter className="w-6 h-6 mb-2" style={{ color: 'var(--text-secondary)' }} />
+              <div className="text-sm font-medium text-[#e2e8f0]">No matches</div>
+              <div className="text-[11px] text-[var(--text-secondary)] mt-1">
+                No watchlist entries match your current filters.
+              </div>
+              <button
+                type="button"
+                onClick={clearFilters}
+                className="mt-3 inline-flex items-center gap-1 px-2.5 py-1 rounded-[10px] text-[11px] font-medium"
+                style={{
+                  background: 'var(--violet-15)',
+                  color: '#c4b5fd',
+                  border: '1px solid rgba(167,139,250,0.25)',
+                }}
+              >
+                <X className="w-3 h-3" />
+                Clear filters
+              </button>
+            </div>
+          ) : (
+            <AllAssetsTable
+              rows={filteredWatchlistRows}
+              horizons={horizons}
+              updatedAsset={updatedAsset}
+              sortLevels={sortLevels}
+              onSort={handleWatchlistSort}
+              onRemoveSort={onRemoveSort}
+              expandedRow={expanded}
+              onExpandRow={setExpanded}
+              qualityScores={qualityScores}
+              onNavigateChart={onNavigateChart}
+              disablePagination
+            />
+          )}
+        </>
       )}
     </div>
   );
@@ -2061,7 +3161,7 @@ function loadVisibleCols(): Set<string> {
   }
 }
 
-function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRemoveSort, expandedRow, onExpandRow, qualityScores, onNavigateChart }: {
+function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRemoveSort, expandedRow, onExpandRow, qualityScores, onNavigateChart, disablePagination }: {
   rows: SummaryRow[]; horizons: number[]; updatedAsset: string | null;
   sortLevels: { col: SortColumn; dir: SortDir }[];
   onSort: (col: SortColumn, shiftKey: boolean) => void;
@@ -2069,6 +3169,9 @@ function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRe
   expandedRow: string | null; onExpandRow: (label: string | null) => void;
   qualityScores: Record<string, number>;
   onNavigateChart: (symbol: string) => void;
+  /** When true, render all rows on a single page (no pager UI). Used by the
+   * Watchlist panel where the row count is small and users dislike paging. */
+  disablePagination?: boolean;
 }) {
   const [page, setPage] = useState(0);
   const [scrolled, setScrolled] = useState(false);
@@ -2096,8 +3199,8 @@ function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRe
     });
   };
   const resetCols = () => setVisibleCols(new Set(DEFAULT_VISIBLE_COLS));
-  const pageRows = rows.slice(page * pageSize, (page + 1) * pageSize);
-  const totalPages = Math.ceil(rows.length / pageSize);
+  const pageRows = disablePagination ? rows : rows.slice(page * pageSize, (page + 1) * pageSize);
+  const totalPages = disablePagination ? 1 : Math.ceil(rows.length / pageSize);
 
   useEffect(() => { setPage(0); }, [rows.length]);
 
@@ -2240,7 +3343,7 @@ function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRe
           </tbody>
         </table>
       </div>
-      {totalPages > 1 && (
+      {!disablePagination && totalPages > 1 && (
         <div className="flex items-center justify-between px-4 py-2.5 border-t border-[var(--border-void)]">
           <span className="text-xs text-[var(--text-muted)]">
             Page {page + 1} of {totalPages} ({rows.length} total)
