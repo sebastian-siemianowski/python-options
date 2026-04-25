@@ -375,13 +375,12 @@ def _run(mode: str) -> int:
     in_traceback: bool = False
     traceback_lines: list = []
     last_error: Optional[str] = None
+    raw_log_line_count = 0
 
     try:
         assert proc.stdout is not None
         for raw in proc.stdout:
             line = raw.rstrip("\n")
-            if line:
-                _emit_log(line)
 
             # Phase transitions: check each remaining phase's marker.
             for i in range(current_idx_box[0] + 1, len(plan)):
@@ -396,6 +395,24 @@ def _run(mode: str) -> int:
                     break
 
             current_phase = plan[current_idx_box[0]]
+
+            if line:
+                raw_log_line_count += 1
+                # Market refresh can print a very large amount of output.
+                # Keep semantic progress events accurate, but sample raw logs
+                # during download phases so the router/browser are not fed a
+                # line-by-line firehose while prices are refreshing.
+                should_emit_raw_log = current_phase.kind != "download"
+                if current_phase.kind == "download":
+                    should_emit_raw_log = (
+                        raw_log_line_count % 50 == 0
+                        or pass_rx.search(line) is not None
+                        or pass_progress_rx.search(line) is not None
+                        or pass_complete_rx.search(line) is not None
+                        or fail_rx.match(line) is not None
+                    )
+                if should_emit_raw_log:
+                    _emit_log(line)
 
             # Sub-phase hints (only within a tune-kind phase, where they fit).
             if current_phase.kind == "tune":

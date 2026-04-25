@@ -29,6 +29,8 @@ _ACTIVE_RETUNE_LOCK = asyncio.Lock()
 _RAW_LOG_FLUSH_INTERVAL_S = 0.35
 _RAW_LOG_MAX_BATCH_LINES = 24
 _RAW_LOG_MAX_BATCH_CHARS = 5000
+_DOWNLOAD_ASSET_SAMPLE_EVERY = 25
+_REFRESH_EVENT_MIN_INTERVAL_S = 0.75
 
 
 async def _terminate_process_tree(process: asyncio.subprocess.Process, timeout: float = 5.0) -> bool:
@@ -174,6 +176,8 @@ async def retune_stream(mode: str = "retune"):
             done_count = 0
             fail_count = 0
             total_expected = 0
+            current_phase_kind: Optional[str] = None
+            last_refresh_emit = 0.0
             while True:
                 line = await process.stdout.readline()
                 if not line:
@@ -193,6 +197,7 @@ async def retune_stream(mode: str = "retune"):
                         total_expected = int(payload.get("total_expected", 0))
                         yield f"data: {json.dumps({'type': 'start', 'mode': payload.get('mode'), 'total': total_expected, 'phase_count': payload.get('phase_count', 1)})}\n\n"
                     elif ev == "phase":
+                        current_phase_kind = payload.get("kind")
                         yield f"data: {json.dumps({'type': 'phase', 'title': payload.get('title', ''), 'step': payload.get('step'), 'total_steps': payload.get('total_steps'), 'kind': payload.get('kind')})}\n\n"
                     elif ev == "asset":
                         status = payload.get("status", "ok")
@@ -200,11 +205,28 @@ async def retune_stream(mode: str = "retune"):
                             fail_count += 1
                         else:
                             done_count += 1
+                        # During market data refresh hundreds of files can land
+                        # in a tight burst. Forwarding every file as its own SSE
+                        # message can starve the browser main thread and make the
+                        # page look frozen. Heartbeats still carry the true count,
+                        # so sample successful download asset events while always
+                        # forwarding failures and all tune/model completions.
+                        if (
+                            current_phase_kind == "download"
+                            and status != "fail"
+                            and done_count % _DOWNLOAD_ASSET_SAMPLE_EVERY != 0
+                        ):
+                            continue
                         yield f"data: {json.dumps({'type': 'asset', 'symbol': payload.get('symbol'), 'status': status, 'detail': payload.get('detail'), 'done': done_count, 'fail': fail_count, 'total': total_expected})}\n\n"
                     elif ev == "model":
                         # Per-asset model selection (e.g. 'Student-t+EVTH').
                         yield f"data: {json.dumps({'type': 'model', 'symbol': payload.get('symbol'), 'model': payload.get('model')})}\n\n"
                     elif ev == "refresh":
+                        now = asyncio.get_running_loop().time()
+                        has_counts = payload.get('ok') is not None or payload.get('pending') is not None
+                        if has_counts and now - last_refresh_emit < _REFRESH_EVENT_MIN_INTERVAL_S:
+                            continue
+                        last_refresh_emit = now
                         yield f"data: {json.dumps({'type': 'refresh', 'pass': payload.get('pass'), 'total_passes': payload.get('total_passes'), 'ok': payload.get('ok'), 'pending': payload.get('pending')})}\n\n"
                     elif ev == "heartbeat":
                         yield f"data: {json.dumps({'type': 'heartbeat', 'done': payload.get('done', 0), 'total': payload.get('total', 0), 'elapsed_s': payload.get('elapsed_s', 0), 'phase_step': payload.get('phase_step'), 'phase_title': payload.get('phase_title')})}\n\n"

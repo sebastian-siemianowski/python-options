@@ -469,48 +469,58 @@ export default function JobLiveActivity() {
       )}
 
       <div
-        className="job-live-activity-anim pointer-events-auto w-[min(430px,calc(100vw-2rem))] overflow-hidden rounded-[22px]"
+        className="job-live-activity-anim pointer-events-auto w-[min(372px,calc(100vw-2rem))] overflow-hidden rounded-[26px]"
         style={{
           animation: 'liveActivityRise 220ms cubic-bezier(.2,.8,.2,1) both',
-          background: 'linear-gradient(180deg, rgba(20,22,35,0.82) 0%, rgba(8,9,17,0.90) 100%)',
-          border: `1px solid ${info.color}34`,
-          boxShadow: `0 20px 70px -26px ${info.color}88, 0 18px 64px -36px rgba(0,0,0,0.95), inset 0 1px 0 rgba(255,255,255,0.10)`,
-          backdropFilter: 'blur(26px) saturate(1.35)',
-          WebkitBackdropFilter: 'blur(26px) saturate(1.35)',
+          background: 'linear-gradient(180deg, rgba(18,20,33,0.76) 0%, rgba(7,8,15,0.88) 100%)',
+          border: `1px solid ${info.color}2f`,
+          boxShadow: `0 18px 56px -28px ${info.color}80, 0 16px 48px -34px rgba(0,0,0,0.95), inset 0 1px 0 rgba(255,255,255,0.11)`,
+          backdropFilter: 'blur(30px) saturate(1.45)',
+          WebkitBackdropFilter: 'blur(30px) saturate(1.45)',
         }}
         aria-live="polite"
       >
-        <div className="relative px-4 py-3.5">
-          <div aria-hidden className="absolute inset-x-4 top-0 h-px" style={{ background: `linear-gradient(90deg, transparent, ${info.color}80, transparent)` }} />
-          <div className="flex items-center gap-3">
+        <div className="relative px-3.5 py-3">
+          <div aria-hidden className="absolute inset-x-5 top-0 h-px" style={{ background: `linear-gradient(90deg, transparent, ${info.color}8c, transparent)` }} />
+          <div className="flex items-center gap-2.5">
             <button
               type="button"
               onClick={job.toggleExpanded}
-              className="relative h-10 w-10 rounded-[14px] flex items-center justify-center shrink-0 transition-transform active:scale-95"
-              style={{ background: `linear-gradient(145deg, ${info.color}30, rgba(255,255,255,0.035))`, border: `1px solid ${info.color}40`, color: info.color, boxShadow: isRunning ? `0 0 20px -5px ${info.color}` : undefined }}
+              className="relative h-9 w-9 rounded-[14px] flex items-center justify-center shrink-0 transition-transform hover:scale-[1.03] active:scale-95"
+              style={{ background: `linear-gradient(145deg, ${info.color}2a, rgba(255,255,255,0.03))`, border: `1px solid ${info.color}36`, color: info.color, boxShadow: isRunning ? `0 0 18px -6px ${info.color}` : undefined }}
               aria-label="Expand live job progress"
             >
-              {isRunning ? <Loader2 className="h-5 w-5 animate-spin" /> : job.status === 'completed' ? <CheckCircle2 className="h-5 w-5" /> : job.status === 'failed' || job.status === 'error' ? <XCircle className="h-5 w-5" /> : <Activity className="h-5 w-5" />}
+              {isRunning ? <Loader2 className="h-4.5 w-4.5 animate-spin" /> : job.status === 'completed' ? <CheckCircle2 className="h-4.5 w-4.5" /> : job.status === 'failed' || job.status === 'error' ? <XCircle className="h-4.5 w-4.5" /> : <Activity className="h-4.5 w-4.5" />}
+              {isRunning && <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full pulse-dot" style={{ background: info.color, boxShadow: `0 0 8px ${info.color}` }} />}
             </button>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
-                <span className="text-[12px] font-semibold tracking-[-0.02em] text-white truncate">{info.shortTitle}</span>
+                <span className="text-[12.5px] font-semibold tracking-[-0.025em] text-white truncate">
+                  {isRunning ? currentPhase?.title ?? info.title : info.shortTitle}
+                </span>
                 <StatusPill label={tone.label} color={tone.color} bg={tone.bg} pulse={isRunning} compact />
               </div>
-              <div className="mt-0.5 truncate text-[11px] text-[var(--text-muted)]">
-                {isRunning ? currentPhase?.title ?? info.desc : liveSubtitle}
+              <div className="mt-0.5 flex items-center gap-2 text-[10.5px] text-[var(--text-muted)]">
+                <span className="truncate">
+                  {isRunning
+                    ? eta !== null ? `ETA ${formatJobElapsed(eta)}` : 'Running in background'
+                    : liveSubtitle}
+                </span>
+                {isRunning && counters.total > 0 && (
+                  <span className="shrink-0 font-mono tabular-nums text-[var(--text-secondary)]">{Math.round(progressPct)}%</span>
+                )}
               </div>
               <div className="mt-2 flex items-center gap-2">
                 <div className="h-1.5 flex-1 overflow-hidden rounded-full" style={{ background: 'rgba(255,255,255,0.07)' }}>
                   <div className="h-full rounded-full transition-[width] duration-700" style={{ width: `${progressPct}%`, background: `linear-gradient(90deg, ${info.color}, #38d9f5)`, boxShadow: `0 0 10px ${info.color}77` }} />
                 </div>
-                <span className="text-[10px] font-mono text-[var(--text-secondary)] tabular-nums min-w-[86px] text-right">
+                <span className="text-[10px] font-mono text-[var(--text-secondary)] tabular-nums min-w-[74px] text-right">
                   {processed}{job.counters.total > 0 ? ` / ${job.counters.total}` : ''}
                 </span>
               </div>
             </div>
-            <div className="flex flex-col items-end gap-1.5 shrink-0">
-              <span className="text-[12px] font-mono font-semibold tabular-nums text-[var(--text-primary)]" title={`Elapsed ${formatJobDuration(job.elapsedSec)}`}>{formatJobElapsed(job.elapsedSec)}</span>
+            <div className="flex flex-col items-end gap-1 shrink-0">
+              <span className="text-[11px] font-mono font-semibold tabular-nums text-[var(--text-primary)]" title={`Elapsed ${formatJobDuration(job.elapsedSec)}`}>{formatJobElapsed(job.elapsedSec)}</span>
               <div className="flex items-center gap-1">
                 <button type="button" onClick={job.toggleExpanded} className="inline-flex h-6 w-6 items-center justify-center rounded-full hover:bg-white/[0.08]" style={{ color: 'var(--text-secondary)' }} aria-label={job.expanded ? 'Collapse job details' : 'Expand job details'}>
                   {job.expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
