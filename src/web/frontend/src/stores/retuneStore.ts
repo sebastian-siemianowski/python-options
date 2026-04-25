@@ -49,9 +49,19 @@ let eventSource: EventSource | null = null;
 const listeners = new Set<Listener>();
 
 function requestBackendCancel() {
+  if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+    try {
+      const payload = new Blob(['{}'], { type: 'application/json' });
+      if (navigator.sendBeacon('/api/tune/retune/cancel', payload)) return;
+    } catch {
+      // Fall through to fetch.
+    }
+  }
+
   void fetch('/api/tune/retune/cancel', {
     method: 'POST',
     keepalive: true,
+    cache: 'no-store',
   }).catch(() => {
     // Best-effort cancellation; the stream may already be closed.
   });
@@ -155,13 +165,14 @@ export function startRetune(onComplete?: () => void) {
 }
 
 export function stopRetune() {
-  if (state.status === 'running') {
-    requestBackendCancel();
-  }
+  const wasRunning = state.status === 'running';
   eventSource?.close();
   eventSource = null;
   state.status = 'idle';
   state.finishedAt = Date.now();
   addLog({ type: 'log', message: 'Cancelled by user', count: 0, success: 0, fail: 0 });
   emit();
+  if (wasRunning) {
+    requestBackendCancel();
+  }
 }

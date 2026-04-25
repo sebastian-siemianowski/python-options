@@ -26,6 +26,9 @@ SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.
 REPO_ROOT = os.path.abspath(os.path.join(SRC_DIR, os.pardir))
 _ACTIVE_RETUNE_PROCESSES: set[asyncio.subprocess.Process] = set()
 _ACTIVE_RETUNE_LOCK = asyncio.Lock()
+_RAW_LOG_FLUSH_INTERVAL_S = 0.35
+_RAW_LOG_MAX_BATCH_LINES = 24
+_RAW_LOG_MAX_BATCH_CHARS = 5000
 
 
 async def _terminate_process_tree(process: asyncio.subprocess.Process, timeout: float = 5.0) -> bool:
@@ -36,7 +39,7 @@ async def _terminate_process_tree(process: asyncio.subprocess.Process, timeout: 
     def _signal_group(sig: int) -> None:
         try:
             if hasattr(os, "killpg"):
-                os.killpg(process.pid, sig)
+                os.killpg(os.getpgid(process.pid), sig)
             else:
                 if sig == signal.SIGTERM:
                     process.terminate()
@@ -68,7 +71,7 @@ async def cancel_retune():
         if await _terminate_process_tree(process):
             stopped += 1
 
-    return {"status": "ok", "stopped": stopped}
+    return {"status": "ok", "active": len(processes), "stopped": stopped}
 
 
 @router.get("/list")
@@ -124,6 +127,30 @@ async def retune_stream(mode: str = "retune"):
 
     async def event_generator():
         process = None
+        raw_log_buffer: list[str] = []
+        last_raw_log_flush = asyncio.get_running_loop().time()
+
+        def _buffer_raw_log(message: str) -> None:
+            cleaned = _strip_ansi(message).strip()
+            if cleaned:
+                raw_log_buffer.append(cleaned[:800])
+
+        def _pop_raw_log_payload() -> Optional[str]:
+            nonlocal last_raw_log_flush
+            if not raw_log_buffer:
+                return None
+            payload = "\n".join(raw_log_buffer)
+            raw_log_buffer.clear()
+            last_raw_log_flush = asyncio.get_running_loop().time()
+            if len(payload) > _RAW_LOG_MAX_BATCH_CHARS:
+                payload = payload[-_RAW_LOG_MAX_BATCH_CHARS:]
+            return payload
+
+        def _should_flush_raw_logs() -> bool:
+            if len(raw_log_buffer) >= _RAW_LOG_MAX_BATCH_LINES:
+                return True
+            return asyncio.get_running_loop().time() - last_raw_log_flush >= _RAW_LOG_FLUSH_INTERVAL_S
+
         try:
             process_kwargs = {"start_new_session": True} if hasattr(os, "setsid") else {}
             process = await asyncio.create_subprocess_exec(
@@ -188,11 +215,25 @@ async def retune_stream(mode: str = "retune"):
                         status = "completed" if payload.get("status") == "ok" else "failed"
                         yield f"data: {json.dumps({'type': status, 'done': payload.get('done', 0), 'total': payload.get('total', 0), 'elapsed_s': payload.get('elapsed_s', 0), 'exit_code': payload.get('exit_code', -1), 'error': payload.get('error')})}\n\n"
                 elif text.startswith("@@LOG@@ "):
-                    # Raw log pass-through (only shown in collapsible log viewer)
-                    yield f"data: {json.dumps({'type': 'log', 'message': _strip_ansi(text[len('@@LOG@@ '):])})}\n\n"
+                    # Raw logs can be extremely chatty during data refreshes.
+                    # Batch them before sending SSE so the browser's main thread
+                    # is not starved before the Stop click can be handled.
+                    _buffer_raw_log(text[len("@@LOG@@ "):])
+                    if _should_flush_raw_logs():
+                        payload = _pop_raw_log_payload()
+                        if payload:
+                            yield f"data: {json.dumps({'type': 'log', 'message': payload})}\n\n"
                 else:
                     # Unstructured line (e.g. driver crash message)
-                    yield f"data: {json.dumps({'type': 'log', 'message': _strip_ansi(text)})}\n\n"
+                    _buffer_raw_log(text)
+                    if _should_flush_raw_logs():
+                        payload = _pop_raw_log_payload()
+                        if payload:
+                            yield f"data: {json.dumps({'type': 'log', 'message': payload})}\n\n"
+
+            payload = _pop_raw_log_payload()
+            if payload:
+                yield f"data: {json.dumps({'type': 'log', 'message': payload})}\n\n"
 
             await process.wait()
             if process.returncode != 0:

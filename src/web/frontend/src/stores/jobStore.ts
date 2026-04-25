@@ -106,18 +106,30 @@ interface JobState {
 
 const STORAGE_KEY = 'python-options-live-job-snapshot-v1';
 const MAX_ASSETS = 500;
-const MAX_LOGS = 2000;
+const MAX_LOGS = 300;
 const MAX_PHASES = 30;
 
 let eventSource: EventSource | null = null;
 let elapsedTimer: number | null = null;
+let logFlushTimer: number | null = null;
+let pendingLogLines: JobLogLine[] = [];
 let logId = 0;
 let phaseId = 0;
 
 function requestBackendCancel() {
+  if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+    try {
+      const payload = new Blob(['{}'], { type: 'application/json' });
+      if (navigator.sendBeacon('/api/tune/retune/cancel', payload)) return;
+    } catch {
+      // Fall through to fetch.
+    }
+  }
+
   void fetch('/api/tune/retune/cancel', {
     method: 'POST',
     keepalive: true,
+    cache: 'no-store',
   }).catch(() => {
     // The UI still closes promptly; the backend may already have ended.
   });
@@ -132,6 +144,11 @@ function cleanupStream() {
     window.clearInterval(elapsedTimer);
     elapsedTimer = null;
   }
+  if (logFlushTimer !== null) {
+    window.clearTimeout(logFlushTimer);
+    logFlushTimer = null;
+  }
+  pendingLogLines = [];
 }
 
 function safeLoadSnapshot(): Partial<JobState> | null {
@@ -233,11 +250,46 @@ export const useJobStore = create<JobState>((set, get) => ({
     logId = 0;
     phaseId = 0;
     const startedAt = Date.now();
+    const launchInfo = JOB_MODE_LABELS[mode];
+    let persistTimer: number | null = null;
+
+    const schedulePersist = () => {
+      if (persistTimer !== null) return;
+      persistTimer = window.setTimeout(() => {
+        persistTimer = null;
+        persistSnapshot(get());
+      }, 500);
+    };
+
+    const enqueueLogLine = (message: string) => {
+      logId += 1;
+      pendingLogLines.push({ id: logId, text: message });
+      if (pendingLogLines.length > MAX_LOGS) {
+        pendingLogLines = pendingLogLines.slice(-MAX_LOGS);
+      }
+      if (logFlushTimer !== null) return;
+      logFlushTimer = window.setTimeout(() => {
+        const batch = pendingLogLines;
+        pendingLogLines = [];
+        logFlushTimer = null;
+        if (batch.length === 0) return;
+        set((state) => {
+          if (state.status !== 'running') return state;
+          return { logLines: state.logLines.concat(batch).slice(-MAX_LOGS) };
+        });
+        schedulePersist();
+      }, 180);
+    };
 
     set({
       mode,
       status: 'running',
-      phases: [],
+      phases: [{
+        id: 0,
+        title: `Launching ${launchInfo.shortTitle.toLowerCase()} pipeline`,
+        kind: 'launch',
+        startedAt,
+      }],
       assets: [],
       logLines: [],
       counters: { done: 0, fail: 0, total: 0 },
@@ -272,8 +324,13 @@ export const useJobStore = create<JobState>((set, get) => ({
         return;
       }
 
+      if (data.type === 'log') {
+        if (data.message) enqueueLogLine(data.message);
+        return;
+      }
+
       set((state) => {
-        if (state.status !== 'running' && data.type !== 'completed' && data.type !== 'failed') return state;
+        if (state.status !== 'running') return state;
         const next: Partial<JobState> = {};
 
         switch (data.type) {
@@ -368,13 +425,6 @@ export const useJobStore = create<JobState>((set, get) => ({
             if (typeof data.elapsed_s === 'number') next.elapsedSec = data.elapsed_s;
             break;
 
-          case 'log':
-            if (data.message) {
-              logId += 1;
-              next.logLines = state.logLines.concat({ id: logId, text: data.message }).slice(-MAX_LOGS);
-            }
-            break;
-
           case 'error':
             next.errorMsg = data.message || data.error_type || data.error || 'Unknown job error';
             break;
@@ -391,7 +441,7 @@ export const useJobStore = create<JobState>((set, get) => ({
 
         return next;
       });
-      persistSnapshot(get());
+      schedulePersist();
     };
 
     es.onerror = () => {
@@ -410,9 +460,7 @@ export const useJobStore = create<JobState>((set, get) => ({
   },
 
   stopJob: () => {
-    if (get().status === 'running') {
-      requestBackendCancel();
-    }
+    const wasRunning = get().status === 'running';
     cleanupStream();
     set((state) => ({
       status: state.status === 'running' ? 'stopped' : state.status,
@@ -422,6 +470,9 @@ export const useJobStore = create<JobState>((set, get) => ({
       expanded: false,
     }));
     persistSnapshot(get());
+    if (wasRunning) {
+      requestBackendCancel();
+    }
   },
 
   dismissSurface: () => {

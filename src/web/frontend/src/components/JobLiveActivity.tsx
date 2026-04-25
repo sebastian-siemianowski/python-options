@@ -19,7 +19,10 @@ import {
   formatJobElapsed,
   JOB_MODE_LABELS,
   useJobStore,
+  type JobAssetEntry,
+  type JobLogLine,
   type JobMode,
+  type JobRefreshPassState,
   type JobStatus,
 } from '../stores/jobStore';
 
@@ -33,6 +36,11 @@ const SIGNAL_QUERY_KEYS = [
   ['tuneList'],
   ['tuneStats'],
 ] as const;
+
+const EMPTY_ASSETS: JobAssetEntry[] = [];
+const EMPTY_LOGS: JobLogLine[] = [];
+const EMPTY_MODEL_COUNTS: Record<string, number> = {};
+const EMPTY_MODEL_BY_SYMBOL: Record<string, string> = {};
 
 function statusTone(status: JobStatus) {
   switch (status) {
@@ -58,47 +66,88 @@ function titleForMode(mode: JobMode | null) {
 
 export default function JobLiveActivity() {
   const queryClient = useQueryClient();
-  const job = useJobStore();
-  const prevStatusRef = useRef<JobStatus>(job.status);
+  const mode = useJobStore((state) => state.mode);
+  const status = useJobStore((state) => state.status);
+  const phases = useJobStore((state) => state.phases);
+  const counters = useJobStore((state) => state.counters);
+  const elapsedSec = useJobStore((state) => state.elapsedSec);
+  const errorMsg = useJobStore((state) => state.errorMsg);
+  const surfaceVisible = useJobStore((state) => state.surfaceVisible);
+  const expanded = useJobStore((state) => state.expanded);
+  const rawLogOpen = useJobStore((state) => state.rawLogOpen);
+  const refreshPass = useJobStore((state) => state.refreshPass);
+  const stopJob = useJobStore((state) => state.stopJob);
+  const setExpanded = useJobStore((state) => state.setExpanded);
+  const toggleExpanded = useJobStore((state) => state.toggleExpanded);
+  const setRawLogOpen = useJobStore((state) => state.setRawLogOpen);
+  const clearTerminalJob = useJobStore((state) => state.clearTerminalJob);
+  const assets = useJobStore((state) => state.expanded ? state.assets : EMPTY_ASSETS);
+  const modelBySymbol = useJobStore((state) => state.expanded ? state.modelBySymbol : EMPTY_MODEL_BY_SYMBOL);
+  const modelCounts = useJobStore((state) => state.expanded ? state.modelCounts : EMPTY_MODEL_COUNTS);
+  const logLines = useJobStore((state) => state.rawLogOpen ? state.logLines : EMPTY_LOGS);
+  const prevStatusRef = useRef<JobStatus>(status);
   const rawLogRef = useRef<HTMLDivElement | null>(null);
 
-  const info = titleForMode(job.mode);
-  const tone = statusTone(job.status);
-  const isRunning = job.status === 'running';
-  const processed = job.counters.done + job.counters.fail;
-  const progressPct = job.counters.total > 0
-    ? Math.min(100, (processed / job.counters.total) * 100)
-    : isRunning ? 3 : job.status === 'idle' ? 0 : 100;
-  const rate = processed > 0 ? processed / Math.max(job.elapsedSec, 1) : 0;
-  const eta = isRunning && rate > 0 && job.counters.total > processed
-    ? Math.round((job.counters.total - processed) / rate)
+  const info = titleForMode(mode);
+  const tone = statusTone(status);
+  const isRunning = status === 'running';
+  const processed = counters.done + counters.fail;
+  const progressPct = counters.total > 0
+    ? Math.min(100, (processed / counters.total) * 100)
+    : isRunning ? 3 : status === 'idle' ? 0 : 100;
+  const rate = processed > 0 ? processed / Math.max(elapsedSec, 1) : 0;
+  const eta = isRunning && rate > 0 && counters.total > processed
+    ? Math.round((counters.total - processed) / rate)
     : null;
-  const currentPhase = job.phases.length > 0 ? job.phases[job.phases.length - 1] : null;
-  const recentAssets = useMemo(() => job.assets.slice(-28).reverse(), [job.assets]);
+  const currentPhase = phases.length > 0 ? phases[phases.length - 1] : null;
+  const recentAssets = useMemo(() => expanded ? assets.slice(-28).reverse() : EMPTY_ASSETS, [assets, expanded]);
   const topModels = useMemo(() => {
-    return Object.entries(job.modelCounts)
+    if (!expanded) return [];
+    return Object.entries(modelCounts)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 6)
       .map(([name, count]) => ({ name, count, hue: hashHue(name) }));
-  }, [job.modelCounts]);
-  const totalModelled = useMemo(() => Object.values(job.modelCounts).reduce((sum, value) => sum + value, 0), [job.modelCounts]);
+  }, [modelCounts, expanded]);
+  const totalModelled = useMemo(() => expanded ? Object.values(modelCounts).reduce((sum, value) => sum + value, 0) : 0, [modelCounts, expanded]);
 
   useEffect(() => {
-    if (prevStatusRef.current === 'running' && job.status === 'completed') {
+    if (prevStatusRef.current === 'running' && status === 'completed') {
       SIGNAL_QUERY_KEYS.forEach((queryKey) => {
         queryClient.invalidateQueries({ queryKey: [...queryKey] });
       });
     }
-    prevStatusRef.current = job.status;
-  }, [job.status, queryClient]);
+    prevStatusRef.current = status;
+  }, [status, queryClient]);
 
   useEffect(() => {
-    if (job.rawLogOpen && rawLogRef.current) {
+    if (rawLogOpen && rawLogRef.current) {
       rawLogRef.current.scrollTop = rawLogRef.current.scrollHeight;
     }
-  }, [job.logLines, job.rawLogOpen]);
+  }, [logLines, rawLogOpen]);
 
-  if (!job.surfaceVisible || job.status === 'idle' || !job.mode) return null;
+  if (!surfaceVisible || status === 'idle' || !mode) return null;
+
+  const job = {
+    mode,
+    status,
+    phases,
+    assets,
+    logLines,
+    counters,
+    elapsedSec,
+    errorMsg,
+    refreshPass: refreshPass as JobRefreshPassState | null,
+    modelBySymbol,
+    modelCounts,
+    surfaceVisible,
+    expanded,
+    rawLogOpen,
+    stopJob,
+    setExpanded,
+    toggleExpanded,
+    setRawLogOpen,
+    clearTerminalJob,
+  };
 
   return (
     <div className="fixed bottom-5 right-5 z-50 pointer-events-none max-w-[calc(100vw-2rem)]">

@@ -7,18 +7,17 @@ import { api } from '../api';
 import type { SummaryRow, SectorGroup, StrongSignalEntry, HighConvictionSignal, SignalSummaryData, SignalStats, EmaState, SmaReversal, SmaReversalsData } from '../api';
 import { SignalTableSkeleton } from '../components/CosmicSkeleton';
 import { CosmicErrorCard } from '../components/CosmicErrorState';
-import { ExportButton } from '../components/ExportButton';
 import { Sparkline, SparklinePct } from '../components/Sparkline';
 import { SignalLabel, SignalStrengthMeter, MomentumBadge, CrashRiskHeat, HorizonCell, QualityCell } from '../components/SignalTableVisuals';
 import { ColumnCustomizer, type ColumnDef } from '../components/ColumnCustomizer';
 import SignalDetailPanel from '../components/SignalDetailPanel';
-import { useJobStore } from '../stores/jobStore';
+import { formatJobElapsed, useJobStore, type JobCounters, type JobMode, type JobStatus } from '../stores/jobStore';
 import {
   Filter, ChevronDown, ChevronRight,
   TrendingUp, TrendingDown, Search, X, ExternalLink, BarChart3,
   Target, Shield, ShieldCheck, ArrowUp, ArrowDown, Clock,
   Activity, Eye, Layers, ChevronUp, AlertTriangle, Zap, Loader2,
-  Star, Plus, SlidersHorizontal,
+  Star, Plus, SlidersHorizontal, RefreshCw, Play, Square, Sparkles,
 } from 'lucide-react';
 import MiniPriceChart from '../components/MiniPriceChart';
 import { formatHorizon, responsiveHorizons } from '../utils/horizons';
@@ -116,6 +115,10 @@ function SignalsPageInner() {
   const setJobExpanded = useJobStore((s) => s.setExpanded);
   const jobStatus = useJobStore((s) => s.status);
   const activeJobMode = useJobStore((s) => s.mode);
+  const jobCounters = useJobStore((s) => s.counters);
+  const jobElapsedSec = useJobStore((s) => s.elapsedSec);
+  const jobPhases = useJobStore((s) => s.phases);
+  const stopJob = useJobStore((s) => s.stopJob);
   const isJobRunning = jobStatus === 'running';
   // v1 premium: default to 'all' so users see all 490 assets immediately (was 'sectors' which showed collapsed empty sectors)
   const [view, setView] = useState<ViewMode>(() => {
@@ -504,8 +507,37 @@ function SignalsPageInner() {
   }
   const collapseAll = () => setExpandedSectors(new Set());
 
+  const openOrStartJob = (mode: 'stocks' | 'retune') => {
+    if (isJobRunning) {
+      showJobSurface();
+      setJobExpanded(true);
+    } else {
+      startJob(mode);
+      showJobSurface();
+      setJobExpanded(true);
+    }
+  };
+
   return (
     <>
+      {/* ── Premium top command center: primary operations are always first. ── */}
+      <SignalOperationsBar
+        status={jobStatus}
+        mode={activeJobMode}
+        counters={jobCounters}
+        elapsedSec={jobElapsedSec}
+        phaseTitle={jobPhases.length > 0 ? jobPhases[jobPhases.length - 1].title : null}
+        filteredRows={filteredRows}
+        totalRows={rows.length}
+        onRefreshStocks={() => openOrStartJob('stocks')}
+        onRunTune={() => openOrStartJob('retune')}
+        onViewProgress={() => {
+          showJobSurface();
+          setJobExpanded(true);
+        }}
+        onStop={stopJob}
+      />
+
       {/* ── v1 PREMIUM HERO BAND ─────────────────────────────────────── */}
       <SignalsHero stats={stats} rows={rows} horizons={horizons} filteredCount={filteredRows.length} wsStatus={wsStatus} />
 
@@ -548,64 +580,6 @@ function SignalsPageInner() {
         rows={rows}
         onNavigateChart={(sym) => navigate(`/charts/${sym}`)}
       />
-
-      {/* Export button row */}
-      <div className="flex items-center justify-between gap-3 mb-3">
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => {
-              if (isJobRunning) {
-                showJobSurface();
-                setJobExpanded(true);
-              } else {
-                startJob('stocks');
-              }
-            }}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-semibold transition-colors"
-            style={{
-              background: 'rgba(59,130,246,0.12)',
-              color: '#60a5fa',
-              border: '1px solid rgba(59,130,246,0.28)',
-            }}
-            title={isJobRunning ? 'A job is already running — view live progress' : 'Run `make stocks` (refresh prices and regenerate signals)'}
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-            {isJobRunning ? 'View Progress' : 'Refresh Stocks'}
-          </button>
-          <button
-            onClick={() => {
-              if (isJobRunning) {
-                showJobSurface();
-                setJobExpanded(true);
-              } else {
-                startJob('retune');
-              }
-            }}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-semibold transition-colors"
-            style={{
-              background: 'rgba(139,92,246,0.12)',
-              color: '#a78bfa',
-              border: '1px solid rgba(139,92,246,0.28)',
-            }}
-            title={isJobRunning ? 'A job is already running — view live progress' : 'Run `make retune` (full retune pipeline)'}
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            {isJobRunning && activeJobMode === 'retune' ? 'Tuning…' : isJobRunning ? 'View Progress' : 'Run Tune'}
-          </button>
-        </div>
-        <ExportButton
-          filename="signals"
-          columns={[
-            { key: 'asset_label', label: 'Asset' },
-            { key: 'signal', label: 'Signal' },
-            { key: 'momentum_score', label: 'Momentum' },
-            { key: 'crash_risk_score', label: 'Crash Risk' },
-          ]}
-          data={filteredRows as unknown as Record<string, unknown>[]}
-          filteredCount={filteredRows.length}
-          totalCount={rows.length}
-        />
-      </div>
 
       {/* ═══ Premium Filter Bar ══════════════════════════════════════════════
           Apple-grade unified filter surface:
@@ -1118,6 +1092,199 @@ export default function SignalsPage() {
     <SignalsErrorBoundary>
       <SignalsPageInner />
     </SignalsErrorBoundary>
+  );
+}
+
+/* ── Top-of-page Signal Operations Command Center ─────────────────── */
+function SignalOperationsBar({
+  status,
+  mode,
+  counters,
+  elapsedSec,
+  phaseTitle,
+  filteredRows,
+  totalRows,
+  onRefreshStocks,
+  onRunTune,
+  onViewProgress,
+  onStop,
+}: {
+  status: JobStatus;
+  mode: JobMode | null;
+  counters: JobCounters;
+  elapsedSec: number;
+  phaseTitle: string | null;
+  filteredRows: SummaryRow[];
+  totalRows: number;
+  onRefreshStocks: () => void;
+  onRunTune: () => void;
+  onViewProgress: () => void;
+  onStop: () => void;
+}) {
+  const isRunning = status === 'running';
+  const isStocks = mode === 'stocks';
+  const isTune = mode === 'retune' || mode === 'tune' || mode === 'calibrate';
+  const processed = counters.done + counters.fail;
+  const progressPct = counters.total > 0 ? Math.min(100, (processed / counters.total) * 100) : isRunning ? 7 : 0;
+  const statusColor = status === 'running' ? '#60a5fa'
+    : status === 'completed' ? '#10b981'
+      : status === 'failed' || status === 'error' ? '#f43f5e'
+        : status === 'stopped' ? '#94a3b8'
+          : '#a78bfa';
+  const statusLabel = isRunning
+    ? mode === 'stocks' ? 'Refreshing market data' : 'Tuning models'
+    : status === 'completed' ? 'Last job complete'
+      : status === 'stopped' ? 'Stopped'
+        : status === 'failed' || status === 'error' ? 'Needs attention'
+          : 'Ready';
+
+  return (
+    <div className="mb-6 fade-up">
+      <div
+        className="relative overflow-hidden rounded-[22px] px-4 py-3.5 md:px-5"
+        style={{
+          background: 'linear-gradient(135deg, rgba(18,20,34,0.66), rgba(8,9,18,0.76) 58%, rgba(22,16,38,0.66))',
+          border: '1px solid rgba(255,255,255,0.07)',
+          boxShadow: '0 18px 52px -42px rgba(139,92,246,0.65), 0 10px 36px -34px rgba(0,0,0,0.9), inset 0 1px 0 rgba(255,255,255,0.075)',
+          backdropFilter: 'blur(18px) saturate(1.18)',
+          WebkitBackdropFilter: 'blur(18px) saturate(1.18)',
+        }}
+      >
+        <div aria-hidden className="absolute -left-20 -top-24 h-44 w-44 rounded-full" style={{ background: 'radial-gradient(circle, rgba(139,92,246,0.16), transparent 70%)', filter: 'blur(4px)' }} />
+        <div aria-hidden className="absolute -right-16 -bottom-24 h-52 w-52 rounded-full" style={{ background: 'radial-gradient(circle, rgba(56,217,245,0.10), transparent 70%)', filter: 'blur(6px)' }} />
+        <div aria-hidden className="absolute inset-x-10 top-0 h-px" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.20), transparent)' }} />
+
+        <div className="relative flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+          <div className="min-w-0 flex-1">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.11em]" style={{ color: '#cfc3ff', background: 'rgba(139,92,246,0.09)', border: '1px solid rgba(139,92,246,0.20)' }}>
+                <Sparkles className="h-3 w-3" />
+                Signal operations
+              </span>
+              <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.10em]" style={{ color: '#9debd1', background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.18)' }}>
+                <span className="h-1.5 w-1.5 rounded-full" style={{ background: '#10b981', boxShadow: '0 0 8px rgba(16,185,129,0.7)' }} />
+                Non-blocking
+              </span>
+              <button
+                type="button"
+                onClick={isRunning ? onViewProgress : undefined}
+                className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.10em] ${isRunning ? 'cursor-pointer hover:brightness-125' : 'cursor-default'}`}
+                style={{ color: statusColor, background: `${statusColor}18`, border: `1px solid ${statusColor}36` }}
+              >
+                <span className={`h-1.5 w-1.5 rounded-full ${isRunning ? 'animate-pulse' : ''}`} style={{ background: statusColor, boxShadow: isRunning ? `0 0 8px ${statusColor}` : undefined }} />
+                {statusLabel}
+              </button>
+              {isRunning && (
+                <span className="text-[11px] text-[var(--text-muted)] tabular-nums">
+                  {formatJobElapsed(elapsedSec)} · {processed}{counters.total > 0 ? ` / ${counters.total}` : ''} processed
+                </span>
+              )}
+            </div>
+            <div className="max-w-[700px]">
+              <div className="text-[13px] md:text-[14px] font-medium tracking-[-0.01em] text-[var(--text-primary)]">
+                Start a background refresh or model tune when you need fresh signals.
+              </div>
+              <p className="mt-1 text-[11px] md:text-[12px] text-[var(--text-muted)] leading-relaxed">
+                Live progress opens automatically and you can continue using the page.
+              </p>
+            </div>
+            <div className="mt-3 h-1 max-w-[560px] overflow-hidden rounded-full" style={{ background: 'rgba(255,255,255,0.055)' }}>
+              <div
+                className="h-full rounded-full transition-[width] duration-700 ease-out"
+                style={{
+                  width: `${progressPct}%`,
+                  background: isRunning ? 'linear-gradient(90deg,#8b5cf6,#38d9f5)' : 'linear-gradient(90deg,rgba(139,92,246,0.35),rgba(56,217,245,0.18))',
+                  boxShadow: isRunning ? '0 0 18px rgba(139,92,246,0.65)' : undefined,
+                }}
+              />
+            </div>
+            <div className="mt-2 min-h-[16px] text-[11px] text-[var(--text-muted)] truncate">
+              {isRunning ? `${phaseTitle ?? 'Preparing live pipeline…'} · Safe to navigate away` : `${filteredRows.length.toLocaleString()} visible signals · ${totalRows.toLocaleString()} total assets · Live Activity appears after launch`}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 min-w-[min(100%,480px)]">
+              <OperationButton
+                icon={isStocks && isRunning ? <Loader2 className="h-5 w-5 animate-spin" /> : <RefreshCw className="h-5 w-5" />}
+                title={isRunning ? isStocks ? 'Refreshing…' : 'View progress' : 'Refresh Stocks'}
+                subtitle={isRunning ? 'Open the live activity drawer' : 'Update prices, cache, and signals'}
+                color="#60a5fa"
+                active={isStocks && isRunning}
+                onClick={onRefreshStocks}
+              />
+              <OperationButton
+                icon={isTune && isRunning ? <Loader2 className="h-5 w-5 animate-spin" /> : <Play className="h-5 w-5" />}
+                title={isRunning ? isTune ? 'Tuning…' : 'View progress' : 'Run Tune'}
+                subtitle={isRunning ? 'Open the live activity drawer' : 'Fit models and refresh BMA weights'}
+                color="#a78bfa"
+                active={isTune && isRunning}
+                onClick={onRunTune}
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 lg:flex-col lg:items-stretch">
+              {isRunning && (
+                <button
+                  type="button"
+                  onClick={onStop}
+                  className="group inline-flex items-center justify-center gap-2 rounded-2xl px-3.5 py-2.5 text-[12px] font-semibold text-white transition-all hover:-translate-y-0.5 active:scale-[0.98]"
+                  style={{ background: 'linear-gradient(180deg,#fb7185,#e11d48)', boxShadow: '0 16px 34px -22px rgba(244,63,94,0.95)' }}
+                >
+                  <Square className="h-3.5 w-3.5" fill="currentColor" />
+                  Stop
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OperationButton({
+  icon,
+  title,
+  subtitle,
+  color,
+  active,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  subtitle: string;
+  color: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="group relative overflow-hidden rounded-[20px] px-4 py-3 text-left transition-all duration-200 hover:-translate-y-0.5 active:scale-[0.985] focus-ring"
+      style={{
+        background: active
+          ? `linear-gradient(150deg, ${color}20, rgba(255,255,255,0.035))`
+          : 'linear-gradient(150deg, rgba(255,255,255,0.052), rgba(255,255,255,0.018))',
+        border: `1px solid ${active ? `${color}58` : 'rgba(255,255,255,0.085)'}`,
+        boxShadow: active ? `0 16px 38px -30px ${color}, inset 0 1px 0 rgba(255,255,255,0.12)` : 'inset 0 1px 0 rgba(255,255,255,0.065)',
+      }}
+    >
+      <div aria-hidden className="absolute inset-x-4 top-0 h-px" style={{ background: `linear-gradient(90deg, transparent, ${color}99, transparent)`, opacity: active ? 1 : 0.45 }} />
+      <div className="flex items-center gap-3">
+        <span
+          className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[15px] transition-transform duration-200 group-hover:scale-105"
+          style={{ color, background: `${color}18`, border: `1px solid ${color}34`, boxShadow: active ? `0 0 22px -8px ${color}` : undefined }}
+        >
+          {icon}
+        </span>
+        <span className="min-w-0">
+          <span className="block text-[14px] font-semibold tracking-[-0.02em] text-white">{title}</span>
+          <span className="mt-0.5 block truncate text-[11px] text-[var(--text-muted)]">{subtitle}</span>
+        </span>
+      </div>
+    </button>
   );
 }
 
