@@ -150,6 +150,11 @@ const STORAGE_KEY = 'python-options-live-job-snapshot-v1';
 const MAX_ASSETS = 500;
 const MAX_LOGS = 300;
 const MAX_PHASES = 30;
+const REFRESH_PASS_RX = /Pass\s+(\d+)\s*\/\s*(\d+)/i;
+const REFRESH_PROGRESS_RX = /●\s*(\d+)\s*ok\s*[·|/•]\s*(\d+)\s*pending/i;
+const REFRESH_COMPLETE_RX = /✓\s*(\d+)\s*\/\s*(\d+)\s*complete/i;
+const TUNE_TOTAL_RX = /\b(\d+)\s+to\s+process\b/i;
+const TUNE_MODEL_RX = /^\s*✓\s*(\S+)\s+(?:→|->)\s+(.+?)\s*$/;
 
 let eventSource: EventSource | null = null;
 let elapsedTimer: number | null = null;
@@ -289,6 +294,7 @@ function metricKindFromPhase(kind?: string, title?: string): string | null {
   if (kind === 'download') return 'download';
   if (kind === 'backup') return 'backup';
   if (kind === 'tune') return 'tune';
+  if (kind === 'signals') return 'signals';
   if (kind === 'calibration') return 'calibration';
   if (kind === 'tune_sub' && lowerTitle.includes('calibrat')) return 'calibration';
   if (kind === 'work' || kind === 'launch') return kind;
@@ -299,6 +305,7 @@ function stageKeyFor(kind: string, step?: number): string {
   if (kind === 'download') return 'download';
   if (kind === 'backup') return 'backup';
   if (kind === 'tune') return 'tune';
+  if (kind === 'signals') return 'signals';
   if (kind === 'calibration') return 'calibration';
   return step ? `${kind}:${step}` : kind;
 }
@@ -307,6 +314,7 @@ function stageTitleFor(kind: string, title: string): string {
   if (kind === 'download') return 'Refresh data';
   if (kind === 'backup') return 'Backup tune cache';
   if (kind === 'tune') return 'Tune stocks';
+  if (kind === 'signals') return 'Generate signals';
   if (kind === 'calibration') return 'Calibration';
   return title;
 }
@@ -364,19 +372,85 @@ function updateStageCounts(
   key: string | null,
   counts: Partial<JobCounters>,
   now: number,
+  options?: { exact?: boolean },
 ): JobStageMetric[] {
   if (!key) return stages;
   return stages.map((item) => (
     item.key === key
       ? {
           ...item,
-          done: Math.max(item.done, counts.done ?? item.done),
-          fail: Math.max(item.fail, counts.fail ?? item.fail),
-          total: Math.max(item.total, counts.total ?? item.total),
+          done: options?.exact && counts.done !== undefined ? counts.done : Math.max(item.done, counts.done ?? item.done),
+          fail: options?.exact && counts.fail !== undefined ? counts.fail : Math.max(item.fail, counts.fail ?? item.fail),
+          total: options?.exact && counts.total !== undefined ? counts.total : Math.max(item.total, counts.total ?? item.total),
           updatedAt: now,
         }
       : item
   ));
+}
+
+function parseRefreshLogLine(message: string, previous: JobRefreshPassState | null): JobRefreshPassState | null {
+  let next = previous ? { ...previous } : null;
+  let changed = false;
+
+  for (const line of message.split(/\r?\n/)) {
+    const passMatch = REFRESH_PASS_RX.exec(line);
+    if (passMatch) {
+      changed = true;
+      next = {
+        pass: Number(passMatch[1]),
+        totalPasses: Number(passMatch[2]),
+        ok: next?.ok ?? 0,
+        pending: next?.pending ?? 0,
+      };
+    }
+
+    const progressMatch = REFRESH_PROGRESS_RX.exec(line);
+    if (progressMatch) {
+      changed = true;
+      next = {
+        pass: next?.pass ?? 1,
+        totalPasses: next?.totalPasses ?? 1,
+        ok: Number(progressMatch[1]),
+        pending: Number(progressMatch[2]),
+      };
+    }
+
+    const completeMatch = REFRESH_COMPLETE_RX.exec(line);
+    if (completeMatch) {
+      changed = true;
+      const ok = Number(completeMatch[1]);
+      const total = Number(completeMatch[2]);
+      next = {
+        pass: next?.pass ?? next?.totalPasses ?? 1,
+        totalPasses: next?.totalPasses ?? next?.pass ?? 1,
+        ok,
+        pending: Math.max(0, total - ok),
+      };
+    }
+  }
+
+  return changed ? next : null;
+}
+
+function collectTuneLogTelemetry(messages: string[]): { total: number; completions: Map<string, string> } {
+  const completions = new Map<string, string>();
+  let total = 0;
+
+  for (const message of messages) {
+    for (const line of message.split(/\r?\n/)) {
+      const totalMatch = TUNE_TOTAL_RX.exec(line);
+      if (totalMatch) {
+        total = Math.max(total, Number(totalMatch[1]));
+      }
+
+      const modelMatch = TUNE_MODEL_RX.exec(line);
+      if (modelMatch) {
+        completions.set(modelMatch[1], modelMatch[2].trim());
+      }
+    }
+  }
+
+  return { total, completions };
 }
 
 export const useJobStore = create<JobState>((set, get) => ({
@@ -409,6 +483,96 @@ export const useJobStore = create<JobState>((set, get) => ({
       pendingLogLines.push({ id: logId, text: message });
       if (pendingLogLines.length > MAX_LOGS) {
         pendingLogLines = pendingLogLines.slice(-MAX_LOGS);
+      }
+      const refreshFromLog = parseRefreshLogLine(message, get().refreshPass);
+      const shouldReconcileTune = TUNE_TOTAL_RX.test(message) || TUNE_MODEL_RX.test(message);
+      if (refreshFromLog || shouldReconcileTune) {
+        set((state) => {
+          if (state.status !== 'running') return state;
+          const now = Date.now();
+          let stageMetrics = state.stageMetrics;
+          let counters = state.counters;
+          let activeStageKey = state.activeStageKey;
+          let refreshPass = state.refreshPass;
+          let assets = state.assets;
+          let modelBySymbol = state.modelBySymbol;
+          let modelMetaBySymbol = state.modelMetaBySymbol;
+          let modelCounts = state.modelCounts;
+
+          if (refreshFromLog) {
+            const refreshTotal = refreshFromLog.ok + refreshFromLog.pending;
+            refreshPass = refreshFromLog;
+            if (refreshTotal > 0) {
+              stageMetrics = updateStageCounts(
+                stageMetrics,
+                'download',
+                { done: refreshFromLog.ok, total: refreshTotal },
+                now,
+                { exact: true },
+              );
+            }
+          }
+
+          if (shouldReconcileTune) {
+            const tuneTelemetry = collectTuneLogTelemetry([
+              ...state.logLines.map((line) => line.text),
+              ...pendingLogLines.map((line) => line.text),
+            ]);
+            if (tuneTelemetry.total > 0 || tuneTelemetry.completions.size > 0) {
+              const tuneTotal = Math.max(tuneTelemetry.total, state.counters.total, stageMetrics.find((stage) => stage.key === 'tune')?.total ?? 0);
+              stageMetrics = upsertRunningStage(stageMetrics, {
+                key: 'tune',
+                title: 'Tune stocks',
+                kind: 'tune',
+                step: 3,
+                totalSteps: state.mode === 'retune' ? 4 : undefined,
+                total: tuneTotal,
+              }, now);
+              activeStageKey = 'tune';
+
+              const nextBySymbol = { ...modelBySymbol };
+              const nextMeta = { ...modelMetaBySymbol };
+              let nextAssets = assets;
+              const assetSymbols = new Set(nextAssets.map((asset) => asset.symbol));
+
+              for (const [symbol, model] of tuneTelemetry.completions) {
+                nextBySymbol[symbol] = model;
+                nextMeta[symbol] = {
+                  ...nextMeta[symbol],
+                  model,
+                  updatedAt: now,
+                };
+                if (!assetSymbols.has(symbol)) {
+                  assetSymbols.add(symbol);
+                  nextAssets = nextAssets.concat({ symbol, status: 'ok', detail: model, model }).slice(-MAX_ASSETS);
+                }
+              }
+
+              const nextCounts: Record<string, number> = {};
+              for (const model of Object.values(nextBySymbol)) {
+                nextCounts[model] = (nextCounts[model] ?? 0) + 1;
+              }
+              const done = Object.keys(nextBySymbol).length;
+              stageMetrics = updateStageCounts(stageMetrics, 'tune', { done, total: tuneTotal }, now, { exact: true });
+              counters = { ...counters, done, total: Math.max(counters.total, tuneTotal) };
+              assets = nextAssets;
+              modelBySymbol = nextBySymbol;
+              modelMetaBySymbol = nextMeta;
+              modelCounts = nextCounts;
+            }
+          }
+
+          return {
+            refreshPass,
+            stageMetrics,
+            activeStageKey,
+            counters,
+            assets,
+            modelBySymbol,
+            modelMetaBySymbol,
+            modelCounts,
+          };
+        });
       }
       if (logFlushTimer !== null) return;
       logFlushTimer = window.setTimeout(() => {
@@ -528,13 +692,20 @@ export const useJobStore = create<JobState>((set, get) => ({
             };
             if (!isDownloadAsset) {
               next.counters = counters;
+              next.stageMetrics = updateStageCounts(
+                next.stageMetrics ?? state.stageMetrics,
+                state.activeStageKey,
+                counters,
+                now,
+              );
+            } else if (data.status === 'fail') {
+              next.stageMetrics = updateStageCounts(
+                next.stageMetrics ?? state.stageMetrics,
+                state.activeStageKey,
+                { fail: (activeStage?.fail ?? 0) + 1 },
+                now,
+              );
             }
-            next.stageMetrics = updateStageCounts(
-              next.stageMetrics ?? state.stageMetrics,
-              state.activeStageKey,
-              counters,
-              now,
-            );
             if (data.symbol) {
               const entry: JobAssetEntry = {
                 symbol: data.symbol,
@@ -633,6 +804,7 @@ export const useJobStore = create<JobState>((set, get) => ({
                   'download',
                   { done: ok, total: refreshTotal },
                   now,
+                  { exact: true },
                 );
               }
             }
@@ -642,15 +814,15 @@ export const useJobStore = create<JobState>((set, get) => ({
             {
               const now = Date.now();
               const activeStage = state.stageMetrics.find((stage) => stage.key === state.activeStageKey);
-              const nextDone = Math.max(activeStage?.done ?? 0, data.done ?? 0);
-              const nextTotal = Math.max(activeStage?.total ?? 0, data.total ?? 0);
-              next.stageMetrics = updateStageCounts(
-                next.stageMetrics ?? state.stageMetrics,
-                state.activeStageKey,
-                { done: nextDone, total: nextTotal },
-                now,
-              );
-              if (activeStage?.kind !== 'download') {
+              if (activeStage?.kind === 'tune' || activeStage?.kind === 'calibration' || activeStage?.kind === 'work' || activeStage?.kind === 'launch') {
+                const nextDone = Math.max(activeStage?.done ?? 0, data.done ?? 0);
+                const nextTotal = Math.max(activeStage?.total ?? 0, data.total ?? 0);
+                next.stageMetrics = updateStageCounts(
+                  next.stageMetrics ?? state.stageMetrics,
+                  state.activeStageKey,
+                  { done: nextDone, total: nextTotal },
+                  now,
+                );
                 next.counters = {
                   done: Math.max(state.counters.done, data.done ?? 0),
                   fail: state.counters.fail,

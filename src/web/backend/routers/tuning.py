@@ -307,14 +307,16 @@ async def retune_stream(mode: str = "retune"):
                             and phase_done_count % _DOWNLOAD_ASSET_SAMPLE_EVERY != 0
                         ):
                             continue
-                        yield f"data: {json.dumps({'type': 'asset', 'symbol': payload.get('symbol'), 'status': status, 'detail': payload.get('detail'), 'model': payload.get('model'), 'weight_pct': payload.get('weight_pct'), 'bic': payload.get('bic'), 'hyv': payload.get('hyv'), 'crps': payload.get('crps'), 'pit_p': payload.get('pit_p'), 'fit_status': payload.get('fit_status'), 'done': phase_done_count, 'fail': phase_fail_count, 'total': total_expected})}\n\n"
+                        asset_total = None if current_phase_kind == "download" else total_expected
+                        yield f"data: {json.dumps({'type': 'asset', 'symbol': payload.get('symbol'), 'status': status, 'detail': payload.get('detail'), 'model': payload.get('model'), 'weight_pct': payload.get('weight_pct'), 'bic': payload.get('bic'), 'hyv': payload.get('hyv'), 'crps': payload.get('crps'), 'pit_p': payload.get('pit_p'), 'fit_status': payload.get('fit_status'), 'done': phase_done_count, 'fail': phase_fail_count, 'total': asset_total})}\n\n"
                     elif ev == "model":
                         # Per-asset model selection (e.g. 'Student-t+EVTH').
                         yield f"data: {json.dumps({'type': 'model', 'symbol': payload.get('symbol'), 'model': payload.get('model'), 'weight_pct': payload.get('weight_pct'), 'bic': payload.get('bic'), 'hyv': payload.get('hyv'), 'crps': payload.get('crps'), 'pit_p': payload.get('pit_p'), 'fit_status': payload.get('fit_status')})}\n\n"
                     elif ev == "refresh":
                         now = asyncio.get_running_loop().time()
                         has_counts = payload.get('ok') is not None or payload.get('pending') is not None
-                        if has_counts and now - last_refresh_emit < _REFRESH_EVENT_MIN_INTERVAL_S:
+                        terminal_refresh = payload.get('ok') is not None and payload.get('pending') == 0
+                        if has_counts and not terminal_refresh and now - last_refresh_emit < _REFRESH_EVENT_MIN_INTERVAL_S:
                             continue
                         last_refresh_emit = now
                         yield f"data: {json.dumps({'type': 'refresh', 'pass': payload.get('pass'), 'total_passes': payload.get('total_passes'), 'ok': payload.get('ok'), 'pending': payload.get('pending')})}\n\n"

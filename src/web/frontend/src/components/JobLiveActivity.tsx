@@ -87,6 +87,7 @@ function titleForMode(mode: JobMode | null) {
 
 function stageTone(kind: string) {
   if (kind === 'download') return { color: '#60a5fa', label: 'Refresh data', doneLabel: 'Ready', unit: 'assets' };
+  if (kind === 'signals') return { color: '#38d9f5', label: 'Generate signals', doneLabel: 'Generated', unit: 'signals' };
   if (kind === 'backup') return { color: '#a78bfa', label: 'Backup tune', doneLabel: 'Backed up', unit: 'cache' };
   if (kind === 'calibration') return { color: '#10b981', label: 'Calibration', doneLabel: 'Calibrated', unit: 'assets' };
   if (kind === 'tune') return { color: '#c084fc', label: 'Tune stocks', doneLabel: 'Tuned', unit: 'assets' };
@@ -94,6 +95,7 @@ function stageTone(kind: string) {
 }
 
 const RETUNE_STAGE_ORDER = ['download', 'backup', 'tune', 'calibration'];
+const STOCKS_STAGE_ORDER = ['download', 'signals'];
 
 function stagePercent(stage: JobStageMetric | null | undefined) {
   if (!stage || stage.total <= 0) return stage?.status === 'completed' ? 100 : 0;
@@ -135,6 +137,7 @@ export default function JobLiveActivity() {
   const activeStage = stageMetrics.find((stage) => stage.key === activeStageKey) ?? stageMetrics.find((stage) => stage.status === 'running') ?? stageMetrics[stageMetrics.length - 1] ?? null;
   const activeCounters = activeStage ? { done: activeStage.done, fail: activeStage.fail, total: activeStage.total } : counters;
   const processed = activeCounters.done + activeCounters.fail;
+  const hasCountableActiveStage = activeCounters.total > 0;
   const progressPct = activeCounters.total > 0
     ? Math.min(100, (processed / activeCounters.total) * 100)
     : isRunning ? 3 : status === 'idle' ? 0 : 100;
@@ -366,7 +369,7 @@ export default function JobLiveActivity() {
 
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-5 pb-7 space-y-4">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5" aria-live="polite">
-              <MetricTile label={activeStage ? stageTone(activeStage.kind).doneLabel : 'Processed'} value={processed} suffix={activeCounters.total > 0 ? `/ ${activeCounters.total}` : undefined} color="#ffffff" />
+              <MetricTile label={activeStage ? stageTone(activeStage.kind).doneLabel : 'Processed'} value={hasCountableActiveStage ? processed : isRunning ? 'Live' : processed} suffix={activeCounters.total > 0 ? `/ ${activeCounters.total}` : undefined} color="#ffffff" />
               <MetricTile label={activeStage?.kind === 'download' ? 'Pending' : 'Successful'} value={activeStage?.kind === 'download' ? Math.max(0, activeCounters.total - activeCounters.done) : activeCounters.done} suffix={successRate !== null && activeStage?.kind !== 'download' ? `${successRate}%` : undefined} color={activeStage?.kind === 'download' ? '#fde68a' : '#10b981'} pulse={isRunning && activeCounters.done > 0} />
               <MetricTile label="Failed" value={activeCounters.fail} color={activeCounters.fail > 0 ? '#f43f5e' : 'var(--text-muted)'} />
               <MetricTile label={rate > 0 ? 'Tune speed' : activeStage?.kind === 'download' ? 'Coverage' : 'Stage'} value={rate > 0 ? (rate * 60).toFixed(1) : `${Math.round(progressPct)}%`} suffix={rate > 0 ? '/ min' : undefined} color={activeStage ? stageTone(activeStage.kind).color : info.color} />
@@ -725,6 +728,8 @@ function StageTelemetryPanel({ stages, activeKey, mode }: { stages: JobStageMetr
   const byKind = new Map(stages.map((stage) => [stage.kind, stage]));
   const orderedKinds = mode === 'retune'
     ? RETUNE_STAGE_ORDER
+    : mode === 'stocks'
+      ? STOCKS_STAGE_ORDER
     : Array.from(new Set(stages.map((stage) => stage.kind)));
   const displayStages = orderedKinds.map((kind, index) => {
     const existing = byKind.get(kind);
@@ -760,6 +765,7 @@ function StageTelemetryPanel({ stages, activeKey, mode }: { stages: JobStageMetr
           const done = stage.status === 'completed';
           const processed = stage.done + stage.fail;
           const pending = stage.total > 0 ? Math.max(0, stage.total - processed) : 0;
+          const hasCount = stage.total > 0;
           return (
             <div key={stage.key} className="relative overflow-hidden rounded-[18px] px-3 py-3" style={{ background: active || done ? `linear-gradient(150deg, ${tone.color}18, rgba(255,255,255,0.025))` : 'rgba(255,255,255,0.025)', border: `1px solid ${active || done ? `${tone.color}42` : 'rgba(255,255,255,0.06)'}`, boxShadow: active ? `0 18px 42px -32px ${tone.color}, inset 0 1px 0 rgba(255,255,255,0.06)` : 'inset 0 1px 0 rgba(255,255,255,0.035)' }}>
               <div aria-hidden className="absolute inset-x-3 top-0 h-px" style={{ background: active || done ? `linear-gradient(90deg, transparent, ${tone.color}aa, transparent)` : 'transparent' }} />
@@ -772,11 +778,11 @@ function StageTelemetryPanel({ stages, activeKey, mode }: { stages: JobStageMetr
               </div>
               <div className="mt-3 flex items-baseline justify-between gap-2">
                 <div>
-                  <span className="text-[20px] leading-none font-semibold tabular-nums text-white">{processed}</span>
+                  <span className="text-[20px] leading-none font-semibold tabular-nums text-white">{hasCount ? processed : active ? 'Live' : done ? 'Done' : '—'}</span>
                   {stage.total > 0 && <span className="ml-1 text-[11px] text-[var(--text-muted)] tabular-nums">/ {stage.total}</span>}
                 </div>
                 <div className="text-right text-[10px] text-[var(--text-muted)] tabular-nums">
-                  {stage.kind === 'download' ? `${pending} pending` : stage.fail > 0 ? `${stage.fail} failed` : tone.unit}
+                  {stage.kind === 'download' ? `${pending} pending` : !hasCount && active ? 'working' : stage.fail > 0 ? `${stage.fail} failed` : tone.unit}
                 </div>
               </div>
               <div className="mt-3 h-2.5 overflow-hidden rounded-full p-[1px]" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.15), rgba(255,255,255,0.04))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.34)' }}>

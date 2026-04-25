@@ -1135,6 +1135,7 @@ function SignalOperationsBar({
   const activeStage = stageMetrics.find((stage) => stage.key === activeStageKey) ?? stageMetrics.find((stage) => stage.status === 'running') ?? stageMetrics[stageMetrics.length - 1] ?? null;
   const activeCounters = activeStage ? { done: activeStage.done, fail: activeStage.fail, total: activeStage.total } : counters;
   const processed = activeCounters.done + activeCounters.fail;
+  const hasCountableActiveStage = activeCounters.total > 0;
   const progressPct = activeCounters.total > 0 ? Math.min(100, (processed / activeCounters.total) * 100) : isRunning ? 7 : 0;
   const completionRate = processed > 0 && activeStage?.kind !== 'download' ? Math.round((activeCounters.done / processed) * 100) : null;
   const etaSec = isRunning && processed > 0 && activeCounters.total > processed && activeStage?.kind !== 'download'
@@ -1151,12 +1152,17 @@ function SignalOperationsBar({
       : status === 'stopped' ? 'Stopped'
         : status === 'failed' || status === 'error' ? 'Needs attention'
           : 'Ready';
-  const pipelineStages = [
-    { key: 'download', label: 'Refresh data', tone: '#60a5fa' },
-    { key: 'backup', label: 'Backup cache', tone: '#a78bfa' },
-    { key: 'tune', label: 'Tune stocks', tone: '#c084fc' },
-    { key: 'calibration', label: 'Calibration', tone: '#10b981' },
-  ];
+  const pipelineStages = isStocks
+    ? [
+        { key: 'download', label: 'Refresh prices', tone: '#60a5fa' },
+        { key: 'signals', label: 'Generate signals', tone: '#38d9f5' },
+      ]
+    : [
+        { key: 'download', label: 'Refresh data', tone: '#60a5fa' },
+        { key: 'backup', label: 'Backup cache', tone: '#a78bfa' },
+        { key: 'tune', label: 'Tune stocks', tone: '#c084fc' },
+        { key: 'calibration', label: 'Calibration', tone: '#10b981' },
+      ];
   const activeStageIndex = (() => {
     const title = (phaseTitle ?? '').toLowerCase();
     if (activeStage?.kind) {
@@ -1164,7 +1170,8 @@ function SignalOperationsBar({
       if (stageIndex >= 0) return stageIndex + 1;
     }
     if (!isRunning) return status === 'completed' ? pipelineStages.length : 0;
-    if (title.includes('refresh') || title.includes('download') || isStocks) return 1;
+    if (title.includes('refresh') || title.includes('download')) return 1;
+    if (title.includes('signal')) return isStocks ? 2 : 1;
     if (title.includes('backup')) return 2;
     if (title.includes('calibrat')) return 4;
     if (title.includes('fit') || title.includes('tune') || title.includes('model')) return 3;
@@ -1172,11 +1179,20 @@ function SignalOperationsBar({
   })();
   const activeStageLabel = activeStage?.kind === 'download'
     ? 'ready'
+    : activeStage?.kind === 'signals'
+      ? 'generated'
     : activeStage?.kind === 'backup'
       ? 'backed up'
       : activeStage?.kind === 'calibration'
         ? 'calibrated'
         : 'processed';
+  const runningProgressText = hasCountableActiveStage
+    ? `${processed}${activeCounters.total > 0 ? ` / ${activeCounters.total}` : ''} ${activeStageLabel}`
+    : activeStage?.kind === 'signals'
+      ? 'Generating signals'
+      : activeStage?.kind === 'backup'
+        ? 'Backing up cache'
+        : 'Working';
   const runTuneSubtitle = isRunning
     ? isTune ? 'Live fitting in progress' : 'Open the live activity drawer'
     : 'Full BMA retune, streamed live';
@@ -1215,7 +1231,7 @@ function SignalOperationsBar({
               </button>
               {isRunning && (
                 <span className="text-[11px] text-[var(--text-muted)] tabular-nums">
-                  {formatJobElapsed(elapsedSec)} · {processed}{activeCounters.total > 0 ? ` / ${activeCounters.total}` : ''} {activeStageLabel}{etaSec !== null ? ` · ETA ${formatJobElapsed(etaSec)}` : ''}
+                  {formatJobElapsed(elapsedSec)} · {runningProgressText}{etaSec !== null ? ` · ETA ${formatJobElapsed(etaSec)}` : ''}
                 </span>
               )}
             </div>

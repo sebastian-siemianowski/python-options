@@ -140,8 +140,8 @@ def _phase_plan(mode: str) -> List[Phase]:
                 re.compile(r"Step 1/2:\s*Refreshing", re.IGNORECASE),
             ),
             Phase(
-                "Generating signals",
-                "tune",
+                "Generating dashboard signals",
+                "signals",
                 None,
                 None,
                 re.compile(
@@ -424,6 +424,15 @@ def _run(mode: str) -> int:
                         or pass_rx.search(line) is not None
                         or pass_progress_rx.search(line) is not None
                         or pass_complete_rx.search(line) is not None
+                        or fail_rx.match(line) is not None
+                    )
+                elif current_phase.kind == "signals":
+                    should_emit_raw_log = (
+                        raw_log_line_count % 40 == 0
+                        or "S I G N A L S" in line
+                        or "Complete" in line
+                        or "assets" in line.lower()
+                        or "signals" in line.lower()
                         or fail_rx.match(line) is not None
                     )
                 if should_emit_raw_log:
