@@ -6,7 +6,7 @@
  * Click any asset row to expand inline zone charts (1M/3M/6M/12M).
  */
 import { useQuery } from '@tanstack/react-query';
-import { api, type SectorGroup, type SummaryRow, type HorizonSignal, type QualityScoresData, type IntrinsicValuesData, type IntrinsicValuation } from '../api';
+import { api, type SectorGroup, type SummaryRow, type HorizonSignal, type IntrinsicValuation } from '../api';
 import PageHeader from '../components/PageHeader';
 import { DashboardSkeleton } from '../components/CosmicSkeleton';
 import { CosmicErrorCard } from '../components/CosmicErrorState';
@@ -20,7 +20,7 @@ import React, {
 import { useNavigate } from 'react-router-dom';
 import {
   ChevronDown, ChevronRight, ChevronUp, Search, X, Filter,
-  TrendingUp, TrendingDown, Minus, Maximize2, Minimize2,
+  TrendingUp, TrendingDown, Maximize2, Minimize2,
   ExternalLink, Loader2, ArrowUpDown, Info,
 } from 'lucide-react';
 
@@ -626,7 +626,8 @@ export default function HeatmapPage() {
   const toggleSector = useCallback((name: string) => {
     setCollapsed(prev => {
       const next = new Set(prev);
-      next.has(name) ? next.delete(name) : next.add(name);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
       return next;
     });
   }, []);

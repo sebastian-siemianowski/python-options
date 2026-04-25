@@ -6,7 +6,6 @@ import PageHeader from '../components/PageHeader';
 import StatCard from '../components/StatCard';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { CosmicErrorCard } from '../components/CosmicErrorState';
-import { ArenaEmpty } from '../components/CosmicEmptyState';
 import { Swords, Trophy, FlaskConical, Target, RefreshCw, Check, X, AlertTriangle, ChevronDown } from 'lucide-react';
 
 /* ── Hard gate thresholds ────────────────────────────────────────── */

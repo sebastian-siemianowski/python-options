@@ -417,7 +417,7 @@ function MatrixTab({ data, isLoading }: { data?: DiagCrossAssetSummary; isLoadin
     ? data.rows.filter(r => r.symbol.toLowerCase().includes(matrixSearch.toLowerCase()))
     : data.rows;
 
-  const getCellColor = (val: number | null | undefined, _m: string): string => {
+  const getCellColor = (val: number | null | undefined): string => {
     if (val == null) return 'text-[#2a2a4a]';
     if (metric === 'crps') return val < 0.015 ? 'text-[var(--accent-emerald)]' : val < 0.025 ? 'text-[var(--text-secondary)]' : 'text-[var(--accent-orange)]';
     if (metric === 'pit_ks_p') return val >= 0.05 ? 'text-[var(--accent-emerald)]' : 'text-[var(--accent-rose)]';
@@ -532,7 +532,7 @@ function MatrixTab({ data, isLoading }: { data?: DiagCrossAssetSummary; isLoadin
                     const sc = row.scores[m];
                     const val = sc ? sc[metric] : null;
                     return (
-                      <td key={m} className={`px-1 py-1 text-center ${getCellColor(val, m)}`}>
+                      <td key={m} className={`px-1 py-1 text-center ${getCellColor(val)}`}>
                         {fmtVal(val)}
                       </td>
                     );

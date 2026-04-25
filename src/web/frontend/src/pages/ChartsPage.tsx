@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { useQuery } from '@tanstack/react-query';
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
@@ -167,7 +168,8 @@ export default function ChartsPage() {
   const toggleSector = (name: string) => {
     setExpandedSectors(prev => {
       const next = new Set(prev);
-      next.has(name) ? next.delete(name) : next.add(name);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
       return next;
     });
   };
@@ -1198,7 +1200,7 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
 
       {/* ── Overlay legend (always visible, click to toggle) ── */}
       <div className="flex items-center gap-3 mb-1 min-h-[18px]">
-        {OVERLAY_DEFS.filter(d => d.key !== 'rsi').map(d => {
+        {OVERLAY_DEFS.map(d => {
           const active = overlays[d.key];
           return (
             <button
@@ -1370,7 +1372,7 @@ function SubIndicatorPane({
       case 'rsi': {
         const d = indicators.rsi;
         if (!d?.length) break;
-        chart.addSeries(LineSeries, { color: '#b49aff', lineWidth: 1.5, ...lineOpts }).setData(d);
+        chart.addSeries(LineSeries, { color: '#b49aff', lineWidth: 2, ...lineOpts }).setData(d);
         const times = d.map((p: any) => p.time);
         chart.addSeries(LineSeries, { color: 'rgba(255,107,138,0.25)', ...refOpts }).setData(times.map((t: string) => ({ time: t, value: 70 })));
         chart.addSeries(LineSeries, { color: 'rgba(62,232,165,0.25)', ...refOpts }).setData(times.map((t: string) => ({ time: t, value: 30 })));
@@ -1390,7 +1392,7 @@ function SubIndicatorPane({
           })));
         }
         if (d.macd?.length)
-          chart.addSeries(LineSeries, { color: '#3ee8a5', lineWidth: 1.5, ...lineOpts }).setData(d.macd);
+          chart.addSeries(LineSeries, { color: '#3ee8a5', lineWidth: 2, ...lineOpts }).setData(d.macd);
         if (d.signal?.length)
           chart.addSeries(LineSeries, { color: '#ff6b8a', lineWidth: 1, ...lineOpts }).setData(d.signal);
         // Zero line
@@ -1404,7 +1406,7 @@ function SubIndicatorPane({
         const d = indicators.stochastic;
         if (!d) break;
         if (d.k?.length)
-          chart.addSeries(LineSeries, { color: '#f5c542', lineWidth: 1.5, ...lineOpts }).setData(d.k);
+          chart.addSeries(LineSeries, { color: '#f5c542', lineWidth: 2, ...lineOpts }).setData(d.k);
         if (d.d?.length)
           chart.addSeries(LineSeries, { color: '#ff6b8a', lineWidth: 1, ...lineOpts }).setData(d.d);
         // Reference lines
@@ -1419,7 +1421,7 @@ function SubIndicatorPane({
         const d = indicators.adx;
         if (!d) break;
         if (d.adx?.length)
-          chart.addSeries(LineSeries, { color: '#26A69A', lineWidth: 1.5, ...lineOpts }).setData(d.adx);
+          chart.addSeries(LineSeries, { color: '#26A69A', lineWidth: 2, ...lineOpts }).setData(d.adx);
         if (d.plus_di?.length)
           chart.addSeries(LineSeries, { color: '#3ee8a5', lineWidth: 1, ...lineOpts }).setData(d.plus_di);
         if (d.minus_di?.length)
@@ -1434,19 +1436,19 @@ function SubIndicatorPane({
       case 'atr': {
         const d = indicators.atr;
         if (!d?.length) break;
-        chart.addSeries(LineSeries, { color: '#c084fc', lineWidth: 1.5, ...lineOpts }).setData(d);
+        chart.addSeries(LineSeries, { color: '#c084fc', lineWidth: 2, ...lineOpts }).setData(d);
         break;
       }
       case 'obv': {
         const d = indicators.obv;
         if (!d?.length) break;
-        chart.addSeries(LineSeries, { color: '#64b5f6', lineWidth: 1.5, ...lineOpts }).setData(d);
+        chart.addSeries(LineSeries, { color: '#64b5f6', lineWidth: 2, ...lineOpts }).setData(d);
         break;
       }
       case 'cci': {
         const d = indicators.cci;
         if (!d?.length) break;
-        chart.addSeries(LineSeries, { color: '#b49aff', lineWidth: 1.5, ...lineOpts }).setData(d);
+        chart.addSeries(LineSeries, { color: '#b49aff', lineWidth: 2, ...lineOpts }).setData(d);
         // Reference lines
         const times = d.map((p: any) => p.time);
         chart.addSeries(LineSeries, { color: 'rgba(255,107,138,0.25)', ...refOpts }).setData(times.map((t: string) => ({ time: t, value: 100 })));
@@ -1457,7 +1459,7 @@ function SubIndicatorPane({
       case 'mfi': {
         const d = indicators.mfi;
         if (!d?.length) break;
-        chart.addSeries(LineSeries, { color: '#4dd0e1', lineWidth: 1.5, ...lineOpts }).setData(d);
+        chart.addSeries(LineSeries, { color: '#4dd0e1', lineWidth: 2, ...lineOpts }).setData(d);
         const times = d.map((p: any) => p.time);
         chart.addSeries(LineSeries, { color: 'rgba(255,107,138,0.25)', ...refOpts }).setData(times.map((t: string) => ({ time: t, value: 80 })));
         chart.addSeries(LineSeries, { color: 'rgba(62,232,165,0.25)', ...refOpts }).setData(times.map((t: string) => ({ time: t, value: 20 })));
@@ -1482,7 +1484,7 @@ function SubIndicatorPane({
       case 'roc': {
         const d = indicators.roc;
         if (!d?.length) break;
-        chart.addSeries(LineSeries, { color: '#ff9f43', lineWidth: 1.5, ...lineOpts }).setData(d);
+        chart.addSeries(LineSeries, { color: '#ff9f43', lineWidth: 2, ...lineOpts }).setData(d);
         const times = d.map((p: any) => p.time);
         chart.addSeries(LineSeries, { color: 'rgba(100,116,139,0.15)', ...refOpts }).setData(times.map((t: string) => ({ time: t, value: 0 })));
         break;
@@ -1490,7 +1492,7 @@ function SubIndicatorPane({
       case 'bbpctb': {
         const d = indicators.bbpctb;
         if (!d?.length) break;
-        chart.addSeries(LineSeries, { color: '#818cf8', lineWidth: 1.5, ...lineOpts }).setData(d);
+        chart.addSeries(LineSeries, { color: '#818cf8', lineWidth: 2, ...lineOpts }).setData(d);
         const times = d.map((p: any) => p.time);
         chart.addSeries(LineSeries, { color: 'rgba(255,107,138,0.25)', ...refOpts }).setData(times.map((t: string) => ({ time: t, value: 1 })));
         chart.addSeries(LineSeries, { color: 'rgba(62,232,165,0.25)', ...refOpts }).setData(times.map((t: string) => ({ time: t, value: 0 })));

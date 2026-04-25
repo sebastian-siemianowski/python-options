@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { api } from '../api';
 import type {
   RiskDashboardFull, RiskStressCategory, RiskStressIndicator,
@@ -62,26 +62,6 @@ function regimeGlow(status: string) {
     case 'Stressed': return 'var(--rose-8)';
     case 'Crisis': return 'var(--rose-12)';
     default: return 'var(--violet-6)';
-  }
-}
-
-function regimeClass(status: string) {
-  switch (status) {
-    case 'Calm': return 'regime-calm';
-    case 'Elevated': return 'regime-elevated';
-    case 'Stressed': return 'regime-stressed';
-    case 'Crisis': return 'regime-crisis';
-    default: return '';
-  }
-}
-
-function regimeGlowClass(status: string) {
-  switch (status) {
-    case 'Calm': return 'regime-calm-glow';
-    case 'Elevated': return 'regime-elevated-glow';
-    case 'Stressed': return 'regime-stressed-glow';
-    case 'Crisis': return 'regime-crisis-glow';
-    default: return '';
   }
 }
 
@@ -655,7 +635,12 @@ function CrossAssetTab({ categories }: { categories?: Record<string, RiskStressC
   if (!categories) return <div className="text-sm" style={{ color: 'var(--text-muted)' }}>No cross-asset data available</div>;
 
   const toggle = (name: string) =>
-    setExpanded(prev => { const n = new Set(prev); n.has(name) ? n.delete(name) : n.add(name); return n; });
+    setExpanded(prev => {
+      const n = new Set(prev);
+      if (n.has(name)) n.delete(name);
+      else n.add(name);
+      return n;
+    });
 
   const sorted = Object.values(categories).sort((a, b) => b.weighted_contribution - a.weighted_contribution);
   // Index by dict key and name for flexible lookup
@@ -1429,10 +1414,8 @@ type SectorSort = 'performance' | 'momentum' | 'risk' | 'alpha';
 
 function SectorsTab({ sectors }: { sectors?: Record<string, SectorMetrics> }) {
   const [sortBy, setSortBy] = useState<SectorSort>('performance');
-  if (!sectors) return <div className="text-sm" style={{ color: 'var(--text-muted)' }}>No sector data available</div>;
-
   const entries = useMemo(() => {
-    const arr = Object.entries(sectors);
+    const arr = Object.entries(sectors ?? {});
     switch (sortBy) {
       case 'performance': return arr.sort(([, a], [, b]) => (b.return_21d ?? 0) - (a.return_21d ?? 0));
       case 'momentum': return arr.sort(([, a], [, b]) => {
@@ -1443,6 +1426,8 @@ function SectorsTab({ sectors }: { sectors?: Record<string, SectorMetrics> }) {
       default: return arr.sort(([a], [b]) => a.localeCompare(b));
     }
   }, [sectors, sortBy]);
+
+  if (!sectors) return <div className="text-sm" style={{ color: 'var(--text-muted)' }}>No sector data available</div>;
 
   const MedalIcons = [Trophy, Award, Medal];
 
@@ -1661,21 +1646,6 @@ function StressPip({ level, size = 8 }: { level: number; size?: number }) {
 
 function stressColor(level: number): string {
   return level < 0.3 ? 'text-[var(--accent-emerald)]' : level < 0.7 ? 'text-[var(--accent-amber)]' : 'text-[var(--accent-rose)]';
-}
-
-function ReturnCell({ v }: { v: number | null | undefined }) {
-  if (v == null) return <span style={{ color: 'var(--text-muted)' }}>--</span>;
-  const pct = v * 100;
-  const color = pct > 0 ? 'var(--accent-emerald)' : pct < 0 ? 'var(--accent-rose)' : 'var(--text-secondary)';
-  return <span style={{ color, fontVariantNumeric: 'tabular-nums' }}>{pct > 0 ? '+' : ''}{pct.toFixed(2)}%</span>;
-}
-
-function ForecastCell({ v }: { v: number | null | undefined }) {
-  if (v == null) return <span style={{ color: 'var(--text-muted)' }}>--</span>;
-  // Forecast values are already in percent
-  const pct = v;
-  const color = pct > 0 ? 'var(--accent-emerald)' : pct < 0 ? 'var(--accent-rose)' : 'var(--text-secondary)';
-  return <span style={{ color, fontVariantNumeric: 'tabular-nums' }}>{pct > 0 ? '+' : ''}{pct.toFixed(1)}%</span>;
 }
 
 function MomentumBadge({ signal }: { signal: string }) {

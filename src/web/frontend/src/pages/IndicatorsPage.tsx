@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState, useMemo, useEffect } from 'react';
 import { api } from '../api';
-import type { IndicatorStrategy, IndicatorFamily, IndicatorBacktestStatus } from '../api';
+import type { IndicatorFamily, IndicatorBacktestStatus } from '../api';
 import PageHeader from '../components/PageHeader';
 import StatCard from '../components/StatCard';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -123,8 +123,8 @@ export default function IndicatorsPage() {
     // Sort
     const key = sortKey;
     items = [...items].sort((a, b) => {
-      const av = (a as Record<string, unknown>)[key] as number ?? 0;
-      const bv = (b as Record<string, unknown>)[key] as number ?? 0;
+      const av = ((a as unknown as Record<string, unknown>)[key] as number) ?? 0;
+      const bv = ((b as unknown as Record<string, unknown>)[key] as number) ?? 0;
       return sortAsc ? av - bv : bv - av;
     });
     return items;
@@ -612,7 +612,7 @@ export default function IndicatorsPage() {
                         <YAxis type="number" dataKey="cagr" name="CAGR%" tick={{ fill: 'var(--text-muted)', fontSize: 10 }} />
                         <Tooltip
                           contentStyle={{ background: 'var(--glass-bg)', border: '1px solid var(--glass-border)', borderRadius: 8, fontSize: 11 }}
-                          formatter={(v: number, name: string) => [typeof v === 'number' ? v.toFixed(2) : v, name]}
+                          formatter={(v: number | undefined, name: string | undefined) => [typeof v === 'number' ? v.toFixed(2) : v ?? '—', name ?? 'value']}
                           labelFormatter={() => ''}
                         />
                         <Scatter data={assets} fill={getFamilyColor(d.family)}>

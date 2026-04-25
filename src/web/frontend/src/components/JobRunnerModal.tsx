@@ -167,7 +167,7 @@ export function JobRunnerPanel({
         for (const [sym, model] of Object.entries(updates)) {
           // Only count each symbol once — if we already have a model for it,
           // skip (tune occasionally re-prints the same selection).
-          if (prev[sym] === undefined || prev[sym] !== model) {
+          if (modelBySymbol[sym] === undefined || modelBySymbol[sym] !== model) {
             next[model] = (next[model] ?? 0) + 1;
           }
         }

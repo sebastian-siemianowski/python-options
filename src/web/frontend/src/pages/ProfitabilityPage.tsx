@@ -73,7 +73,7 @@ function MetricChart({ title, data, targetValue, color = '#b49aff' }: {
                 backdropFilter: 'blur(12px)',
                 boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
               }}
-              formatter={(v: number) => `${(v * 100).toFixed(2)}%`}
+              formatter={(v: number | undefined) => typeof v === 'number' ? `${(v * 100).toFixed(2)}%` : '—'}
             />
             <ReferenceLine
               y={targetValue}

@@ -1,10 +1,11 @@
 interface Props {
   title: string;
-  children: React.ReactNode;
+  children?: React.ReactNode;
+  subtitle?: React.ReactNode;
   action?: React.ReactNode;
 }
 
-export default function PageHeader({ title, children, action }: Props) {
+export default function PageHeader({ title, children, subtitle, action }: Props) {
   return (
     <div className="mb-10 fade-up">
       <div className="flex items-end justify-between">
@@ -18,7 +19,9 @@ export default function PageHeader({ title, children, action }: Props) {
           >
             {title}
           </h1>
-          <div className="text-sm mt-3 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{children}</div>
+          {(children || subtitle) && (
+            <div className="text-sm mt-3 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{children ?? subtitle}</div>
+          )}
         </div>
         {action && <div>{action}</div>}
       </div>

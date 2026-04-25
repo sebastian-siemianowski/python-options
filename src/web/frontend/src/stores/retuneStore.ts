@@ -48,6 +48,15 @@ let state: RetuneState = {
 let eventSource: EventSource | null = null;
 const listeners = new Set<Listener>();
 
+function requestBackendCancel() {
+  void fetch('/api/tune/retune/cancel', {
+    method: 'POST',
+    keepalive: true,
+  }).catch(() => {
+    // Best-effort cancellation; the stream may already be closed.
+  });
+}
+
 function emit() {
   state = { ...state };
   listeners.forEach((l) => l());
@@ -80,7 +89,7 @@ function addLog(entry: RetuneLogEntry) {
 
 function extractAssetName(message: string): string | null {
   // Match ticker-like patterns: 1-5 uppercase letters, optionally with =X, -USD, .PA etc.
-  const m = message.match(/\b([A-Z][A-Z0-9]{0,5}(?:[=\-\.][A-Z0-9]+)?)\b/);
+  const m = message.match(/\b([A-Z][A-Z0-9]{0,5}(?:[=.-][A-Z0-9]+)?)\b/);
   return m ? m[1] : null;
 }
 
@@ -146,6 +155,9 @@ export function startRetune(onComplete?: () => void) {
 }
 
 export function stopRetune() {
+  if (state.status === 'running') {
+    requestBackendCancel();
+  }
   eventSource?.close();
   eventSource = null;
   state.status = 'idle';

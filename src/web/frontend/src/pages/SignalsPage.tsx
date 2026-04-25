@@ -1,23 +1,22 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, useMemo, useEffect, useRef, useCallback, Component, Fragment, type ReactNode, type ErrorInfo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import type { SummaryRow, SectorGroup, StrongSignalEntry, HighConvictionSignal, SignalSummaryData, SignalStats, EmaState, SmaReversal, SmaReversalsData } from '../api';
-import PageHeader from '../components/PageHeader';
 import { SignalTableSkeleton } from '../components/CosmicSkeleton';
 import { CosmicErrorCard } from '../components/CosmicErrorState';
-import { SignalsEmpty } from '../components/CosmicEmptyState';
 import { ExportButton } from '../components/ExportButton';
 import { Sparkline, SparklinePct } from '../components/Sparkline';
-import { SignalLabel, SignalStrengthBar, SignalStrengthMeter, MomentumBadge, CrashRiskHeat, HorizonCell, QualityCell } from '../components/SignalTableVisuals';
+import { SignalLabel, SignalStrengthMeter, MomentumBadge, CrashRiskHeat, HorizonCell, QualityCell } from '../components/SignalTableVisuals';
 import { ColumnCustomizer, type ColumnDef } from '../components/ColumnCustomizer';
 import SignalDetailPanel from '../components/SignalDetailPanel';
-import { JobRunnerModal, type JobMode } from '../components/JobRunnerModal';
+import { useJobStore } from '../stores/jobStore';
 import {
-  ArrowUpCircle, ArrowDownCircle, Filter, ChevronDown, ChevronRight,
+  Filter, ChevronDown, ChevronRight,
   TrendingUp, TrendingDown, Search, X, ExternalLink, BarChart3,
-  Target, Shield, ShieldCheck, ArrowUp, ArrowDown, Clock, DollarSign,
+  Target, Shield, ShieldCheck, ArrowUp, ArrowDown, Clock,
   Activity, Eye, Layers, ChevronUp, AlertTriangle, Zap, Loader2,
   Star, Plus, SlidersHorizontal,
 } from 'lucide-react';
@@ -110,21 +109,14 @@ function useWindowWidth(): number {
   return width;
 }
 
-/** WebSocket connection status indicator. */
-function WsStatusDot({ status }: { status: WSStatus }) {
-  const dotClass = status === 'connected' ? 'ws-connected' : status === 'connecting' ? 'ws-connecting' : 'ws-disconnected';
-  const label = status === 'connected' ? 'Live' : status === 'connecting' ? 'Reconnecting' : 'Disconnected';
-  const color = status === 'connected' ? 'var(--accent-emerald)' : status === 'connecting' ? 'var(--accent-amber)' : 'var(--accent-rose)';
-  return (
-    <span className="inline-flex items-center gap-1.5 ml-2" title={`WebSocket: ${status}`}>
-      <span className={dotClass} />
-      <span className="text-caption font-medium" style={{ color }}>{label}</span>
-    </span>
-  );
-}
-
 function SignalsPageInner() {
   const navigate = useNavigate();
+  const startJob = useJobStore((s) => s.startJob);
+  const showJobSurface = useJobStore((s) => s.showSurface);
+  const setJobExpanded = useJobStore((s) => s.setExpanded);
+  const jobStatus = useJobStore((s) => s.status);
+  const activeJobMode = useJobStore((s) => s.mode);
+  const isJobRunning = jobStatus === 'running';
   // v1 premium: default to 'all' so users see all 490 assets immediately (was 'sectors' which showed collapsed empty sectors)
   const [view, setView] = useState<ViewMode>(() => {
     try {
@@ -154,8 +146,6 @@ function SignalsPageInner() {
   useEffect(() => {
     try { localStorage.setItem('signals-ema-filters', JSON.stringify(emaFilters)); } catch { /* ignore */ }
   }, [emaFilters]);
-  const [jobMode, setJobMode] = useState<JobMode | null>(null);
-
   const [updatedAsset, setUpdatedAsset] = useState<string | null>(null);
 
   // Sector-view controls (lifted out of SectorPanels so the entire Signals
@@ -495,7 +485,8 @@ function SignalsPageInner() {
   const toggleSector = (name: string) => {
     setExpandedSectors(prev => {
       const next = new Set(prev);
-      next.has(name) ? next.delete(name) : next.add(name);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
       return next;
     });
   };
@@ -539,7 +530,6 @@ function SignalsPageInner() {
           signals={buyQ.data?.signals || []}
           color="green"
           isLoading={buyQ.isLoading}
-          onNavigateChart={(sym) => navigate(`/charts/${sym}`)}
           emaStates={emaStates}
         />
         <HighConvictionPanel
@@ -547,7 +537,6 @@ function SignalsPageInner() {
           signals={sellQ.data?.signals || []}
           color="red"
           isLoading={sellQ.isLoading}
-          onNavigateChart={(sym) => navigate(`/charts/${sym}`)}
           emaStates={emaStates}
         />
       </div>
@@ -564,30 +553,44 @@ function SignalsPageInner() {
       <div className="flex items-center justify-between gap-3 mb-3">
         <div className="flex items-center gap-2">
           <button
-            onClick={() => setJobMode('stocks')}
+            onClick={() => {
+              if (isJobRunning) {
+                showJobSurface();
+                setJobExpanded(true);
+              } else {
+                startJob('stocks');
+              }
+            }}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-semibold transition-colors"
             style={{
               background: 'rgba(59,130,246,0.12)',
               color: '#60a5fa',
               border: '1px solid rgba(59,130,246,0.28)',
             }}
-            title="Run `make stocks` (refresh prices and regenerate signals)"
+            title={isJobRunning ? 'A job is already running — view live progress' : 'Run `make stocks` (refresh prices and regenerate signals)'}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-            Refresh Stocks
+            {isJobRunning ? 'View Progress' : 'Refresh Stocks'}
           </button>
           <button
-            onClick={() => setJobMode('retune')}
+            onClick={() => {
+              if (isJobRunning) {
+                showJobSurface();
+                setJobExpanded(true);
+              } else {
+                startJob('retune');
+              }
+            }}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-semibold transition-colors"
             style={{
               background: 'rgba(139,92,246,0.12)',
               color: '#a78bfa',
               border: '1px solid rgba(139,92,246,0.28)',
             }}
-            title="Run `make retune` (full retune pipeline)"
+            title={isJobRunning ? 'A job is already running — view live progress' : 'Run `make retune` (full retune pipeline)'}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            Run Tune
+            {isJobRunning && activeJobMode === 'retune' ? 'Tuning…' : isJobRunning ? 'View Progress' : 'Run Tune'}
           </button>
         </div>
         <ExportButton
@@ -603,13 +606,6 @@ function SignalsPageInner() {
           totalCount={rows.length}
         />
       </div>
-
-      {/* Inline job runner sub-panel (renders only when active) */}
-      <JobRunnerModal
-        open={jobMode !== null}
-        mode={jobMode}
-        onClose={() => setJobMode(null)}
-      />
 
       {/* ═══ Premium Filter Bar ══════════════════════════════════════════════
           Apple-grade unified filter surface:
@@ -764,7 +760,6 @@ function SignalsPageInner() {
             ]).map(({ key, period, count }) => {
               const on = emaFilters[key];
               const emaLoaded = Object.keys(emaStates).length > 0;
-              const accent = 'var(--accent-violet)';
               const accentColor = '#a78bfa';
               return (
                 <button
@@ -889,7 +884,7 @@ function SignalsPageInner() {
             violet glow. This lets the entire control surface read as one
             cohesive hierarchy (what → when) with zero dividers fighting the
             content. */}
-        {(view === 'sectors' || ((view === 'all' || view === 'sectors') && allHorizons.length > 0)) && (
+        {(view === 'sectors' || (view === 'all' && allHorizons.length > 0)) && (
           <div
             className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5"
             style={{ borderTop: '1px solid rgba(255,255,255,0.03)', background: 'rgba(255,255,255,0.006)' }}
@@ -1126,29 +1121,6 @@ export default function SignalsPage() {
   );
 }
 
-/* ── Premium stat card with progress bar ─────────────────────────── */
-function StatCard({ label, value, total, color, icon }: { label: string; value: number; total: number; color: string; icon: React.ReactNode }) {
-  const pct = total > 0 ? (value / total) * 100 : 0;
-  return (
-    <div className="glass-card px-3 py-3 hover-lift stat-shine group cursor-default"
-      style={{ borderBottom: `2px solid ${color}20` }}>
-      <div className="flex items-center gap-2 mb-1.5">
-        <div className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: `${color}15`, color }}>{icon}</div>
-        <div className="flex-1 min-w-0">
-          <p className="text-lg font-bold text-[#e2e8f0] tabular-nums leading-tight">{value}</p>
-        </div>
-      </div>
-      <div className="flex items-center justify-between mb-1">
-        <p className="text-[10px] text-[var(--text-secondary)] font-medium">{label}</p>
-        <p className="text-[9px] tabular-nums" style={{ color: `${color}99` }}>{pct.toFixed(1)}%</p>
-      </div>
-      <div className="w-full h-1 rounded-full bg-white/[0.04] overflow-hidden">
-        <div className="h-full rounded-full transition-all duration-700 ease-out" style={{ width: `${Math.min(pct, 100)}%`, background: color }} />
-      </div>
-    </div>
-  );
-}
-
 /* ── v1 Premium Signals Hero Band ─────────────────────────────────── */
 function SignalsHero({
   stats, rows, horizons, filteredCount, wsStatus,
@@ -1175,7 +1147,7 @@ function SignalsHero({
   const wsColor =
     wsStatus === 'connected' ? '#10b981' :
     wsStatus === 'connecting' ? '#f59e0b' :
-    wsStatus === 'error' ? '#f43f5e' : '#64748b';
+    '#64748b';
 
   return (
     <div
@@ -3503,127 +3475,6 @@ function CosmicSignalRow({ row, ticker, horizons, visibleCols, qualityScore, hig
   );
 }
 
-/* ── Mini chart panel (legacy — retained for internal reference, unused) ── */
-function MiniChartPanel({ ticker, onNavigateChart }: { ticker: string; onNavigateChart: () => void }) {
-  const { data, isLoading, error } = useQuery({
-    queryKey: ['miniChart', ticker],
-    queryFn: () => api.chartOhlcv(ticker, 90),
-    staleTime: 300_000,
-  });
-
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-
-  useEffect(() => {
-    const bars = data?.data;
-    if (!bars || bars.length < 2 || !canvasRef.current) return;
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
-    ctx.scale(dpr, dpr);
-    ctx.clearRect(0, 0, rect.width, rect.height);
-
-    if (bars.length < 2) return;
-
-    const closes = bars.map(b => b.close);
-    const minP = Math.min(...closes);
-    const maxP = Math.max(...closes);
-    const range = maxP - minP || 1;
-    const padding = 4;
-    const w = rect.width - padding * 2;
-    const h = rect.height - padding * 2;
-
-    // Gradient fill
-    const isUp = closes[closes.length - 1] >= closes[0];
-    const lineColor = isUp ? 'var(--accent-emerald)' : 'var(--accent-rose)';
-    const gradient = ctx.createLinearGradient(0, padding, 0, rect.height);
-    gradient.addColorStop(0, isUp ? 'rgba(52, 211, 153, 0.15)' : 'rgba(251, 113, 133, 0.15)');
-    gradient.addColorStop(1, 'transparent');
-
-    // Draw area fill
-    ctx.beginPath();
-    closes.forEach((c, i) => {
-      const x = padding + (i / (closes.length - 1)) * w;
-      const y = padding + h - ((c - minP) / range) * h;
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-    });
-    ctx.lineTo(padding + w, padding + h);
-    ctx.lineTo(padding, padding + h);
-    ctx.closePath();
-    ctx.fillStyle = gradient;
-    ctx.fill();
-
-    // Draw line
-    ctx.beginPath();
-    closes.forEach((c, i) => {
-      const x = padding + (i / (closes.length - 1)) * w;
-      const y = padding + h - ((c - minP) / range) * h;
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-    });
-    ctx.strokeStyle = lineColor;
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-
-    // Current price dot
-    const lastX = padding + w;
-    const lastY = padding + h - ((closes[closes.length - 1] - minP) / range) * h;
-    ctx.beginPath();
-    ctx.arc(lastX, lastY, 3, 0, Math.PI * 2);
-    ctx.fillStyle = lineColor;
-    ctx.fill();
-
-  }, [data]);
-
-  const bars = data?.data || [];
-  const lastPrice = bars.length > 0 ? bars[bars.length - 1].close : 0;
-  const firstPrice = bars.length > 0 ? bars[0].close : 0;
-  const changePct = firstPrice ? ((lastPrice - firstPrice) / firstPrice) * 100 : 0;
-  const isUp = changePct >= 0;
-
-  return (
-    <div className="mini-chart-enter bg-[#0a0a1a]/60 border-t border-[var(--void-raised)]/30">
-      <div className="flex items-center gap-4 px-4 py-2">
-        {/* Chart area */}
-        <div className="flex-1 h-[80px]">
-          {isLoading ? (
-            <div className="h-full flex items-center justify-center">
-              <div className="w-4 h-4 border-2 border-[var(--void-raised)] border-t-[var(--accent-violet)] rounded-full animate-spin" />
-            </div>
-          ) : error ? (
-            <div className="h-full flex items-center justify-center text-[10px] text-[var(--text-secondary)]">Chart unavailable</div>
-          ) : (
-            <canvas ref={canvasRef} className="w-full h-full" />
-          )}
-        </div>
-
-        {/* Price info */}
-        <div className="flex-shrink-0 text-right space-y-1">
-          <p className="text-sm font-bold text-[#e2e8f0] tabular-nums">
-            {lastPrice > 0 ? (lastPrice < 10 ? lastPrice.toFixed(4) : lastPrice.toFixed(2)) : '--'}
-          </p>
-          <p className={`text-xs font-semibold tabular-nums ${isUp ? 'text-[var(--accent-emerald)]' : 'text-[var(--accent-rose)]'}`}>
-            {isUp ? '+' : ''}{changePct.toFixed(2)}%
-          </p>
-          <p className="text-[9px] text-[#6b7a90]">3M change</p>
-        </div>
-
-        {/* Navigate to full chart */}
-        <button
-          onClick={onNavigateChart}
-          className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-medium text-[var(--text-violet)] bg-[var(--accent-violet)]/10 hover:bg-[var(--accent-violet)]/20 transition-all"
-        >
-          <ExternalLink className="w-3 h-3" />
-          Full Chart
-        </button>
-      </div>
-    </div>
-  );
-}
-
 /* ── Sector signal row — premium with inline expand ───────────────── */
 function SectorSignalRow({ row, horizons, visibleCols, qualityScore, highlighted, delayMs = 0, onNavigateChart }: {
   row: SummaryRow; horizons: number[];
@@ -3753,16 +3604,6 @@ function SectorSignalRow({ row, horizons, visibleCols, qualityScore, highlighted
         </tr>
       )}
     </>
-  );
-}
-
-/* ── Badges & Helpers ────────────────────────────────────────────── */
-function CountBadge({ value, label, color }: { value: number; label: string; color: string }) {
-  return (
-    <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium"
-      style={{ color, background: `${color}15` }}>
-      {label}{value}
-    </span>
   );
 }
 
@@ -4932,13 +4773,12 @@ function EmaFilterBar({
 }
 
 function HighConvictionPanel({
-  title, signals, color, isLoading, onNavigateChart, emaStates,
+  title, signals, color, isLoading, emaStates,
 }: {
   title: string;
   signals: HighConvictionSignal[];
   color: 'green' | 'red';
   isLoading: boolean;
-  onNavigateChart: (sym: string) => void;
   emaStates: Record<string, EmaState>;
 }) {
   const [sortCol, setSortCol] = useState<HCSortCol>('exp_ret');
@@ -4997,7 +4837,6 @@ function HighConvictionPanel({
   const Icon = color === 'green' ? TrendingUp : TrendingDown;
   const accent = color === 'green' ? '#10b981' : '#f43f5e';
   const accentSoft = color === 'green' ? '#10b98120' : '#f43f5e20';
-  const accentMid = color === 'green' ? '#10b98160' : '#f43f5e60';
 
   // Group signals by ticker
   const grouped = useMemo(() => {

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * BuySellZoneCharts — Four mini charts (1M, 3M, 6M, 12M)
  * showing historical prices with forward-looking buy/sell zones.

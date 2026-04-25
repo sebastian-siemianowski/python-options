@@ -29,7 +29,7 @@ export default function DataPage() {
         pricesQ.refetch();
         dirsQ.refetch();
       }, 5000);
-    } catch (err) {
+    } catch {
       setRefreshMsg('Failed to start data refresh');
     } finally {
       setRefreshing(false);

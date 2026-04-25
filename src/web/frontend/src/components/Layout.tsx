@@ -23,6 +23,7 @@ import BreadcrumbBar from './BreadcrumbBar';
 import StatusStrip from './StatusStrip';
 import AmbientOrbs from './AmbientOrbs';
 import { KeyboardShortcutOverlay } from './KeyboardShortcuts';
+import JobLiveActivity from './JobLiveActivity';
 import { initTilt } from '../utils/tilt';
 
 /* ─── Types ─────────────────────────────────────────────────────── */
@@ -58,7 +59,7 @@ export default function Layout() {
   const [collapsed, setCollapsed] = useState(getSavedCollapsed);
   const [tooltip, setTooltip] = useState<{ item: NavItem; rect: DOMRect } | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const tooltipTimer = useRef<ReturnType<typeof setTimeout>>();
+  const tooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /* Persist collapse */
   useEffect(() => {
@@ -295,14 +296,14 @@ export default function Layout() {
 
   /* ── Tooltip handlers ──────────────────────────────────────────── */
   const showTooltip = useCallback((item: NavItem, el: HTMLElement) => {
-    clearTimeout(tooltipTimer.current);
+    if (tooltipTimer.current) clearTimeout(tooltipTimer.current);
     tooltipTimer.current = setTimeout(() => {
       setTooltip({ item, rect: el.getBoundingClientRect() });
     }, 400);
   }, []);
 
   const hideTooltip = useCallback(() => {
-    clearTimeout(tooltipTimer.current);
+    if (tooltipTimer.current) clearTimeout(tooltipTimer.current);
     setTooltip(null);
   }, []);
 
@@ -316,6 +317,9 @@ export default function Layout() {
 
       {/* Ambient Status Strip */}
       <StatusStrip />
+
+      {/* Non-blocking global job progress — persists across page navigation. */}
+      <JobLiveActivity />
 
       {/* Sidebar */}
       <aside

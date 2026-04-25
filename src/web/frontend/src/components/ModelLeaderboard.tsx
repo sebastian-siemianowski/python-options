@@ -23,7 +23,7 @@ interface ModelRow {
   rank: number;
 }
 
-export default function ModelLeaderboard({ modelsDistribution, pitPass, pitFail, total }: Props) {
+export default function ModelLeaderboard({ modelsDistribution, pitPass, total }: Props) {
   const navigate = useNavigate();
   const [expandedModel, setExpandedModel] = useState<string | null>(null);
   const [visible, setVisible] = useState(false);

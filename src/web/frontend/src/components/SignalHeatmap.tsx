@@ -40,12 +40,6 @@ function heatCellStyle(expRet: number | null | undefined): { background: string;
   };
 }
 
-/** Opacity from position_strength (conviction). */
-function cellOpacity(sig: { position_strength?: number } | undefined): number {
-  if (!sig || sig.position_strength == null) return 0.7;
-  return 0.3 + 0.7 * Math.min(Math.max(sig.position_strength, 0), 1);
-}
-
 /** Build a mini sentiment bar from sector counts. */
 function SectorSentimentBar({ sector }: { sector: SectorGroup }) {
   const total = sector.asset_count || 1;
@@ -111,7 +105,8 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
   const toggleSector = useCallback((name: string) => {
     setCollapsed(prev => {
       const next = new Set(prev);
-      next.has(name) ? next.delete(name) : next.add(name);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
       return next;
     });
   }, []);
@@ -340,7 +335,6 @@ export default function SignalHeatmap({ sectors, horizons }: Props) {
             {sectors.map(sector => {
               const isCollapsed = collapsed.has(sector.name);
               rowIdx++;
-              const sectorIdx = rowIdx;
               const avgMom = sector.avg_momentum ?? 0;
               return (
                 <tbody key={sector.name}>

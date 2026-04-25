@@ -21,6 +21,7 @@ import {
   HistogramSeries,
   CrosshairMode,
   LineStyle,
+  ColorType,
   type IChartApi,
   type ISeriesApi,
 } from 'lightweight-charts';
@@ -41,7 +42,7 @@ const RANGE_DAYS: Record<RangeKey, number> = {
 /** Frozen theme object — single source of truth for chart colors. */
 const TV_THEME = Object.freeze({
   layout: {
-    background: { type: 'solid' as const, color: 'transparent' },
+    background: { type: ColorType.Solid, color: 'transparent' },
     textColor: '#a8b2c8',
     fontFamily: 'Inter, system-ui, sans-serif',
     fontSize: 10,

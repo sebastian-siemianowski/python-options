@@ -2,10 +2,9 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, useRef, useEffect, useCallback, useSyncExternalStore, useMemo, memo } from 'react';
 import { api } from '../api';
 import type { TuneAsset, ModelAnalytics } from '../api';
-import PageHeader from '../components/PageHeader';
 import { TuningSkeleton } from '../components/CosmicSkeleton';
 import {
-  CheckCircle, XCircle, AlertCircle, RefreshCw, Play, Square, Terminal,
+  CheckCircle, XCircle, RefreshCw, Play, Square, Terminal,
   Copy, ArrowDown, ArrowRight,
   ChevronDown, ChevronUp, Search, Filter, Layers, Target, Timer, Award,
   PieChart, Eye, X,
@@ -593,15 +592,15 @@ function MissionControl({
   retuneLogs, showRetunePanel,
   onSelectMode, onStart, onStop, onToggleLog,
 }: {
-  modes: readonly { id: RetuneMode; label: string }[];
-  retuneMode: RetuneMode;
+  modes: readonly { id: TuneMode; label: string }[];
+  retuneMode: TuneMode;
   retuneStatus: RetuneStatus;
   retune: ReturnType<typeof getRetuneSnapshot>;
   elapsed: number | null;
   totalAssetCount: number;
   retuneLogs: RetuneLogEntry[];
   showRetunePanel: boolean;
-  onSelectMode: (id: RetuneMode) => void;
+  onSelectMode: (id: TuneMode) => void;
   onStart: () => void;
   onStop: () => void;
   onToggleLog: () => void;
@@ -838,89 +837,6 @@ function StatChip({
       {icon}
       {children}
     </span>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════════════
-   Summary Card (Clickable)
-   ══════════════════════════════════════════════════════════════════ */
-
-function SummaryCard({ icon, label, value, sub, color, active, onClick }: {
-  icon: React.ReactNode; label: string; value: number; sub?: string; color: string;
-  active?: boolean; onClick?: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className="group relative w-full text-left p-4 transition-all duration-200 hover:-translate-y-[1px] focus-ring"
-      style={{
-        borderRadius: 16,
-        background: active
-          ? `linear-gradient(160deg, ${color}10, rgba(255,255,255,0.01))`
-          : 'linear-gradient(160deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01))',
-        border: `1px solid ${active ? color + '30' : 'var(--violet-8)'}`,
-        boxShadow: active
-          ? `0 1px 0 ${color}20 inset, 0 6px 24px -12px ${color}35`
-          : '0 1px 0 rgba(255,255,255,0.02) inset',
-        backdropFilter: 'blur(14px)',
-        WebkitBackdropFilter: 'blur(14px)',
-      }}
-    >
-      {/* Top hairline shimmer */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-x-3 top-0 h-px"
-        style={{ background: `linear-gradient(90deg, transparent, ${active ? color + '60' : 'rgba(255,255,255,0.08)'}, transparent)` }}
-      />
-      <div className="flex items-start justify-between mb-3">
-        <div
-          className="inline-flex items-center justify-center w-7 h-7 rounded-lg transition-transform duration-200 group-hover:scale-[1.04]"
-          style={{
-            background: `${color}12`,
-            color,
-            border: `1px solid ${color}22`,
-          }}
-        >
-          {icon}
-        </div>
-        {active && (
-          <span
-            className="w-1.5 h-1.5 rounded-full"
-            style={{ background: color, boxShadow: `0 0 8px ${color}` }}
-          />
-        )}
-      </div>
-      <div
-        className="font-mono"
-        style={{
-          color: active ? color : 'var(--text-luminous)',
-          fontVariantNumeric: 'tabular-nums',
-          fontSize: 26,
-          lineHeight: 1.1,
-          letterSpacing: '-0.02em',
-          fontWeight: 600,
-        }}
-      >
-        {value}
-      </div>
-      <div
-        className="mt-1 text-[11px]"
-        style={{
-          color: 'var(--text-secondary)',
-          letterSpacing: '0.01em',
-        }}
-      >
-        {label}
-      </div>
-      {sub && (
-        <div
-          className="mt-0.5 text-[10px]"
-          style={{ color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}
-        >
-          {sub}
-        </div>
-      )}
-    </button>
   );
 }
 
@@ -1715,7 +1631,6 @@ function DetailPanel({ symbol, data, onViewDiagnostics, onClose }: {
 }) {
   const g = (data.global ?? data) as Record<string, unknown>;
   const best = g.best_model as string | undefined;
-  const regime = data.regime as Record<string, unknown> | string | undefined;
   const modelWeights = g.model_weights as Record<string, number> | undefined;
   const modelComparison = g.model_comparison as Record<string, { ll?: number; bic?: number; aic?: number; fit_success?: boolean }> | undefined;
   const regimeCounts = data.regime_counts as Record<string, number> | undefined;

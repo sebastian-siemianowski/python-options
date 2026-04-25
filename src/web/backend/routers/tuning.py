@@ -5,6 +5,7 @@ Tuning router — tuning cache, PIT calibration status, model weights, retune SS
 import asyncio
 import json
 import os
+import signal
 import sys
 from typing import Optional
 
@@ -23,6 +24,51 @@ router = APIRouter()
 
 SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir))
 REPO_ROOT = os.path.abspath(os.path.join(SRC_DIR, os.pardir))
+_ACTIVE_RETUNE_PROCESSES: set[asyncio.subprocess.Process] = set()
+_ACTIVE_RETUNE_LOCK = asyncio.Lock()
+
+
+async def _terminate_process_tree(process: asyncio.subprocess.Process, timeout: float = 5.0) -> bool:
+    """Terminate a running job-driver process and its child process group."""
+    if process.returncode is not None:
+        return False
+
+    def _signal_group(sig: int) -> None:
+        try:
+            if hasattr(os, "killpg"):
+                os.killpg(process.pid, sig)
+            else:
+                if sig == signal.SIGTERM:
+                    process.terminate()
+                else:
+                    process.kill()
+        except ProcessLookupError:
+            pass
+
+    _signal_group(signal.SIGTERM)
+    try:
+        await asyncio.wait_for(process.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        _signal_group(signal.SIGKILL)
+        try:
+            await asyncio.wait_for(process.wait(), timeout=2.0)
+        except asyncio.TimeoutError:
+            return False
+    return True
+
+
+@router.post("/retune/cancel")
+async def cancel_retune():
+    """Cancel any active retune/tune/stocks streaming subprocesses."""
+    async with _ACTIVE_RETUNE_LOCK:
+        processes = list(_ACTIVE_RETUNE_PROCESSES)
+
+    stopped = 0
+    for process in processes:
+        if await _terminate_process_tree(process):
+            stopped += 1
+
+    return {"status": "ok", "stopped": stopped}
 
 
 @router.get("/list")
@@ -79,6 +125,7 @@ async def retune_stream(mode: str = "retune"):
     async def event_generator():
         process = None
         try:
+            process_kwargs = {"start_new_session": True} if hasattr(os, "setsid") else {}
             process = await asyncio.create_subprocess_exec(
                 sys.executable, "-u", "-m", "web.backend.job_driver", mode,
                 cwd=REPO_ROOT,
@@ -92,7 +139,10 @@ async def retune_stream(mode: str = "retune"):
                     "COLUMNS": "120",
                     "PYTHONPATH": f"{os.path.join(REPO_ROOT, 'src')}{os.pathsep}{os.environ.get('PYTHONPATH', '')}",
                 },
+                **process_kwargs,
             )
+            async with _ACTIVE_RETUNE_LOCK:
+                _ACTIVE_RETUNE_PROCESSES.add(process)
 
             done_count = 0
             fail_count = 0
@@ -149,23 +199,17 @@ async def retune_stream(mode: str = "retune"):
                 yield f"data: {json.dumps({'type': 'failed', 'exit_code': process.returncode})}\n\n"
 
         except asyncio.CancelledError:
-            if process and process.returncode is None:
-                try:
-                    process.terminate()
-                    await asyncio.wait_for(process.wait(), timeout=5.0)
-                except (asyncio.TimeoutError, ProcessLookupError):
-                    try:
-                        process.kill()
-                    except ProcessLookupError:
-                        pass
+            if process:
+                await _terminate_process_tree(process)
             return
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
             if process and process.returncode is None:
-                try:
-                    process.terminate()
-                except ProcessLookupError:
-                    pass
+                await _terminate_process_tree(process)
+        finally:
+            if process:
+                async with _ACTIVE_RETUNE_LOCK:
+                    _ACTIVE_RETUNE_PROCESSES.discard(process)
 
     return StreamingResponse(
         event_generator(),

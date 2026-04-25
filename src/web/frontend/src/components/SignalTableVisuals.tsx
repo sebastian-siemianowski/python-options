@@ -189,7 +189,7 @@ export function HorizonArrow({ direction }: { direction: 'up' | 'down' | 'neutra
   return null;
 }
 
-export function HorizonCell({ expRet, pUp }: { expRet: number | null | undefined; pUp: number | null | undefined }) {
+export function HorizonCell({ expRet }: { expRet: number | null | undefined; pUp: number | null | undefined }) {
   if (expRet == null) {
     return (
       <div

@@ -4,7 +4,7 @@
  * All chart components reference this shared config to ensure consistent
  * look-and-feel across every page.
  */
-import { useEffect, useRef, useCallback } from 'react';
+import { createElement, useEffect, useRef, useCallback, type CSSProperties } from 'react';
 
 /* ── Colour Palette ──────────────────────────────────────────── */
 
@@ -21,7 +21,7 @@ export const CHART_COLORS = {
 
 /* ── Tooltip Style ───────────────────────────────────────────── */
 
-export const CHART_TOOLTIP_STYLE: React.CSSProperties = {
+export const CHART_TOOLTIP_STYLE: CSSProperties = {
   background: 'rgba(15,15,35,0.95)',
   border: '1px solid rgba(139,92,246,0.15)',
   borderRadius: 12,
@@ -60,15 +60,17 @@ export const CHART_GRADIENTS = {
  * Place inside any <svg> or Recharts chart.
  */
 export function ChartGradientDefs() {
-  return (
-    <defs>
-      {Object.values(CHART_GRADIENTS).map((g) => (
-        <linearGradient key={g.id} id={g.id} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={g.from} />
-          <stop offset="100%" stopColor={g.to} />
-        </linearGradient>
-      ))}
-    </defs>
+  return createElement(
+    'defs',
+    null,
+    Object.values(CHART_GRADIENTS).map((g) =>
+      createElement(
+        'linearGradient',
+        { key: g.id, id: g.id, x1: '0', y1: '0', x2: '0', y2: '1' },
+        createElement('stop', { offset: '0%', stopColor: g.from }),
+        createElement('stop', { offset: '100%', stopColor: g.to }),
+      ),
+    ),
   );
 }
 

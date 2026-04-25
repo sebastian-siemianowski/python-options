@@ -2,7 +2,6 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
 import PageHeader from '../components/PageHeader';
 import StatCard from '../components/StatCard';
-import LoadingSpinner from '../components/LoadingSpinner';
 import { DashboardSkeleton } from '../components/CosmicSkeleton';
 import { CosmicErrorCard } from '../components/CosmicErrorState';
 import { DashboardEmpty } from '../components/CosmicEmptyState';
@@ -197,10 +196,10 @@ export default function OverviewPage() {
 
         {/* Model Confidence Leaderboard */}
         <ModelLeaderboard
-          modelsDistribution={data?.tune?.models_distribution ?? {}}
-          pitPass={data?.tune?.pit_pass}
-          pitFail={data?.tune?.pit_fail}
-          total={data?.tune?.total}
+          modelsDistribution={tuning.models_distribution ?? {}}
+          pitPass={tuning.pit_pass}
+          pitFail={tuning.pit_fail}
+          total={tuning.total}
         />
 
         {/* Top Sectors */}

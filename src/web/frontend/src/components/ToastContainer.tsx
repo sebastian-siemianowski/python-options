@@ -9,7 +9,7 @@ import {
   X,
   ArrowRight,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 
 /* ─── Variant config ────────────────────────────────────────────── */
 const VARIANTS: Record<ToastVariant, {
