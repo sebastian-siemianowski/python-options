@@ -17,7 +17,7 @@ import {
   TrendingUp, TrendingDown, Search, X, ExternalLink, BarChart3,
   Target, Shield, ShieldCheck, ArrowUp, ArrowDown, Clock,
   Activity, Eye, Layers, ChevronUp, AlertTriangle, Zap, Loader2,
-  Star, Plus, SlidersHorizontal, RefreshCw, Play, Square, Sparkles,
+  Star, Plus, SlidersHorizontal, RefreshCw, Play, Square,
 } from 'lucide-react';
 import MiniPriceChart from '../components/MiniPriceChart';
 import { formatHorizon, responsiveHorizons } from '../utils/horizons';
@@ -1126,6 +1126,10 @@ function SignalOperationsBar({
   const isTune = mode === 'retune' || mode === 'tune' || mode === 'calibrate';
   const processed = counters.done + counters.fail;
   const progressPct = counters.total > 0 ? Math.min(100, (processed / counters.total) * 100) : isRunning ? 7 : 0;
+  const completionRate = processed > 0 ? Math.round((counters.done / processed) * 100) : null;
+  const etaSec = isRunning && processed > 0 && counters.total > processed
+    ? Math.max(0, Math.round(((counters.total - processed) * elapsedSec) / processed))
+    : null;
   const statusColor = status === 'running' ? '#60a5fa'
     : status === 'completed' ? '#10b981'
       : status === 'failed' || status === 'error' ? '#f43f5e'
@@ -1137,34 +1141,47 @@ function SignalOperationsBar({
       : status === 'stopped' ? 'Stopped'
         : status === 'failed' || status === 'error' ? 'Needs attention'
           : 'Ready';
+  const pipelineStages = [
+    { label: 'Refresh data', tone: '#60a5fa' },
+    { label: 'Backup cache', tone: '#a78bfa' },
+    { label: 'Fit models', tone: '#c084fc' },
+    { label: 'Refresh dashboard', tone: '#38d9f5' },
+  ];
+  const activeStageIndex = (() => {
+    const title = (phaseTitle ?? '').toLowerCase();
+    if (!isRunning) return status === 'completed' ? pipelineStages.length : 0;
+    if (title.includes('refresh') || title.includes('download') || isStocks) return 1;
+    if (title.includes('backup')) return 2;
+    if (title.includes('fit') || title.includes('tune') || title.includes('model')) return 3;
+    return Math.max(1, Math.min(pipelineStages.length, Math.ceil((progressPct / 100) * pipelineStages.length)));
+  })();
+  const runTuneSubtitle = isRunning
+    ? isTune ? 'Live fitting in progress' : 'Open the live activity drawer'
+    : 'Full BMA retune, streamed live';
+  const stocksSubtitle = isRunning
+    ? isStocks ? 'Refreshing market data' : 'Open the live activity drawer'
+    : 'Prices, cache, and signals';
 
   return (
     <div className="mb-6 fade-up">
       <div
-        className="relative overflow-hidden rounded-[22px] px-4 py-3.5 md:px-5"
+        className="relative overflow-hidden rounded-[30px] px-4 py-4 md:px-6 md:py-5"
         style={{
-          background: 'linear-gradient(135deg, rgba(18,20,34,0.66), rgba(8,9,18,0.76) 58%, rgba(22,16,38,0.66))',
-          border: '1px solid rgba(255,255,255,0.07)',
-          boxShadow: '0 18px 52px -42px rgba(139,92,246,0.65), 0 10px 36px -34px rgba(0,0,0,0.9), inset 0 1px 0 rgba(255,255,255,0.075)',
-          backdropFilter: 'blur(18px) saturate(1.18)',
-          WebkitBackdropFilter: 'blur(18px) saturate(1.18)',
+          background: 'radial-gradient(900px 280px at 18% -20%, rgba(167,139,250,0.20), transparent 62%), radial-gradient(760px 260px at 92% 118%, rgba(56,217,245,0.13), transparent 62%), linear-gradient(135deg, rgba(25,26,44,0.82), rgba(8,9,18,0.91) 56%, rgba(24,16,42,0.82))',
+          border: '1px solid rgba(255,255,255,0.09)',
+          boxShadow: '0 34px 96px -58px rgba(139,92,246,0.95), 0 22px 82px -56px rgba(56,217,245,0.55), 0 18px 58px -42px rgba(0,0,0,0.95), inset 0 1px 0 rgba(255,255,255,0.11)',
+          backdropFilter: 'blur(24px) saturate(1.35)',
+          WebkitBackdropFilter: 'blur(24px) saturate(1.35)',
         }}
       >
-        <div aria-hidden className="absolute -left-20 -top-24 h-44 w-44 rounded-full" style={{ background: 'radial-gradient(circle, rgba(139,92,246,0.16), transparent 70%)', filter: 'blur(4px)' }} />
-        <div aria-hidden className="absolute -right-16 -bottom-24 h-52 w-52 rounded-full" style={{ background: 'radial-gradient(circle, rgba(56,217,245,0.10), transparent 70%)', filter: 'blur(6px)' }} />
-        <div aria-hidden className="absolute inset-x-10 top-0 h-px" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.20), transparent)' }} />
+        <div aria-hidden className="absolute -left-24 -top-28 h-56 w-56 rounded-full tune-orb-slow" style={{ background: 'radial-gradient(circle, rgba(139,92,246,0.22), rgba(139,92,246,0.05) 42%, transparent 72%)', filter: 'blur(4px)' }} />
+        <div aria-hidden className="absolute -right-20 -bottom-28 h-64 w-64 rounded-full tune-orb-slow tune-orb-delay" style={{ background: 'radial-gradient(circle, rgba(56,217,245,0.16), rgba(56,217,245,0.035) 42%, transparent 72%)', filter: 'blur(6px)' }} />
+        <div aria-hidden className="absolute inset-x-12 top-0 h-px" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.28), rgba(196,181,253,0.38), transparent)' }} />
+        <div aria-hidden className="absolute inset-x-0 bottom-0 h-px" style={{ background: 'linear-gradient(90deg, transparent, rgba(56,217,245,0.18), rgba(139,92,246,0.24), transparent)' }} />
 
-        <div className="relative flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+        <div className="relative flex flex-col gap-5 2xl:flex-row 2xl:items-stretch 2xl:justify-between">
           <div className="min-w-0 flex-1">
             <div className="mb-2 flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.11em]" style={{ color: '#cfc3ff', background: 'rgba(139,92,246,0.09)', border: '1px solid rgba(139,92,246,0.20)' }}>
-                <Sparkles className="h-3 w-3" />
-                Signal operations
-              </span>
-              <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.10em]" style={{ color: '#9debd1', background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.18)' }}>
-                <span className="h-1.5 w-1.5 rounded-full" style={{ background: '#10b981', boxShadow: '0 0 8px rgba(16,185,129,0.7)' }} />
-                Non-blocking
-              </span>
               <button
                 type="button"
                 onClick={isRunning ? onViewProgress : undefined}
@@ -1176,59 +1193,102 @@ function SignalOperationsBar({
               </button>
               {isRunning && (
                 <span className="text-[11px] text-[var(--text-muted)] tabular-nums">
-                  {formatJobElapsed(elapsedSec)} · {processed}{counters.total > 0 ? ` / ${counters.total}` : ''} processed
+                  {formatJobElapsed(elapsedSec)} · {processed}{counters.total > 0 ? ` / ${counters.total}` : ''} processed{etaSec !== null ? ` · ETA ${formatJobElapsed(etaSec)}` : ''}
                 </span>
               )}
             </div>
-            <div className="max-w-[700px]">
-              <div className="text-[13px] md:text-[14px] font-medium tracking-[-0.01em] text-[var(--text-primary)]">
-                Start a background refresh or model tune when you need fresh signals.
-              </div>
-              <p className="mt-1 text-[11px] md:text-[12px] text-[var(--text-muted)] leading-relaxed">
-                Live progress opens automatically and you can continue using the page.
-              </p>
+            <div className="mt-4 grid max-w-[760px] grid-cols-2 gap-2 sm:grid-cols-4" aria-label="Tune pipeline stages">
+              {pipelineStages.map((stage, index) => {
+                const stageNumber = index + 1;
+                const active = activeStageIndex === stageNumber;
+                const done = activeStageIndex > stageNumber;
+                return (
+                  <div
+                    key={stage.label}
+                    className="rounded-2xl px-3 py-2 transition-all duration-300"
+                    style={{
+                      background: done || active ? `${stage.tone}14` : 'rgba(255,255,255,0.025)',
+                      border: `1px solid ${done || active ? `${stage.tone}3d` : 'rgba(255,255,255,0.055)'}`,
+                      boxShadow: active ? `0 12px 30px -24px ${stage.tone}` : 'inset 0 1px 0 rgba(255,255,255,0.035)',
+                    }}
+                  >
+                    <div className="mb-1 flex items-center gap-1.5">
+                      <span
+                        className={`h-1.5 w-1.5 rounded-full ${active && isRunning ? 'animate-pulse' : ''}`}
+                        style={{ background: done || active ? stage.tone : 'rgba(255,255,255,0.18)', boxShadow: active ? `0 0 8px ${stage.tone}` : undefined }}
+                      />
+                      <span className="text-[9px] font-semibold uppercase tracking-[0.13em] text-[var(--text-muted)]">Step {stageNumber}</span>
+                    </div>
+                    <div className="truncate text-[11px] font-semibold tracking-[-0.01em]" style={{ color: done || active ? 'var(--text-primary)' : 'var(--text-secondary)' }}>{stage.label}</div>
+                  </div>
+                );
+              })}
             </div>
-            <div className="mt-3 h-1 max-w-[560px] overflow-hidden rounded-full" style={{ background: 'rgba(255,255,255,0.055)' }}>
+            <div className="mt-4 h-1.5 max-w-[760px] overflow-hidden rounded-full" style={{ background: 'rgba(255,255,255,0.065)' }}>
               <div
-                className="h-full rounded-full transition-[width] duration-700 ease-out"
+                className="relative h-full rounded-full transition-[width] duration-700 ease-out"
                 style={{
                   width: `${progressPct}%`,
                   background: isRunning ? 'linear-gradient(90deg,#8b5cf6,#38d9f5)' : 'linear-gradient(90deg,rgba(139,92,246,0.35),rgba(56,217,245,0.18))',
                   boxShadow: isRunning ? '0 0 18px rgba(139,92,246,0.65)' : undefined,
                 }}
-              />
+              >
+                {isRunning && <span className="absolute inset-y-0 left-0 w-full tune-progress-shimmer" />}
+              </div>
             </div>
-            <div className="mt-2 min-h-[16px] text-[11px] text-[var(--text-muted)] truncate">
-              {isRunning ? `${phaseTitle ?? 'Preparing live pipeline…'} · Safe to navigate away` : `${filteredRows.length.toLocaleString()} visible signals · ${totalRows.toLocaleString()} total assets · Live Activity appears after launch`}
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-[var(--text-muted)]">
+              <span className="truncate">
+                {isRunning ? `${phaseTitle ?? 'Preparing live pipeline…'} · Signals remains usable` : `${filteredRows.length.toLocaleString()} visible signals · ${totalRows.toLocaleString()} total assets`}
+              </span>
+              {completionRate !== null && isRunning && (
+                <span className="rounded-full px-2 py-0.5 tabular-nums" style={{ color: '#a7f3d0', background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.18)' }}>{completionRate}% success</span>
+              )}
+              {counters.fail > 0 && (
+                <span className="rounded-full px-2 py-0.5 tabular-nums" style={{ color: '#fb7185', background: 'rgba(244,63,94,0.10)', border: '1px solid rgba(244,63,94,0.22)' }}>{counters.fail} failed</span>
+              )}
             </div>
           </div>
 
-          <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 min-w-[min(100%,480px)]">
+          <div className="flex flex-col justify-center gap-3 2xl:w-[520px]">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 2xl:grid-cols-1">
+              <OperationButton
+                icon={isTune && isRunning ? <Loader2 className="h-5 w-5 animate-spin" /> : <Play className="h-5 w-5" />}
+                title={isRunning ? isTune ? 'Tuning live…' : 'View live activity' : 'Run Tune'}
+                subtitle={runTuneSubtitle}
+                eyebrow={isRunning && isTune ? 'Streaming now' : 'Recommended'}
+                color="#a78bfa"
+                active={isTune && isRunning}
+                primary
+                onClick={onRunTune}
+              />
               <OperationButton
                 icon={isStocks && isRunning ? <Loader2 className="h-5 w-5 animate-spin" /> : <RefreshCw className="h-5 w-5" />}
-                title={isRunning ? isStocks ? 'Refreshing…' : 'View progress' : 'Refresh Stocks'}
-                subtitle={isRunning ? 'Open the live activity drawer' : 'Update prices, cache, and signals'}
+                title={isRunning ? isStocks ? 'Refreshing…' : 'View live activity' : 'Refresh Stocks'}
+                subtitle={stocksSubtitle}
+                eyebrow="Market data"
                 color="#60a5fa"
                 active={isStocks && isRunning}
                 onClick={onRefreshStocks}
               />
-              <OperationButton
-                icon={isTune && isRunning ? <Loader2 className="h-5 w-5 animate-spin" /> : <Play className="h-5 w-5" />}
-                title={isRunning ? isTune ? 'Tuning…' : 'View progress' : 'Run Tune'}
-                subtitle={isRunning ? 'Open the live activity drawer' : 'Fit models and refresh BMA weights'}
-                color="#a78bfa"
-                active={isTune && isRunning}
-                onClick={onRunTune}
-              />
             </div>
 
-            <div className="flex items-center justify-end gap-2 lg:flex-col lg:items-stretch">
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {isRunning && (
+                <button
+                  type="button"
+                  onClick={onViewProgress}
+                  className="inline-flex items-center justify-center gap-2 rounded-full px-3.5 py-2 text-[12px] font-semibold transition-all hover:-translate-y-0.5 active:scale-[0.98]"
+                  style={{ color: '#dbeafe', background: 'rgba(96,165,250,0.10)', border: '1px solid rgba(96,165,250,0.26)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06)' }}
+                >
+                  <Activity className="h-3.5 w-3.5" />
+                  View Live Activity
+                </button>
+              )}
               {isRunning && (
                 <button
                   type="button"
                   onClick={onStop}
-                  className="group inline-flex items-center justify-center gap-2 rounded-2xl px-3.5 py-2.5 text-[12px] font-semibold text-white transition-all hover:-translate-y-0.5 active:scale-[0.98]"
+                  className="group inline-flex items-center justify-center gap-2 rounded-full px-3.5 py-2 text-[12px] font-semibold text-white transition-all hover:-translate-y-0.5 active:scale-[0.98]"
                   style={{ background: 'linear-gradient(180deg,#fb7185,#e11d48)', boxShadow: '0 16px 34px -22px rgba(244,63,94,0.95)' }}
                 >
                   <Square className="h-3.5 w-3.5" fill="currentColor" />
@@ -1247,41 +1307,51 @@ function OperationButton({
   icon,
   title,
   subtitle,
+  eyebrow,
   color,
   active,
+  primary,
   onClick,
 }: {
   icon: React.ReactNode;
   title: string;
   subtitle: string;
+  eyebrow?: string;
   color: string;
   active: boolean;
+  primary?: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="group relative overflow-hidden rounded-[20px] px-4 py-3 text-left transition-all duration-200 hover:-translate-y-0.5 active:scale-[0.985] focus-ring"
+      className={`group relative overflow-hidden rounded-[24px] text-left transition-all duration-300 hover:-translate-y-0.5 active:scale-[0.985] focus-ring ${primary ? 'px-5 py-4' : 'px-4 py-3'}`}
       style={{
-        background: active
-          ? `linear-gradient(150deg, ${color}20, rgba(255,255,255,0.035))`
-          : 'linear-gradient(150deg, rgba(255,255,255,0.052), rgba(255,255,255,0.018))',
-        border: `1px solid ${active ? `${color}58` : 'rgba(255,255,255,0.085)'}`,
-        boxShadow: active ? `0 16px 38px -30px ${color}, inset 0 1px 0 rgba(255,255,255,0.12)` : 'inset 0 1px 0 rgba(255,255,255,0.065)',
+        background: primary
+          ? `radial-gradient(520px 160px at 18% -18%, ${color}36, transparent 58%), linear-gradient(150deg, ${color}24, rgba(255,255,255,0.055) 54%, rgba(56,217,245,0.075))`
+          : active
+            ? `linear-gradient(150deg, ${color}20, rgba(255,255,255,0.035))`
+            : 'linear-gradient(150deg, rgba(255,255,255,0.052), rgba(255,255,255,0.018))',
+        border: `1px solid ${primary ? `${color}70` : active ? `${color}58` : 'rgba(255,255,255,0.085)'}`,
+        boxShadow: primary
+          ? `0 26px 62px -38px ${color}, 0 0 0 1px ${color}18 inset, inset 0 1px 0 rgba(255,255,255,0.14)`
+          : active ? `0 16px 38px -30px ${color}, inset 0 1px 0 rgba(255,255,255,0.12)` : 'inset 0 1px 0 rgba(255,255,255,0.065)',
       }}
     >
-      <div aria-hidden className="absolute inset-x-4 top-0 h-px" style={{ background: `linear-gradient(90deg, transparent, ${color}99, transparent)`, opacity: active ? 1 : 0.45 }} />
-      <div className="flex items-center gap-3">
+      <div aria-hidden className="absolute inset-x-4 top-0 h-px" style={{ background: `linear-gradient(90deg, transparent, ${color}b8, rgba(255,255,255,0.42), transparent)`, opacity: primary || active ? 1 : 0.45 }} />
+      {primary && <div aria-hidden className="absolute -right-16 -top-20 h-36 w-36 rounded-full tune-orb-slow" style={{ background: `radial-gradient(circle, ${color}2f, transparent 70%)`, filter: 'blur(5px)' }} />}
+      <div className="relative flex items-center gap-3">
         <span
-          className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[15px] transition-transform duration-200 group-hover:scale-105"
-          style={{ color, background: `${color}18`, border: `1px solid ${color}34`, boxShadow: active ? `0 0 22px -8px ${color}` : undefined }}
+          className={`inline-flex shrink-0 items-center justify-center rounded-[17px] transition-transform duration-200 group-hover:scale-105 ${primary ? 'h-12 w-12' : 'h-10 w-10'}`}
+          style={{ color, background: `${color}1d`, border: `1px solid ${color}3d`, boxShadow: primary || active ? `0 0 26px -8px ${color}` : undefined }}
         >
           {icon}
         </span>
         <span className="min-w-0">
-          <span className="block text-[14px] font-semibold tracking-[-0.02em] text-white">{title}</span>
-          <span className="mt-0.5 block truncate text-[11px] text-[var(--text-muted)]">{subtitle}</span>
+          {eyebrow && <span className="mb-1 block text-[9px] font-semibold uppercase tracking-[0.13em]" style={{ color }}>{eyebrow}</span>}
+          <span className={`block font-semibold tracking-[-0.035em] text-white ${primary ? 'text-[17px]' : 'text-[14px]'}`}>{title}</span>
+          <span className={`mt-0.5 block truncate text-[var(--text-muted)] ${primary ? 'text-[12px]' : 'text-[11px]'}`}>{subtitle}</span>
         </span>
       </div>
     </button>

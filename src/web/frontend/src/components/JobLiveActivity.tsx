@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import {
   Activity,
   CheckCircle2,
@@ -66,6 +67,7 @@ function titleForMode(mode: JobMode | null) {
 
 export default function JobLiveActivity() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const mode = useJobStore((state) => state.mode);
   const status = useJobStore((state) => state.status);
   const phases = useJobStore((state) => state.phases);
@@ -96,10 +98,23 @@ export default function JobLiveActivity() {
     ? Math.min(100, (processed / counters.total) * 100)
     : isRunning ? 3 : status === 'idle' ? 0 : 100;
   const rate = processed > 0 ? processed / Math.max(elapsedSec, 1) : 0;
+  const successRate = processed > 0 ? Math.round((counters.done / processed) * 100) : null;
   const eta = isRunning && rate > 0 && counters.total > processed
     ? Math.round((counters.total - processed) / rate)
     : null;
   const currentPhase = phases.length > 0 ? phases[phases.length - 1] : null;
+  const liveTitle = mode === 'retune' || mode === 'tune' || mode === 'calibrate'
+    ? 'Live Tune Activity'
+    : 'Live Market Refresh';
+  const liveSubtitle = isRunning
+    ? 'Running quietly in the background — keep exploring Signals.'
+    : status === 'completed'
+      ? 'Finished cleanly. Fresh data is being reflected across the dashboard.'
+      : status === 'stopped'
+        ? 'Stopped safely. No blocking overlay, no lost context.'
+        : status === 'failed' || status === 'error'
+          ? 'The job needs attention. Raw logs are available below.'
+          : info.desc;
   const recentAssets = useMemo(() => expanded ? assets.slice(-28).reverse() : EMPTY_ASSETS, [assets, expanded]);
   const topModels = useMemo(() => {
     if (!expanded) return [];
@@ -164,6 +179,10 @@ export default function JobLiveActivity() {
           from { opacity: 0; transform: translateY(12px) scale(0.98); filter: blur(4px); }
           to { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
         }
+        @keyframes liveActivityHalo {
+          0%, 100% { opacity: 0.55; transform: translate3d(-10px,0,0) scale(1); }
+          50% { opacity: 1; transform: translate3d(12px,-8px,0) scale(1.08); }
+        }
         @media (prefers-reduced-motion: reduce) {
           .job-live-activity-anim, .job-live-activity-anim * { animation: none !important; transition-duration: 0.01ms !important; }
         }
@@ -193,6 +212,15 @@ export default function JobLiveActivity() {
                 animation: 'liveActivityGlow 5.5s ease-in-out infinite',
               }}
             />
+            <div
+              aria-hidden
+              className="absolute -bottom-24 left-8 h-44 w-72 rounded-full job-live-activity-anim"
+              style={{
+                background: 'radial-gradient(ellipse, rgba(56,217,245,0.12), rgba(139,92,246,0.06) 46%, transparent 72%)',
+                filter: 'blur(10px)',
+                animation: 'liveActivityHalo 7s ease-in-out infinite',
+              }}
+            />
             <div className="relative flex items-start justify-between gap-5 px-5 py-4" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
               <div className="flex items-start gap-3 min-w-0">
                 <div
@@ -209,10 +237,13 @@ export default function JobLiveActivity() {
                 </div>
                 <div className="min-w-0">
                   <div className="label-micro mb-1" style={{ color: info.color }}>Live Activity</div>
-                  <div className="text-[20px] font-semibold tracking-[-0.03em] text-white leading-tight">{info.title}</div>
+                  <div className="text-[22px] font-semibold tracking-[-0.04em] text-white leading-tight">{liveTitle}</div>
                   <div className="mt-1 text-[12px] text-[var(--text-muted)] truncate max-w-[440px]">
                     {currentPhase?.title ?? info.desc}
                     {eta !== null && <span className="text-[var(--text-secondary)]"> · ETA {formatJobElapsed(eta)}</span>}
+                  </div>
+                  <div className="mt-1.5 text-[11px] text-[var(--text-secondary)] truncate max-w-[480px]">
+                    {liveSubtitle}
                   </div>
                 </div>
               </div>
@@ -269,10 +300,26 @@ export default function JobLiveActivity() {
           <div className="max-h-[calc(min(78vh,820px)-116px)] overflow-y-auto p-5 space-y-4">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5" aria-live="polite">
               <MetricTile label="Processed" value={processed} suffix={job.counters.total > 0 ? `/ ${job.counters.total}` : undefined} color="#ffffff" />
-              <MetricTile label="Successful" value={job.counters.done} suffix={processed > 0 ? `${Math.round((job.counters.done / processed) * 100)}%` : undefined} color="#10b981" pulse={isRunning && job.counters.done > 0} />
+              <MetricTile label="Successful" value={job.counters.done} suffix={successRate !== null ? `${successRate}%` : undefined} color="#10b981" pulse={isRunning && job.counters.done > 0} />
               <MetricTile label="Failed" value={job.counters.fail} color={job.counters.fail > 0 ? '#f43f5e' : 'var(--text-muted)'} />
               <MetricTile label={rate > 0 ? 'Throughput' : 'Progress'} value={rate > 0 ? (rate * 60).toFixed(1) : `${Math.round(progressPct)}%`} suffix={rate > 0 ? '/ min' : undefined} color={info.color} />
             </div>
+
+            <section className="rounded-[18px] p-4" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.015))', border: '1px solid rgba(255,255,255,0.075)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.055)' }}>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[10px] uppercase tracking-[0.13em] text-[var(--text-muted)] font-semibold">Non-blocking promise</div>
+                  <div className="mt-1 text-[13px] font-medium tracking-[-0.02em] text-[var(--text-primary)]">
+                    {isRunning ? 'Tune is running. Signals, filters, charts, and watchlists stay responsive.' : 'The job lifecycle is complete and your workspace is still exactly where you left it.'}
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-[10.5px] font-semibold">
+                  <span className="rounded-full px-2.5 py-1" style={{ color: '#a7f3d0', background: 'rgba(16,185,129,0.09)', border: '1px solid rgba(16,185,129,0.22)' }}>Background stream</span>
+                  <span className="rounded-full px-2.5 py-1" style={{ color: '#bfdbfe', background: 'rgba(96,165,250,0.09)', border: '1px solid rgba(96,165,250,0.22)' }}>Live cache refresh</span>
+                  <span className="rounded-full px-2.5 py-1" style={{ color: '#ddd6fe', background: 'rgba(139,92,246,0.10)', border: '1px solid rgba(139,92,246,0.24)' }}>Safe cancel</span>
+                </div>
+              </div>
+            </section>
 
             {currentPhase && (
               <section className="rounded-[18px] p-4" style={{ background: `linear-gradient(180deg, ${info.color}12, ${info.color}05)`, border: `1px solid ${info.color}26` }}>
@@ -377,6 +424,31 @@ export default function JobLiveActivity() {
               </TerminalBanner>
             )}
 
+            {!isRunning && (
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    job.clearTerminalJob();
+                    navigate('/tuning');
+                  }}
+                  className="inline-flex items-center gap-2 rounded-full px-3.5 py-2 text-[12px] font-semibold transition-all hover:-translate-y-0.5 active:scale-[0.98]"
+                  style={{ color: '#ddd6fe', background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.28)' }}
+                >
+                  Open tuning dashboard
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={job.clearTerminalJob}
+                  className="inline-flex items-center gap-2 rounded-full px-3.5 py-2 text-[12px] font-semibold transition-all hover:bg-white/[0.08] active:scale-[0.98]"
+                  style={{ color: 'var(--text-secondary)', border: '1px solid rgba(255,255,255,0.08)' }}
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+
             <div>
               <button
                 type="button"
@@ -426,7 +498,7 @@ export default function JobLiveActivity() {
                 <StatusPill label={tone.label} color={tone.color} bg={tone.bg} pulse={isRunning} compact />
               </div>
               <div className="mt-0.5 truncate text-[11px] text-[var(--text-muted)]">
-                {currentPhase?.title ?? info.desc}
+                {isRunning ? currentPhase?.title ?? info.desc : liveSubtitle}
               </div>
               <div className="mt-2 flex items-center gap-2">
                 <div className="h-1.5 flex-1 overflow-hidden rounded-full" style={{ background: 'rgba(255,255,255,0.07)' }}>
