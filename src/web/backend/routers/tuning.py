@@ -259,6 +259,8 @@ async def retune_stream(mode: str = "retune"):
 
             done_count = 0
             fail_count = 0
+            phase_done_count = 0
+            phase_fail_count = 0
             total_expected = 0
             current_phase_kind: Optional[str] = None
             last_refresh_emit = 0.0
@@ -282,13 +284,17 @@ async def retune_stream(mode: str = "retune"):
                         yield f"data: {json.dumps({'type': 'start', 'mode': payload.get('mode'), 'total': total_expected, 'phase_count': payload.get('phase_count', 1)})}\n\n"
                     elif ev == "phase":
                         current_phase_kind = payload.get("kind")
+                        phase_done_count = 0
+                        phase_fail_count = 0
                         yield f"data: {json.dumps({'type': 'phase', 'title': payload.get('title', ''), 'step': payload.get('step'), 'total_steps': payload.get('total_steps'), 'kind': payload.get('kind')})}\n\n"
                     elif ev == "asset":
                         status = payload.get("status", "ok")
                         if status == "fail":
                             fail_count += 1
+                            phase_fail_count += 1
                         else:
                             done_count += 1
+                            phase_done_count += 1
                         # During market data refresh hundreds of files can land
                         # in a tight burst. Forwarding every file as its own SSE
                         # message can starve the browser main thread and make the
@@ -298,10 +304,10 @@ async def retune_stream(mode: str = "retune"):
                         if (
                             current_phase_kind == "download"
                             and status != "fail"
-                            and done_count % _DOWNLOAD_ASSET_SAMPLE_EVERY != 0
+                            and phase_done_count % _DOWNLOAD_ASSET_SAMPLE_EVERY != 0
                         ):
                             continue
-                        yield f"data: {json.dumps({'type': 'asset', 'symbol': payload.get('symbol'), 'status': status, 'detail': payload.get('detail'), 'model': payload.get('model'), 'weight_pct': payload.get('weight_pct'), 'bic': payload.get('bic'), 'hyv': payload.get('hyv'), 'crps': payload.get('crps'), 'pit_p': payload.get('pit_p'), 'fit_status': payload.get('fit_status'), 'done': done_count, 'fail': fail_count, 'total': total_expected})}\n\n"
+                        yield f"data: {json.dumps({'type': 'asset', 'symbol': payload.get('symbol'), 'status': status, 'detail': payload.get('detail'), 'model': payload.get('model'), 'weight_pct': payload.get('weight_pct'), 'bic': payload.get('bic'), 'hyv': payload.get('hyv'), 'crps': payload.get('crps'), 'pit_p': payload.get('pit_p'), 'fit_status': payload.get('fit_status'), 'done': phase_done_count, 'fail': phase_fail_count, 'total': total_expected})}\n\n"
                     elif ev == "model":
                         # Per-asset model selection (e.g. 'Student-t+EVTH').
                         yield f"data: {json.dumps({'type': 'model', 'symbol': payload.get('symbol'), 'model': payload.get('model'), 'weight_pct': payload.get('weight_pct'), 'bic': payload.get('bic'), 'hyv': payload.get('hyv'), 'crps': payload.get('crps'), 'pit_p': payload.get('pit_p'), 'fit_status': payload.get('fit_status')})}\n\n"

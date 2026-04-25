@@ -11,7 +11,7 @@ import { Sparkline, SparklinePct } from '../components/Sparkline';
 import { SignalLabel, SignalStrengthMeter, MomentumBadge, CrashRiskHeat, HorizonCell, QualityCell } from '../components/SignalTableVisuals';
 import { ColumnCustomizer, type ColumnDef } from '../components/ColumnCustomizer';
 import SignalDetailPanel from '../components/SignalDetailPanel';
-import { formatJobElapsed, useJobStore, type JobCounters, type JobMode, type JobStatus } from '../stores/jobStore';
+import { formatJobElapsed, useJobStore, type JobCounters, type JobMode, type JobStageMetric, type JobStatus } from '../stores/jobStore';
 import {
   Filter, ChevronDown, ChevronRight,
   TrendingUp, TrendingDown, Search, X, ExternalLink, BarChart3,
@@ -116,6 +116,8 @@ function SignalsPageInner() {
   const jobStatus = useJobStore((s) => s.status);
   const activeJobMode = useJobStore((s) => s.mode);
   const jobCounters = useJobStore((s) => s.counters);
+  const jobStageMetrics = useJobStore((s) => s.stageMetrics);
+  const jobActiveStageKey = useJobStore((s) => s.activeStageKey);
   const jobElapsedSec = useJobStore((s) => s.elapsedSec);
   const jobPhases = useJobStore((s) => s.phases);
   const stopJob = useJobStore((s) => s.stopJob);
@@ -525,6 +527,8 @@ function SignalsPageInner() {
         status={jobStatus}
         mode={activeJobMode}
         counters={jobCounters}
+        stageMetrics={jobStageMetrics}
+        activeStageKey={jobActiveStageKey}
         elapsedSec={jobElapsedSec}
         phaseTitle={jobPhases.length > 0 ? jobPhases[jobPhases.length - 1].title : null}
         filteredRows={filteredRows}
@@ -1100,6 +1104,8 @@ function SignalOperationsBar({
   status,
   mode,
   counters,
+  stageMetrics,
+  activeStageKey,
   elapsedSec,
   phaseTitle,
   filteredRows,
@@ -1112,6 +1118,8 @@ function SignalOperationsBar({
   status: JobStatus;
   mode: JobMode | null;
   counters: JobCounters;
+  stageMetrics: JobStageMetric[];
+  activeStageKey: string | null;
   elapsedSec: number;
   phaseTitle: string | null;
   filteredRows: SummaryRow[];
@@ -1124,11 +1132,13 @@ function SignalOperationsBar({
   const isRunning = status === 'running';
   const isStocks = mode === 'stocks';
   const isTune = mode === 'retune' || mode === 'tune' || mode === 'calibrate';
-  const processed = counters.done + counters.fail;
-  const progressPct = counters.total > 0 ? Math.min(100, (processed / counters.total) * 100) : isRunning ? 7 : 0;
-  const completionRate = processed > 0 ? Math.round((counters.done / processed) * 100) : null;
-  const etaSec = isRunning && processed > 0 && counters.total > processed
-    ? Math.max(0, Math.round(((counters.total - processed) * elapsedSec) / processed))
+  const activeStage = stageMetrics.find((stage) => stage.key === activeStageKey) ?? stageMetrics.find((stage) => stage.status === 'running') ?? stageMetrics[stageMetrics.length - 1] ?? null;
+  const activeCounters = activeStage ? { done: activeStage.done, fail: activeStage.fail, total: activeStage.total } : counters;
+  const processed = activeCounters.done + activeCounters.fail;
+  const progressPct = activeCounters.total > 0 ? Math.min(100, (processed / activeCounters.total) * 100) : isRunning ? 7 : 0;
+  const completionRate = processed > 0 && activeStage?.kind !== 'download' ? Math.round((activeCounters.done / processed) * 100) : null;
+  const etaSec = isRunning && processed > 0 && activeCounters.total > processed && activeStage?.kind !== 'download'
+    ? Math.max(0, Math.round(((activeCounters.total - processed) * elapsedSec) / processed))
     : null;
   const statusColor = status === 'running' ? '#60a5fa'
     : status === 'completed' ? '#10b981'
@@ -1142,19 +1152,31 @@ function SignalOperationsBar({
         : status === 'failed' || status === 'error' ? 'Needs attention'
           : 'Ready';
   const pipelineStages = [
-    { label: 'Refresh data', tone: '#60a5fa' },
-    { label: 'Backup cache', tone: '#a78bfa' },
-    { label: 'Fit models', tone: '#c084fc' },
-    { label: 'Refresh dashboard', tone: '#38d9f5' },
+    { key: 'download', label: 'Refresh data', tone: '#60a5fa' },
+    { key: 'backup', label: 'Backup cache', tone: '#a78bfa' },
+    { key: 'tune', label: 'Tune stocks', tone: '#c084fc' },
+    { key: 'calibration', label: 'Calibration', tone: '#10b981' },
   ];
   const activeStageIndex = (() => {
     const title = (phaseTitle ?? '').toLowerCase();
+    if (activeStage?.kind) {
+      const stageIndex = pipelineStages.findIndex((stage) => stage.key === activeStage.kind);
+      if (stageIndex >= 0) return stageIndex + 1;
+    }
     if (!isRunning) return status === 'completed' ? pipelineStages.length : 0;
     if (title.includes('refresh') || title.includes('download') || isStocks) return 1;
     if (title.includes('backup')) return 2;
+    if (title.includes('calibrat')) return 4;
     if (title.includes('fit') || title.includes('tune') || title.includes('model')) return 3;
     return Math.max(1, Math.min(pipelineStages.length, Math.ceil((progressPct / 100) * pipelineStages.length)));
   })();
+  const activeStageLabel = activeStage?.kind === 'download'
+    ? 'ready'
+    : activeStage?.kind === 'backup'
+      ? 'backed up'
+      : activeStage?.kind === 'calibration'
+        ? 'calibrated'
+        : 'processed';
   const runTuneSubtitle = isRunning
     ? isTune ? 'Live fitting in progress' : 'Open the live activity drawer'
     : 'Full BMA retune, streamed live';
@@ -1193,7 +1215,7 @@ function SignalOperationsBar({
               </button>
               {isRunning && (
                 <span className="text-[11px] text-[var(--text-muted)] tabular-nums">
-                  {formatJobElapsed(elapsedSec)} · {processed}{counters.total > 0 ? ` / ${counters.total}` : ''} processed{etaSec !== null ? ` · ETA ${formatJobElapsed(etaSec)}` : ''}
+                  {formatJobElapsed(elapsedSec)} · {processed}{activeCounters.total > 0 ? ` / ${activeCounters.total}` : ''} {activeStageLabel}{etaSec !== null ? ` · ETA ${formatJobElapsed(etaSec)}` : ''}
                 </span>
               )}
             </div>
@@ -1246,8 +1268,8 @@ function SignalOperationsBar({
               {completionRate !== null && isRunning && (
                 <span className="rounded-full px-2 py-0.5 tabular-nums" style={{ color: '#a7f3d0', background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.18)' }}>{completionRate}% success</span>
               )}
-              {counters.fail > 0 && (
-                <span className="rounded-full px-2 py-0.5 tabular-nums" style={{ color: '#fb7185', background: 'rgba(244,63,94,0.10)', border: '1px solid rgba(244,63,94,0.22)' }}>{counters.fail} failed</span>
+              {activeCounters.fail > 0 && (
+                <span className="rounded-full px-2 py-0.5 tabular-nums" style={{ color: '#fb7185', background: 'rgba(244,63,94,0.10)', border: '1px solid rgba(244,63,94,0.22)' }}>{activeCounters.fail} failed</span>
               )}
             </div>
           </div>

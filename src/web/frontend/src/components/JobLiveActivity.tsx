@@ -25,6 +25,7 @@ import {
   type JobModelMeta,
   type JobMode,
   type JobRefreshPassState,
+  type JobStageMetric,
   type JobStatus,
 } from '../stores/jobStore';
 
@@ -44,6 +45,7 @@ const EMPTY_LOGS: JobLogLine[] = [];
 const EMPTY_MODEL_COUNTS: Record<string, number> = {};
 const EMPTY_MODEL_BY_SYMBOL: Record<string, string> = {};
 const EMPTY_MODEL_META_BY_SYMBOL: Record<string, JobModelMeta> = {};
+const EMPTY_STAGE_METRICS: JobStageMetric[] = [];
 
 function statusTone(status: JobStatus) {
   switch (status) {
@@ -83,6 +85,21 @@ function titleForMode(mode: JobMode | null) {
   return JOB_MODE_LABELS[mode];
 }
 
+function stageTone(kind: string) {
+  if (kind === 'download') return { color: '#60a5fa', label: 'Refresh data', doneLabel: 'Ready', unit: 'assets' };
+  if (kind === 'backup') return { color: '#a78bfa', label: 'Backup tune', doneLabel: 'Backed up', unit: 'cache' };
+  if (kind === 'calibration') return { color: '#10b981', label: 'Calibration', doneLabel: 'Calibrated', unit: 'assets' };
+  if (kind === 'tune') return { color: '#c084fc', label: 'Tune stocks', doneLabel: 'Tuned', unit: 'assets' };
+  return { color: '#94a3b8', label: 'Working', doneLabel: 'Done', unit: 'items' };
+}
+
+const RETUNE_STAGE_ORDER = ['download', 'backup', 'tune', 'calibration'];
+
+function stagePercent(stage: JobStageMetric | null | undefined) {
+  if (!stage || stage.total <= 0) return stage?.status === 'completed' ? 100 : 0;
+  return Math.min(100, ((stage.done + stage.fail) / stage.total) * 100);
+}
+
 export default function JobLiveActivity() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -96,6 +113,8 @@ export default function JobLiveActivity() {
   const expanded = useJobStore((state) => state.expanded);
   const rawLogOpen = useJobStore((state) => state.rawLogOpen);
   const refreshPass = useJobStore((state) => state.refreshPass);
+  const stageMetrics = useJobStore((state) => state.stageMetrics.length > 0 ? state.stageMetrics : EMPTY_STAGE_METRICS);
+  const activeStageKey = useJobStore((state) => state.activeStageKey);
   const stopJob = useJobStore((state) => state.stopJob);
   const setExpanded = useJobStore((state) => state.setExpanded);
   const toggleExpanded = useJobStore((state) => state.toggleExpanded);
@@ -108,18 +127,22 @@ export default function JobLiveActivity() {
   const logLines = useJobStore((state) => state.rawLogOpen ? state.logLines : EMPTY_LOGS);
   const prevStatusRef = useRef<JobStatus>(status);
   const rawLogRef = useRef<HTMLDivElement | null>(null);
+  const rawLogSectionRef = useRef<HTMLDivElement | null>(null);
 
   const info = titleForMode(mode);
   const tone = statusTone(status);
   const isRunning = status === 'running';
-  const processed = counters.done + counters.fail;
-  const progressPct = counters.total > 0
-    ? Math.min(100, (processed / counters.total) * 100)
+  const activeStage = stageMetrics.find((stage) => stage.key === activeStageKey) ?? stageMetrics.find((stage) => stage.status === 'running') ?? stageMetrics[stageMetrics.length - 1] ?? null;
+  const activeCounters = activeStage ? { done: activeStage.done, fail: activeStage.fail, total: activeStage.total } : counters;
+  const processed = activeCounters.done + activeCounters.fail;
+  const progressPct = activeCounters.total > 0
+    ? Math.min(100, (processed / activeCounters.total) * 100)
     : isRunning ? 3 : status === 'idle' ? 0 : 100;
-  const rate = processed > 0 ? processed / Math.max(elapsedSec, 1) : 0;
-  const successRate = processed > 0 ? Math.round((counters.done / processed) * 100) : null;
-  const eta = isRunning && rate > 0 && counters.total > processed
-    ? Math.round((counters.total - processed) / rate)
+  const stageElapsedSec = activeStage ? Math.max(1, Math.floor((Date.now() - activeStage.startedAt) / 1000)) : elapsedSec;
+  const rate = processed > 0 && activeStage?.kind !== 'download' && activeStage?.kind !== 'backup' ? processed / Math.max(stageElapsedSec, 1) : 0;
+  const successRate = processed > 0 && activeCounters.fail + activeCounters.done > 0 ? Math.round((activeCounters.done / processed) * 100) : null;
+  const eta = isRunning && rate > 0 && activeCounters.total > processed
+    ? Math.round((activeCounters.total - processed) / rate)
     : null;
   const currentPhase = phases.length > 0 ? phases[phases.length - 1] : null;
   const liveTitle = mode === 'retune' || mode === 'tune' || mode === 'calibrate'
@@ -173,6 +196,12 @@ export default function JobLiveActivity() {
     }
   }, [logLines, rawLogOpen]);
 
+  useEffect(() => {
+    if (rawLogOpen && rawLogSectionRef.current) {
+      rawLogSectionRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [rawLogOpen]);
+
   if (!surfaceVisible || status === 'idle' || !mode) return null;
 
   const job = {
@@ -182,6 +211,8 @@ export default function JobLiveActivity() {
     assets,
     logLines,
     counters,
+    stageMetrics,
+    activeStageKey,
     elapsedSec,
     errorMsg,
     refreshPass: refreshPass as JobRefreshPassState | null,
@@ -220,7 +251,7 @@ export default function JobLiveActivity() {
 
       {job.expanded && (
         <div
-          className="job-live-activity-anim pointer-events-auto mb-3 w-[min(760px,calc(100vw-2rem))] max-h-[min(78vh,820px)] overflow-hidden rounded-[28px]"
+          className="job-live-activity-anim pointer-events-auto flex max-h-[calc(100vh-2.5rem)] w-[min(760px,calc(100vw-2rem))] flex-col overflow-hidden rounded-[28px]"
           style={{
             animation: 'liveActivityRise 260ms cubic-bezier(.2,.8,.2,1) both',
             background: 'linear-gradient(180deg, rgba(18,20,33,0.86) 0%, rgba(8,9,17,0.94) 100%)',
@@ -232,7 +263,7 @@ export default function JobLiveActivity() {
           role="region"
           aria-label="Live job progress"
         >
-          <div className="relative overflow-hidden">
+          <div className="relative shrink-0 overflow-hidden">
             <div
               aria-hidden
               className="absolute -top-24 -right-20 h-56 w-56 rounded-full job-live-activity-anim"
@@ -279,6 +310,17 @@ export default function JobLiveActivity() {
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <StatusPill label={tone.label} color={tone.color} bg={tone.bg} pulse={isRunning} />
+                <button
+                  type="button"
+                  onClick={() => job.setRawLogOpen(!job.rawLogOpen)}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[11px] font-semibold transition-all hover:brightness-125 active:scale-[0.98]"
+                  style={{ color: '#bfdbfe', background: 'rgba(96,165,250,0.10)', border: '1px solid rgba(147,197,253,0.25)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06)' }}
+                  aria-expanded={job.rawLogOpen}
+                >
+                  {job.rawLogOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                  Logs
+                  <span className="rounded-full px-1.5 py-0.5 text-[9px] tabular-nums" style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.68)' }}>{job.logLines.length}</span>
+                </button>
                 {isRunning && (
                   <button
                     type="button"
@@ -322,12 +364,12 @@ export default function JobLiveActivity() {
             </div>
           </div>
 
-          <div className="max-h-[calc(min(78vh,820px)-116px)] overflow-y-auto p-5 space-y-4">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-5 pb-7 space-y-4">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5" aria-live="polite">
-              <MetricTile label="Processed" value={processed} suffix={job.counters.total > 0 ? `/ ${job.counters.total}` : undefined} color="#ffffff" />
-              <MetricTile label="Successful" value={job.counters.done} suffix={successRate !== null ? `${successRate}%` : undefined} color="#10b981" pulse={isRunning && job.counters.done > 0} />
-              <MetricTile label="Failed" value={job.counters.fail} color={job.counters.fail > 0 ? '#f43f5e' : 'var(--text-muted)'} />
-              <MetricTile label={rate > 0 ? 'Throughput' : 'Progress'} value={rate > 0 ? (rate * 60).toFixed(1) : `${Math.round(progressPct)}%`} suffix={rate > 0 ? '/ min' : undefined} color={info.color} />
+              <MetricTile label={activeStage ? stageTone(activeStage.kind).doneLabel : 'Processed'} value={processed} suffix={activeCounters.total > 0 ? `/ ${activeCounters.total}` : undefined} color="#ffffff" />
+              <MetricTile label={activeStage?.kind === 'download' ? 'Pending' : 'Successful'} value={activeStage?.kind === 'download' ? Math.max(0, activeCounters.total - activeCounters.done) : activeCounters.done} suffix={successRate !== null && activeStage?.kind !== 'download' ? `${successRate}%` : undefined} color={activeStage?.kind === 'download' ? '#fde68a' : '#10b981'} pulse={isRunning && activeCounters.done > 0} />
+              <MetricTile label="Failed" value={activeCounters.fail} color={activeCounters.fail > 0 ? '#f43f5e' : 'var(--text-muted)'} />
+              <MetricTile label={rate > 0 ? 'Tune speed' : activeStage?.kind === 'download' ? 'Coverage' : 'Stage'} value={rate > 0 ? (rate * 60).toFixed(1) : `${Math.round(progressPct)}%`} suffix={rate > 0 ? '/ min' : undefined} color={activeStage ? stageTone(activeStage.kind).color : info.color} />
             </div>
 
             <section className="rounded-[18px] p-4" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.015))', border: '1px solid rgba(255,255,255,0.075)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.055)' }}>
@@ -379,6 +421,10 @@ export default function JobLiveActivity() {
                   </div>
                 )}
               </section>
+            )}
+
+            {job.stageMetrics.length > 0 && (
+              <StageTelemetryPanel stages={job.stageMetrics} activeKey={job.activeStageKey} mode={job.mode} />
             )}
 
             {isRunning && job.refreshPass && currentPhase?.kind === 'download' && (
@@ -549,17 +595,25 @@ export default function JobLiveActivity() {
               </div>
             )}
 
-            <div>
+            <div ref={rawLogSectionRef} className="scroll-mt-4 rounded-[20px] p-3" style={{ background: 'linear-gradient(180deg, rgba(15,23,42,0.58), rgba(3,4,8,0.72))', border: '1px solid rgba(147,197,253,0.12)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.045)' }}>
               <button
                 type="button"
                 onClick={() => job.setRawLogOpen(!job.rawLogOpen)}
-                className="inline-flex items-center gap-1.5 text-[11px] text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+                className="flex w-full items-center justify-between gap-3 rounded-[15px] px-3 py-2 text-left transition-all hover:bg-white/[0.045]"
+                style={{ color: 'var(--text-primary)' }}
+                aria-expanded={job.rawLogOpen}
               >
-                {job.rawLogOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-                Raw log ({job.logLines.length})
+                <span className="flex items-center gap-2 min-w-0">
+                  {job.rawLogOpen ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+                  <span className="min-w-0">
+                    <span className="block text-[11px] font-semibold uppercase tracking-[0.12em] text-[#bfdbfe]">Raw subprocess log</span>
+                    <span className="block truncate text-[10.5px] text-[var(--text-muted)]">Terminal output, batched safely so the page stays responsive.</span>
+                  </span>
+                </span>
+                <span className="rounded-full px-2.5 py-1 text-[10px] font-semibold tabular-nums" style={{ color: '#dbeafe', background: 'rgba(96,165,250,0.10)', border: '1px solid rgba(147,197,253,0.22)' }}>{job.logLines.length} lines</span>
               </button>
               {job.rawLogOpen && (
-                <div ref={rawLogRef} className="mt-2 max-h-[260px] overflow-auto rounded-2xl px-3 py-2 font-mono text-[11px] leading-[1.5]" style={{ background: 'rgba(3,4,8,0.9)', color: 'rgba(255,255,255,0.62)', border: '1px solid rgba(255,255,255,0.07)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                <div ref={rawLogRef} className="mt-2 max-h-[320px] overflow-auto rounded-[18px] px-3 py-3 font-mono text-[11px] leading-[1.55]" style={{ background: 'rgba(1,2,6,0.94)', color: 'rgba(219,234,254,0.72)', border: '1px solid rgba(147,197,253,0.13)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.035)' }}>
                   {job.logLines.length === 0 ? <span className="text-[var(--text-muted)]">(no subprocess output yet)</span> : job.logLines.map((line) => <div key={line.id}>{line.text}</div>)}
                 </div>
               )}
@@ -568,7 +622,7 @@ export default function JobLiveActivity() {
         </div>
       )}
 
-      <div
+      {!job.expanded && <div
         className="job-live-activity-anim pointer-events-auto w-[min(372px,calc(100vw-2rem))] overflow-hidden rounded-[26px]"
         style={{
           animation: 'liveActivityRise 220ms cubic-bezier(.2,.8,.2,1) both',
@@ -606,7 +660,7 @@ export default function JobLiveActivity() {
                     ? eta !== null ? `ETA ${formatJobElapsed(eta)}` : 'Running in background'
                     : liveSubtitle}
                 </span>
-                {isRunning && counters.total > 0 && (
+                {isRunning && activeCounters.total > 0 && (
                   <span className="shrink-0 font-mono tabular-nums text-[var(--text-secondary)]">{Math.round(progressPct)}%</span>
                 )}
               </div>
@@ -617,7 +671,7 @@ export default function JobLiveActivity() {
                   </div>
                 </div>
                 <span className="text-[10px] font-mono text-[var(--text-secondary)] tabular-nums min-w-[74px] text-right">
-                  {processed}{job.counters.total > 0 ? ` / ${job.counters.total}` : ''}
+                  {processed}{activeCounters.total > 0 ? ` / ${activeCounters.total}` : ''}
                 </span>
               </div>
             </div>
@@ -640,7 +694,7 @@ export default function JobLiveActivity() {
             </div>
           </div>
         </div>
-      </div>
+      </div>}
     </div>
   );
 }
@@ -664,6 +718,75 @@ function MetricTile({ label, value, suffix, color, pulse }: { label: string; val
         {suffix && <span className="text-[11px] text-[var(--text-muted)] tabular-nums">{suffix}</span>}
       </div>
     </div>
+  );
+}
+
+function StageTelemetryPanel({ stages, activeKey, mode }: { stages: JobStageMetric[]; activeKey: string | null; mode: JobMode }) {
+  const byKind = new Map(stages.map((stage) => [stage.kind, stage]));
+  const orderedKinds = mode === 'retune'
+    ? RETUNE_STAGE_ORDER
+    : Array.from(new Set(stages.map((stage) => stage.kind)));
+  const displayStages = orderedKinds.map((kind, index) => {
+    const existing = byKind.get(kind);
+    const tone = stageTone(kind);
+    return existing ?? {
+      key: kind,
+      title: tone.label,
+      kind,
+      step: index + 1,
+      totalSteps: orderedKinds.length,
+      done: 0,
+      fail: 0,
+      total: 0,
+      status: 'pending' as const,
+      startedAt: 0,
+      updatedAt: 0,
+    };
+  });
+  return (
+    <section className="rounded-[22px] p-4" style={{ background: 'radial-gradient(520px 180px at 0% -20%, rgba(139,92,246,0.13), transparent 62%), linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.015))', border: '1px solid rgba(255,255,255,0.085)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06)' }}>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.14em] text-[var(--text-muted)] font-semibold">Stage cockpit</div>
+          <div className="mt-0.5 text-[12px] text-[var(--text-secondary)]">Each phase owns its own metrics — no mixed counters.</div>
+        </div>
+        <span className="rounded-full px-2.5 py-1 text-[10px] font-semibold" style={{ color: '#ddd6fe', background: 'rgba(139,92,246,0.11)', border: '1px solid rgba(139,92,246,0.24)' }}>{displayStages.length} stages</span>
+      </div>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        {displayStages.map((stage) => {
+          const tone = stageTone(stage.kind);
+          const pct = stagePercent(stage);
+          const active = stage.key === activeKey || stage.status === 'running';
+          const done = stage.status === 'completed';
+          const processed = stage.done + stage.fail;
+          const pending = stage.total > 0 ? Math.max(0, stage.total - processed) : 0;
+          return (
+            <div key={stage.key} className="relative overflow-hidden rounded-[18px] px-3 py-3" style={{ background: active || done ? `linear-gradient(150deg, ${tone.color}18, rgba(255,255,255,0.025))` : 'rgba(255,255,255,0.025)', border: `1px solid ${active || done ? `${tone.color}42` : 'rgba(255,255,255,0.06)'}`, boxShadow: active ? `0 18px 42px -32px ${tone.color}, inset 0 1px 0 rgba(255,255,255,0.06)` : 'inset 0 1px 0 rgba(255,255,255,0.035)' }}>
+              <div aria-hidden className="absolute inset-x-3 top-0 h-px" style={{ background: active || done ? `linear-gradient(90deg, transparent, ${tone.color}aa, transparent)` : 'transparent' }} />
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-[9px] uppercase tracking-[0.12em] text-[var(--text-muted)] font-semibold">Step {stage.step ?? '—'}</div>
+                  <div className="mt-1 truncate text-[12px] font-semibold tracking-[-0.02em] text-white">{stage.title}</div>
+                </div>
+                <span className="rounded-full px-2 py-0.5 text-[9px] font-semibold capitalize" style={{ color: active ? tone.color : done ? '#a7f3d0' : 'var(--text-muted)', background: active ? `${tone.color}16` : done ? 'rgba(16,185,129,0.10)' : 'rgba(255,255,255,0.04)', border: `1px solid ${active ? `${tone.color}30` : done ? 'rgba(16,185,129,0.20)' : 'rgba(255,255,255,0.06)'}` }}>{stage.status}</span>
+              </div>
+              <div className="mt-3 flex items-baseline justify-between gap-2">
+                <div>
+                  <span className="text-[20px] leading-none font-semibold tabular-nums text-white">{processed}</span>
+                  {stage.total > 0 && <span className="ml-1 text-[11px] text-[var(--text-muted)] tabular-nums">/ {stage.total}</span>}
+                </div>
+                <div className="text-right text-[10px] text-[var(--text-muted)] tabular-nums">
+                  {stage.kind === 'download' ? `${pending} pending` : stage.fail > 0 ? `${stage.fail} failed` : tone.unit}
+                </div>
+              </div>
+              <div className="mt-3 h-2.5 overflow-hidden rounded-full p-[1px]" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.15), rgba(255,255,255,0.04))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.34)' }}>
+                <div className="h-full rounded-full transition-[width] duration-700 ease-out" style={{ width: `${pct}%`, background: `linear-gradient(90deg, ${tone.color}, #38d9f5, rgba(255,255,255,0.9))`, boxShadow: active ? `0 0 20px -8px ${tone.color}, inset 0 1px 0 rgba(255,255,255,0.44)` : 'inset 0 1px 0 rgba(255,255,255,0.22)' }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 

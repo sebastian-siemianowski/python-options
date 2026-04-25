@@ -100,6 +100,22 @@ export interface JobCounters {
   total: number;
 }
 
+export type JobStageStatus = 'pending' | 'running' | 'completed' | 'failed' | 'stopped';
+
+export interface JobStageMetric {
+  key: string;
+  title: string;
+  kind: string;
+  step?: number;
+  totalSteps?: number;
+  done: number;
+  fail: number;
+  total: number;
+  status: JobStageStatus;
+  startedAt: number;
+  updatedAt: number;
+}
+
 interface JobState {
   mode: JobMode | null;
   status: JobStatus;
@@ -107,6 +123,8 @@ interface JobState {
   assets: JobAssetEntry[];
   logLines: JobLogLine[];
   counters: JobCounters;
+  stageMetrics: JobStageMetric[];
+  activeStageKey: string | null;
   elapsedSec: number;
   startedAt: number | null;
   finishedAt: number | null;
@@ -205,6 +223,8 @@ function persistSnapshot(state: JobState) {
       assets: state.assets.slice(-64),
       logLines: state.logLines.slice(-200),
       counters: state.counters,
+      stageMetrics: state.stageMetrics,
+      activeStageKey: state.activeStageKey,
       elapsedSec: state.elapsedSec,
       startedAt: state.startedAt,
       finishedAt: state.finishedAt,
@@ -241,6 +261,8 @@ function initialState(): Omit<JobState,
     assets: snapshot?.assets ?? [],
     logLines: snapshot?.logLines ?? [],
     counters: snapshot?.counters ?? { done: 0, fail: 0, total: 0 },
+    stageMetrics: snapshot?.stageMetrics ?? [],
+    activeStageKey: snapshot?.activeStageKey ?? null,
     elapsedSec: snapshot?.elapsedSec ?? 0,
     startedAt: snapshot?.startedAt ?? null,
     finishedAt: snapshot?.finishedAt ?? null,
@@ -261,6 +283,101 @@ export const JOB_MODE_LABELS: Record<JobMode, { title: string; shortTitle: strin
   retune: { title: 'Run Tune', shortTitle: 'Tune', desc: 'Full retune pipeline', color: '#8b5cf6' },
   calibrate: { title: 'Calibrate', shortTitle: 'Calibrate', desc: 'Repairing calibration failures', color: '#10b981' },
 };
+
+function metricKindFromPhase(kind?: string, title?: string): string | null {
+  const lowerTitle = (title ?? '').toLowerCase();
+  if (kind === 'download') return 'download';
+  if (kind === 'backup') return 'backup';
+  if (kind === 'tune') return 'tune';
+  if (kind === 'calibration') return 'calibration';
+  if (kind === 'tune_sub' && lowerTitle.includes('calibrat')) return 'calibration';
+  if (kind === 'work' || kind === 'launch') return kind;
+  return null;
+}
+
+function stageKeyFor(kind: string, step?: number): string {
+  if (kind === 'download') return 'download';
+  if (kind === 'backup') return 'backup';
+  if (kind === 'tune') return 'tune';
+  if (kind === 'calibration') return 'calibration';
+  return step ? `${kind}:${step}` : kind;
+}
+
+function stageTitleFor(kind: string, title: string): string {
+  if (kind === 'download') return 'Refresh data';
+  if (kind === 'backup') return 'Backup tune cache';
+  if (kind === 'tune') return 'Tune stocks';
+  if (kind === 'calibration') return 'Calibration';
+  return title;
+}
+
+function upsertRunningStage(
+  stages: JobStageMetric[],
+  stage: { key: string; title: string; kind: string; step?: number; totalSteps?: number; total?: number },
+  now: number,
+): JobStageMetric[] {
+  const previous = stages.map((item) => (
+    item.status === 'running' && item.key !== stage.key
+      ? {
+          ...item,
+          done: item.done === 0 && item.total <= 1 ? Math.max(1, item.total) : item.done,
+          total: item.total === 0 && item.done === 0 ? 1 : item.total,
+          status: 'completed' as JobStageStatus,
+          updatedAt: now,
+        }
+      : item
+  ));
+  const existing = previous.find((item) => item.key === stage.key);
+  if (!existing) {
+    return previous.concat({
+      key: stage.key,
+      title: stage.title,
+      kind: stage.kind,
+      step: stage.step,
+      totalSteps: stage.totalSteps,
+      done: 0,
+      fail: 0,
+      total: stage.total ?? 0,
+      status: 'running',
+      startedAt: now,
+      updatedAt: now,
+    });
+  }
+  return previous.map((item) => (
+    item.key === stage.key
+      ? {
+          ...item,
+          title: stage.title,
+          kind: stage.kind,
+          step: stage.step ?? item.step,
+          totalSteps: stage.totalSteps ?? item.totalSteps,
+          total: Math.max(item.total, stage.total ?? 0),
+          status: 'running' as JobStageStatus,
+          updatedAt: now,
+        }
+      : item
+  ));
+}
+
+function updateStageCounts(
+  stages: JobStageMetric[],
+  key: string | null,
+  counts: Partial<JobCounters>,
+  now: number,
+): JobStageMetric[] {
+  if (!key) return stages;
+  return stages.map((item) => (
+    item.key === key
+      ? {
+          ...item,
+          done: Math.max(item.done, counts.done ?? item.done),
+          fail: Math.max(item.fail, counts.fail ?? item.fail),
+          total: Math.max(item.total, counts.total ?? item.total),
+          updatedAt: now,
+        }
+      : item
+  ));
+}
 
 export const useJobStore = create<JobState>((set, get) => ({
   ...initialState(),
@@ -319,6 +436,8 @@ export const useJobStore = create<JobState>((set, get) => ({
       assets: [],
       logLines: [],
       counters: { done: 0, fail: 0, total: 0 },
+      stageMetrics: [],
+      activeStageKey: null,
       elapsedSec: 0,
       startedAt,
       finishedAt: null,
@@ -369,6 +488,7 @@ export const useJobStore = create<JobState>((set, get) => ({
 
           case 'phase':
             if (data.title) {
+              const now = Date.now();
               phaseId += 1;
               next.phases = state.phases.concat({
                 id: phaseId,
@@ -376,8 +496,21 @@ export const useJobStore = create<JobState>((set, get) => ({
                 step: data.step,
                 totalSteps: data.total_steps,
                 kind: data.kind,
-                startedAt: Date.now(),
+                startedAt: now,
               }).slice(-MAX_PHASES);
+              const metricKind = metricKindFromPhase(data.kind, data.title);
+              if (metricKind) {
+                const key = stageKeyFor(metricKind, data.step);
+                next.activeStageKey = key;
+                next.stageMetrics = upsertRunningStage(state.stageMetrics, {
+                  key,
+                  title: stageTitleFor(metricKind, data.title),
+                  kind: metricKind,
+                  step: metricKind === 'calibration' ? 4 : data.step,
+                  totalSteps: metricKind === 'calibration' ? Math.max(data.total_steps ?? 4, 4) : data.total_steps,
+                  total: metricKind === 'backup' ? 1 : data.total,
+                }, now);
+              }
               if (data.kind !== 'download') {
                 next.refreshPass = null;
               }
@@ -385,12 +518,23 @@ export const useJobStore = create<JobState>((set, get) => ({
             break;
 
           case 'asset': {
+            const now = Date.now();
+            const activeStage = state.stageMetrics.find((stage) => stage.key === state.activeStageKey);
+            const isDownloadAsset = activeStage?.kind === 'download';
             const counters = {
               done: data.done ?? state.counters.done,
               fail: data.fail ?? state.counters.fail,
               total: data.total ?? state.counters.total,
             };
-            next.counters = counters;
+            if (!isDownloadAsset) {
+              next.counters = counters;
+            }
+            next.stageMetrics = updateStageCounts(
+              next.stageMetrics ?? state.stageMetrics,
+              state.activeStageKey,
+              counters,
+              now,
+            );
             if (data.symbol) {
               const entry: JobAssetEntry = {
                 symbol: data.symbol,
@@ -404,7 +548,9 @@ export const useJobStore = create<JobState>((set, get) => ({
                 pitP: data.pit_p,
                 fitStatus: data.fit_status,
               };
-              next.assets = state.assets.concat(entry).slice(-MAX_ASSETS);
+              if (!isDownloadAsset || data.status === 'fail' || data.model) {
+                next.assets = state.assets.concat(entry).slice(-MAX_ASSETS);
+              }
               if (data.model) {
                 const oldModel = state.modelBySymbol[data.symbol];
                 const nextBySymbol = { ...state.modelBySymbol, [data.symbol]: data.model };
@@ -471,6 +617,7 @@ export const useJobStore = create<JobState>((set, get) => ({
 
           case 'refresh':
             if (typeof data.pass === 'number') {
+              const now = Date.now();
               const ok = data.ok ?? state.refreshPass?.ok ?? 0;
               const pending = data.pending ?? state.refreshPass?.pending ?? 0;
               const refreshTotal = ok + pending;
@@ -481,26 +628,35 @@ export const useJobStore = create<JobState>((set, get) => ({
                 pending,
               };
               if (refreshTotal > 0) {
-                next.counters = {
-                  done: Math.max(state.counters.done, ok),
-                  fail: state.counters.fail,
-                  total: Math.max(state.counters.total, refreshTotal),
-                };
+                next.stageMetrics = updateStageCounts(
+                  next.stageMetrics ?? state.stageMetrics,
+                  'download',
+                  { done: ok, total: refreshTotal },
+                  now,
+                );
               }
             }
             break;
 
           case 'heartbeat':
             {
-              const refreshDone = state.refreshPass?.ok ?? 0;
-              const refreshTotal = state.refreshPass
-                ? state.refreshPass.ok + state.refreshPass.pending
-                : 0;
-            next.counters = {
-              done: Math.max(state.counters.done, data.done ?? 0, refreshDone),
-              fail: state.counters.fail,
-              total: Math.max(state.counters.total, data.total ?? 0, refreshTotal),
-            };
+              const now = Date.now();
+              const activeStage = state.stageMetrics.find((stage) => stage.key === state.activeStageKey);
+              const nextDone = Math.max(activeStage?.done ?? 0, data.done ?? 0);
+              const nextTotal = Math.max(activeStage?.total ?? 0, data.total ?? 0);
+              next.stageMetrics = updateStageCounts(
+                next.stageMetrics ?? state.stageMetrics,
+                state.activeStageKey,
+                { done: nextDone, total: nextTotal },
+                now,
+              );
+              if (activeStage?.kind !== 'download') {
+                next.counters = {
+                  done: Math.max(state.counters.done, data.done ?? 0),
+                  fail: state.counters.fail,
+                  total: Math.max(state.counters.total, data.total ?? 0),
+                };
+              }
             if (typeof data.elapsed_s === 'number') next.elapsedSec = data.elapsed_s;
             }
             break;
@@ -514,6 +670,11 @@ export const useJobStore = create<JobState>((set, get) => ({
             cleanupStream();
             next.status = data.type;
             next.finishedAt = Date.now();
+            next.stageMetrics = state.stageMetrics.map((stage) => (
+              stage.status === 'running'
+                ? { ...stage, status: data.type === 'completed' ? 'completed' : 'failed', updatedAt: Date.now() }
+                : stage
+            ));
             if (data.type === 'failed') next.errorMsg = state.errorMsg || data.error || 'Job failed';
             if (typeof data.elapsed_s === 'number') next.elapsedSec = data.elapsed_s;
             break;
@@ -546,6 +707,7 @@ export const useJobStore = create<JobState>((set, get) => ({
       status: state.status === 'running' ? 'stopped' : state.status,
       finishedAt: Date.now(),
       errorMsg: state.status === 'running' ? 'Stopped by user' : state.errorMsg,
+      stageMetrics: state.stageMetrics.map((stage) => stage.status === 'running' ? { ...stage, status: 'stopped', updatedAt: Date.now() } : stage),
       surfaceVisible: true,
       expanded: false,
     }));
@@ -590,6 +752,8 @@ export const useJobStore = create<JobState>((set, get) => ({
       assets: [],
       logLines: [],
       counters: { done: 0, fail: 0, total: 0 },
+      stageMetrics: [],
+      activeStageKey: null,
       elapsedSec: 0,
       startedAt: null,
       finishedAt: null,

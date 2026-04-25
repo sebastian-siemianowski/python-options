@@ -258,7 +258,8 @@ def _heartbeat_loop(
 def _run(mode: str) -> int:
     total = _estimate_total(mode)
     plan = _phase_plan(mode)
-    _emit({"event": "start", "mode": mode, "total_expected": total, "phase_count": len(plan)})
+    visible_phase_count = 4 if mode == "retune" else len(plan)
+    _emit({"event": "start", "mode": mode, "total_expected": total, "phase_count": visible_phase_count})
 
     state = _WatcherState()
     start_ts = time.time()
@@ -293,7 +294,7 @@ def _run(mode: str) -> int:
                 "title": phase.title,
                 "kind": phase.kind,
                 "step": index + 1,
-                "total_steps": len(plan),
+                "total_steps": visible_phase_count,
             }
         )
 
@@ -433,13 +434,24 @@ def _run(mode: str) -> int:
                 for pat, label in sub_markers:
                     if pat.search(line) and label != last_sub_marker:
                         last_sub_marker = label
+                        if label == "Calibrating PIT" and mode == "retune":
+                            _emit(
+                                {
+                                    "event": "phase",
+                                    "title": "Calibration",
+                                    "kind": "calibration",
+                                    "step": visible_phase_count,
+                                    "total_steps": visible_phase_count,
+                                }
+                            )
+                            break
                         _emit(
                             {
                                 "event": "phase",
                                 "title": f"{current_phase.title} — {label}",
                                 "kind": "tune_sub",
                                 "step": current_idx_box[0] + 1,
-                                "total_steps": len(plan),
+                                "total_steps": visible_phase_count,
                             }
                         )
                         break
