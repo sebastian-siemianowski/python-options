@@ -303,19 +303,21 @@ export default function JobLiveActivity() {
               </div>
             </div>
 
-            <div className="relative h-2 overflow-hidden rounded-full mx-5 mb-4 p-[1px]" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.13), rgba(255,255,255,0.035))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.35)' }}>
+            <div className="relative h-3 overflow-hidden rounded-full mx-5 mb-4 p-[1px]" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.18), rgba(255,255,255,0.045))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.42), 0 10px 34px -28px rgba(255,255,255,0.75)' }}>
+              <div aria-hidden className="absolute inset-0 rounded-full" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.08), transparent 52%, rgba(0,0,0,0.16))' }} />
               <div
                 className="relative h-full rounded-full transition-[width] duration-700 ease-out"
                 style={{
                   width: `${progressPct}%`,
                   background: job.status === 'failed' || job.status === 'error'
                     ? 'linear-gradient(90deg,#f43f5e,#fb7185,#fecdd3)'
-                    : `linear-gradient(90deg, ${info.color} 0%, #38d9f5 58%, rgba(255,255,255,0.92) 100%)`,
-                  boxShadow: `0 0 24px -8px ${info.color}, inset 0 1px 0 rgba(255,255,255,0.34)`,
+                    : `linear-gradient(90deg, ${info.color} 0%, #38d9f5 55%, rgba(255,255,255,0.94) 100%)`,
+                  boxShadow: `0 0 28px -9px ${info.color}, inset 0 1px 0 rgba(255,255,255,0.48), inset 0 -1px 0 rgba(0,0,0,0.18)`,
                 }}
               >
-                <span aria-hidden className="absolute inset-x-1 top-0 h-px rounded-full" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.72), transparent)' }} />
-                {isRunning && progressPct > 2 && <span aria-hidden className="absolute right-0 top-1/2 h-3 w-3 -translate-y-1/2 translate-x-1/2 rounded-full" style={{ background: '#ffffff', boxShadow: `0 0 18px 4px ${info.color}88` }} />}
+                <span aria-hidden className="absolute inset-x-1 top-0 h-px rounded-full" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.88), transparent)' }} />
+                <span aria-hidden className="absolute inset-0 rounded-full" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.16), transparent 48%)' }} />
+                {isRunning && progressPct > 2 && <span aria-hidden className="absolute right-0 top-1/2 h-4 w-4 -translate-y-1/2 translate-x-1/2 rounded-full" style={{ background: '#ffffff', boxShadow: `0 0 24px 5px ${info.color}96, 0 0 0 1px rgba(255,255,255,0.65) inset` }} />}
               </div>
             </div>
           </div>
@@ -609,9 +611,9 @@ export default function JobLiveActivity() {
                 )}
               </div>
               <div className="mt-2 flex items-center gap-2">
-                <div className="h-2 flex-1 overflow-hidden rounded-full p-[1px]" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.13), rgba(255,255,255,0.04))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.35)' }}>
-                  <div className="relative h-full rounded-full transition-[width] duration-700" style={{ width: `${progressPct}%`, background: `linear-gradient(90deg, ${info.color} 0%, #38d9f5 62%, rgba(255,255,255,0.88) 100%)`, boxShadow: `0 0 16px -7px ${info.color}, inset 0 1px 0 rgba(255,255,255,0.35)` }}>
-                    <span aria-hidden className="absolute inset-x-1 top-0 h-px rounded-full" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.75), transparent)' }} />
+                <div className="h-2.5 flex-1 overflow-hidden rounded-full p-[1px]" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.16), rgba(255,255,255,0.045))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.40)' }}>
+                  <div className="relative h-full rounded-full transition-[width] duration-700" style={{ width: `${progressPct}%`, background: `linear-gradient(90deg, ${info.color} 0%, #38d9f5 58%, rgba(255,255,255,0.9) 100%)`, boxShadow: `0 0 18px -7px ${info.color}, inset 0 1px 0 rgba(255,255,255,0.45)` }}>
+                    <span aria-hidden className="absolute inset-x-1 top-0 h-px rounded-full" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.82), transparent)' }} />
                   </div>
                 </div>
                 <span className="text-[10px] font-mono text-[var(--text-secondary)] tabular-nums min-w-[74px] text-right">
@@ -669,28 +671,65 @@ function RefreshPassCard({ pass, totalPasses, ok, pending }: { pass: number; tot
   const passPct = totalPasses > 0 ? Math.min(100, (pass / totalPasses) * 100) : 0;
   const processed = ok + pending;
   const okPct = processed > 0 ? (ok / processed) * 100 : 0;
+  const pendingPct = processed > 0 ? (pending / processed) * 100 : 0;
+  const coverageLabel = processed > 0 ? `${Math.round(okPct)}%` : '—';
   return (
-    <section className="rounded-[18px] p-4" style={{ background: 'linear-gradient(180deg, rgba(96,165,250,0.10), rgba(96,165,250,0.025))', border: '1px solid rgba(96,165,250,0.25)' }}>
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <Download className="h-4 w-4 text-[#60a5fa]" />
-          <span className="text-[10px] uppercase tracking-[0.12em] text-[var(--text-muted)] font-semibold">Refresh pass</span>
-          <span className="text-[12px] font-semibold text-[#bfdbfe] tabular-nums">{pass} <span className="text-[var(--text-muted)]">/ {totalPasses}</span></span>
+    <section className="relative overflow-hidden rounded-[22px] p-4" style={{ background: 'radial-gradient(520px 220px at 0% -30%, rgba(96,165,250,0.20), transparent 62%), linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.018))', border: '1px solid rgba(147,197,253,0.24)', boxShadow: '0 18px 48px -38px rgba(96,165,250,0.95), inset 0 1px 0 rgba(255,255,255,0.075)' }}>
+      <div aria-hidden className="absolute inset-x-5 top-0 h-px" style={{ background: 'linear-gradient(90deg, transparent, rgba(191,219,254,0.78), transparent)' }} />
+      <div className="mb-4 flex items-start justify-between gap-4">
+        <div className="flex items-start gap-3 min-w-0">
+          <div className="h-10 w-10 shrink-0 rounded-[15px] flex items-center justify-center" style={{ color: '#93c5fd', background: 'linear-gradient(145deg, rgba(96,165,250,0.20), rgba(255,255,255,0.035))', border: '1px solid rgba(147,197,253,0.26)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.10)' }}>
+            <Download className="h-4.5 w-4.5" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-[10px] uppercase tracking-[0.14em] text-[var(--text-muted)] font-semibold">Market data refresh</div>
+            <div className="mt-1 text-[15px] font-semibold tracking-[-0.035em] text-white">Pass {pass} <span className="text-[var(--text-muted)] font-medium">of {totalPasses}</span></div>
+            <div className="mt-0.5 text-[11px] text-[var(--text-secondary)]">Downloading, validating, and warming price cache.</div>
+          </div>
         </div>
-        <div className="flex items-center gap-3 text-[10px] tabular-nums">
-          <span className="text-[#10b981]"><b>{ok}</b> ok</span>
-          <span className={pending > 0 ? 'text-[#fbbf24]' : 'text-[var(--text-muted)]'}><b>{pending}</b> pending</span>
+        <div className="grid grid-cols-2 gap-2 shrink-0 text-right">
+          <div className="rounded-[14px] px-3 py-2" style={{ background: 'rgba(16,185,129,0.09)', border: '1px solid rgba(16,185,129,0.18)' }}>
+            <div className="text-[18px] leading-none font-semibold tabular-nums text-[#6ee7b7]">{ok}</div>
+            <div className="mt-1 text-[9px] uppercase tracking-[0.11em] text-[#a7f3d0]/70">ready</div>
+          </div>
+          <div className="rounded-[14px] px-3 py-2" style={{ background: pending > 0 ? 'rgba(251,191,36,0.09)' : 'rgba(148,163,184,0.07)', border: `1px solid ${pending > 0 ? 'rgba(251,191,36,0.20)' : 'rgba(148,163,184,0.14)'}` }}>
+            <div className="text-[18px] leading-none font-semibold tabular-nums" style={{ color: pending > 0 ? '#fde68a' : 'var(--text-muted)' }}>{pending}</div>
+            <div className="mt-1 text-[9px] uppercase tracking-[0.11em]" style={{ color: pending > 0 ? 'rgba(253,230,138,0.72)' : 'var(--text-muted)' }}>pending</div>
+          </div>
         </div>
       </div>
-      <div className="mb-1.5 h-1.5 overflow-hidden rounded-full" style={{ background: 'rgba(96,165,250,0.12)' }}>
-        <div className="h-full transition-[width] duration-500" style={{ width: `${passPct}%`, background: 'linear-gradient(90deg,#60a5fa,#818cf8)' }} />
-      </div>
-      {processed > 0 && (
-        <div className="flex h-1 overflow-hidden rounded-full" style={{ background: 'rgba(148,163,184,0.12)' }}>
-          <div className="transition-[width] duration-500" style={{ width: `${okPct}%`, background: 'linear-gradient(90deg,#10b981,#34d399)' }} />
-          <div style={{ flex: 1, background: 'repeating-linear-gradient(-45deg, rgba(251,191,36,0.55) 0 4px, rgba(251,191,36,0.22) 4px 8px)' }} />
+
+      <div className="space-y-3">
+        <div>
+          <div className="mb-1.5 flex items-center justify-between text-[10px] uppercase tracking-[0.11em] font-semibold text-[var(--text-muted)]">
+            <span>Pass cycle</span>
+            <span className="text-[#bfdbfe] tabular-nums">{Math.round(passPct)}%</span>
+          </div>
+          <div className="relative h-3 overflow-hidden rounded-full p-[1px]" style={{ background: 'linear-gradient(180deg, rgba(191,219,254,0.18), rgba(191,219,254,0.045))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.38)' }}>
+            <div className="relative h-full rounded-full transition-[width] duration-700 ease-out" style={{ width: `${passPct}%`, background: 'linear-gradient(90deg, #60a5fa 0%, #818cf8 55%, rgba(255,255,255,0.92) 100%)', boxShadow: '0 0 24px -9px rgba(96,165,250,0.95), inset 0 1px 0 rgba(255,255,255,0.45)' }}>
+              <span aria-hidden className="absolute inset-x-1 top-0 h-px rounded-full" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.86), transparent)' }} />
+            </div>
+          </div>
         </div>
-      )}
+
+        <div>
+          <div className="mb-1.5 flex items-center justify-between text-[10px] uppercase tracking-[0.11em] font-semibold text-[var(--text-muted)]">
+            <span>Universe coverage</span>
+            <span className="text-[#a7f3d0] tabular-nums">{coverageLabel} ready</span>
+          </div>
+          <div className="relative flex h-3 overflow-hidden rounded-full p-[1px]" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.15), rgba(255,255,255,0.04))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.38)' }}>
+            {processed > 0 ? (
+              <>
+                <div className="relative h-full rounded-l-full transition-[width] duration-700 ease-out" style={{ width: `${okPct}%`, background: 'linear-gradient(90deg, #10b981 0%, #34d399 72%, #a7f3d0 100%)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.35)' }} />
+                <div className="relative h-full rounded-r-full transition-[width] duration-700 ease-out" style={{ width: `${pendingPct}%`, background: pending > 0 ? 'linear-gradient(90deg, rgba(251,191,36,0.34), rgba(253,230,138,0.62))' : 'transparent' }} />
+              </>
+            ) : (
+              <div className="h-full w-0" />
+            )}
+            <span aria-hidden className="absolute inset-x-1 top-[1px] h-px rounded-full" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.72), transparent)' }} />
+          </div>
+        </div>
+      </div>
     </section>
   );
 }

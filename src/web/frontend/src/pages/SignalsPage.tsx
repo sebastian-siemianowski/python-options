@@ -1224,17 +1224,19 @@ function SignalOperationsBar({
                 );
               })}
             </div>
-            <div className="mt-4 h-2 max-w-[760px] overflow-hidden rounded-full p-[1px]" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.14), rgba(255,255,255,0.04))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.34)' }}>
+            <div className="relative mt-4 h-3 max-w-[760px] overflow-hidden rounded-full p-[1px]" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.18), rgba(255,255,255,0.045))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.42), 0 10px 34px -28px rgba(255,255,255,0.75)' }}>
+              <div aria-hidden className="absolute inset-0 rounded-full" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.08), transparent 52%, rgba(0,0,0,0.16))' }} />
               <div
                 className="relative h-full rounded-full transition-[width] duration-700 ease-out"
                 style={{
                   width: `${progressPct}%`,
-                  background: isRunning ? 'linear-gradient(90deg,#8b5cf6 0%,#38d9f5 62%,rgba(255,255,255,0.92) 100%)' : 'linear-gradient(90deg,rgba(139,92,246,0.48),rgba(56,217,245,0.24))',
-                  boxShadow: isRunning ? '0 0 22px -8px rgba(139,92,246,0.9), inset 0 1px 0 rgba(255,255,255,0.34)' : 'inset 0 1px 0 rgba(255,255,255,0.18)',
+                  background: isRunning ? 'linear-gradient(90deg,#8b5cf6 0%,#38d9f5 56%,rgba(255,255,255,0.94) 100%)' : 'linear-gradient(90deg,rgba(139,92,246,0.52),rgba(56,217,245,0.26))',
+                  boxShadow: isRunning ? '0 0 28px -9px rgba(139,92,246,0.95), inset 0 1px 0 rgba(255,255,255,0.48), inset 0 -1px 0 rgba(0,0,0,0.18)' : 'inset 0 1px 0 rgba(255,255,255,0.24)',
                 }}
               >
-                <span aria-hidden className="absolute inset-x-1 top-0 h-px rounded-full" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.72), transparent)' }} />
-                {isRunning && progressPct > 2 && <span aria-hidden className="absolute right-0 top-1/2 h-3 w-3 -translate-y-1/2 translate-x-1/2 rounded-full" style={{ background: '#fff', boxShadow: '0 0 18px 4px rgba(139,92,246,0.52)' }} />}
+                <span aria-hidden className="absolute inset-x-1 top-0 h-px rounded-full" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.88), transparent)' }} />
+                <span aria-hidden className="absolute inset-0 rounded-full" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.16), transparent 48%)' }} />
+                {isRunning && progressPct > 2 && <span aria-hidden className="absolute right-0 top-1/2 h-4 w-4 -translate-y-1/2 translate-x-1/2 rounded-full" style={{ background: '#fff', boxShadow: '0 0 24px 5px rgba(139,92,246,0.58), 0 0 0 1px rgba(255,255,255,0.65) inset' }} />}
               </div>
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-[var(--text-muted)]">
