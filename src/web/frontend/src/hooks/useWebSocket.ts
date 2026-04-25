@@ -19,23 +19,32 @@ export function useWebSocket(path: string = '/ws') {
   const wsRef = useRef<WebSocket | null>(null);
   const retriesRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const shouldReconnectRef = useRef(false);
+  const generationRef = useRef(0);
 
   const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    if (!shouldReconnectRef.current) return;
+    if (
+      wsRef.current?.readyState === WebSocket.OPEN
+      || wsRef.current?.readyState === WebSocket.CONNECTING
+    ) return;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${protocol}//${window.location.host}${path}`;
     setStatus('connecting');
 
     const ws = new WebSocket(url);
+    const generation = generationRef.current;
     wsRef.current = ws;
 
     ws.onopen = () => {
+      if (wsRef.current !== ws || generation !== generationRef.current) return;
       setStatus('connected');
       retriesRef.current = 0;
     };
 
     ws.onmessage = (event) => {
+      if (wsRef.current !== ws || generation !== generationRef.current) return;
       try {
         const data = JSON.parse(event.data) as WSMessage;
         if (data.type !== 'pong') {
@@ -47,8 +56,10 @@ export function useWebSocket(path: string = '/ws') {
     };
 
     ws.onclose = () => {
+      if (wsRef.current !== ws || generation !== generationRef.current) return;
       setStatus('disconnected');
       wsRef.current = null;
+      if (!shouldReconnectRef.current) return;
       // exponential backoff
       const delay = Math.min(
         RECONNECT_BASE_MS * Math.pow(2, retriesRef.current),
@@ -59,11 +70,14 @@ export function useWebSocket(path: string = '/ws') {
     };
 
     ws.onerror = () => {
+      if (wsRef.current !== ws || generation !== generationRef.current) return;
       ws.close();
     };
   }, [path]);
 
   useEffect(() => {
+    shouldReconnectRef.current = true;
+    generationRef.current += 1;
     connect();
     // ping keepalive every 25s
     const pingInterval = setInterval(() => {
@@ -73,9 +87,13 @@ export function useWebSocket(path: string = '/ws') {
     }, 25000);
 
     return () => {
+      shouldReconnectRef.current = false;
+      generationRef.current += 1;
       clearInterval(pingInterval);
       if (timerRef.current) clearTimeout(timerRef.current);
-      wsRef.current?.close();
+      const ws = wsRef.current;
+      wsRef.current = null;
+      ws?.close();
     };
   }, [connect]);
 

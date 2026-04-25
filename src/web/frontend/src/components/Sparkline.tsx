@@ -1,4 +1,4 @@
-import { useRef, useEffect, memo } from 'react';
+import { useRef, useEffect, useState, memo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
 
@@ -8,17 +8,72 @@ interface SparklineProps {
   height?: number;
 }
 
+const MAX_CONCURRENT_SPARKLINE_REQUESTS = 6;
+let activeSparklineRequests = 0;
+const pendingSparklineRequests: Array<() => void> = [];
+
+function runSparklineRequest<T>(request: () => Promise<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const run = () => {
+      activeSparklineRequests += 1;
+      request()
+        .then(resolve, reject)
+        .finally(() => {
+          activeSparklineRequests = Math.max(0, activeSparklineRequests - 1);
+          pendingSparklineRequests.shift()?.();
+        });
+    };
+
+    if (activeSparklineRequests < MAX_CONCURRENT_SPARKLINE_REQUESTS) {
+      run();
+    } else {
+      pendingSparklineRequests.push(run);
+    }
+  });
+}
+
+function useNearViewport<T extends HTMLElement>(rootMargin = '720px') {
+  const ref = useRef<T | null>(null);
+  const [isNearViewport, setIsNearViewport] = useState(false);
+
+  useEffect(() => {
+    if (isNearViewport) return;
+    const el = ref.current;
+    if (!el) return;
+    if (!('IntersectionObserver' in window)) {
+      setIsNearViewport(true);
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setIsNearViewport(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [isNearViewport, rootMargin]);
+
+  return { ref, isNearViewport };
+}
+
 /**
  * Story 3.1 AC-1: Gradient area sparkline showing 30-day price movement.
  * Emerald if above 20-day SMA, rose if below. Gradient area fill underneath,
  * end-dot with concentric glow, and a tabular % chip in the top-right.
  */
 function SparklineInner({ ticker, width = 60, height = 28 }: SparklineProps) {
+  const { ref: visibilityRef, isNearViewport } = useNearViewport<HTMLDivElement>();
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const { data } = useQuery({
     queryKey: ['sparkline', ticker],
-    queryFn: () => api.chartOhlcv(ticker, 30),
+    queryFn: () => runSparklineRequest(() => api.chartOhlcv(ticker, 30)),
+    enabled: isNearViewport,
     staleTime: 600_000,
   });
 
@@ -98,6 +153,7 @@ function SparklineInner({ ticker, width = 60, height = 28 }: SparklineProps) {
   if (!bars || bars.length < 3) {
     return (
       <div
+        ref={visibilityRef}
         style={{ width, height }}
         className="opacity-20 flex items-center justify-center text-[8px] text-[var(--text-muted)]"
       >
@@ -113,17 +169,19 @@ function SparklineInner({ ticker, width = 60, height = 28 }: SparklineProps) {
   const up = pctChg >= 0;
 
   return (
-    <canvas
-      ref={canvasRef}
-      style={{
-        width,
-        height,
-        display: 'block',
-        filter: up
-          ? 'drop-shadow(0 0 2px rgba(62,232,165,0.35))'
-          : 'drop-shadow(0 0 2px rgba(255,107,138,0.35))',
-      }}
-    />
+    <div ref={visibilityRef} style={{ width, height }}>
+      <canvas
+        ref={canvasRef}
+        style={{
+          width,
+          height,
+          display: 'block',
+          filter: up
+            ? 'drop-shadow(0 0 2px rgba(62,232,165,0.35))'
+            : 'drop-shadow(0 0 2px rgba(255,107,138,0.35))',
+        }}
+      />
+    </div>
   );
 }
 
@@ -134,14 +192,16 @@ export const Sparkline = memo(SparklineInner);
  * in its own table column. Shares the same React-Query cache via queryKey.
  */
 function SparklinePctInner({ ticker }: { ticker: string }) {
+  const { ref: visibilityRef, isNearViewport } = useNearViewport<HTMLSpanElement>();
   const { data } = useQuery({
     queryKey: ['sparkline', ticker],
-    queryFn: () => api.chartOhlcv(ticker, 30),
+    queryFn: () => runSparklineRequest(() => api.chartOhlcv(ticker, 30)),
+    enabled: isNearViewport,
     staleTime: 600_000,
   });
   const bars = data?.data;
   if (!bars || bars.length < 3) {
-    return <span className="text-[10px] text-[var(--text-muted)]">—</span>;
+    return <span ref={visibilityRef} className="text-[10px] text-[var(--text-muted)]">—</span>;
   }
   const closes = bars.map((b: { close: number }) => b.close);
   const first = closes[0];
@@ -150,6 +210,7 @@ function SparklinePctInner({ ticker }: { ticker: string }) {
   const up = pctChg >= 0;
   return (
     <span
+      ref={visibilityRef}
       className="inline-block text-[10px] font-mono tabular-nums font-semibold px-1.5 py-0.5 rounded-md"
       style={{
         color: up ? 'var(--accent-emerald)' : 'var(--accent-rose)',

@@ -90,6 +90,12 @@ containing:
 - A large, focus-first text input for ticker entry.
 - A grid of color-coded chips, one per tracked symbol.
 - Each chip shows a colored dot (bull/bear) or amber warning (missing).
+- Chips are grouped into intensity bands: Big Greens, Greens, Soft
+  Greens, Mixed / Flat, Soft Reds, Reds, Big Reds, and Missing.
+- Symbols are sorted alphabetically inside each intensity band.
+- The "Big Greens / Big Reds" lens is exclusive: it renders only
+  absolute 1-week moves of at least 3%, split into Big Greens and Big
+  Reds. It does not show soft, mid, mixed, or missing names.
 - Remove via the `×` button on the chip. Future: swipe-left.
 
 When `symbols.length === 0` the drawer is auto-opened and the insight
@@ -224,3 +230,8 @@ Before adding a new control ask:
 
 - 2026-04-23 — Initial design doc. Introduces Insight Bar, unified
   segmented control, Refine popover, Manage drawer, sorting contract.
+- 2026-04-25 — Manage drawer ticker cloud becomes an intensity map:
+  green/red groups are ordered by move strength, with A-Z sorting inside
+  every band.
+- 2026-04-25 — Big Greens / Big Reds lens tightened to show only true
+  big green/red moves.

@@ -2129,9 +2129,9 @@ function WatchlistView({
   // Chip color mode in the Manage Drawer.
   //   'signal'   — nearest-label bullish/bearish (green/red).
   //   'horizon'  — whole-row greens vs reds verdict.
-  //   'bigmoves' — only large 1w movers get color; small ones are muted grey
-  //                so the eye locks onto Big Greens / Big Reds instantly.
-  const [chipColorMode, setChipColorMode] = useState<'signal' | 'horizon' | 'bigmoves'>('signal');
+  //   'bigmoves' — groups 1w movers by signed intensity, so Big Greens /
+  //                Big Reds become impossible to miss.
+  const [chipColorMode, setChipColorMode] = useState<'signal' | 'horizon' | 'bigmoves'>('horizon');
   // Refine popover — search / sector / sort are collapsed behind a single
   // trigger so the two primary rows (insight bar, segmented control) can
   // breathe.
@@ -2348,6 +2348,253 @@ function WatchlistView({
   );
 
   const addErrorMsg = add.error?.message;
+
+  const watchlistChipSections = useMemo(() => {
+    type ChipTone = 'green' | 'red' | 'neutral' | 'missing';
+    type ChipSectionKey =
+      | 'big_green'
+      | 'green'
+      | 'soft_green'
+      | 'mixed'
+      | 'soft_red'
+      | 'red'
+      | 'big_red'
+      | 'missing';
+    type ChipMeta = {
+      symbol: string;
+      title: string;
+      tone: ChipTone;
+      bg: string;
+      color: string;
+      border: string;
+      dot: string | null;
+      fontWeight: 400 | 500 | 600 | 700;
+      intensity: number;
+      isMissing: boolean;
+      percentLabel: string;
+    };
+    type ChipSection = {
+      key: ChipSectionKey;
+      label: string;
+      hint: string;
+      accent: string;
+      tint: string;
+      border: string;
+      items: ChipMeta[];
+    };
+
+    const BIG_MOVE_ABS_THRESHOLD = 0.03;
+    const sectionSpecs: Omit<ChipSection, 'items'>[] = [
+      {
+        key: 'big_green',
+        label: 'Big Greens',
+        hint: 'largest upside pressure',
+        accent: '#34d399',
+        tint: 'rgba(16,185,129,0.105)',
+        border: 'rgba(16,185,129,0.38)',
+      },
+      {
+        key: 'green',
+        label: 'Greens',
+        hint: 'positive and building',
+        accent: '#6ee7b7',
+        tint: 'rgba(52,211,153,0.070)',
+        border: 'rgba(52,211,153,0.26)',
+      },
+      {
+        key: 'soft_green',
+        label: 'Soft Greens',
+        hint: 'positive, low intensity',
+        accent: '#86efac',
+        tint: 'rgba(134,239,172,0.045)',
+        border: 'rgba(134,239,172,0.18)',
+      },
+      {
+        key: 'mixed',
+        label: 'Mixed / Flat',
+        hint: 'direction still undecided',
+        accent: '#cbd5e1',
+        tint: 'rgba(148,163,184,0.035)',
+        border: 'rgba(148,163,184,0.16)',
+      },
+      {
+        key: 'soft_red',
+        label: 'Soft Reds',
+        hint: 'negative, low intensity',
+        accent: '#fca5a5',
+        tint: 'rgba(252,165,165,0.040)',
+        border: 'rgba(252,165,165,0.18)',
+      },
+      {
+        key: 'red',
+        label: 'Reds',
+        hint: 'negative and building',
+        accent: '#f87171',
+        tint: 'rgba(248,113,113,0.065)',
+        border: 'rgba(248,113,113,0.26)',
+      },
+      {
+        key: 'big_red',
+        label: 'Big Reds',
+        hint: 'largest downside pressure',
+        accent: '#ef4444',
+        tint: 'rgba(239,68,68,0.095)',
+        border: 'rgba(239,68,68,0.36)',
+      },
+      {
+        key: 'missing',
+        label: 'Missing',
+        hint: 'not in the live signal set',
+        accent: '#fcd34d',
+        tint: 'rgba(251,191,36,0.060)',
+        border: 'rgba(251,191,36,0.28)',
+      },
+    ];
+
+    const groups = new Map<ChipSectionKey, ChipSection>(
+      sectionSpecs.map((spec) => [spec.key, { ...spec, items: [] }]),
+    );
+    const alphaSort = (a: ChipMeta, b: ChipMeta) =>
+      a.symbol.localeCompare(b.symbol, undefined, { numeric: true, sensitivity: 'base' });
+    const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+    const pctLabel = (value: number) => {
+      if (!Number.isFinite(value) || value === 0) return '0.00%';
+      const sign = value > 0 ? '+' : '';
+      return `${sign}${(value * 100).toFixed(2)}%`;
+    };
+    const bucketFor = (tone: ChipTone, absReturn: number, tier: number): ChipSectionKey => {
+      if (tone === 'missing') return 'missing';
+      if (tone === 'neutral') return 'mixed';
+      const size = absReturn >= 0.03 || tier === 3 ? 'big' : absReturn >= 0.015 || tier >= 2 ? 'mid' : 'soft';
+      if (tone === 'green') {
+        if (size === 'big') return 'big_green';
+        if (size === 'mid') return 'green';
+        return 'soft_green';
+      }
+      if (size === 'big') return 'big_red';
+      if (size === 'mid') return 'red';
+      return 'soft_red';
+    };
+    const paint = (tone: ChipTone, tier: number, intensity: number) => {
+      if (tone === 'missing') {
+        return {
+          bg: 'rgba(251,191,36,0.08)',
+          color: '#fcd34d',
+          border: 'rgba(251,191,36,0.26)',
+          dot: null,
+          fontWeight: 600 as const,
+        };
+      }
+      if (tone === 'neutral') {
+        return {
+          bg: 'rgba(148,163,184,0.06)',
+          color: '#cbd5e1',
+          border: 'rgba(148,163,184,0.20)',
+          dot: null,
+          fontWeight: 500 as const,
+        };
+      }
+      const isGreen = tone === 'green';
+      const bgA = lerp(0.06, isGreen ? 0.52 : 0.50, intensity);
+      const brA = lerp(0.20, 0.92, intensity);
+      return {
+        bg: `rgba(${isGreen ? '16,185,129' : '239,68,68'},${bgA.toFixed(3)})`,
+        color: isGreen
+          ? ['#bbf7d0', '#86efac', '#34d399', '#d1fae5'][tier]
+          : ['#fecaca', '#fca5a5', '#f87171', '#fee2e2'][tier],
+        border: `rgba(${isGreen ? '16,185,129' : '239,68,68'},${brA.toFixed(3)})`,
+        dot: isGreen ? '#10b981' : '#ef4444',
+        fontWeight: (tier >= 2 ? 700 : tier === 1 ? 600 : 500) as 500 | 600 | 700,
+      };
+    };
+
+    for (const sym of symbols) {
+      const isMissing = missingSymbols.includes(sym);
+      const row = isMissing ? undefined : rowForSymbol(sym);
+      const r7d = isMissing ? 0 : exp1w(sym);
+      const absReturn = Math.abs(r7d);
+      const raw = Math.min(1, absReturn / maxAbs1w);
+      const intensity = Math.max(0.08, Math.sqrt(raw));
+      const tier = intensity < 0.30 ? 0 : intensity < 0.55 ? 1 : intensity < 0.80 ? 2 : 3;
+      let tone: ChipTone = 'neutral';
+      let titleDetail = 'mixed';
+
+      if (isMissing) {
+        tone = 'missing';
+        titleDetail = 'not in current signal set';
+      } else if (row && chipColorMode === 'horizon') {
+        const horizonTone = rowHorizonColor(row);
+        tone = horizonTone === 'greens' ? 'green' : horizonTone === 'reds' ? 'red' : 'neutral';
+        titleDetail =
+          horizonTone === 'greens'
+            ? `green horizon tape, 1w ${pctLabel(r7d)}`
+            : horizonTone === 'reds'
+            ? `red horizon tape, 1w ${pctLabel(r7d)}`
+            : `mixed horizon tape, 1w ${pctLabel(r7d)}`;
+      } else if (row && chipColorMode === 'bigmoves') {
+        tone = r7d > 0 ? 'green' : r7d < 0 ? 'red' : 'neutral';
+        titleDetail = `1w ${pctLabel(r7d)}`;
+      } else if (row) {
+        const cls = classifyRow(row);
+        tone = cls === 'bullish' ? 'green' : cls === 'bearish' ? 'red' : 'neutral';
+        titleDetail = `${row.nearest_label || 'HOLD'}, 1w ${pctLabel(r7d)}`;
+      }
+
+      const style = paint(tone, tier, intensity);
+      if (chipColorMode === 'bigmoves' && absReturn < BIG_MOVE_ABS_THRESHOLD) {
+        continue;
+      }
+
+      const sectionKey = bucketFor(tone, absReturn, tier);
+      if (chipColorMode === 'bigmoves' && sectionKey !== 'big_green' && sectionKey !== 'big_red') {
+        continue;
+      }
+      groups.get(sectionKey)?.items.push({
+        symbol: sym,
+        title: `${sym} - ${titleDetail}`,
+        tone,
+        bg: style.bg,
+        color: style.color,
+        border: style.border,
+        dot: style.dot,
+        fontWeight: style.fontWeight,
+        intensity,
+        isMissing,
+        percentLabel: isMissing ? '' : pctLabel(r7d),
+      });
+    }
+
+    return sectionSpecs
+      .map((spec) => {
+        const section = groups.get(spec.key)!;
+        section.items.sort(alphaSort);
+        return section;
+      })
+      .filter((section) =>
+        section.items.length > 0 &&
+        (chipColorMode !== 'bigmoves' || section.key === 'big_green' || section.key === 'big_red')
+      );
+  }, [
+    symbols,
+    missingSymbols,
+    rowForSymbol,
+    exp1w,
+    maxAbs1w,
+    chipColorMode,
+    classifyRow,
+  ]);
+
+  const chipToneCounts = useMemo(() => {
+    let green = 0;
+    let red = 0;
+    for (const section of watchlistChipSections) {
+      for (const chip of section.items) {
+        if (chip.tone === 'green') green++;
+        else if (chip.tone === 'red') red++;
+      }
+    }
+    return { green, red };
+  }, [watchlistChipSections]);
 
   return (
     <div className="flex flex-col gap-3 fade-up-delay-3">
@@ -2711,7 +2958,7 @@ function WatchlistView({
                               ? 'Color chips by nearest-horizon signal (bullish / bearish)'
                               : opt.k === 'horizon'
                               ? 'Color chips by whole-row verdict (all greens vs all reds)'
-                              : 'Highlight only big 1-week movers (≥1.5%); small ones go neutral grey'
+                              : 'Show only big 1-week green/red moves (>=3%)'
                           }
                         >
                           {opt.k === 'horizon' && (
@@ -2732,154 +2979,134 @@ function WatchlistView({
                     })}
                   </div>
                 </div>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {symbols.map((sym) => {
-                    const isMissing = missingSymbols.includes(sym);
-                    const row = isMissing ? undefined : rowForSymbol(sym);
-                    // 1w intensity in [0..1] — |exp_ret_7d| normalised by the
-                    // strongest mover. sqrt curve amplifies mid-range so the
-                    // difference between a 0.5% and 2% mover is unmistakable.
-                    const r7d = isMissing ? 0 : exp1w(sym);
-                    const raw = Math.min(1, Math.abs(r7d) / maxAbs1w);
-                    const intensity = Math.max(0.08, Math.sqrt(raw));
-                    // Tier the chip into 4 visual buckets so adjacent chips
-                    // are obviously distinct, not a smooth alpha gradient.
-                    const tier = intensity < 0.30 ? 0 : intensity < 0.55 ? 1 : intensity < 0.80 ? 2 : 3;
-                    const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
-                    let bg = 'rgba(148,163,184,0.06)';
-                    let color = '#cbd5e1';
-                    let border = 'rgba(148,163,184,0.20)';
-                    let dot: string | null = null;
-                    let chipTitleSuffix = '';
-                    let fontWeight: 400 | 500 | 600 | 700 = 500;
-                    if (isMissing) {
-                      bg = 'rgba(251,191,36,0.08)';
-                      color = '#fcd34d';
-                      border = 'rgba(251,191,36,0.26)';
-                    } else if (row && chipColorMode === 'bigmoves') {
-                      // Big Greens / Big Reds lens — ignore the row verdict;
-                      // gate purely on |1w move|. Below 1.5% → neutral grey.
-                      // 1.5–3% → medium tint. ≥3% → vivid, bold, glowing.
-                      const absR = Math.abs(r7d);
-                      const sign = r7d >= 0 ? 1 : -1;
-                      let bigTier: 0 | 1 | 2 = 0;
-                      if (absR >= 0.03) bigTier = 2;
-                      else if (absR >= 0.015) bigTier = 1;
-                      if (bigTier === 0) {
-                        bg = 'rgba(148,163,184,0.05)';
-                        color = '#64748b';
-                        border = 'rgba(148,163,184,0.16)';
-                        dot = null;
-                        fontWeight = 400;
-                        chipTitleSuffix = ` — 1w ${(r7d * 100).toFixed(2)}% (small)`;
-                      } else if (sign > 0) {
-                        const bgA = bigTier === 2 ? 0.55 : 0.28;
-                        const brA = bigTier === 2 ? 0.95 : 0.55;
-                        bg = `rgba(16,185,129,${bgA})`;
-                        color = bigTier === 2 ? '#d1fae5' : '#34d399';
-                        border = `rgba(16,185,129,${brA})`;
-                        dot = '#10b981';
-                        fontWeight = bigTier === 2 ? 700 : 600;
-                        chipTitleSuffix = ` — BIG green 1w +${(r7d * 100).toFixed(2)}%`;
-                      } else {
-                        const bgA = bigTier === 2 ? 0.55 : 0.28;
-                        const brA = bigTier === 2 ? 0.95 : 0.55;
-                        bg = `rgba(239,68,68,${bgA})`;
-                        color = bigTier === 2 ? '#fee2e2' : '#f87171';
-                        border = `rgba(239,68,68,${brA})`;
-                        dot = '#ef4444';
-                        fontWeight = bigTier === 2 ? 700 : 600;
-                        chipTitleSuffix = ` — BIG red 1w ${(r7d * 100).toFixed(2)}%`;
-                      }
-                    } else if (row && chipColorMode === 'horizon') {
-                      // Greens vs Reds lens — 4 tiers, wide alpha range so
-                      // strongest movers are clearly separated from the rest.
-                      const hc = rowHorizonColor(row);
-                      const bgA = lerp(0.06, 0.55, intensity);
-                      const brA = lerp(0.20, 0.95, intensity);
-                      fontWeight = tier >= 2 ? 700 : tier === 1 ? 600 : 500;
-                      if (hc === 'greens') {
-                        bg = `rgba(16,185,129,${bgA.toFixed(3)})`;
-                        // Step palette: tier 0 → pale, tier 3 → vivid white-green.
-                        color = ['#86efac', '#6ee7b7', '#34d399', '#a7f3d0'][tier];
-                        border = `rgba(16,185,129,${brA.toFixed(3)})`;
-                        dot = '#10b981';
-                        chipTitleSuffix = ` — all greens (1w +${(Math.abs(r7d) * 100).toFixed(2)}%)`;
-                      } else if (hc === 'reds') {
-                        // Pure red, not orange.
-                        bg = `rgba(239,68,68,${bgA.toFixed(3)})`;
-                        color = ['#fca5a5', '#f87171', '#ef4444', '#fecaca'][tier];
-                        border = `rgba(239,68,68,${brA.toFixed(3)})`;
-                        dot = '#ef4444';
-                        chipTitleSuffix = ` — all reds (1w −${(Math.abs(r7d) * 100).toFixed(2)}%)`;
-                      } else {
-                        bg = 'rgba(148,163,184,0.06)';
-                        color = '#94a3b8';
-                        border = 'rgba(148,163,184,0.20)';
-                        dot = null;
-                        chipTitleSuffix = ' — mixed';
-                      }
-                    } else if (row) {
-                      const cls = classifyRow(row);
-                      // Bullish/bearish lens — same 4-tier scheme.
-                      const bgA = lerp(0.04, 0.42, intensity);
-                      const brA = lerp(0.16, 0.80, intensity);
-                      fontWeight = tier >= 2 ? 700 : tier === 1 ? 600 : 500;
-                      if (cls === 'bullish') {
-                        bg = `rgba(52,211,153,${bgA.toFixed(3)})`;
-                        color = ['#a7f3d0', '#6ee7b7', '#34d399', '#d1fae5'][tier];
-                        border = `rgba(52,211,153,${brA.toFixed(3)})`;
-                        dot = '#34d399';
-                        chipTitleSuffix = ` — 1w +${(r7d * 100).toFixed(2)}%`;
-                      } else if (cls === 'bearish') {
-                        bg = `rgba(239,68,68,${bgA.toFixed(3)})`;
-                        color = ['#fecaca', '#fca5a5', '#f87171', '#fee2e2'][tier];
-                        border = `rgba(239,68,68,${brA.toFixed(3)})`;
-                        dot = '#ef4444';
-                        chipTitleSuffix = ` — 1w ${(r7d * 100).toFixed(2)}%`;
-                      }
-                    }
-                    return (
-                      <span
-                        key={sym}
-                        className="group inline-flex items-center gap-1 pl-2 pr-1 py-1 rounded-md text-[11px] tabular-nums transition-all duration-[140ms] hover:-translate-y-[1px]"
-                        style={{ background: bg, color, border: `1px solid ${border}`, fontWeight }}
-                        title={
-                          isMissing
-                            ? `${sym} — not in current signal set`
-                            : row
-                            ? `${sym} — ${row.nearest_label || 'HOLD'}${chipTitleSuffix}`
-                            : sym
-                        }
+                <div
+                  className="mt-3 overflow-hidden"
+                  style={{
+                    background:
+                      'linear-gradient(180deg, rgba(255,255,255,0.026) 0%, rgba(255,255,255,0.006) 100%)',
+                    border: '1px solid rgba(255,255,255,0.065)',
+                    borderRadius: '14px',
+                    boxShadow:
+                      '0 1px 0 rgba(255,255,255,0.05) inset, 0 12px 32px -20px rgba(0,0,0,0.7)',
+                  }}
+                  aria-label="Watchlist tickers grouped by intensity"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-b border-white/[0.045]">
+                    <div className="flex items-center gap-2">
+                      <Layers className="w-3.5 h-3.5" style={{ color: '#c4b5fd' }} />
+                      <div className="leading-tight">
+                        <div className="text-[11px] font-semibold text-[#e2e8f0]">
+                          {chipColorMode === 'bigmoves' ? 'Big move map' : 'Intensity map'}
+                        </div>
+                        <div className="text-[10px] text-[var(--text-secondary)]">
+                          {chipColorMode === 'bigmoves'
+                            ? 'only big green/red moves, alphabetized inside each band'
+                            : 'grouped by move strength, alphabetized inside each band'}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="inline-flex items-center gap-1 text-[10px] text-[var(--text-secondary)] tabular-nums">
+                      <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: '#10b981' }} />
+                      {chipToneCounts.green}
+                      <span className="mx-1 opacity-40">/</span>
+                      <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: '#ef4444' }} />
+                      {chipToneCounts.red}
+                    </div>
+                  </div>
+
+                  <div className="divide-y divide-white/[0.04]">
+                    {watchlistChipSections.length === 0 ? (
+                      <div className="px-3 py-4 text-[11px] text-[var(--text-secondary)]">
+                        No big green/red moves right now.
+                      </div>
+                    ) : watchlistChipSections.map((section) => (
+                      <section
+                        key={section.key}
+                        className="px-3 py-2.5"
+                        style={{
+                          background: `linear-gradient(90deg, ${section.tint} 0%, transparent 54%)`,
+                        }}
                       >
-                        {isMissing ? (
-                          <AlertTriangle className="w-3 h-3" />
-                        ) : dot ? (
+                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span
+                              className="inline-block w-1 h-4 rounded-full"
+                              style={{
+                                background: section.accent,
+                                boxShadow: `0 0 16px ${section.border}`,
+                              }}
+                            />
+                            <div className="min-w-0">
+                              <div className="flex items-baseline gap-1.5">
+                                <span
+                                  className="text-[11px] font-semibold"
+                                  style={{ color: section.accent }}
+                                >
+                                  {section.label}
+                                </span>
+                                <span className="text-[10px] tabular-nums text-[var(--text-secondary)]">
+                                  {section.items.length}
+                                </span>
+                              </div>
+                              <div className="text-[10px] text-[var(--text-secondary)] truncate">
+                                {section.hint}
+                              </div>
+                            </div>
+                          </div>
                           <span
-                            className="inline-block rounded-full"
-                            style={{
-                              width: 6,
-                              height: 6,
-                              background: dot,
-                              // Halo grows with 1w intensity — subtle for weak
-                              // signals, prominent glow for strongest movers.
-                              boxShadow: `0 0 0 2px ${dot}${Math.round(lerp(0x14, 0x55, intensity)).toString(16).padStart(2, '0')}`,
-                            }}
-                          />
-                        ) : null}
-                        <span>{sym}</span>
-                        <button
-                          type="button"
-                          onClick={() => remove.mutate(sym)}
-                          disabled={remove.isPending}
-                          className="ml-0.5 w-4 h-4 inline-flex items-center justify-center rounded opacity-60 hover:opacity-100 hover:bg-white/5 disabled:opacity-30"
-                          title={`Remove ${sym}`}
-                        >
-                          <X className="w-3 h-3" />
-                        </button>
-                      </span>
-                    );
-                  })}
+                            className="text-[9px] uppercase tracking-[0.10em] font-semibold"
+                            style={{ color: 'rgba(148,163,184,0.62)' }}
+                          >
+                            A-Z
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {section.items.map((chip) => (
+                            <span
+                              key={chip.symbol}
+                              className="group inline-flex items-center gap-1 pl-2 pr-1 py-1 rounded-md text-[11px] tabular-nums transition-all duration-[140ms] hover:-translate-y-[1px]"
+                              style={{
+                                background: chip.bg,
+                                color: chip.color,
+                                border: `1px solid ${chip.border}`,
+                                fontWeight: chip.fontWeight,
+                              }}
+                              title={chip.title}
+                            >
+                              {chip.isMissing ? (
+                                <AlertTriangle className="w-3 h-3" />
+                              ) : chip.dot ? (
+                                <span
+                                  className="inline-block rounded-full"
+                                  style={{
+                                    width: 6,
+                                    height: 6,
+                                    background: chip.dot,
+                                    boxShadow: `0 0 0 2px ${chip.dot}${Math.round((0x14 + (0x55 - 0x14) * chip.intensity)).toString(16).padStart(2, '0')}`,
+                                  }}
+                                />
+                              ) : null}
+                              <span>{chip.symbol}</span>
+                              {chip.percentLabel && (
+                                <span className="hidden sm:inline opacity-55 text-[10px]">
+                                  {chip.percentLabel}
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => remove.mutate(chip.symbol)}
+                                disabled={remove.isPending}
+                                className="ml-0.5 w-4 h-4 inline-flex items-center justify-center rounded opacity-60 hover:opacity-100 hover:bg-white/5 disabled:opacity-30"
+                                title={`Remove ${chip.symbol}`}
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      </section>
+                    ))}
+                  </div>
                 </div>
               </>
             )}
