@@ -50,6 +50,16 @@ def _emit_log(text: str) -> None:
     sys.stdout.flush()
 
 
+def _parse_metric_float(value: str) -> Optional[float]:
+    text = value.strip().replace(",", "")
+    if not text or text in {"-", "—", "nan", "NaN"}:
+        return None
+    try:
+        return float(text.rstrip("%"))
+    except ValueError:
+        return None
+
+
 def _scan(dir_path: Path, suffix: str) -> Dict[str, Tuple[float, int]]:
     """Return {symbol: (mtime, size)} for files matching *.<suffix> in dir_path."""
     out: Dict[str, Tuple[float, int]] = {}
@@ -348,6 +358,7 @@ def _run(mode: str) -> int:
     model_pick_rx = re.compile(
         r"^\s*(.+?)\s{2,}(\d{1,3})%\s+(-?\d+)\s+(\d+)\s*$"
     )
+    tune_result_symbol_rx = re.compile(r"^[A-Z0-9][A-Z0-9._=^\-]{0,14}$")
     # Refresh logs emit: `    Pass 2/5  (400 symbols)`, `    ● 192 ok  ·  305 pending`,
     # and `    ✓ 530/532 complete` when a pass finishes with no pending.
     pass_rx = re.compile(r"Pass\s+(\d+)\s*/\s*(\d+)")
@@ -367,6 +378,7 @@ def _run(mode: str) -> int:
 
     last_sub_marker: Optional[str] = None
     seen_models: Set[str] = set()
+    seen_asset_completions: Set[str] = set()
     current_pass: Tuple[int, int] = (0, 0)
     # Boxed-symbol/model-pick state for the two-line pattern above.
     last_boxed_symbol: Optional[str] = None
@@ -376,6 +388,8 @@ def _run(mode: str) -> int:
     traceback_lines: list = []
     last_error: Optional[str] = None
     raw_log_line_count = 0
+    latest_refresh_ok = 0
+    latest_refresh_total = 0
 
     try:
         assert proc.stdout is not None
@@ -447,6 +461,17 @@ def _run(mode: str) -> int:
                                 "model": model_name,
                             }
                         )
+                        if symbol not in seen_asset_completions:
+                            seen_asset_completions.add(symbol)
+                            _emit(
+                                {
+                                    "event": "asset",
+                                    "symbol": symbol,
+                                    "status": "ok",
+                                    "detail": model_name,
+                                    "model": model_name,
+                                }
+                            )
                 else:
                     # Track the most recent boxed ticker.
                     mb = box_symbol_rx.match(line)
@@ -456,17 +481,25 @@ def _run(mode: str) -> int:
                         mp_pick = model_pick_rx.match(prev_nonempty_line)
                         if mp_pick:
                             model_name = mp_pick.group(1).strip()
+                            weight_pct = int(mp_pick.group(2))
+                            bic = int(mp_pick.group(3))
+                            hyv = int(mp_pick.group(4))
                             symbol = last_boxed_symbol
                             key = f"{symbol}::{model_name}"
                             if key not in seen_models:
                                 seen_models.add(key)
-                                _emit(
-                                    {
-                                        "event": "model",
-                                        "symbol": symbol,
-                                        "model": model_name,
-                                    }
-                                )
+                            _emit(
+                                {
+                                    "event": "model",
+                                    "symbol": symbol,
+                                    "model": model_name,
+                                    "weight_pct": weight_pct,
+                                    "bic": bic,
+                                    "hyv": hyv,
+                                }
+                            )
+                            if symbol not in seen_asset_completions:
+                                seen_asset_completions.add(symbol)
                                 # Also emit an asset-completion event so the
                                 # overall processed counter advances during tune.
                                 _emit(
@@ -476,8 +509,49 @@ def _run(mode: str) -> int:
                                         "status": "ok",
                                         "detail": model_name,
                                         "model": model_name,
+                                        "weight_pct": weight_pct,
+                                        "bic": bic,
+                                        "hyv": hyv,
                                     }
                                 )
+
+                    # Rich tune results table: │ Asset │ Model │ ... │ BIC │ Hyv │ CRPS │ PIT p │ St │
+                    # These rows carry the premium metrics the UI should show as soon as they stream.
+                    if "│" in line:
+                        cols = [col.strip() for col in line.strip().strip("│").split("│")]
+                        if len(cols) >= 13 and tune_result_symbol_rx.match(cols[0]) and cols[0].lower() != "asset":
+                            symbol = cols[0]
+                            model_name = cols[1]
+                            bic_val = _parse_metric_float(cols[-5])
+                            hyv_val = _parse_metric_float(cols[-4])
+                            crps_val = _parse_metric_float(cols[-3])
+                            pit_val = _parse_metric_float(cols[-2])
+                            status_text = cols[-1]
+                            if model_name and model_name.lower() != "model":
+                                key = f"{symbol}::{model_name}"
+                                if key not in seen_models:
+                                    seen_models.add(key)
+                                payload = {
+                                    "event": "model",
+                                    "symbol": symbol,
+                                    "model": model_name,
+                                    "bic": bic_val,
+                                    "hyv": hyv_val,
+                                    "crps": crps_val,
+                                    "pit_p": pit_val,
+                                    "fit_status": status_text,
+                                }
+                                _emit(payload)
+                                if symbol not in seen_asset_completions:
+                                    seen_asset_completions.add(symbol)
+                                    _emit(
+                                        {
+                                            **payload,
+                                            "event": "asset",
+                                            "status": "ok",
+                                            "detail": model_name,
+                                        }
+                                    )
 
             # Refresh-phase enrichment: pass number + ok/pending counters.
             if current_phase.kind == "download":
@@ -497,6 +571,8 @@ def _run(mode: str) -> int:
                 if mpp:
                     ok_n = int(mpp.group(1))
                     pending_n = int(mpp.group(2))
+                    latest_refresh_ok = ok_n
+                    latest_refresh_total = ok_n + pending_n
                     _emit(
                         {
                             "event": "refresh",
@@ -511,6 +587,8 @@ def _run(mode: str) -> int:
                     if mpc:
                         ok_n = int(mpc.group(1))
                         total_n = int(mpc.group(2))
+                        latest_refresh_ok = ok_n
+                        latest_refresh_total = total_n
                         _emit(
                             {
                                 "event": "refresh",
@@ -596,8 +674,8 @@ def _run(mode: str) -> int:
         {
             "event": "done",
             "status": "ok" if rc == 0 else "fail",
-            "done": len(final_done),
-            "total": total,
+            "done": max(len(final_done), latest_refresh_ok),
+            "total": max(total, latest_refresh_total),
             "elapsed_s": round(time.time() - start_ts, 1),
             "exit_code": rc,
             "error": last_error,

@@ -22,6 +22,7 @@ import {
   useJobStore,
   type JobAssetEntry,
   type JobLogLine,
+  type JobModelMeta,
   type JobMode,
   type JobRefreshPassState,
   type JobStatus,
@@ -42,6 +43,7 @@ const EMPTY_ASSETS: JobAssetEntry[] = [];
 const EMPTY_LOGS: JobLogLine[] = [];
 const EMPTY_MODEL_COUNTS: Record<string, number> = {};
 const EMPTY_MODEL_BY_SYMBOL: Record<string, string> = {};
+const EMPTY_MODEL_META_BY_SYMBOL: Record<string, JobModelMeta> = {};
 
 function statusTone(status: JobStatus) {
   switch (status) {
@@ -58,6 +60,22 @@ function hashHue(value: string) {
   let hash = 0;
   for (let i = 0; i < value.length; i += 1) hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
   return hash % 360;
+}
+
+function compactMetric(value: number) {
+  return Math.abs(value) >= 1000 ? `${Math.round(value / 100) / 10}k` : `${value}`;
+}
+
+function fixedMetric(value: number, digits: number) {
+  return Number.isFinite(value) ? value.toFixed(digits) : '—';
+}
+
+function MetricPill({ label, value, hue }: { label: string; value: string; hue: number }) {
+  return (
+    <span className="rounded-full px-1.5 py-0.5 text-[9px] font-semibold tabular-nums" style={{ color: `hsl(${hue} 78% 82%)`, background: `hsla(${hue},72%,58%,0.12)`, border: `1px solid hsla(${hue},72%,62%,0.22)` }}>
+      <span className="opacity-60">{label}</span> {value}
+    </span>
+  );
 }
 
 function titleForMode(mode: JobMode | null) {
@@ -85,6 +103,7 @@ export default function JobLiveActivity() {
   const clearTerminalJob = useJobStore((state) => state.clearTerminalJob);
   const assets = useJobStore((state) => state.expanded ? state.assets : EMPTY_ASSETS);
   const modelBySymbol = useJobStore((state) => state.expanded ? state.modelBySymbol : EMPTY_MODEL_BY_SYMBOL);
+  const modelMetaBySymbol = useJobStore((state) => state.expanded ? state.modelMetaBySymbol : EMPTY_MODEL_META_BY_SYMBOL);
   const modelCounts = useJobStore((state) => state.expanded ? state.modelCounts : EMPTY_MODEL_COUNTS);
   const logLines = useJobStore((state) => state.rawLogOpen ? state.logLines : EMPTY_LOGS);
   const prevStatusRef = useRef<JobStatus>(status);
@@ -124,6 +143,20 @@ export default function JobLiveActivity() {
       .map(([name, count]) => ({ name, count, hue: hashHue(name) }));
   }, [modelCounts, expanded]);
   const totalModelled = useMemo(() => expanded ? Object.values(modelCounts).reduce((sum, value) => sum + value, 0) : 0, [modelCounts, expanded]);
+  const recentModelWinners = useMemo(() => {
+    if (!expanded) return [];
+    return Object.entries(modelMetaBySymbol)
+      .sort((a, b) => b[1].updatedAt - a[1].updatedAt)
+      .slice(0, 12)
+      .map(([symbol, meta]) => ({ symbol, meta, hue: hashHue(`${symbol}:${meta.model}`) }));
+  }, [modelMetaBySymbol, expanded]);
+  const fallbackModelWinners = useMemo(() => {
+    if (!expanded || recentModelWinners.length > 0) return [];
+    return Object.entries(modelBySymbol)
+      .slice(-12)
+      .reverse()
+      .map(([symbol, model]) => ({ symbol, model, hue: hashHue(`${symbol}:${model}`) }));
+  }, [modelBySymbol, expanded, recentModelWinners.length]);
 
   useEffect(() => {
     if (prevStatusRef.current === 'running' && status === 'completed') {
@@ -153,6 +186,7 @@ export default function JobLiveActivity() {
     errorMsg,
     refreshPass: refreshPass as JobRefreshPassState | null,
     modelBySymbol,
+    modelMetaBySymbol,
     modelCounts,
     surfaceVisible,
     expanded,
@@ -170,10 +204,6 @@ export default function JobLiveActivity() {
         @keyframes liveActivityGlow {
           0%, 100% { transform: translate3d(0,0,0) scale(1); opacity: 0.78; }
           50% { transform: translate3d(10px,-8px,0) scale(1.08); opacity: 1; }
-        }
-        @keyframes liveActivityShimmer {
-          0% { transform: translateX(-120%); }
-          100% { transform: translateX(120%); }
         }
         @keyframes liveActivityRise {
           from { opacity: 0; transform: translateY(12px) scale(0.98); filter: blur(4px); }
@@ -273,27 +303,20 @@ export default function JobLiveActivity() {
               </div>
             </div>
 
-            <div className="relative h-[4px] overflow-hidden" style={{ background: 'rgba(255,255,255,0.045)' }}>
+            <div className="relative h-2 overflow-hidden rounded-full mx-5 mb-4 p-[1px]" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.13), rgba(255,255,255,0.035))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.35)' }}>
               <div
-                className="h-full transition-[width] duration-700 ease-out"
+                className="relative h-full rounded-full transition-[width] duration-700 ease-out"
                 style={{
                   width: `${progressPct}%`,
                   background: job.status === 'failed' || job.status === 'error'
-                    ? 'linear-gradient(90deg,#f43f5e,#fb7185)'
-                    : `linear-gradient(90deg, ${info.color}, #38d9f5)`,
-                  boxShadow: `0 0 16px ${info.color}77`,
+                    ? 'linear-gradient(90deg,#f43f5e,#fb7185,#fecdd3)'
+                    : `linear-gradient(90deg, ${info.color} 0%, #38d9f5 58%, rgba(255,255,255,0.92) 100%)`,
+                  boxShadow: `0 0 24px -8px ${info.color}, inset 0 1px 0 rgba(255,255,255,0.34)`,
                 }}
-              />
-              {isRunning && (
-                <div
-                  className="absolute inset-y-0 job-live-activity-anim"
-                  style={{
-                    width: `${Math.max(progressPct, 8)}%`,
-                    background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.28), transparent)',
-                    animation: 'liveActivityShimmer 1.8s linear infinite',
-                  }}
-                />
-              )}
+              >
+                <span aria-hidden className="absolute inset-x-1 top-0 h-px rounded-full" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.72), transparent)' }} />
+                {isRunning && progressPct > 2 && <span aria-hidden className="absolute right-0 top-1/2 h-3 w-3 -translate-y-1/2 translate-x-1/2 rounded-full" style={{ background: '#ffffff', boxShadow: `0 0 18px 4px ${info.color}88` }} />}
+              </div>
             </div>
           </div>
 
@@ -389,6 +412,64 @@ export default function JobLiveActivity() {
               </section>
             )}
 
+            {(recentModelWinners.length > 0 || fallbackModelWinners.length > 0) && (
+              <section className="rounded-[20px] p-4" style={{ background: 'radial-gradient(520px 180px at 10% -20%, rgba(167,139,250,0.14), transparent 58%), linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.015))', border: '1px solid rgba(255,255,255,0.085)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06)' }}>
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Sparkles className="h-4 w-4 shrink-0" style={{ color: info.color }} />
+                    <div className="min-w-0">
+                      <div className="text-[10px] uppercase tracking-[0.13em] text-[var(--text-muted)] font-semibold">Winning models</div>
+                      <div className="mt-0.5 truncate text-[12px] text-[var(--text-secondary)]">Latest stock → champion distribution</div>
+                    </div>
+                  </div>
+                  <span className="rounded-full px-2.5 py-1 text-[10px] font-semibold tabular-nums" style={{ color: '#ddd6fe', background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.24)' }}>
+                    {recentModelWinners.length || fallbackModelWinners.length} latest
+                  </span>
+                </div>
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-2">
+                  {recentModelWinners.map((winner) => (
+                    <div
+                      key={`${winner.symbol}-${winner.meta.model}`}
+                      className="group relative overflow-hidden rounded-[16px] px-3 py-2.5"
+                      style={{
+                        background: `linear-gradient(150deg, hsla(${winner.hue},72%,58%,0.13), rgba(255,255,255,0.025))`,
+                        border: `1px solid hsla(${winner.hue},72%,62%,0.30)`,
+                        boxShadow: `0 12px 30px -26px hsla(${winner.hue},72%,58%,0.95), inset 0 1px 0 rgba(255,255,255,0.055)`,
+                      }}
+                      title={`${winner.symbol} winner: ${winner.meta.model}`}
+                    >
+                      <div aria-hidden className="absolute inset-x-3 top-0 h-px" style={{ background: `linear-gradient(90deg, transparent, hsla(${winner.hue},72%,70%,0.75), transparent)` }} />
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono text-[12px] font-semibold tracking-[-0.02em] text-white truncate">{winner.symbol}</span>
+                        <span className="rounded-full px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-[0.09em]" style={{ color: `hsl(${winner.hue} 80% 78%)`, background: `hsla(${winner.hue},72%,58%,0.16)`, border: `1px solid hsla(${winner.hue},72%,62%,0.32)` }}>Winner</span>
+                      </div>
+                      <div className="mt-1.5 truncate text-[11px] font-medium tracking-[-0.01em]" style={{ color: `hsl(${winner.hue} 80% 78%)` }}>
+                        {winner.meta.model}
+                      </div>
+                      {(winner.meta.weightPct != null || winner.meta.bic != null || winner.meta.hyv != null || winner.meta.crps != null || winner.meta.pitP != null) && (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {winner.meta.weightPct != null && <MetricPill label="W" value={`${winner.meta.weightPct}%`} hue={winner.hue} />}
+                          {winner.meta.bic != null && <MetricPill label="BIC" value={compactMetric(winner.meta.bic)} hue={winner.hue} />}
+                          {winner.meta.hyv != null && <MetricPill label="Hyv" value={compactMetric(winner.meta.hyv)} hue={winner.hue} />}
+                          {winner.meta.crps != null && <MetricPill label="CRPS" value={fixedMetric(winner.meta.crps, 4)} hue={winner.hue} />}
+                          {winner.meta.pitP != null && <MetricPill label="PIT" value={fixedMetric(winner.meta.pitP, 3)} hue={winner.hue} />}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {fallbackModelWinners.map((winner) => (
+                    <div key={`${winner.symbol}-${winner.model}`} className="rounded-[16px] px-3 py-2.5" style={{ background: `linear-gradient(150deg, hsla(${winner.hue},72%,58%,0.10), rgba(255,255,255,0.025))`, border: `1px solid hsla(${winner.hue},72%,62%,0.24)` }} title={`${winner.symbol} winner: ${winner.model}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono text-[12px] font-semibold text-white truncate">{winner.symbol}</span>
+                        <span className="rounded-full px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-[0.09em]" style={{ color: `hsl(${winner.hue} 80% 78%)`, background: `hsla(${winner.hue},72%,58%,0.16)` }}>Winner</span>
+                      </div>
+                      <div className="mt-1.5 truncate text-[11px] font-medium" style={{ color: `hsl(${winner.hue} 80% 78%)` }}>{winner.model}</div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
             {recentAssets.length > 0 && (
               <section>
                 <div className="mb-2 flex items-center justify-between">
@@ -397,15 +478,32 @@ export default function JobLiveActivity() {
                 </div>
                 <div className="grid grid-cols-[repeat(auto-fill,minmax(138px,1fr))] gap-1.5">
                   {recentAssets.map((asset, index) => {
-                    const model = asset.model ?? job.modelBySymbol[asset.symbol];
+                    const meta = job.modelMetaBySymbol[asset.symbol];
+                    const model = asset.model ?? meta?.model ?? job.modelBySymbol[asset.symbol];
                     const ok = asset.status === 'ok';
+                    const hue = hashHue(`${asset.symbol}:${model ?? asset.detail ?? asset.status}`);
+                    const weightPct = asset.weightPct ?? meta?.weightPct;
+                    const bic = asset.bic ?? meta?.bic;
+                    const hyv = asset.hyv ?? meta?.hyv;
+                    const crps = asset.crps ?? meta?.crps;
+                    const pitP = asset.pitP ?? meta?.pitP;
                     return (
-                      <div key={`${asset.symbol}-${index}`} className="rounded-xl px-2.5 py-2 font-mono" style={{ background: ok ? 'rgba(16,185,129,0.065)' : 'rgba(244,63,94,0.08)', border: `1px solid ${ok ? 'rgba(16,185,129,0.20)' : 'rgba(244,63,94,0.28)'}` }} title={model ? `${asset.symbol} · ${model}` : asset.detail ?? asset.symbol}>
+                      <div key={`${asset.symbol}-${index}`} className="rounded-[16px] px-3 py-2.5 font-mono" style={{ background: ok ? `linear-gradient(150deg, hsla(${hue},70%,58%,0.13), rgba(255,255,255,0.026))` : 'rgba(244,63,94,0.08)', border: `1px solid ${ok ? `hsla(${hue},70%,62%,0.28)` : 'rgba(244,63,94,0.28)'}`, boxShadow: ok ? `0 14px 32px -28px hsla(${hue},70%,58%,0.95), inset 0 1px 0 rgba(255,255,255,0.045)` : undefined }} title={model ? `${asset.symbol} · winner: ${model}` : asset.detail ?? asset.symbol}>
                         <div className="flex items-center gap-1.5 min-w-0">
                           {ok ? <CheckCircle2 className="h-3 w-3 shrink-0" style={{ color: '#10b981' }} /> : <XCircle className="h-3 w-3 shrink-0" style={{ color: '#f43f5e' }} />}
                           <span className="truncate text-[11px] font-semibold text-[var(--text-primary)]">{asset.symbol}</span>
+                          {model && <span className="ml-auto rounded px-1 text-[8px] uppercase tracking-[0.08em]" style={{ color: `hsl(${hue} 80% 78%)`, background: `hsla(${hue},70%,58%,0.13)` }}>win</span>}
                         </div>
-                        {model && <div className="mt-1 truncate pl-[18px] text-[9.5px] tracking-[-0.01em]" style={{ color: info.color, opacity: 0.86 }}>{model}</div>}
+                        {model && <div className="mt-1 truncate pl-[18px] text-[10px] font-medium tracking-[-0.01em]" style={{ color: `hsl(${hue} 80% 78%)`, opacity: 0.96 }}>{model}</div>}
+                        {(weightPct != null || bic != null || hyv != null || crps != null || pitP != null) && (
+                          <div className="mt-2 flex flex-wrap gap-1 pl-[18px]">
+                            {weightPct != null && <MetricPill label="W" value={`${weightPct}%`} hue={hue} />}
+                            {bic != null && <MetricPill label="BIC" value={compactMetric(bic)} hue={hue} />}
+                            {hyv != null && <MetricPill label="Hyv" value={compactMetric(hyv)} hue={hue} />}
+                            {crps != null && <MetricPill label="CRPS" value={fixedMetric(crps, 4)} hue={hue} />}
+                            {pitP != null && <MetricPill label="PIT" value={fixedMetric(pitP, 3)} hue={hue} />}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -511,8 +609,10 @@ export default function JobLiveActivity() {
                 )}
               </div>
               <div className="mt-2 flex items-center gap-2">
-                <div className="h-1.5 flex-1 overflow-hidden rounded-full" style={{ background: 'rgba(255,255,255,0.07)' }}>
-                  <div className="h-full rounded-full transition-[width] duration-700" style={{ width: `${progressPct}%`, background: `linear-gradient(90deg, ${info.color}, #38d9f5)`, boxShadow: `0 0 10px ${info.color}77` }} />
+                <div className="h-2 flex-1 overflow-hidden rounded-full p-[1px]" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.13), rgba(255,255,255,0.04))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.35)' }}>
+                  <div className="relative h-full rounded-full transition-[width] duration-700" style={{ width: `${progressPct}%`, background: `linear-gradient(90deg, ${info.color} 0%, #38d9f5 62%, rgba(255,255,255,0.88) 100%)`, boxShadow: `0 0 16px -7px ${info.color}, inset 0 1px 0 rgba(255,255,255,0.35)` }}>
+                    <span aria-hidden className="absolute inset-x-1 top-0 h-px rounded-full" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.75), transparent)' }} />
+                  </div>
                 </div>
                 <span className="text-[10px] font-mono text-[var(--text-secondary)] tabular-nums min-w-[74px] text-right">
                   {processed}{job.counters.total > 0 ? ` / ${job.counters.total}` : ''}

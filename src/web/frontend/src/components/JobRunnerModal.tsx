@@ -552,35 +552,24 @@ export function JobRunnerPanel({
 
       {/* Progress bar */}
       <div
-        className="relative h-[3px] overflow-hidden"
-        style={{ background: 'rgba(255,255,255,0.04)' }}
+        className="relative h-2 overflow-hidden rounded-full mx-4 mt-3 p-[1px]"
+        style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.13), rgba(255,255,255,0.04))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.35)' }}
       >
         <div
-          className="h-full transition-[width] duration-500 ease-out"
+          className="relative h-full rounded-full transition-[width] duration-500 ease-out"
           style={{
             width: `${progressPct}%`,
             background:
               status === 'failed' || status === 'error'
-                ? 'linear-gradient(90deg, #f43f5e, #fb7185)'
-                : `linear-gradient(90deg, ${modeColor}, ${modeColor}cc)`,
-            boxShadow: `0 0 10px ${modeColor}66`,
+                ? 'linear-gradient(90deg, #f43f5e, #fb7185, #fecdd3)'
+                : `linear-gradient(90deg, ${modeColor} 0%, #38d9f5 62%, rgba(255,255,255,0.9) 100%)`,
+            boxShadow: `0 0 18px -8px ${modeColor}, inset 0 1px 0 rgba(255,255,255,0.34)`,
           }}
-        />
-        {isRunning && progressPct > 0 && progressPct < 100 && (
-          <div
-            aria-hidden="true"
-            className="absolute top-0 bottom-0 pointer-events-none"
-            style={{
-              left: 0,
-              width: `${progressPct}%`,
-              background:
-                'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.22) 50%, transparent 100%)',
-              animation: 'jobShimmer 1.6s linear infinite',
-            }}
-          />
-        )}
+        >
+          <span aria-hidden className="absolute inset-x-1 top-0 h-px rounded-full" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.72), transparent)' }} />
+          {isRunning && progressPct > 2 && <span aria-hidden className="absolute right-0 top-1/2 h-3 w-3 -translate-y-1/2 translate-x-1/2 rounded-full" style={{ background: '#fff', boxShadow: `0 0 18px 4px ${modeColor}66` }} />}
+        </div>
       </div>
-      <style>{`@keyframes jobShimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }`}</style>
 
       {/* Body */}
       <div className="p-4 space-y-3">

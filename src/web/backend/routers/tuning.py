@@ -31,6 +31,13 @@ _RAW_LOG_MAX_BATCH_LINES = 24
 _RAW_LOG_MAX_BATCH_CHARS = 5000
 _DOWNLOAD_ASSET_SAMPLE_EVERY = 25
 _REFRESH_EVENT_MIN_INTERVAL_S = 0.75
+_PROJECT_JOB_PROCESS_PATTERNS = (
+    "web.backend.job_driver",
+    "src/data_ops/refresh_data.py",
+    "src/tuning/tune_ux.py",
+    "src/tuning/tune.py",
+    "src/decision/signals.py",
+)
 
 
 async def _terminate_process_tree(process: asyncio.subprocess.Process, timeout: float = 5.0) -> bool:
@@ -62,6 +69,82 @@ async def _terminate_process_tree(process: asyncio.subprocess.Process, timeout: 
     return True
 
 
+async def _kill_matching_project_job_processes(timeout: float = 1.2) -> int:
+    """Best-effort safety net for orphaned refresh/tune Python children.
+
+    Process-group termination is the primary path, but some subprocess pools can
+    survive as detached children. Restrict the fallback to this project's known
+    job entry points so we don't touch unrelated Python or uvicorn processes.
+    """
+    try:
+        ps = await asyncio.create_subprocess_exec(
+            "ps", "-axo", "pid=,pgid=,command=",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await ps.communicate()
+    except Exception:
+        return 0
+
+    current_pid = os.getpid()
+    current_pgid = os.getpgrp() if hasattr(os, "getpgrp") else None
+    matches: list[tuple[int, int, str]] = []
+    for raw_line in out.decode("utf-8", errors="replace").splitlines():
+        parts = raw_line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+            pgid = int(parts[1])
+        except ValueError:
+            continue
+        command = parts[2]
+        if pid == current_pid:
+            continue
+        if current_pgid is not None and pgid == current_pgid:
+            # Do not signal the API server's own process group.
+            continue
+        if any(pattern in command for pattern in _PROJECT_JOB_PROCESS_PATTERNS):
+            matches.append((pid, pgid, command))
+
+    if not matches:
+        return 0
+
+    signalled: set[int] = set()
+    for pid, pgid, _command in matches:
+        try:
+            if hasattr(os, "killpg") and pgid > 0:
+                os.killpg(pgid, signal.SIGTERM)
+                signalled.add(pgid)
+            else:
+                os.kill(pid, signal.SIGTERM)
+                signalled.add(pid)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            pass
+
+    await asyncio.sleep(timeout)
+
+    killed = 0
+    for pid, pgid, _command in matches:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            killed += 1
+            continue
+        except PermissionError:
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+            killed += 1
+        except ProcessLookupError:
+            killed += 1
+        except PermissionError:
+            pass
+    return max(killed, len(signalled))
+
+
 @router.post("/retune/cancel")
 async def cancel_retune():
     """Cancel any active retune/tune/stocks streaming subprocesses."""
@@ -72,8 +155,9 @@ async def cancel_retune():
     for process in processes:
         if await _terminate_process_tree(process):
             stopped += 1
+    swept = await _kill_matching_project_job_processes()
 
-    return {"status": "ok", "active": len(processes), "stopped": stopped}
+    return {"status": "ok", "active": len(processes), "stopped": stopped, "swept": swept}
 
 
 @router.get("/list")
@@ -217,10 +301,10 @@ async def retune_stream(mode: str = "retune"):
                             and done_count % _DOWNLOAD_ASSET_SAMPLE_EVERY != 0
                         ):
                             continue
-                        yield f"data: {json.dumps({'type': 'asset', 'symbol': payload.get('symbol'), 'status': status, 'detail': payload.get('detail'), 'done': done_count, 'fail': fail_count, 'total': total_expected})}\n\n"
+                        yield f"data: {json.dumps({'type': 'asset', 'symbol': payload.get('symbol'), 'status': status, 'detail': payload.get('detail'), 'model': payload.get('model'), 'weight_pct': payload.get('weight_pct'), 'bic': payload.get('bic'), 'hyv': payload.get('hyv'), 'crps': payload.get('crps'), 'pit_p': payload.get('pit_p'), 'fit_status': payload.get('fit_status'), 'done': done_count, 'fail': fail_count, 'total': total_expected})}\n\n"
                     elif ev == "model":
                         # Per-asset model selection (e.g. 'Student-t+EVTH').
-                        yield f"data: {json.dumps({'type': 'model', 'symbol': payload.get('symbol'), 'model': payload.get('model')})}\n\n"
+                        yield f"data: {json.dumps({'type': 'model', 'symbol': payload.get('symbol'), 'model': payload.get('model'), 'weight_pct': payload.get('weight_pct'), 'bic': payload.get('bic'), 'hyv': payload.get('hyv'), 'crps': payload.get('crps'), 'pit_p': payload.get('pit_p'), 'fit_status': payload.get('fit_status')})}\n\n"
                     elif ev == "refresh":
                         now = asyncio.get_running_loop().time()
                         has_counts = payload.get('ok') is not None or payload.get('pending') is not None

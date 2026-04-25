@@ -39,6 +39,12 @@ interface JobEvent {
   total_passes?: number;
   ok?: number;
   pending?: number;
+  weight_pct?: number;
+  bic?: number;
+  hyv?: number;
+  crps?: number;
+  pit_p?: number;
+  fit_status?: string;
   error_type?: string;
   error?: string;
 }
@@ -53,6 +59,23 @@ export interface JobAssetEntry {
   status: 'ok' | 'fail';
   detail?: string;
   model?: string;
+  weightPct?: number;
+  bic?: number;
+  hyv?: number;
+  crps?: number;
+  pitP?: number;
+  fitStatus?: string;
+}
+
+export interface JobModelMeta {
+  model: string;
+  weightPct?: number;
+  bic?: number;
+  hyv?: number;
+  crps?: number;
+  pitP?: number;
+  fitStatus?: string;
+  updatedAt: number;
 }
 
 export interface JobPhaseEntry {
@@ -90,6 +113,7 @@ interface JobState {
   errorMsg: string | null;
   refreshPass: JobRefreshPassState | null;
   modelBySymbol: Record<string, string>;
+  modelMetaBySymbol: Record<string, JobModelMeta>;
   modelCounts: Record<string, number>;
   surfaceVisible: boolean;
   expanded: boolean;
@@ -187,6 +211,7 @@ function persistSnapshot(state: JobState) {
       errorMsg: state.errorMsg,
       refreshPass: state.refreshPass,
       modelBySymbol: state.modelBySymbol,
+      modelMetaBySymbol: state.modelMetaBySymbol,
       modelCounts: state.modelCounts,
       surfaceVisible: state.surfaceVisible,
       expanded: state.expanded,
@@ -222,6 +247,7 @@ function initialState(): Omit<JobState,
     errorMsg: snapshot?.errorMsg ?? null,
     refreshPass: snapshot?.refreshPass ?? null,
     modelBySymbol: snapshot?.modelBySymbol ?? {},
+    modelMetaBySymbol: snapshot?.modelMetaBySymbol ?? {},
     modelCounts: snapshot?.modelCounts ?? {},
     surfaceVisible: snapshot?.surfaceVisible ?? false,
     expanded: snapshot?.expanded ?? false,
@@ -299,6 +325,7 @@ export const useJobStore = create<JobState>((set, get) => ({
       errorMsg: null,
       refreshPass: null,
       modelBySymbol: {},
+      modelMetaBySymbol: {},
       modelCounts: {},
       surfaceVisible: true,
       expanded: false,
@@ -351,6 +378,9 @@ export const useJobStore = create<JobState>((set, get) => ({
                 kind: data.kind,
                 startedAt: Date.now(),
               }).slice(-MAX_PHASES);
+              if (data.kind !== 'download') {
+                next.refreshPass = null;
+              }
             }
             break;
 
@@ -367,6 +397,12 @@ export const useJobStore = create<JobState>((set, get) => ({
                 status: data.status === 'fail' ? 'fail' : 'ok',
                 detail: data.detail,
                 model: data.model,
+                weightPct: data.weight_pct,
+                bic: data.bic,
+                hyv: data.hyv,
+                crps: data.crps,
+                pitP: data.pit_p,
+                fitStatus: data.fit_status,
               };
               next.assets = state.assets.concat(entry).slice(-MAX_ASSETS);
               if (data.model) {
@@ -382,6 +418,20 @@ export const useJobStore = create<JobState>((set, get) => ({
                   nextCounts[data.model] = (nextCounts[data.model] ?? 0) + 1;
                 }
                 next.modelBySymbol = nextBySymbol;
+                const existingMeta = state.modelMetaBySymbol[data.symbol];
+                next.modelMetaBySymbol = {
+                  ...state.modelMetaBySymbol,
+                  [data.symbol]: {
+                    model: data.model,
+                    weightPct: data.weight_pct ?? existingMeta?.weightPct,
+                    bic: data.bic ?? existingMeta?.bic,
+                    hyv: data.hyv ?? existingMeta?.hyv,
+                    crps: data.crps ?? existingMeta?.crps,
+                    pitP: data.pit_p ?? existingMeta?.pitP,
+                    fitStatus: data.fit_status ?? existingMeta?.fitStatus,
+                    updatedAt: Date.now(),
+                  },
+                };
                 next.modelCounts = nextCounts;
               }
             }
@@ -402,27 +452,57 @@ export const useJobStore = create<JobState>((set, get) => ({
                 next.modelCounts = nextCounts;
               }
               next.modelBySymbol = { ...state.modelBySymbol, [data.symbol]: data.model };
+              const existingMeta = state.modelMetaBySymbol[data.symbol];
+              next.modelMetaBySymbol = {
+                ...state.modelMetaBySymbol,
+                [data.symbol]: {
+                  model: data.model,
+                  weightPct: data.weight_pct ?? existingMeta?.weightPct,
+                  bic: data.bic ?? existingMeta?.bic,
+                  hyv: data.hyv ?? existingMeta?.hyv,
+                  crps: data.crps ?? existingMeta?.crps,
+                  pitP: data.pit_p ?? existingMeta?.pitP,
+                  fitStatus: data.fit_status ?? existingMeta?.fitStatus,
+                  updatedAt: Date.now(),
+                },
+              };
             }
             break;
 
           case 'refresh':
             if (typeof data.pass === 'number') {
+              const ok = data.ok ?? state.refreshPass?.ok ?? 0;
+              const pending = data.pending ?? state.refreshPass?.pending ?? 0;
+              const refreshTotal = ok + pending;
               next.refreshPass = {
                 pass: data.pass,
                 totalPasses: data.total_passes ?? state.refreshPass?.totalPasses ?? 1,
-                ok: data.ok ?? state.refreshPass?.ok ?? 0,
-                pending: data.pending ?? state.refreshPass?.pending ?? 0,
+                ok,
+                pending,
               };
+              if (refreshTotal > 0) {
+                next.counters = {
+                  done: Math.max(state.counters.done, ok),
+                  fail: state.counters.fail,
+                  total: Math.max(state.counters.total, refreshTotal),
+                };
+              }
             }
             break;
 
           case 'heartbeat':
+            {
+              const refreshDone = state.refreshPass?.ok ?? 0;
+              const refreshTotal = state.refreshPass
+                ? state.refreshPass.ok + state.refreshPass.pending
+                : 0;
             next.counters = {
-              done: data.done ?? state.counters.done,
+              done: Math.max(state.counters.done, data.done ?? 0, refreshDone),
               fail: state.counters.fail,
-              total: data.total ?? state.counters.total,
+              total: Math.max(state.counters.total, data.total ?? 0, refreshTotal),
             };
             if (typeof data.elapsed_s === 'number') next.elapsedSec = data.elapsed_s;
+            }
             break;
 
           case 'error':
@@ -516,6 +596,7 @@ export const useJobStore = create<JobState>((set, get) => ({
       errorMsg: null,
       refreshPass: null,
       modelBySymbol: {},
+      modelMetaBySymbol: {},
       modelCounts: {},
       surfaceVisible: false,
       expanded: false,

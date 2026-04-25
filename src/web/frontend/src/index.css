@@ -492,18 +492,6 @@ body {
 .tune-orb-delay {
   animation-delay: -3.5s;
 }
-@keyframes tune-progress-sheen {
-  from { transform: translateX(-120%); opacity: 0; }
-  12% { opacity: 0.7; }
-  88% { opacity: 0.7; }
-  to { transform: translateX(120%); opacity: 0; }
-}
-.tune-progress-shimmer {
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.42), transparent);
-  animation: tune-progress-sheen 1.9s linear infinite;
-  mix-blend-mode: screen;
-}
-
 /* ================================================================
    AMBIENT ORBS -- Drifting cosmic orbs for living background
    ================================================================ */
@@ -733,7 +721,7 @@ body {
     transform: none !important;
     transition: none !important;
   }
-  .tune-orb-slow, .tune-progress-shimmer {
+  .tune-orb-slow {
     animation: none !important;
     transform: none !important;
   }

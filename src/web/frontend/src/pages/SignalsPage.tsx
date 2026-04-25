@@ -1224,16 +1224,17 @@ function SignalOperationsBar({
                 );
               })}
             </div>
-            <div className="mt-4 h-1.5 max-w-[760px] overflow-hidden rounded-full" style={{ background: 'rgba(255,255,255,0.065)' }}>
+            <div className="mt-4 h-2 max-w-[760px] overflow-hidden rounded-full p-[1px]" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.14), rgba(255,255,255,0.04))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.34)' }}>
               <div
                 className="relative h-full rounded-full transition-[width] duration-700 ease-out"
                 style={{
                   width: `${progressPct}%`,
-                  background: isRunning ? 'linear-gradient(90deg,#8b5cf6,#38d9f5)' : 'linear-gradient(90deg,rgba(139,92,246,0.35),rgba(56,217,245,0.18))',
-                  boxShadow: isRunning ? '0 0 18px rgba(139,92,246,0.65)' : undefined,
+                  background: isRunning ? 'linear-gradient(90deg,#8b5cf6 0%,#38d9f5 62%,rgba(255,255,255,0.92) 100%)' : 'linear-gradient(90deg,rgba(139,92,246,0.48),rgba(56,217,245,0.24))',
+                  boxShadow: isRunning ? '0 0 22px -8px rgba(139,92,246,0.9), inset 0 1px 0 rgba(255,255,255,0.34)' : 'inset 0 1px 0 rgba(255,255,255,0.18)',
                 }}
               >
-                {isRunning && <span className="absolute inset-y-0 left-0 w-full tune-progress-shimmer" />}
+                <span aria-hidden className="absolute inset-x-1 top-0 h-px rounded-full" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.72), transparent)' }} />
+                {isRunning && progressPct > 2 && <span aria-hidden className="absolute right-0 top-1/2 h-3 w-3 -translate-y-1/2 translate-x-1/2 rounded-full" style={{ background: '#fff', boxShadow: '0 0 18px 4px rgba(139,92,246,0.52)' }} />}
               </div>
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-[var(--text-muted)]">
