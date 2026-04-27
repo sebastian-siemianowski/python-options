@@ -33,9 +33,13 @@ from scipy.stats import t as student_t
 try:
     from .student_t_common import (
         asset_phi_profile,
+        compute_berkowitz_full as common_compute_berkowitz_full,
+        compute_berkowitz_pvalue as common_compute_berkowitz_pvalue,
         compute_ad_statistic,
         compute_cvm_statistic,
+        estimate_gjr_garch_params,
         ewm_lagged_correction,
+        pit_simple_path as common_pit_simple_path,
         precompute_vov,
         variance_to_scale,
         variance_to_scale_vec,
@@ -43,9 +47,13 @@ try:
 except ImportError:
     from models.student_t_common import (
         asset_phi_profile,
+        compute_berkowitz_full as common_compute_berkowitz_full,
+        compute_berkowitz_pvalue as common_compute_berkowitz_pvalue,
         compute_ad_statistic,
         compute_cvm_statistic,
+        estimate_gjr_garch_params,
         ewm_lagged_correction,
+        pit_simple_path as common_pit_simple_path,
         precompute_vov,
         variance_to_scale,
         variance_to_scale_vec,
@@ -3173,63 +3181,20 @@ class PhiStudentTDriftModel:
     @staticmethod
     def _pit_simple_path(returns_test, mu_pred_test, S_calibrated, nu, t_df_asym):
         """PIT via basic Student-t CDF (non-GARCH path). Returns (pit, sigma, mu_eff)."""
-        sigma = np.sqrt(S_calibrated * (nu - 2) / nu) if nu > 2 else np.sqrt(S_calibrated)
-        sigma = np.maximum(sigma, 1e-10)
-        innovations = returns_test - mu_pred_test
-        z = innovations / sigma
-        if abs(t_df_asym) > 0.05:
-            pit_values = np.zeros(len(z))
-            _nu_l, _nu_r = max(2.5, nu - t_df_asym), max(2.5, nu + t_df_asym)
-            m = z < 0
-            pit_values[m] = _fast_t_cdf(z[m], _nu_l)
-            pit_values[~m] = _fast_t_cdf(z[~m], _nu_r)
-        else:
-            pit_values = _fast_t_cdf(z, nu)
-        return np.clip(pit_values, 0.001, 0.999), sigma, mu_pred_test
+        return common_pit_simple_path(
+            returns_test, mu_pred_test, S_calibrated, nu, t_df_asym,
+            cdf_fn=_fast_t_cdf,
+        )
 
     @staticmethod
     def _compute_berkowitz_pvalue(pit_values):
         """Berkowitz (2001) p-value only. Wrapper around _compute_berkowitz_full."""
-        return PhiStudentTDriftModel._compute_berkowitz_full(pit_values)[0]
+        return common_compute_berkowitz_pvalue(pit_values)
 
     @staticmethod
     def _compute_berkowitz_full(pit_values):
-        """
-        Berkowitz (2001) LR test: H0 Phi^-1(PIT)~N(0,1) iid vs H1 AR(1). Chi2(3).
-
-        Returns (p_value, lr_statistic, n_pit).
-        """
-        try:
-            from scipy.special import ndtri
-            pit = np.asarray(pit_values, dtype=np.float64).ravel()
-            pit = pit[np.isfinite(pit)]
-            z = ndtri(np.clip(pit, 1e-6, 1.0 - 1e-6))
-            z = z[np.isfinite(z)]
-            n_z = len(z)
-            if n_z <= 20:
-                return (float('nan'), 0.0, n_z)
-
-            mu_hat = float(np.mean(z))
-            var_hat = max(float(np.var(z, ddof=0)), 1e-6)
-            z_c = z - mu_hat
-            denom = float(np.sum(z_c[:-1] ** 2))
-            rho_hat = float(np.clip(np.sum(z_c[1:] * z_c[:-1]) / denom, -0.99, 0.99)) if denom > 1e-12 else 0.0
-
-            ll_null = -0.5 * n_z * math.log(2.0 * math.pi) - 0.5 * float(np.sum(z ** 2))
-            sigma_sq_cond = max(var_hat * (1.0 - rho_hat ** 2), 1e-6)
-            resid = z[1:] - (mu_hat + rho_hat * (z[:-1] - mu_hat))
-            ll_alt = (
-                -0.5 * math.log(2.0 * math.pi * var_hat)
-                -0.5 * (z[0] - mu_hat) ** 2 / var_hat
-                -0.5 * (n_z - 1) * math.log(2.0 * math.pi * sigma_sq_cond)
-                -0.5 * float(np.sum(resid ** 2)) / sigma_sq_cond
-            )
-            lr_stat = float(max(2.0 * (ll_alt - ll_null), 0.0))
-            from scipy.special import chdtrc as _chdtrc_berk
-            p_value = float(_chdtrc_berk(3, lr_stat))
-            return (p_value if np.isfinite(p_value) else float('nan'), lr_stat, n_z)
-        except Exception:
-            return (float('nan'), 0.0, 0)
+        """Berkowitz (2001) LR test. Returns (p_value, lr_statistic, n_pit)."""
+        return common_compute_berkowitz_full(pit_values)
 
     @classmethod
     def filter_phi(cls, returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float]:
@@ -3443,7 +3408,7 @@ class PhiStudentTDriftModel:
         gamma_vov: float = 0.0,
         vov_rolling: np.ndarray = None,
         prediction_bias_lambda: float = 0.95,
-        prediction_bias_cap_z: float = 0.20,
+        prediction_bias_cap_z: float = 0.18,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
         """phi-Student-t filter returning predictive mu_pred and S_pred for PIT.
 
@@ -3489,69 +3454,12 @@ class PhiStudentTDriftModel:
         Moment-based, bounded, and stationarity-enforced.  This avoids unstable
         GARCH blends when residuals are flat, missing, or dominated by one print.
         """
-        returns_train = np.asarray(returns_train, dtype=np.float64).ravel()
-        mu_pred_train = np.asarray(mu_pred_train, dtype=np.float64).ravel()
-        n = min(len(returns_train), len(mu_pred_train), int(max(n_train, 0)))
-        if n <= 2:
-            return {
-                'garch_omega': 1e-10, 'garch_alpha': 0.05,
-                'garch_beta': 0.90, 'garch_leverage': 0.0,
-                'unconditional_var': 1e-8,
-            }
-
-        innovations_train = returns_train[:n] - mu_pred_train[:n] - float(mu_drift_opt)
-        innovations_train = innovations_train[np.isfinite(innovations_train)]
-        if len(innovations_train) <= 2:
-            innovations_train = np.zeros(3, dtype=np.float64)
-
-        # Robust variance floor/cap for moment estimation.
-        med = float(np.median(innovations_train))
-        mad = float(np.median(np.abs(innovations_train - med)))
-        robust_scale = max(1.4826 * mad, float(np.std(innovations_train)), 1e-8)
-        cap = max(8.0 * robust_scale, 1e-8)
-        innovations_clip = np.clip(innovations_train - med, -cap, cap)
-        sq_innov = innovations_clip ** 2
-        unconditional_var = max(float(np.mean(sq_innov)), 1e-10)
-
-        garch_leverage = 0.0
-        if len(innovations_clip) > 100:
-            sq_centered = sq_innov - unconditional_var
-            denom = float(np.sum(sq_centered[:-1] ** 2))
-            if denom > 1e-12:
-                garch_alpha = float(np.sum(sq_centered[1:] * sq_centered[:-1]) / denom)
-                garch_alpha = float(np.clip(garch_alpha, 0.02, 0.20))
-            else:
-                garch_alpha = 0.06
-
-            neg_indicator = (innovations_clip[:-1] < 0.0).astype(np.float64)
-            n_neg = max(int(np.sum(neg_indicator)), 1)
-            n_pos = max(int(np.sum(1.0 - neg_indicator)), 1)
-            mean_sq_after_neg = float(np.sum(sq_innov[1:] * neg_indicator) / n_neg)
-            mean_sq_after_pos = float(np.sum(sq_innov[1:] * (1.0 - neg_indicator)) / n_pos)
-            leverage_ratio = mean_sq_after_neg / max(mean_sq_after_pos, 1e-12)
-            if leverage_ratio > 1.0:
-                garch_leverage = float(np.clip(garch_alpha * (leverage_ratio - 1.0), 0.0, 0.18))
-
-            garch_beta = 0.96 - garch_alpha - 0.5 * garch_leverage
-            garch_beta = float(np.clip(garch_beta, 0.65, 0.94))
-            persistence = garch_alpha + 0.5 * garch_leverage + garch_beta
-            if persistence >= 0.985:
-                garch_beta = max(0.50, 0.985 - garch_alpha - 0.5 * garch_leverage)
-
-            persistence = min(garch_alpha + 0.5 * garch_leverage + garch_beta, 0.985)
-            garch_omega = max(unconditional_var * (1.0 - persistence), 1e-10)
-        else:
-            garch_alpha = 0.06
-            garch_beta = 0.88
-            garch_omega = max(unconditional_var * (1.0 - garch_alpha - garch_beta), 1e-10)
-
-        return {
-            'garch_omega': float(garch_omega),
-            'garch_alpha': float(garch_alpha),
-            'garch_beta': float(garch_beta),
-            'garch_leverage': float(garch_leverage),
-            'unconditional_var': float(unconditional_var),
-        }
+        return estimate_gjr_garch_params(
+            returns_train,
+            mu_pred_train,
+            mu_drift_opt,
+            n_train,
+        )
 
     # =========================================================================
     # AD TAIL-CORRECTION PIPELINE (March 2026)

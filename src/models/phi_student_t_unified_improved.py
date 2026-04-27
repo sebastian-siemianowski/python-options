@@ -32,14 +32,22 @@ from scipy.stats import t as student_t
 
 try:
     from .student_t_common import (
+        compute_berkowitz_full as common_compute_berkowitz_full,
+        compute_berkowitz_pvalue as common_compute_berkowitz_pvalue,
+        estimate_gjr_garch_params,
         ewm_lagged_correction,
+        pit_simple_path as common_pit_simple_path,
         precompute_vov,
         variance_to_scale,
         variance_to_scale_vec,
     )
 except ImportError:
     from models.student_t_common import (
+        compute_berkowitz_full as common_compute_berkowitz_full,
+        compute_berkowitz_pvalue as common_compute_berkowitz_pvalue,
+        estimate_gjr_garch_params,
         ewm_lagged_correction,
+        pit_simple_path as common_pit_simple_path,
         precompute_vov,
         variance_to_scale,
         variance_to_scale_vec,
@@ -2896,61 +2904,20 @@ class UnifiedPhiStudentTModel:
     @staticmethod
     def _pit_simple_path(returns_test, mu_pred_test, S_calibrated, nu, t_df_asym):
         """PIT via basic Student-t CDF (non-GARCH path). Returns (pit, sigma, mu_eff)."""
-        sigma = np.sqrt(S_calibrated * (nu - 2) / nu) if nu > 2 else np.sqrt(S_calibrated)
-        sigma = np.maximum(sigma, 1e-10)
-        innovations = returns_test - mu_pred_test
-        z = innovations / sigma
-        if abs(t_df_asym) > 0.05:
-            pit_values = np.zeros(len(z))
-            _nu_l, _nu_r = max(2.5, nu - t_df_asym), max(2.5, nu + t_df_asym)
-            m = z < 0
-            pit_values[m] = _fast_t_cdf(z[m], _nu_l)
-            pit_values[~m] = _fast_t_cdf(z[~m], _nu_r)
-        else:
-            pit_values = _fast_t_cdf(z, nu)
-        return np.clip(pit_values, 0.001, 0.999), sigma, mu_pred_test
+        return common_pit_simple_path(
+            returns_test, mu_pred_test, S_calibrated, nu, t_df_asym,
+            cdf_fn=_fast_t_cdf,
+        )
 
     @classmethod
     def _compute_berkowitz_pvalue(cls, pit_values):
         """Berkowitz (2001) p-value only. Wrapper around _compute_berkowitz_full."""
-        return cls._compute_berkowitz_full(pit_values)[0]
+        return common_compute_berkowitz_pvalue(pit_values)
 
     @staticmethod
     def _compute_berkowitz_full(pit_values):
-        """
-        Berkowitz (2001) LR test: H0 Phi^-1(PIT)~N(0,1) iid vs H1 AR(1). Chi2(3).
-
-        Returns (p_value, lr_statistic, n_pit):
-            p_value:      1 - Chi2_cdf(LR, df=3). Higher = better calibrated.
-            lr_statistic: Raw LR = 2*(ll_alt - ll_null). Per-obs penalty = LR/T.
-            n_pit:        Number of valid PIT observations used in the test.
-        """
-        try:
-            from scipy.special import ndtri
-            z = ndtri(np.clip(pit_values, 0.0001, 0.9999))
-            z = z[np.isfinite(z)]
-            n_z = len(z)
-            if n_z <= 20:
-                return (float('nan'), 0.0, n_z)
-            mu_hat = float(np.mean(z))
-            var_hat = float(np.var(z, ddof=0))
-            z_c = z - mu_hat
-            denom = np.sum(z_c[:-1] ** 2)
-            rho_hat = float(np.clip(np.sum(z_c[1:] * z_c[:-1]) / denom, -0.99, 0.99)) if denom > 1e-12 else 0.0
-            ll_null = -0.5 * n_z * np.log(2 * np.pi) - 0.5 * np.sum(z ** 2)
-            sigma_sq_cond = max(var_hat * (1 - rho_hat ** 2) if abs(rho_hat) < 0.99 else var_hat * 0.01, 1e-6)
-            # Vectorized AR(1) log-likelihood (replaces per-element Python loop)
-            resid = z[1:] - (mu_hat + rho_hat * (z[:-1] - mu_hat))
-            ll_alt = (-0.5 * np.log(2 * np.pi * var_hat)
-                      - 0.5 * (z[0] - mu_hat) ** 2 / var_hat
-                      - 0.5 * (n_z - 1) * np.log(2 * np.pi * sigma_sq_cond)
-                      - 0.5 * np.sum(resid ** 2) / sigma_sq_cond)
-            lr_stat = float(max(2 * (ll_alt - ll_null), 0))
-            from scipy.special import chdtrc as _chdtrc_berk
-            p_value = float(_chdtrc_berk(3, lr_stat))
-            return (p_value, lr_stat, n_z)
-        except Exception:
-            return (float('nan'), 0.0, 0)
+        """Berkowitz (2001) LR test. Returns (p_value, lr_statistic, n_pit)."""
+        return common_compute_berkowitz_full(pit_values)
 
     @classmethod
     def _compute_crps_output(cls, returns_test, mu_pred_test, mu_effective, sigma,
@@ -4446,71 +4413,19 @@ class UnifiedPhiStudentTModel:
     @staticmethod
     def _stage_5c_garch_estimation(returns_train, mu_pred_train, mu_drift_opt, n_train):
         """
-        Stage 5c: GJR-GARCH(1,1) parameter estimation (Glosten-Jagannathan-Runkle 1993).
+        Stage 5c: robust GJR-GARCH(1,1) parameter estimation.
 
         h_t = ω + α·ε²_{t-1} + γ_lev·ε²_{t-1}·I(ε_{t-1}<0) + β·h_{t-1}
 
-        The leverage term γ_lev captures asymmetric variance reaction:
-          Negative returns → variance increases by (α + γ_lev)·ε²
-          Positive returns → variance increases by α·ε² only
-
-        Returns:
-            dict with keys: garch_omega, garch_alpha, garch_beta,
-            garch_leverage, unconditional_var
+        Uses the shared winsorized moment estimator so the unified and base
+        improved models compete on structure, not duplicated volatility math.
         """
-        innovations_train = returns_train - mu_pred_train - mu_drift_opt
-        sq_innov = innovations_train ** 2
-        unconditional_var = float(np.var(innovations_train))
-
-        garch_leverage = 0.0
-
-        if n_train > 100:
-            sq_centered = sq_innov - unconditional_var
-            denom = np.sum(sq_centered[:-1]**2)
-            if denom > 1e-12:
-                garch_alpha = float(np.sum(sq_centered[1:] * sq_centered[:-1]) / denom)
-                garch_alpha = np.clip(garch_alpha, 0.02, 0.25)
-            else:
-                garch_alpha = 0.08
-
-            neg_indicator = (innovations_train[:-1] < 0).astype(np.float64)
-            n_neg = max(int(np.sum(neg_indicator)), 1)
-            n_pos = max(int(np.sum(1.0 - neg_indicator)), 1)
-            mean_sq_after_neg = float(np.sum(sq_innov[1:] * neg_indicator) / n_neg)
-            mean_sq_after_pos = float(np.sum(sq_innov[1:] * (1.0 - neg_indicator)) / n_pos)
-
-            if mean_sq_after_pos > 1e-12:
-                leverage_ratio = mean_sq_after_neg / mean_sq_after_pos
-            else:
-                leverage_ratio = 1.0
-
-            if leverage_ratio > 1.0:
-                garch_leverage = float(np.clip(
-                    garch_alpha * (leverage_ratio - 1.0), 0.0, 0.20
-                ))
-
-            garch_beta = 0.97 - garch_alpha - garch_leverage / 2.0
-            garch_beta = float(np.clip(garch_beta, 0.70, 0.95))
-
-            total_persistence = garch_alpha + garch_leverage / 2.0 + garch_beta
-            if total_persistence >= 0.99:
-                garch_beta = 0.98 - garch_alpha - garch_leverage / 2.0
-                garch_beta = max(garch_beta, 0.5)
-
-            garch_omega = unconditional_var * (1 - garch_alpha - garch_leverage / 2.0 - garch_beta)
-            garch_omega = max(garch_omega, 1e-10)
-        else:
-            garch_omega = unconditional_var * 0.05
-            garch_alpha = 0.08
-            garch_beta = 0.87
-
-        return {
-            'garch_omega': float(garch_omega),
-            'garch_alpha': float(garch_alpha),
-            'garch_beta': float(garch_beta),
-            'garch_leverage': float(garch_leverage),
-            'unconditional_var': float(unconditional_var),
-        }
+        return estimate_gjr_garch_params(
+            returns_train,
+            mu_pred_train,
+            mu_drift_opt,
+            n_train,
+        )
 
     @classmethod
     def _stage_5d_jump_diffusion(cls, returns_train, vol_train, mu_pred_train,

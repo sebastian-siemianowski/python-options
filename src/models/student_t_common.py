@@ -112,6 +112,14 @@ def ewm_lagged_correction(returns: np.ndarray, mu_pred: np.ndarray, ewm_lambda: 
     alpha = 1.0 - lam
     innov_lagged = np.asarray(returns[:n - 1] - mu_pred[:n - 1], dtype=np.float64)
     innov_lagged = np.where(np.isfinite(innov_lagged), innov_lagged, 0.0)
+
+    if n <= 4096:
+        value = 0.0
+        for idx in range(n - 1):
+            value = lam * value + alpha * innov_lagged[idx]
+            corrections[idx + 1] = value
+        return corrections
+
     try:
         from scipy.signal import lfilter
 
@@ -122,6 +130,186 @@ def ewm_lagged_correction(returns: np.ndarray, mu_pred: np.ndarray, ewm_lambda: 
             value = lam * value + alpha * innov_lagged[idx]
             corrections[idx + 1] = value
     return corrections
+
+
+def pit_simple_path(
+    returns_test: np.ndarray,
+    mu_pred_test: np.ndarray,
+    s_calibrated: np.ndarray,
+    nu: float,
+    t_df_asym: float,
+    cdf_fn=None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Basic Student-t PIT path shared by the improved Student-t variants."""
+    returns_test = np.asarray(returns_test, dtype=np.float64).ravel()
+    mu_pred_test = np.asarray(mu_pred_test, dtype=np.float64).ravel()
+    s_calibrated = np.asarray(s_calibrated, dtype=np.float64).ravel()
+    n = min(len(returns_test), len(mu_pred_test), len(s_calibrated))
+    if n <= 0:
+        empty = np.empty(0, dtype=np.float64)
+        return empty, empty, empty
+
+    nu = float(nu) if np.isfinite(nu) else 8.0
+    t_df_asym = float(t_df_asym) if np.isfinite(t_df_asym) else 0.0
+    returns_test = returns_test[:n]
+    mu_pred_test = mu_pred_test[:n]
+    s_calibrated = s_calibrated[:n]
+
+    sigma = variance_to_scale_vec(s_calibrated, nu)
+    z = (returns_test - mu_pred_test) / sigma
+    z = np.where(np.isfinite(z), z, 0.0)
+
+    if cdf_fn is None:
+        from scipy.stats import t as student_t
+
+        def cdf_fn(values, df):
+            return student_t.cdf(values, df=float(df))
+
+    if abs(t_df_asym) > 0.05:
+        pit_values = np.zeros(n, dtype=np.float64)
+        nu_l = max(2.5, nu - t_df_asym)
+        nu_r = max(2.5, nu + t_df_asym)
+        left = z < 0.0
+        pit_values[left] = cdf_fn(z[left], nu_l)
+        pit_values[~left] = cdf_fn(z[~left], nu_r)
+    else:
+        pit_values = cdf_fn(z, nu)
+
+    pit_values = np.asarray(pit_values, dtype=np.float64)
+    pit_values = np.where(np.isfinite(pit_values), pit_values, 0.5)
+    return np.clip(pit_values, 0.001, 0.999), sigma, mu_pred_test
+
+
+def compute_berkowitz_full(pit_values: np.ndarray) -> tuple[float, float, int]:
+    """
+    Berkowitz LR test: H0 Phi^-1(PIT)~N(0,1) iid vs H1 AR(1). Chi2(3).
+
+    Returns (p_value, lr_statistic, n_pit).
+    """
+    try:
+        from scipy.special import chdtrc, ndtri
+
+        pit = np.asarray(pit_values, dtype=np.float64).ravel()
+        pit = pit[np.isfinite(pit)]
+        z = ndtri(np.clip(pit, 1e-6, 1.0 - 1e-6))
+        z = z[np.isfinite(z)]
+        n_z = len(z)
+        if n_z <= 20:
+            return (float("nan"), 0.0, n_z)
+
+        mu_hat = float(np.mean(z))
+        var_hat = max(float(np.var(z, ddof=0)), 1e-6)
+        z_c = z - mu_hat
+        denom = float(np.sum(z_c[:-1] ** 2))
+        rho_hat = 0.0
+        if denom > 1e-12:
+            rho_hat = float(np.clip(np.sum(z_c[1:] * z_c[:-1]) / denom, -0.99, 0.99))
+
+        ll_null = -0.5 * n_z * math.log(2.0 * math.pi) - 0.5 * float(np.sum(z ** 2))
+        sigma_sq_cond = max(var_hat * (1.0 - rho_hat ** 2), 1e-6)
+        resid = z[1:] - (mu_hat + rho_hat * (z[:-1] - mu_hat))
+        ll_alt = (
+            -0.5 * math.log(2.0 * math.pi * var_hat)
+            -0.5 * (z[0] - mu_hat) ** 2 / var_hat
+            -0.5 * (n_z - 1) * math.log(2.0 * math.pi * sigma_sq_cond)
+            -0.5 * float(np.sum(resid ** 2)) / sigma_sq_cond
+        )
+        lr_stat = float(max(2.0 * (ll_alt - ll_null), 0.0))
+        p_value = float(chdtrc(3, lr_stat))
+        return (p_value if np.isfinite(p_value) else float("nan"), lr_stat, n_z)
+    except Exception:
+        return (float("nan"), 0.0, 0)
+
+
+def compute_berkowitz_pvalue(pit_values: np.ndarray) -> float:
+    """Berkowitz p-value convenience wrapper."""
+    return compute_berkowitz_full(pit_values)[0]
+
+
+def estimate_gjr_garch_params(
+    returns_train: np.ndarray,
+    mu_pred_train: np.ndarray,
+    mu_drift_opt: float,
+    n_train: int,
+    *,
+    alpha_default: float = 0.06,
+    beta_anchor: float = 0.96,
+    alpha_bounds: tuple[float, float] = (0.02, 0.20),
+    beta_bounds: tuple[float, float] = (0.65, 0.94),
+    leverage_cap: float = 0.18,
+    persistence_cap: float = 0.985,
+    short_beta: float = 0.88,
+) -> dict[str, float]:
+    """
+    Robust moment estimator for GJR-GARCH(1,1) parameters.
+
+    Uses winsorized residual moments and explicit stationarity enforcement so a
+    single bad print cannot dominate volatility blending.
+    """
+    returns_train = np.asarray(returns_train, dtype=np.float64).ravel()
+    mu_pred_train = np.asarray(mu_pred_train, dtype=np.float64).ravel()
+    n = min(len(returns_train), len(mu_pred_train), int(max(n_train, 0)))
+    if n <= 2:
+        return {
+            "garch_omega": 1e-10,
+            "garch_alpha": float(alpha_default),
+            "garch_beta": 0.90,
+            "garch_leverage": 0.0,
+            "unconditional_var": 1e-8,
+        }
+
+    innovations = returns_train[:n] - mu_pred_train[:n] - float(mu_drift_opt)
+    innovations = innovations[np.isfinite(innovations)]
+    if len(innovations) <= 2:
+        innovations = np.zeros(3, dtype=np.float64)
+
+    med = float(np.median(innovations))
+    mad = float(np.median(np.abs(innovations - med)))
+    robust_scale = max(1.4826 * mad, float(np.std(innovations)), 1e-8)
+    cap = max(8.0 * robust_scale, 1e-8)
+    innovations_clip = np.clip(innovations - med, -cap, cap)
+    sq_innov = innovations_clip ** 2
+    unconditional_var = max(float(np.mean(sq_innov)), 1e-10)
+
+    garch_leverage = 0.0
+    if len(innovations_clip) > 100:
+        sq_centered = sq_innov - unconditional_var
+        denom = float(np.sum(sq_centered[:-1] ** 2))
+        if denom > 1e-12:
+            garch_alpha = float(np.sum(sq_centered[1:] * sq_centered[:-1]) / denom)
+            garch_alpha = float(np.clip(garch_alpha, alpha_bounds[0], alpha_bounds[1]))
+        else:
+            garch_alpha = float(alpha_default)
+
+        neg_indicator = (innovations_clip[:-1] < 0.0).astype(np.float64)
+        n_neg = max(int(np.sum(neg_indicator)), 1)
+        n_pos = max(int(np.sum(1.0 - neg_indicator)), 1)
+        mean_sq_after_neg = float(np.sum(sq_innov[1:] * neg_indicator) / n_neg)
+        mean_sq_after_pos = float(np.sum(sq_innov[1:] * (1.0 - neg_indicator)) / n_pos)
+        leverage_ratio = mean_sq_after_neg / max(mean_sq_after_pos, 1e-12)
+        if leverage_ratio > 1.0:
+            garch_leverage = float(np.clip(garch_alpha * (leverage_ratio - 1.0), 0.0, leverage_cap))
+
+        garch_beta = beta_anchor - garch_alpha - 0.5 * garch_leverage
+        garch_beta = float(np.clip(garch_beta, beta_bounds[0], beta_bounds[1]))
+        persistence = garch_alpha + 0.5 * garch_leverage + garch_beta
+        if persistence >= persistence_cap:
+            garch_beta = max(0.50, persistence_cap - garch_alpha - 0.5 * garch_leverage)
+
+        persistence = min(garch_alpha + 0.5 * garch_leverage + garch_beta, persistence_cap)
+        garch_omega = max(unconditional_var * (1.0 - persistence), 1e-10)
+    else:
+        garch_alpha = float(alpha_default)
+        garch_beta = float(short_beta)
+        garch_omega = max(unconditional_var * (1.0 - garch_alpha - garch_beta), 1e-10)
+
+    return {
+        "garch_omega": float(garch_omega),
+        "garch_alpha": float(garch_alpha),
+        "garch_beta": float(garch_beta),
+        "garch_leverage": float(garch_leverage),
+        "unconditional_var": float(unconditional_var),
+    }
 
 
 _ASSET_PHI_CENTER = {
