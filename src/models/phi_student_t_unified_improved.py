@@ -31,6 +31,21 @@ from scipy.stats import norm
 from scipy.stats import t as student_t
 
 try:
+    from .student_t_common import (
+        ewm_lagged_correction,
+        precompute_vov,
+        variance_to_scale,
+        variance_to_scale_vec,
+    )
+except ImportError:
+    from models.student_t_common import (
+        ewm_lagged_correction,
+        precompute_vov,
+        variance_to_scale,
+        variance_to_scale_vec,
+    )
+
+try:
     from .asset_classification import (
         CRYPTO_SYMBOLS as _SHARED_CRYPTO_SYMBOLS,
         HIGH_VOL_EQUITY_SYMBOLS as _SHARED_HIGH_VOL_EQUITY_SYMBOLS,
@@ -1847,23 +1862,12 @@ class UnifiedPhiStudentTModel:
     @staticmethod
     def _variance_to_scale(variance: float, nu: float) -> float:
         """Convert predictive variance to Student-t scale: scale = √(Var × (ν-2)/ν) for ν > 2."""
-        if variance <= 1e-20:
-            return 1e-10
-        if nu > 2:
-            return np.sqrt(variance * (nu - 2) / nu)
-        else:
-            # For ν ≤ 2, variance is infinite; use variance as proxy for scale²
-            return np.sqrt(variance)
+        return variance_to_scale(variance, nu)
 
     @staticmethod
     def _variance_to_scale_vec(variance: np.ndarray, nu: float) -> np.ndarray:
         """Vectorized version of _variance_to_scale for array inputs."""
-        variance_safe = np.maximum(variance, 1e-20)
-        if nu > 2:
-            scale = np.sqrt(variance_safe * (nu - 2) / nu)
-        else:
-            scale = np.sqrt(variance_safe)
-        return np.where(scale < 1e-10, 1e-10, scale)
+        return variance_to_scale_vec(variance, nu)
 
     @staticmethod
     def compute_effective_nu(
@@ -1913,25 +1917,6 @@ class UnifiedPhiStudentTModel:
         log_kernel = -((nu + 1.0) / 2.0) * np.log(1.0 + (z ** 2) / nu)
         return float(log_norm + log_kernel)
 
-    @staticmethod
-    def _precompute_vov(vol: np.ndarray, window: int = 20) -> np.ndarray:
-        """Rolling std of log-vol (O(n) via cumulative sums). Shared across ν."""
-        n = len(vol)
-        if n <= window:
-            return np.zeros(n, dtype=np.float64)
-        log_vol = np.log(np.maximum(vol, 1e-10))
-        cs1 = np.concatenate(([0.0], np.cumsum(log_vol)))
-        cs2 = np.concatenate(([0.0], np.cumsum(log_vol * log_vol)))
-        inv_w = 1.0 / float(window)
-        idx = np.arange(window, n)
-        s1 = cs1[idx] - cs1[idx - window]
-        s2 = cs2[idx] - cs2[idx - window]
-        var_arr = np.maximum(s2 * inv_w - (s1 * inv_w) ** 2, 0.0)
-        vov = np.empty(n, dtype=np.float64)
-        vov[window:] = np.sqrt(var_arr)
-        vov[:window] = vov[window]
-        return vov
-
     # =====================================================================
     # NU_REFINE grids (Lange, Little & Taylor 1989)
     # =====================================================================
@@ -1950,52 +1935,6 @@ class UnifiedPhiStudentTModel:
         20: [12.0, 15.0, 18.0, 20.0, 25.0, 35.0, 50.0],
     }
     _GAMMA_VOV_DEFAULT = 0.3
-
-    # =====================================================================
-    # Cramér-von Mises statistic (Anderson 1962)
-    # =====================================================================
-    @staticmethod
-    def _compute_cvm_statistic(pit_values: np.ndarray) -> float:
-        """
-        Cramér-von Mises W² for Uniform(0,1).
-
-        W² = Σ(u_(i) - (2i-1)/(2n))² + 1/(12n)
-
-        More sensitive to the middle of the distribution than KS
-        (which only captures max deviation). Lower = better calibrated.
-        """
-        n = len(pit_values)
-        if n < 2:
-            return float('inf')
-        u = np.sort(pit_values)
-        i_vals = np.arange(1, n + 1)
-        w2 = float(np.sum((u - (2.0 * i_vals - 1.0) / (2.0 * n)) ** 2)
-                   ) + 1.0 / (12.0 * n)
-        return w2
-
-    # =====================================================================
-    # Anderson-Darling statistic for Uniform(0,1) (Anderson & Darling 1952)
-    # =====================================================================
-    @staticmethod
-    def _compute_ad_statistic(pit_values: np.ndarray) -> float:
-        """
-        Anderson-Darling A² for Uniform(0,1).
-
-        A² = -n - (1/n) Σ [(2i-1)(ln u_i + ln(1-u_{n+1-i}))]
-
-        3-10× more powerful than KS for tail miscalibration — captures both
-        heavy-tail deficiency and light-tail excess simultaneously.
-        Lower = better calibrated.
-        """
-        n = len(pit_values)
-        if n < 2:
-            return float('inf')
-        u = np.sort(np.clip(pit_values, 1e-10, 1.0 - 1e-10))
-        i_vals = np.arange(1, n + 1)
-        log_u = np.log(u)
-        log_1mu = np.log(1.0 - u[::-1])  # u_{n+1-i}
-        a2 = -float(n) - float(np.sum((2.0 * i_vals - 1.0) * (log_u + log_1mu))) / float(n)
-        return max(a2, 0.0)
 
     # =====================================================================
     # optimize_params_unified — COMPLETE unified φ-t pipeline
@@ -3510,27 +3449,6 @@ class UnifiedPhiStudentTModel:
                                      gamma_vov=gamma_vov,
                                      vov_rolling=vov_rolling)
 
-    @staticmethod
-    def _ewm_lagged_correction(returns: np.ndarray, mu_pred: np.ndarray, ewm_lambda: float) -> np.ndarray:
-        """Lagged EWM innovation correction used by unified filter paths."""
-        n = min(len(returns), len(mu_pred))
-        corrections = np.zeros(n, dtype=np.float64)
-        if n <= 2 or ewm_lambda < 0.01:
-            return corrections
-        lam = float(np.clip(ewm_lambda, 0.01, 0.999))
-        alpha_ewm = 1.0 - lam
-        innov_lagged = np.asarray(returns[:n - 1] - mu_pred[:n - 1], dtype=np.float64)
-        innov_lagged = np.where(np.isfinite(innov_lagged), innov_lagged, 0.0)
-        try:
-            from scipy.signal import lfilter
-            corrections[1:] = lfilter([alpha_ewm], [1.0, -lam], innov_lagged)
-        except Exception:
-            ewm_mu_val = 0.0
-            for t in range(n - 1):
-                ewm_mu_val = lam * ewm_mu_val + alpha_ewm * innov_lagged[t]
-                corrections[t + 1] = ewm_mu_val
-        return corrections
-
     @classmethod
     def filter_phi_unified(
         cls,
@@ -3595,22 +3513,8 @@ class UnifiedPhiStudentTModel:
                 q_t = np.full(n, q_base)
                 p_stress = np.zeros(n)
 
-            # VoV rolling std
             window = config.vov_window
-            if n > window and gamma_vov > 1e-12:
-                log_vol = np.log(np.maximum(vol, 1e-10))
-                cs1 = np.concatenate(([0.0], np.cumsum(log_vol)))
-                cs2 = np.concatenate(([0.0], np.cumsum(log_vol * log_vol)))
-                inv_w = 1.0 / float(window)
-                idx_end = np.arange(window, n)
-                s1 = cs1[idx_end] - cs1[idx_end - window]
-                s2 = cs2[idx_end] - cs2[idx_end - window]
-                var_arr = np.maximum(s2 * inv_w - (s1 * inv_w) ** 2, 0.0)
-                vov_rolling = np.empty(n, dtype=np.float64)
-                vov_rolling[window:] = np.sqrt(var_arr)
-                vov_rolling[:window] = vov_rolling[window] if n > window else 0.0
-            else:
-                vov_rolling = np.zeros(n, dtype=np.float64)
+            vov_rolling = precompute_vov(vol, window) if n > window and gamma_vov > 1e-12 else np.zeros(n, dtype=np.float64)
 
             # Exogenous / momentum
             _has_exo = config.exogenous_input is not None
@@ -3626,7 +3530,7 @@ class UnifiedPhiStudentTModel:
 
                 # Apply EWM correction if lambda was configured
                 if _ewm_lambda >= 0.01 and n > 2:
-                    mu_p = mu_p + cls._ewm_lagged_correction(returns, mu_p, _ewm_lambda)
+                    mu_p = mu_p + ewm_lagged_correction(returns, mu_p, _ewm_lambda)
             else:
                 # Extended kernel: handles risk prem, skew, jumps, drift, EWM
                 from models.numba_wrappers import run_unified_phi_student_t_filter_extended
@@ -3668,23 +3572,8 @@ class UnifiedPhiStudentTModel:
             q_t = np.full(n, q_base)
             p_stress = np.zeros(n)
 
-        log_vol = np.log(np.maximum(vol, 1e-10))
         window = config.vov_window
-        if n > window and gamma_vov > 1e-12:
-            cs1 = np.concatenate(([0.0], np.cumsum(log_vol)))
-            cs2 = np.concatenate(([0.0], np.cumsum(log_vol * log_vol)))
-            inv_w = 1.0 / float(window)
-            # For t in [window, n): sum of log_vol[t-window:t]
-            # cs1[t] - cs1[t-window], for t = window..n-1
-            idx_end = np.arange(window, n)    # t values
-            s1 = cs1[idx_end] - cs1[idx_end - window]
-            s2 = cs2[idx_end] - cs2[idx_end - window]
-            var_arr = np.maximum(s2 * inv_w - (s1 * inv_w) ** 2, 0.0)
-            vov_rolling = np.empty(n, dtype=np.float64)
-            vov_rolling[window:] = np.sqrt(var_arr)
-            vov_rolling[:window] = vov_rolling[window] if n > window else 0.0
-        else:
-            vov_rolling = np.zeros(n)
+        vov_rolling = precompute_vov(vol, window) if n > window and gamma_vov > 1e-12 else np.zeros(n, dtype=np.float64)
 
         phi_sq = phi_val * phi_val
         R_base = c_val * (vol ** 2)
@@ -3922,7 +3811,7 @@ class UnifiedPhiStudentTModel:
         if _ewm_lambda < 0.01:
             _ewm_lambda = 0.95  # Default fallback: conservative tracking
         if n > 2:
-            mu_pred_arr = mu_pred_arr + cls._ewm_lagged_correction(
+            mu_pred_arr = mu_pred_arr + ewm_lagged_correction(
                 returns, mu_pred_arr, _ewm_lambda)
 
         return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, float(log_likelihood)

@@ -31,6 +31,27 @@ from scipy.stats import norm
 from scipy.stats import t as student_t
 
 try:
+    from .student_t_common import (
+        asset_phi_profile,
+        compute_ad_statistic,
+        compute_cvm_statistic,
+        ewm_lagged_correction,
+        precompute_vov,
+        variance_to_scale,
+        variance_to_scale_vec,
+    )
+except ImportError:
+    from models.student_t_common import (
+        asset_phi_profile,
+        compute_ad_statistic,
+        compute_cvm_statistic,
+        ewm_lagged_correction,
+        precompute_vov,
+        variance_to_scale,
+        variance_to_scale_vec,
+    )
+
+try:
     from .asset_classification import (
         CRYPTO_SYMBOLS as _SHARED_CRYPTO_SYMBOLS,
         HIGH_VOL_EQUITY_SYMBOLS as _SHARED_HIGH_VOL_EQUITY_SYMBOLS,
@@ -1766,24 +1787,12 @@ class PhiStudentTDriftModel:
     @staticmethod
     def _variance_to_scale(variance: float, nu: float) -> float:
         """Convert predictive variance to Student-t scale with hard finite guards."""
-        variance = float(variance) if np.isfinite(variance) else 1e-20
-        variance = max(variance, 1e-20)
-        nu = float(nu) if np.isfinite(nu) else 8.0
-        if nu > 2.0:
-            return float(math.sqrt(max(variance * (nu - 2.0) / nu, 1e-20)))
-        return float(math.sqrt(variance))
+        return variance_to_scale(variance, nu)
 
     @staticmethod
     def _variance_to_scale_vec(variance: np.ndarray, nu: float) -> np.ndarray:
         """Vectorized version of _variance_to_scale for array inputs."""
-        variance = np.asarray(variance, dtype=np.float64)
-        variance_safe = np.maximum(np.where(np.isfinite(variance), variance, 1e-20), 1e-20)
-        nu = float(nu) if np.isfinite(nu) else 8.0
-        if nu > 2.0:
-            scale = np.sqrt(variance_safe * (nu - 2.0) / nu)
-        else:
-            scale = np.sqrt(variance_safe)
-        return np.maximum(scale, 1e-10)
+        return variance_to_scale_vec(variance, nu)
 
     @staticmethod
     def compute_effective_nu(
@@ -2004,6 +2013,8 @@ class PhiStudentTDriftModel:
         use_osa = True
         p_floor = max(float(_P_MIN), 1e-12)
         p_cap = max(float(_P_MAX), 100.0 * vol_var_med, 1e-6)
+        asset_class = _detect_asset_class(asset_symbol) if asset_symbol else None
+        phi_prior_center, phi_prior_tau, phi_prior_strength = asset_phi_profile(asset_class)
 
         def neg_cv_ll(params):
             log_q, log_c, phi_raw = params
@@ -2078,8 +2089,15 @@ class PhiStudentTDriftModel:
             # Weak priors prevent pathological drift/noise decompositions.
             prior_pen = float(prior_lambda) * (float(log_q) - float(prior_log_q_mean)) ** 2
             c_prior_pen = 0.05 * (float(log_c) - math.log10(max(c_mom, 1e-8))) ** 2
-            phi_tau = 0.75
-            phi_shrink_pen = 0.5 * (phi_clip / phi_tau) ** 2
+            # Balance two truths: drift persistence exists, but likelihood can
+            # over-explain return noise with phi.  The zero-center term keeps
+            # the latent drift honest; the weak asset term prevents large-cap,
+            # index, and metal assets from collapsing to a silent phi.
+            zero_phi_pen = 0.35 * (phi_clip / 0.80) ** 2
+            asset_phi_pen = 0.25 * phi_prior_strength * (
+                (phi_clip - phi_prior_center) / max(phi_prior_tau, 1e-6)
+            ) ** 2
+            phi_shrink_pen = zero_phi_pen + asset_phi_pen
             stationarity_pen = 0.0
             if abs(phi_clip) > 0.95:
                 stationarity_pen = 10.0 * (abs(phi_clip) - 0.95) ** 2
@@ -2124,18 +2142,7 @@ class PhiStudentTDriftModel:
             math.log10(max(1.0, c_min_eff)),
             math.log10(max(min(c_max_eff * 0.5, c_mom * 2.0), c_min_eff)),
         }
-        asset_class = _detect_asset_class(asset_symbol) if asset_symbol else None
-        asset_phi_start = {
-            'index': 0.80,
-            'large_cap': 0.65,
-            'small_cap': 0.20,
-            'high_vol_equity': 0.05,
-            'crypto': 0.45,
-            'forex': 0.30,
-            'metals_gold': 0.75,
-            'metals_silver': 0.55,
-            'metals_other': 0.45,
-        }.get(asset_class, 0.25)
+        asset_phi_start = phi_prior_center
         phi_start_vals = [-0.10, 0.0, 0.35, asset_phi_start]
         if asset_class in ('metals_gold', 'index', 'large_cap'):
             phi_start_vals.append(0.80)
@@ -2146,7 +2153,7 @@ class PhiStudentTDriftModel:
                     _add_candidate(lq0, lc0, ph0)
 
         grid_candidates.sort(key=lambda x: x[0])
-        top_starts = grid_candidates[:2] if grid_candidates else [
+        top_starts = grid_candidates[:1] if grid_candidates else [
             (1e20, np.clip(prior_log_q_mean, log_q_min, log_q_max),
              np.clip(math.log10(max(c_mom, c_min_eff)), log_c_min, log_c_max), 0.0)
         ]
@@ -2160,7 +2167,7 @@ class PhiStudentTDriftModel:
                     neg_cv_ll, [lq0, lc0, ph0],
                     method='L-BFGS-B',
                     bounds=[(log_q_min, log_q_max), (log_c_min, log_c_max), (phi_min_eff, phi_max_eff)],
-                    options={'maxiter': 35, 'ftol': 1e-7, 'gtol': 1e-5, 'maxls': 15},
+                    options={'maxiter': 28, 'ftol': 1e-7, 'gtol': 1e-5, 'maxls': 12},
                 )
                 val = float(res.fun) if np.isfinite(res.fun) else float('inf')
                 if val < best_val:
@@ -2190,44 +2197,14 @@ class PhiStudentTDriftModel:
             "q_bounds": (float(q_min_eff), float(q_max_eff)),
             "c_bounds": (float(c_min_eff), float(c_max_eff)),
             "phi_bounds": (float(phi_min_eff), float(phi_max_eff)),
+            "phi_prior_center": float(phi_prior_center),
+            "phi_prior_tau": float(phi_prior_tau),
+            "phi_prior_strength": float(phi_prior_strength),
             "n_grid_candidates": int(len(grid_candidates)),
             "cv_objective": float(best_val),
         }
 
         return q_opt, c_opt, phi_opt, cv_ll, diagnostics
-
-    # =====================================================================
-    # VoV precomputation (Barndorff-Nielsen & Shephard 2002)
-    # =====================================================================
-    @staticmethod
-    def _precompute_vov(vol: np.ndarray, window: int = 20) -> np.ndarray:
-        """Rolling std of log-vol (O(n)) with robust finite guards."""
-        vol = np.asarray(vol, dtype=np.float64).ravel()
-        n = len(vol)
-        if n <= 0:
-            return np.empty(0, dtype=np.float64)
-
-        finite = vol[np.isfinite(vol) & (vol > 0)]
-        fill = float(np.median(finite)) if finite.size else 1.0
-        vol = np.where(np.isfinite(vol) & (vol > 0), vol, fill)
-        vol = np.maximum(vol, max(fill * 1e-4, 1e-10))
-
-        window = int(max(2, min(window, max(n, 2))))
-        if n <= window:
-            return np.zeros(n, dtype=np.float64)
-
-        log_vol = np.log(vol)
-        cs1 = np.concatenate(([0.0], np.cumsum(log_vol)))
-        cs2 = np.concatenate(([0.0], np.cumsum(log_vol * log_vol)))
-        inv_w = 1.0 / float(window)
-        idx = np.arange(window, n)
-        s1 = cs1[idx] - cs1[idx - window]
-        s2 = cs2[idx] - cs2[idx - window]
-        var_arr = np.maximum(s2 * inv_w - (s1 * inv_w) ** 2, 0.0)
-        vov = np.empty(n, dtype=np.float64)
-        vov[window:] = np.sqrt(var_arr)
-        vov[:window] = vov[window] if window < n else 0.0
-        return np.where(np.isfinite(vov), vov, 0.0)
 
     # =====================================================================
     # NU_REFINE grids (Lange, Little & Taylor 1989)
@@ -2248,41 +2225,20 @@ class PhiStudentTDriftModel:
     }
     _GAMMA_VOV_DEFAULT = 0.3
 
-    # =====================================================================
-    # Cramér-von Mises statistic (Anderson 1962)
-    # =====================================================================
+    @staticmethod
+    def _precompute_vov(vol: np.ndarray, window: int = 20) -> np.ndarray:
+        """Backward-compatible hook; implementation lives in student_t_common."""
+        return precompute_vov(vol, window)
+
     @staticmethod
     def _compute_cvm_statistic(pit_values: np.ndarray) -> float:
-        """
-        Cramér-von Mises W² for Uniform(0,1). Lower means better calibration.
-        """
-        pit_values = np.asarray(pit_values, dtype=np.float64).ravel()
-        pit_values = pit_values[np.isfinite(pit_values)]
-        n = len(pit_values)
-        if n < 2:
-            return float('inf')
-        u = np.sort(np.clip(pit_values, 1e-12, 1.0 - 1e-12))
-        i_vals = np.arange(1, n + 1, dtype=np.float64)
-        w2 = float(np.sum((u - (2.0 * i_vals - 1.0) / (2.0 * n)) ** 2) + 1.0 / (12.0 * n))
-        return w2 if np.isfinite(w2) else float('inf')
+        """Backward-compatible hook; implementation lives in student_t_common."""
+        return compute_cvm_statistic(pit_values)
 
-    # =====================================================================
-    # Anderson-Darling statistic for Uniform(0,1) (Anderson & Darling 1952)
-    # =====================================================================
     @staticmethod
     def _compute_ad_statistic(pit_values: np.ndarray) -> float:
-        """
-        Anderson-Darling A² for Uniform(0,1). Lower means better tail calibration.
-        """
-        pit_values = np.asarray(pit_values, dtype=np.float64).ravel()
-        pit_values = pit_values[np.isfinite(pit_values)]
-        n = len(pit_values)
-        if n < 2:
-            return float('inf')
-        u = np.sort(np.clip(pit_values, 1e-10, 1.0 - 1e-10))
-        i_vals = np.arange(1, n + 1, dtype=np.float64)
-        a2 = -float(n) - float(np.sum((2.0 * i_vals - 1.0) * (np.log(u) + np.log1p(-u[::-1])))) / float(n)
-        return float(max(a2, 0.0)) if np.isfinite(a2) else float('inf')
+        """Backward-compatible hook; implementation lives in student_t_common."""
+        return compute_ad_statistic(pit_values)
 
     # =====================================================================
     # tune_and_calibrate — COMPLETE φ-t pipeline in the model
@@ -2335,7 +2291,7 @@ class PhiStudentTDriftModel:
         if gamma_vov is None:
             gamma_vov = cls._GAMMA_VOV_DEFAULT
         if vov_rolling is None:
-            vov_rolling = cls._precompute_vov(vol)
+            vov_rolling = precompute_vov(vol)
         n_params = 3  # q, c, phi
         # ── Train/test split for out-of-sample evaluation ──
         # Filter runs on full data; CRPS/PIT/Hyvärinen scored on test only
@@ -2617,10 +2573,10 @@ class PhiStudentTDriftModel:
         _best_c_profile = float(c_st)
         _base_pit_passing = pit_p_st >= 0.05
         _base_pit_vals = _pit_ext_base.get("pit_values", np.array([]))
-        _base_cvm = cls._compute_cvm_statistic(_base_pit_vals)
+        _base_cvm = compute_cvm_statistic(_base_pit_vals)
         if not np.isfinite(_base_cvm) or _base_cvm < 1e-12:
             _base_cvm = 1.0
-        _base_ad = cls._compute_ad_statistic(_base_pit_vals)
+        _base_ad = compute_ad_statistic(_base_pit_vals)
         if not np.isfinite(_base_ad) or _base_ad < 1e-12:
             _base_ad = 1.0
         _orig_crps = crps_st
@@ -2705,9 +2661,9 @@ class PhiStudentTDriftModel:
                     _r_test, _mu_test, _scale_profiled[n_train:], _nu_trial)
 
                 # CvM & AD for calibration quality
-                _cvm_ref = cls._compute_cvm_statistic(
+                _cvm_ref = compute_cvm_statistic(
                     _pit_ref.get("pit_values", np.array([])))
-                _ad_ref = cls._compute_ad_statistic(
+                _ad_ref = compute_ad_statistic(
                     _pit_ref.get("pit_values", np.array([])))
 
                 # ── Compute composite score ──
@@ -3486,6 +3442,8 @@ class PhiStudentTDriftModel:
         online_scale_adapt: bool = False,
         gamma_vov: float = 0.0,
         vov_rolling: np.ndarray = None,
+        prediction_bias_lambda: float = 0.95,
+        prediction_bias_cap_z: float = 0.20,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
         """phi-Student-t filter returning predictive mu_pred and S_pred for PIT.
 
@@ -3501,13 +3459,27 @@ class PhiStudentTDriftModel:
             online_scale_adapt: Embed chi² EWM scale correction in filter loop.
             gamma_vov: Vol-of-vol sensitivity (0.0 = disabled).
             vov_rolling: Precomputed rolling std of log-vol.
+            prediction_bias_lambda: Causal lagged innovation-memory correction.
+            prediction_bias_cap_z: Cap correction as a fraction of forecast sigma.
         """
-        return cls._filter_phi_core(returns, vol, q, c, phi, nu,
-                                     exogenous_input=exogenous_input,
-                                     robust_wt=robust_wt,
-                                     online_scale_adapt=online_scale_adapt,
-                                     gamma_vov=gamma_vov,
-                                     vov_rolling=vov_rolling)
+        mu_f, P_f, mu_pred, S_pred, ll = cls._filter_phi_core(
+            returns, vol, q, c, phi, nu,
+            exogenous_input=exogenous_input,
+            robust_wt=robust_wt,
+            online_scale_adapt=online_scale_adapt,
+            gamma_vov=gamma_vov,
+            vov_rolling=vov_rolling,
+        )
+        if prediction_bias_lambda >= 0.01 and len(mu_pred) > 2:
+            correction = ewm_lagged_correction(returns, mu_pred, prediction_bias_lambda)
+            cap_z = float(np.clip(prediction_bias_cap_z, 0.0, 1.0))
+            if cap_z > 0.0:
+                nu_val = cls._clip_nu(nu, cls.nu_min_default, cls.nu_max_default)
+                scale_factor = (nu_val - 2.0) / nu_val if nu_val > 2.0 else 1.0
+                cap = cap_z * np.sqrt(np.maximum(S_pred, 1e-20) * scale_factor)
+                correction = np.clip(correction, -cap, cap)
+            mu_pred = mu_pred + correction
+        return mu_f, P_f, mu_pred, S_pred, ll
 
     @staticmethod
     def _stage_5c_garch_estimation(returns_train, mu_pred_train, mu_drift_opt, n_train):
@@ -3658,7 +3630,7 @@ class PhiStudentTDriftModel:
         z = np.clip((returns - mu_pred) / np.maximum(scale, 1e-10), -1e6, 1e6)
         pit_base = pit.copy()
         ks_base, p_base = _fast_ks_uniform(pit_base)
-        ad_base = cls._compute_ad_statistic(pit_base)
+        ad_base = compute_ad_statistic(pit_base)
 
         # Stage A: Tail-weighted scale correction.
         scale_inflate = None
@@ -3681,7 +3653,7 @@ class PhiStudentTDriftModel:
                 z_twsc = z / scale_inflate
                 pit_twsc = np.clip(_fast_t_cdf(z_twsc, nu), 0.001, 0.999)
                 ks_twsc, p_twsc = _fast_ks_uniform(pit_twsc)
-                ad_twsc = cls._compute_ad_statistic(pit_twsc)
+                ad_twsc = compute_ad_statistic(pit_twsc)
                 if (p_twsc >= p_base * 0.95) or (ad_twsc <= ad_base * 1.02):
                     pit = pit_twsc
                     diag['twsc_applied'] = True
@@ -3739,7 +3711,7 @@ class PhiStudentTDriftModel:
                                 )
                             pit_sptg = np.clip(np.asarray(pit_sptg, dtype=np.float64), 0.001, 0.999)
                             ks_sptg, p_sptg = _fast_ks_uniform(pit_sptg)
-                            ad_sptg = cls._compute_ad_statistic(pit_sptg)
+                            ad_sptg = compute_ad_statistic(pit_sptg)
                             if (p_sptg >= p_base * 0.95) or (ad_sptg <= ad_base):
                                 pit = pit_sptg
                                 diag['sptg_applied'] = True
@@ -3775,8 +3747,8 @@ class PhiStudentTDriftModel:
                     pit_iso = np.clip(recal.transform(pit), 0.001, 0.999)
                     ks_before, p_before = _fast_ks_uniform(pit)
                     ks_after, p_after = _fast_ks_uniform(pit_iso)
-                    ad_before = cls._compute_ad_statistic(pit)
-                    ad_after = cls._compute_ad_statistic(pit_iso)
+                    ad_before = compute_ad_statistic(pit)
+                    ad_after = compute_ad_statistic(pit_iso)
                     if (p_after >= p_before) or (ad_after <= ad_before):
                         pit = pit_iso
                         diag['isotonic_applied'] = True
