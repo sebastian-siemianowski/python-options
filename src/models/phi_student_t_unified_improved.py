@@ -3510,6 +3510,27 @@ class UnifiedPhiStudentTModel:
                                      gamma_vov=gamma_vov,
                                      vov_rolling=vov_rolling)
 
+    @staticmethod
+    def _ewm_lagged_correction(returns: np.ndarray, mu_pred: np.ndarray, ewm_lambda: float) -> np.ndarray:
+        """Lagged EWM innovation correction used by unified filter paths."""
+        n = min(len(returns), len(mu_pred))
+        corrections = np.zeros(n, dtype=np.float64)
+        if n <= 2 or ewm_lambda < 0.01:
+            return corrections
+        lam = float(np.clip(ewm_lambda, 0.01, 0.999))
+        alpha_ewm = 1.0 - lam
+        innov_lagged = np.asarray(returns[:n - 1] - mu_pred[:n - 1], dtype=np.float64)
+        innov_lagged = np.where(np.isfinite(innov_lagged), innov_lagged, 0.0)
+        try:
+            from scipy.signal import lfilter
+            corrections[1:] = lfilter([alpha_ewm], [1.0, -lam], innov_lagged)
+        except Exception:
+            ewm_mu_val = 0.0
+            for t in range(n - 1):
+                ewm_mu_val = lam * ewm_mu_val + alpha_ewm * innov_lagged[t]
+                corrections[t + 1] = ewm_mu_val
+        return corrections
+
     @classmethod
     def filter_phi_unified(
         cls,
@@ -3605,16 +3626,7 @@ class UnifiedPhiStudentTModel:
 
                 # Apply EWM correction if lambda was configured
                 if _ewm_lambda >= 0.01 and n > 2:
-                    lam = _ewm_lambda
-                    alpha_ewm = 1.0 - lam
-                    innov_lagged = returns[:-1] - mu_p[:-1]
-                    ewm_corrections = np.empty(n, dtype=np.float64)
-                    ewm_corrections[0] = 0.0
-                    ewm_mu_val = 0.0
-                    for t in range(n - 1):
-                        ewm_mu_val = lam * ewm_mu_val + alpha_ewm * innov_lagged[t]
-                        ewm_corrections[t + 1] = ewm_mu_val
-                    mu_p = mu_p + ewm_corrections
+                    mu_p = mu_p + cls._ewm_lagged_correction(returns, mu_p, _ewm_lambda)
             else:
                 # Extended kernel: handles risk prem, skew, jumps, drift, EWM
                 from models.numba_wrappers import run_unified_phi_student_t_filter_extended
@@ -3910,20 +3922,8 @@ class UnifiedPhiStudentTModel:
         if _ewm_lambda < 0.01:
             _ewm_lambda = 0.95  # Default fallback: conservative tracking
         if n > 2:
-            # Vectorized EWM: ewm_mu[t] = λ·ewm_mu[t-1] + (1-λ)·ε_{t-1}
-            # Equivalent to exponential filter on lagged innovations
-            innov_lagged = returns[:-1] - mu_pred_arr[:-1]  # ε_{t-1} for t=1..n-1
-            alpha_ewm = 1.0 - _ewm_lambda
-            # Recursive filter: use scipy.signal.lfilter for O(n)
-            # ewm_mu[t] = λ^t·ewm_mu[0] + α·Σ_{k=0}^{t-1} λ^{t-1-k}·innov[k]
-            # This is a 1st-order IIR filter: y[t] = λ·y[t-1] + α·x[t]
-            ewm_corrections = np.empty(n, dtype=np.float64)
-            ewm_corrections[0] = 0.0
-            ewm_mu_val = 0.0
-            for t in range(n - 1):
-                ewm_mu_val = _ewm_lambda * ewm_mu_val + alpha_ewm * innov_lagged[t]
-                ewm_corrections[t + 1] = ewm_mu_val
-            mu_pred_arr = mu_pred_arr + ewm_corrections
+            mu_pred_arr = mu_pred_arr + cls._ewm_lagged_correction(
+                returns, mu_pred_arr, _ewm_lambda)
 
         return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, float(log_likelihood)
 

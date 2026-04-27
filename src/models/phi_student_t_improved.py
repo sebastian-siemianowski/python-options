@@ -1992,6 +1992,9 @@ class PhiStudentTDriftModel:
         if not folds:
             sp = max(5, min(split0, n - 1))
             folds = [(0, sp, sp, n)]
+        if len(folds) > 3:
+            fold_idx = np.unique(np.round(np.linspace(0, len(folds) - 1, 3)).astype(int))
+            folds = [folds[int(i)] for i in fold_idx]
 
         log_norm_const = math.lgamma((nu_val + 1.0) / 2.0) - math.lgamma(nu_val / 2.0) - 0.5 * math.log(nu_val * math.pi)
         neg_exp = -0.5 * (nu_val + 1.0)
@@ -2112,7 +2115,6 @@ class PhiStudentTDriftModel:
 
         q_start_vals = {
             prior_log_q_mean,
-            math.log10(max(q_min_eff * 10.0, 1e-12)),
             math.log10(max(ret_var * 1e-5, q_min_eff)),
             math.log10(max(ret_var * 1e-4, q_min_eff)),
             math.log10(max(q_min_eff, min(q_max_eff, vol_var_med * 1e-3))),
@@ -2120,19 +2122,31 @@ class PhiStudentTDriftModel:
         c_start_vals = {
             math.log10(max(c_mom, c_min_eff)),
             math.log10(max(1.0, c_min_eff)),
-            math.log10(max(c_min_eff * 2.0, c_min_eff)),
             math.log10(max(min(c_max_eff * 0.5, c_mom * 2.0), c_min_eff)),
         }
-        phi_start_vals = [-0.25, 0.0, 0.25, 0.60]
-        if asset_symbol and _detect_asset_class(asset_symbol) in ('metals_gold', 'forex', 'index'):
-            phi_start_vals.extend([0.80])
+        asset_class = _detect_asset_class(asset_symbol) if asset_symbol else None
+        asset_phi_start = {
+            'index': 0.80,
+            'large_cap': 0.65,
+            'small_cap': 0.20,
+            'high_vol_equity': 0.05,
+            'crypto': 0.45,
+            'forex': 0.30,
+            'metals_gold': 0.75,
+            'metals_silver': 0.55,
+            'metals_other': 0.45,
+        }.get(asset_class, 0.25)
+        phi_start_vals = [-0.10, 0.0, 0.35, asset_phi_start]
+        if asset_class in ('metals_gold', 'index', 'large_cap'):
+            phi_start_vals.append(0.80)
+        phi_start_vals = sorted({float(np.clip(v, phi_min_eff, phi_max_eff)) for v in phi_start_vals})
         for lq0 in q_start_vals:
             for lc0 in c_start_vals:
                 for ph0 in phi_start_vals:
                     _add_candidate(lq0, lc0, ph0)
 
         grid_candidates.sort(key=lambda x: x[0])
-        top_starts = grid_candidates[:5] if grid_candidates else [
+        top_starts = grid_candidates[:2] if grid_candidates else [
             (1e20, np.clip(prior_log_q_mean, log_q_min, log_q_max),
              np.clip(math.log10(max(c_mom, c_min_eff)), log_c_min, log_c_max), 0.0)
         ]
@@ -2146,7 +2160,7 @@ class PhiStudentTDriftModel:
                     neg_cv_ll, [lq0, lc0, ph0],
                     method='L-BFGS-B',
                     bounds=[(log_q_min, log_q_max), (log_c_min, log_c_max), (phi_min_eff, phi_max_eff)],
-                    options={'maxiter': 100, 'ftol': 1e-10, 'maxls': 30},
+                    options={'maxiter': 35, 'ftol': 1e-7, 'gtol': 1e-5, 'maxls': 15},
                 )
                 val = float(res.fun) if np.isfinite(res.fun) else float('inf')
                 if val < best_val:
