@@ -292,7 +292,6 @@ def compute_features(
                 # Try to extract gamma value from name (e.g., phi_student_t_nu_6_vov_g0.5_momentum)
                 gamma_str = ""
                 nu_str = ""
-                import re
                 # Extract gamma: look for g followed by number
                 gamma_match = re.search(r'_g(\d+\.?\d*)', base_name)
                 if gamma_match:
@@ -322,7 +321,6 @@ def compute_features(
             # Two-Piece asymmetric: phi_student_t_nuL{L}_nuR{R}_momentum
             if 'nul' in base_name.lower() and 'nur' in base_name.lower():
                 # Extract nu_left and nu_right
-                import re
                 nul_match = re.search(r'nul(\d+)', base_name.lower())
                 nur_match = re.search(r'nur(\d+)', base_name.lower())
                 if nul_match and nur_match:
@@ -340,7 +338,6 @@ def compute_features(
             # Two-Component mixture: phi_student_t_mix_{calm}_{stress}_momentum
             if 'mix' in base_name.lower() and 'student_t' in base_name.lower():
                 # Extract calm and stress nu values
-                import re
                 mix_match = re.search(r'mix_(\d+)_(\d+)', base_name)
                 if mix_match:
                     short = f'φ-T(Mix:{mix_match.group(1)}/{mix_match.group(2)})'
