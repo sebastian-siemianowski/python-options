@@ -30,6 +30,29 @@ from scipy.special import gammaln
 from scipy.stats import norm
 from scipy.stats import t as student_t
 
+try:
+    from .asset_classification import (
+        CRYPTO_SYMBOLS as _SHARED_CRYPTO_SYMBOLS,
+        HIGH_VOL_EQUITY_SYMBOLS as _SHARED_HIGH_VOL_EQUITY_SYMBOLS,
+        INDEX_SYMBOLS as _SHARED_INDEX_SYMBOLS,
+        LARGE_CAP_SYMBOLS as _SHARED_LARGE_CAP_SYMBOLS,
+        METALS_GOLD_SYMBOLS as _SHARED_METALS_GOLD_SYMBOLS,
+        METALS_OTHER_SYMBOLS as _SHARED_METALS_OTHER_SYMBOLS,
+        METALS_SILVER_SYMBOLS as _SHARED_METALS_SILVER_SYMBOLS,
+        detect_asset_class as _shared_detect_asset_class,
+    )
+except ImportError:
+    from models.asset_classification import (
+        CRYPTO_SYMBOLS as _SHARED_CRYPTO_SYMBOLS,
+        HIGH_VOL_EQUITY_SYMBOLS as _SHARED_HIGH_VOL_EQUITY_SYMBOLS,
+        INDEX_SYMBOLS as _SHARED_INDEX_SYMBOLS,
+        LARGE_CAP_SYMBOLS as _SHARED_LARGE_CAP_SYMBOLS,
+        METALS_GOLD_SYMBOLS as _SHARED_METALS_GOLD_SYMBOLS,
+        METALS_OTHER_SYMBOLS as _SHARED_METALS_OTHER_SYMBOLS,
+        METALS_SILVER_SYMBOLS as _SHARED_METALS_SILVER_SYMBOLS,
+        detect_asset_class as _shared_detect_asset_class,
+    )
+
 # Filter cache for deterministic result reuse
 try:
     from .filter_cache import (
@@ -576,16 +599,10 @@ MS_Q_BMA_PENALTY = 0.0        # No penalty - fair competition via BIC
 # The optimizer still finds likelihood-optimal values.
 # ---------------------------------------------------------------------------
 
-# Metals ticker sets — futures, spot FX, and major producers
-METALS_GOLD_SYMBOLS = frozenset({
-    'GC=F', 'XAUUSD', 'XAUUSD=X', 'GLD', 'IAU', 'SGOL',
-})
-METALS_SILVER_SYMBOLS = frozenset({
-    'SI=F', 'XAGUSD', 'XAGUSD=X', 'SLV', 'SIVR',
-})
-METALS_OTHER_SYMBOLS = frozenset({
-    'HG=F', 'PL=F', 'PA=F', 'COPX', 'PPLT',
-})
+# Metals ticker sets, maintained centrally with the retune universe.
+METALS_GOLD_SYMBOLS = _SHARED_METALS_GOLD_SYMBOLS
+METALS_SILVER_SYMBOLS = _SHARED_METALS_SILVER_SYMBOLS
+METALS_OTHER_SYMBOLS = _SHARED_METALS_OTHER_SYMBOLS
 
 # ---------------------------------------------------------------------------
 # HIGH-VOLATILITY EQUITY SYMBOLS
@@ -593,13 +610,7 @@ METALS_OTHER_SYMBOLS = frozenset({
 # Crypto-correlated, meme, and micro-cap stocks with kurtosis >> 6.
 # Need lower ν, sharper asymmetry, and weaker VoV damping for CRPS.
 # ---------------------------------------------------------------------------
-HIGH_VOL_EQUITY_SYMBOLS = frozenset({
-    'MSTR', 'AMZE', 'RCAT', 'SMCI', 'RGTI', 'QBTS', 'BKSY',
-    'SPCE', 'ABTC', 'BZAI', 'BNZI', 'AIRI',
-    # March 2026 expansion — micro/small-cap with annualized vol > 50%
-    'ESLT', 'QS', 'QUBT', 'PACB', 'APLM', 'NVTS',
-    'ACHR', 'GORO', 'USAS', 'ONDS', 'GPUS',
-})
+HIGH_VOL_EQUITY_SYMBOLS = _SHARED_HIGH_VOL_EQUITY_SYMBOLS
 
 
 def _detect_asset_class(asset_symbol: str) -> Optional[str]:
@@ -613,21 +624,7 @@ def _detect_asset_class(asset_symbol: str) -> Optional[str]:
         'high_vol_equity': Crypto-correlated / meme / micro-cap with extreme kurtosis
         None: No special profile (equities, FX, crypto — use generic)
     """
-    if asset_symbol is None:
-        return None
-    sym = asset_symbol.strip().upper()
-    if sym in METALS_GOLD_SYMBOLS:
-        return 'metals_gold'
-    if sym in METALS_SILVER_SYMBOLS:
-        return 'metals_silver'
-    if sym in METALS_OTHER_SYMBOLS:
-        return 'metals_other'
-    if sym in HIGH_VOL_EQUITY_SYMBOLS:
-        return 'high_vol_equity'
-    # Forex pairs: symbol ends with =X (e.g. CNYJPY=X, AUDUSD=X)
-    if sym.endswith('=X'):
-        return 'forex'
-    return None
+    return _shared_detect_asset_class(asset_symbol)
 
 
 # ── Story 7.1: Calibrated MS-q sensitivity per asset class ───────────
@@ -643,21 +640,10 @@ MS_Q_ASSET_CLASS_PARAMS = {
     'forex':           (3.0, 1.2),   # Moderate
 }
 
-# Crypto symbols for detection
-_CRYPTO_SYMBOLS = frozenset({
-    'BTC-USD', 'ETH-USD', 'SOL-USD', 'DOGE-USD', 'ADA-USD',
-    'XRP-USD', 'DOT-USD', 'AVAX-USD', 'LINK-USD', 'MATIC-USD',
-})
-
-_LARGE_CAP_SYMBOLS = frozenset({
-    'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'NVDA', 'META',
-    'TSLA', 'BRK-B', 'JPM', 'V', 'MA', 'UNH', 'HD', 'PG',
-    'JNJ', 'WMT', 'DIS', 'NFLX', 'COST', 'CRM', 'ADBE',
-})
-
-_INDEX_SYMBOLS = frozenset({
-    'SPY', 'QQQ', 'IWM', 'DIA', 'VOO', 'VTI', '^GSPC', '^DJI', '^IXIC',
-})
+# Broad classes for detection, maintained centrally with the retune universe.
+_CRYPTO_SYMBOLS = _SHARED_CRYPTO_SYMBOLS
+_LARGE_CAP_SYMBOLS = _SHARED_LARGE_CAP_SYMBOLS
+_INDEX_SYMBOLS = _SHARED_INDEX_SYMBOLS
 
 
 def get_ms_q_params(asset_symbol: str = None) -> Tuple[float, float]:

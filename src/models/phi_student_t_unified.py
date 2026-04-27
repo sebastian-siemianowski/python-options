@@ -30,6 +30,33 @@ from scipy.special import gammaln
 from scipy.stats import norm
 from scipy.stats import t as student_t
 
+try:
+    from .asset_classification import (
+        CRYPTO_SYMBOLS as _SHARED_CRYPTO_SYMBOLS,
+        HIGH_VOL_EQUITY_SYMBOLS as _SHARED_HIGH_VOL_EQUITY_SYMBOLS,
+        INDEX_SYMBOLS as _SHARED_INDEX_SYMBOLS,
+        LARGE_CAP_SYMBOLS as _SHARED_LARGE_CAP_SYMBOLS,
+        METALS_GOLD_SYMBOLS as _SHARED_METALS_GOLD_SYMBOLS,
+        METALS_OTHER_SYMBOLS as _SHARED_METALS_OTHER_SYMBOLS,
+        METALS_SILVER_SYMBOLS as _SHARED_METALS_SILVER_SYMBOLS,
+        SMALL_CAP_SYMBOLS as _SHARED_SMALL_CAP_SYMBOLS,
+        classify_asset_for_phi as _shared_classify_asset_for_phi,
+        detect_asset_class as _shared_detect_asset_class,
+    )
+except ImportError:
+    from models.asset_classification import (
+        CRYPTO_SYMBOLS as _SHARED_CRYPTO_SYMBOLS,
+        HIGH_VOL_EQUITY_SYMBOLS as _SHARED_HIGH_VOL_EQUITY_SYMBOLS,
+        INDEX_SYMBOLS as _SHARED_INDEX_SYMBOLS,
+        LARGE_CAP_SYMBOLS as _SHARED_LARGE_CAP_SYMBOLS,
+        METALS_GOLD_SYMBOLS as _SHARED_METALS_GOLD_SYMBOLS,
+        METALS_OTHER_SYMBOLS as _SHARED_METALS_OTHER_SYMBOLS,
+        METALS_SILVER_SYMBOLS as _SHARED_METALS_SILVER_SYMBOLS,
+        SMALL_CAP_SYMBOLS as _SHARED_SMALL_CAP_SYMBOLS,
+        classify_asset_for_phi as _shared_classify_asset_for_phi,
+        detect_asset_class as _shared_detect_asset_class,
+    )
+
 # Filter cache for deterministic result reuse
 try:
     from .filter_cache import (
@@ -187,64 +214,22 @@ PHI_PRIOR_DEFAULT = 0.50     # Fallback: agnostic center
 
 PHI_PRIOR_LAMBDA_BASE = 0.10  # Base shrinkage strength (scaled by 1/n_samples)
 
-# Symbol sets for broad phi classification
-INDEX_SYMBOLS = frozenset({
-    'SPY', 'QQQ', 'IWM', 'DIA', 'VOO', 'VTI', 'RSP',
-    '^GSPC', '^IXIC', '^DJI', '^RUT',
-    'SPX', 'NDX', 'DJIA',
-})
-
-LARGE_CAP_SYMBOLS = frozenset({
-    'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'META', 'NVDA',
-    'TSLA', 'BRK-B', 'JPM', 'JNJ', 'UNH', 'V', 'MA', 'PG',
-    'HD', 'BAC', 'XOM', 'CVX', 'ABBV', 'KO', 'PEP', 'COST',
-    'MRK', 'AVGO', 'LLY', 'TMO', 'ORCL', 'ACN', 'CRM', 'ADBE',
-    'NFLX', 'AMD', 'INTC', 'QCOM', 'TXN', 'GS', 'MS', 'SCHW',
-    'LMT', 'RTX', 'NOC', 'GD', 'BA', 'CAT', 'DE', 'GE',
-    'UPS', 'LIN', 'PFE', 'DIS', 'NKE', 'SBUX',
-})
-
-SMALL_CAP_SYMBOLS = frozenset({
-    'UPST', 'AFRM', 'IONQ', 'SNAP', 'DKNG', 'CRWD',
-    'PLTR', 'SOFI', 'RIVN', 'LCID', 'RIOT', 'MARA',
-    'NET', 'RBLX', 'HOOD', 'COIN',
-})
-
-CRYPTO_SYMBOLS = frozenset({
-    'BTC-USD', 'ETH-USD', 'SOL-USD', 'ADA-USD', 'DOT-USD',
-    'DOGE-USD', 'AVAX-USD', 'MATIC-USD', 'LINK-USD', 'XRP-USD',
-    'BNB-USD', 'SHIB-USD',
-})
+# Symbol sets for broad phi classification. The canonical definitions live in
+# asset_classification.py and are aligned with the retune universe.
+INDEX_SYMBOLS = _SHARED_INDEX_SYMBOLS
+LARGE_CAP_SYMBOLS = _SHARED_LARGE_CAP_SYMBOLS
+SMALL_CAP_SYMBOLS = _SHARED_SMALL_CAP_SYMBOLS
+CRYPTO_SYMBOLS = _SHARED_CRYPTO_SYMBOLS
 
 
-def _classify_asset_for_phi(asset_symbol):
+def _classify_asset_for_phi(asset_symbol, returns=None):
     """
     Classify asset into broad category for phi prior selection.
 
     Returns one of: 'index', 'large_cap', 'small_cap', 'crypto',
                      'metals', 'forex', 'high_vol', 'default'
     """
-    if asset_symbol is None:
-        return 'default'
-    sym = asset_symbol.strip().upper()
-
-    if sym in INDEX_SYMBOLS:
-        return 'index'
-    if sym in CRYPTO_SYMBOLS:
-        return 'crypto'
-    if sym in METALS_GOLD_SYMBOLS or sym in METALS_SILVER_SYMBOLS or sym in METALS_OTHER_SYMBOLS:
-        return 'metals'
-    if sym in HIGH_VOL_EQUITY_SYMBOLS:
-        return 'high_vol'
-    if sym.endswith('=X'):
-        return 'forex'
-    if sym in SMALL_CAP_SYMBOLS:
-        return 'small_cap'
-    if sym in LARGE_CAP_SYMBOLS:
-        return 'large_cap'
-    if sym.endswith('=F'):
-        return 'metals'
-    return 'default'
+    return _shared_classify_asset_for_phi(asset_symbol, returns=returns)
 
 
 def compute_phi_prior(asset_symbol, returns=None, n_samples=252):
@@ -270,7 +255,7 @@ def compute_phi_prior(asset_symbol, returns=None, n_samples=252):
         phi_0: prior center
         lambda_phi: shrinkage strength (larger = stronger pull toward phi_0)
     """
-    asset_class = _classify_asset_for_phi(asset_symbol)
+    asset_class = _classify_asset_for_phi(asset_symbol, returns=returns)
 
     _PHI_PRIOR_MAP = {
         'index': PHI_PRIOR_INDEX,
@@ -385,16 +370,10 @@ MS_Q_BMA_PENALTY = 0.0        # No penalty - fair competition via BIC
 # The optimizer still finds likelihood-optimal values.
 # ---------------------------------------------------------------------------
 
-# Metals ticker sets — futures, spot FX, and major producers
-METALS_GOLD_SYMBOLS = frozenset({
-    'GC=F', 'XAUUSD', 'XAUUSD=X', 'GLD', 'IAU', 'SGOL',
-})
-METALS_SILVER_SYMBOLS = frozenset({
-    'SI=F', 'XAGUSD', 'XAGUSD=X', 'SLV', 'SIVR',
-})
-METALS_OTHER_SYMBOLS = frozenset({
-    'HG=F', 'PL=F', 'PA=F', 'COPX', 'PPLT',
-})
+# Metals ticker sets, maintained centrally with the retune universe.
+METALS_GOLD_SYMBOLS = _SHARED_METALS_GOLD_SYMBOLS
+METALS_SILVER_SYMBOLS = _SHARED_METALS_SILVER_SYMBOLS
+METALS_OTHER_SYMBOLS = _SHARED_METALS_OTHER_SYMBOLS
 
 # ---------------------------------------------------------------------------
 # HIGH-VOLATILITY EQUITY SYMBOLS
@@ -402,13 +381,7 @@ METALS_OTHER_SYMBOLS = frozenset({
 # Crypto-correlated, meme, and micro-cap stocks with kurtosis >> 6.
 # Need lower ν, sharper asymmetry, and weaker VoV damping for CRPS.
 # ---------------------------------------------------------------------------
-HIGH_VOL_EQUITY_SYMBOLS = frozenset({
-    'MSTR', 'AMZE', 'RCAT', 'SMCI', 'RGTI', 'QBTS', 'BKSY',
-    'SPCE', 'ABTC', 'BZAI', 'BNZI', 'AIRI',
-    # March 2026 expansion — micro/small-cap with annualized vol > 50%
-    'ESLT', 'QS', 'QUBT', 'PACB', 'APLM', 'NVTS',
-    'ACHR', 'GORO', 'USAS', 'ONDS', 'GPUS',
-})
+HIGH_VOL_EQUITY_SYMBOLS = _SHARED_HIGH_VOL_EQUITY_SYMBOLS
 
 
 def _detect_asset_class(asset_symbol: str) -> Optional[str]:
@@ -422,21 +395,7 @@ def _detect_asset_class(asset_symbol: str) -> Optional[str]:
         'high_vol_equity': Crypto-correlated / meme / micro-cap with extreme kurtosis
         None: No special profile (equities, FX, crypto — use generic)
     """
-    if asset_symbol is None:
-        return None
-    sym = asset_symbol.strip().upper()
-    if sym in METALS_GOLD_SYMBOLS:
-        return 'metals_gold'
-    if sym in METALS_SILVER_SYMBOLS:
-        return 'metals_silver'
-    if sym in METALS_OTHER_SYMBOLS:
-        return 'metals_other'
-    if sym in HIGH_VOL_EQUITY_SYMBOLS:
-        return 'high_vol_equity'
-    # Forex pairs: symbol ends with =X (e.g. CNYJPY=X, AUDUSD=X)
-    if sym.endswith('=X'):
-        return 'forex'
-    return None
+    return _shared_detect_asset_class(asset_symbol)
 
 
 # ---------------------------------------------------------------------------

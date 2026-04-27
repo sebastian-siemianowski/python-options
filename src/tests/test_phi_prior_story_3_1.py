@@ -73,6 +73,23 @@ class TestClassifyAssetForPhi(unittest.TestCase):
         # Any =F symbol not in named sets falls through to metals via endswith('=F')
         self.assertEqual(self.classify('ZZ=F'), 'metals')
 
+    def test_retune_universe_is_classified(self):
+        from models.asset_classification import get_internal_universe_symbols
+        universe = get_internal_universe_symbols()
+        self.assertGreaterEqual(len(universe), 490)
+        self.assertIn('PLNJPY=X', universe)
+        self.assertIn('AIFF', universe)
+        self.assertNotEqual(self.classify('AIFF'), 'default')
+
+    def test_cache_safe_and_metal_fx_symbols(self):
+        self.assertEqual(self.classify('PLNJPY_X'), 'forex')
+        self.assertEqual(self.classify('XAGUSD=X'), 'metals')
+        self.assertEqual(self.classify('NEM'), 'metals')
+
+    def test_returns_profile_handles_unlisted_high_vol(self):
+        returns = np.array([0.08, -0.08] * 40)
+        self.assertEqual(self.classify('ACME', returns=returns), 'high_vol')
+
 
 class TestComputePhiPrior(unittest.TestCase):
     """Test compute_phi_prior returns correct (phi_0, lambda_phi)."""
