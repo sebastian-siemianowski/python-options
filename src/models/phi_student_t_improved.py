@@ -682,7 +682,7 @@ METALS_OTHER_SYMBOLS = _SHARED_METALS_OTHER_SYMBOLS
 HIGH_VOL_EQUITY_SYMBOLS = _SHARED_HIGH_VOL_EQUITY_SYMBOLS
 
 
-def _detect_asset_class(asset_symbol: str) -> Optional[str]:
+def _detect_asset_class(asset_symbol: str, returns=None) -> Optional[str]:
     """
     Detect asset class from symbol for calibration profile selection.
 
@@ -693,7 +693,7 @@ def _detect_asset_class(asset_symbol: str) -> Optional[str]:
         'high_vol_equity': Crypto-correlated / meme / micro-cap with extreme kurtosis
         None: No special profile (equities, FX, crypto — use generic)
     """
-    return _shared_detect_asset_class(asset_symbol)
+    return _shared_detect_asset_class(asset_symbol, returns=returns)
 
 
 # ── Story 7.1: Calibrated MS-q sensitivity per asset class ───────────
@@ -2021,7 +2021,7 @@ class PhiStudentTDriftModel:
         use_osa = True
         p_floor = max(float(_P_MIN), 1e-12)
         p_cap = max(float(_P_MAX), 100.0 * vol_var_med, 1e-6)
-        asset_class = _detect_asset_class(asset_symbol) if asset_symbol else None
+        asset_class = _detect_asset_class(asset_symbol, returns=ret_train0) if asset_symbol else None
         phi_prior_center, phi_prior_tau, phi_prior_strength = asset_phi_profile(asset_class)
 
         def neg_cv_ll(params):

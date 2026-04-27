@@ -407,7 +407,7 @@ METALS_OTHER_SYMBOLS = _SHARED_METALS_OTHER_SYMBOLS
 HIGH_VOL_EQUITY_SYMBOLS = _SHARED_HIGH_VOL_EQUITY_SYMBOLS
 
 
-def _detect_asset_class(asset_symbol: str) -> Optional[str]:
+def _detect_asset_class(asset_symbol: str, returns=None) -> Optional[str]:
     """
     Detect asset class from symbol for calibration profile selection.
 
@@ -418,7 +418,7 @@ def _detect_asset_class(asset_symbol: str) -> Optional[str]:
         'high_vol_equity': Crypto-correlated / meme / micro-cap with extreme kurtosis
         None: No special profile (equities, FX, crypto — use generic)
     """
-    return _shared_detect_asset_class(asset_symbol)
+    return _shared_detect_asset_class(asset_symbol, returns=returns)
 
 
 # ---------------------------------------------------------------------------
@@ -1994,7 +1994,7 @@ class UnifiedPhiStudentTModel:
         vol_train = vol[:n_train]
 
         # ── Asset-class adaptive profile
-        asset_class = _detect_asset_class(asset_symbol)
+        asset_class = _detect_asset_class(asset_symbol, returns=returns_train)
         profile = ASSET_CLASS_PROFILES.get(asset_class, {}) if asset_class else {}
 
         # ── Story 3.1: Asset-class adaptive phi prior
@@ -3772,8 +3772,8 @@ class UnifiedPhiStudentTModel:
                 if _math_isfinite(ll_t):
                     log_likelihood += ll_t
 
-        # Causal EWM location correction: tracks innovation mean bias
-        # Uses Stage 5f lambda, fallback 0.95 (~20-day half-life)
+        # Causal EWM location correction: tracks innovation mean bias.
+        # Uses Stage 5f lambda, fallback 0.95 (~20-day half-life).
         _ewm_lambda = float(getattr(config, 'crps_ewm_lambda', 0.0))
         if _ewm_lambda < 0.01:
             _ewm_lambda = 0.95  # Default fallback: conservative tracking
