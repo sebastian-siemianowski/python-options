@@ -617,6 +617,12 @@ try:
         make_gaussian_name,
         make_phi_gaussian_name,
         make_student_t_name,
+        make_student_t_improved_name,
+        make_student_t_mle_name,
+        make_student_t_improved_mle_name,
+        make_unified_student_t_name,
+        make_unified_student_t_improved_name,
+        is_student_t_family_model,
         # Grids
         STUDENT_T_NU_GRID,
         STUDENT_T_NU_REFINED_GRID,
@@ -639,6 +645,29 @@ except ImportError as e:
     
     def make_student_t_name(nu: int) -> str:
         return f"phi_student_t_nu_{nu}"
+
+    def make_student_t_improved_name(nu: int) -> str:
+        return f"phi_student_t_improved_nu_{nu}"
+
+    def make_student_t_mle_name() -> str:
+        return "phi_student_t_nu_mle"
+
+    def make_student_t_improved_mle_name() -> str:
+        return "phi_student_t_improved_nu_mle"
+
+    def make_unified_student_t_name(nu: int) -> str:
+        return f"phi_student_t_unified_nu_{nu}"
+
+    def make_unified_student_t_improved_name(nu: int) -> str:
+        return f"phi_student_t_unified_improved_nu_{nu}"
+
+    def is_student_t_family_model(name: str) -> bool:
+        return (
+            name.startswith("phi_student_t_nu_")
+            or name.startswith("phi_student_t_improved_nu_")
+            or name.startswith("phi_student_t_unified_nu_")
+            or name.startswith("phi_student_t_unified_improved_nu_")
+        )
 
     STUDENT_T_NU_GRID = [3, 4, 8, 20]
 

@@ -132,7 +132,7 @@ def is_nu_likelihood_flat(
     # Find all Student-t models
     student_t_models = {
         k: v for k, v in model_comparison.items()
-        if k.startswith('phi_student_t_nu_')
+        if k.startswith(('phi_student_t_nu_', 'phi_student_t_improved_nu_'))
     }
     
     if len(student_t_models) < 2:
@@ -368,7 +368,7 @@ class AdaptiveNuRefiner:
         
         student_t_models = {
             k: v for k, v in model_comparison.items()
-            if k.startswith('phi_student_t_nu_')
+            if k.startswith(('phi_student_t_nu_', 'phi_student_t_improved_nu_'))
         }
         
         if len(student_t_models) < 2:

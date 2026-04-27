@@ -47,6 +47,7 @@ USAGE:
 from models.gaussian import GaussianDriftModel, GaussianUnifiedConfig
 from models.phi_gaussian import PhiGaussianDriftModel
 from models.phi_student_t import PhiStudentTDriftModel
+from models.phi_student_t_improved import PhiStudentTDriftModel as ImprovedPhiStudentTDriftModel
 
 # Import φ-Skew-t model for BMA ensemble (Fernández-Steel parameterization)
 from models.phi_skew_t import (
@@ -146,6 +147,10 @@ from models.phi_student_t_unified import (
     UnifiedStudentTConfig,
     UnifiedPhiStudentTModel,
 )
+from models.phi_student_t_unified_improved import (
+    UnifiedStudentTConfig as ImprovedUnifiedStudentTConfig,
+    UnifiedPhiStudentTModel as ImprovedUnifiedPhiStudentTModel,
+)
 
 # Import Numba-accelerated filter wrappers (February 2026 Performance)
 try:
@@ -168,6 +173,7 @@ __all__ = [
     'GaussianUnifiedConfig',
     'PhiGaussianDriftModel',
     'PhiStudentTDriftModel',
+    'ImprovedPhiStudentTDriftModel',
     'PhiSkewTDriftModel',
     # Constants (from phi_student_t)
     'PHI_SHRINKAGE_TAU_MIN',
@@ -202,6 +208,8 @@ __all__ = [
     # Unified Student-T Architecture (February 2026)
     'UnifiedStudentTConfig',
     'UnifiedPhiStudentTModel',
+    'ImprovedUnifiedStudentTConfig',
+    'ImprovedUnifiedPhiStudentTModel',
     'compute_ms_process_noise_smooth',
     # Constants (from phi_skew_t)
     'SKEW_T_NU_GRID',

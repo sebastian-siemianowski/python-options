@@ -7,6 +7,7 @@ tuning pipeline -- the 1,040-line model fitting loop that orchestrates all
 """
 import math
 import os
+from dataclasses import fields, is_dataclass
 from typing import Dict, Any, List, Optional, Tuple
 
 import numpy as np
@@ -58,6 +59,34 @@ def optimize_q_c_phi_mle(
         prior_log_q_mean=prior_log_q_mean,
         prior_lambda=prior_lambda,
     )
+
+
+def _scalar_config_dict(config: Any) -> Dict[str, Any]:
+    """Convert a dataclass config into JSON-friendly scalar parameters."""
+    if is_dataclass(config):
+        raw = {
+            field.name: getattr(config, field.name)
+            for field in fields(config)
+            if field.name != "exogenous_input"
+        }
+    elif hasattr(config, "to_dict"):
+        raw = config.to_dict()
+    else:
+        raw = dict(getattr(config, "__dict__", {}))
+
+    out: Dict[str, Any] = {}
+    for key, value in raw.items():
+        if key == "exogenous_input":
+            continue
+        if isinstance(value, np.generic):
+            value = value.item()
+        if isinstance(value, bool) or value is None:
+            out[key] = value
+        elif isinstance(value, (int, float)):
+            out[key] = float(value)
+        elif isinstance(value, str):
+            out[key] = value
+    return out
 
 
 # =============================================================================
@@ -494,7 +523,7 @@ def fit_all_models_for_regime(
 
     _st_warm_start = None  # Cross-ν warm-starting (March 2026)
     for nu_fixed in STUDENT_T_NU_GRID:
-        model_name = f"phi_student_t_nu_{nu_fixed}"
+        model_name = make_student_t_name(nu_fixed)
         try:
             models[model_name] = PhiStudentTDriftModel.tune_and_calibrate(
                 returns, vol, nu_fixed,
@@ -598,7 +627,7 @@ def fit_all_models_for_regime(
             _n_params_mle = 4  # q, c, phi, nu (same param count as discrete)
             _bic_mle = -2.0 * _ll_mle + _n_params_mle * math.log(max(n_obs, 1))
 
-            _nu_mle_name = "phi_student_t_nu_mle"
+            _nu_mle_name = make_student_t_mle_name()
 
             # Copy best discrete model and update nu-related fields
             _mle_model = dict(_best_dm)
@@ -615,6 +644,138 @@ def fit_all_models_for_regime(
             models[_nu_mle_name] = _mle_model
         except Exception:
             pass  # Discrete grid models still available
+
+    # =========================================================================
+    # Model 1c: Improved Phi-Student-t with DISCRETE ν GRID
+    # =========================================================================
+    # Fitted side by side with the canonical phi_student_t implementation. The
+    # output names are distinct, so BMA can award posterior mass to whichever
+    # implementation earns it without replacing the incumbent model.
+    # =========================================================================
+    try:
+        from models.phi_student_t_improved import (
+            PhiStudentTDriftModel as ImprovedPhiStudentTDriftModel,
+        )
+        _improved_student_t_available = True
+    except ImportError:
+        ImprovedPhiStudentTDriftModel = None
+        _improved_student_t_available = False
+
+    if _improved_student_t_available:
+        _vov_rolling_improved = ImprovedPhiStudentTDriftModel._precompute_vov(vol)
+        _st_improved_warm_start = None
+        for nu_fixed in STUDENT_T_NU_GRID:
+            model_name = make_student_t_improved_name(nu_fixed)
+            try:
+                models[model_name] = ImprovedPhiStudentTDriftModel.tune_and_calibrate(
+                    returns, vol, nu_fixed,
+                    prior_log_q_mean=prior_log_q_mean,
+                    prior_lambda=prior_lambda,
+                    asset_symbol=asset,
+                    n_obs=n_obs,
+                    n_train=int(n_obs * 0.7),
+                    vov_rolling=_vov_rolling_improved,
+                    gamma_vov=_gamma_vov_fixed,
+                    momentum_wrapper=_st_momentum_wrapper,
+                    prices=prices,
+                    regime_labels=regime_labels,
+                    warm_start_params=_st_improved_warm_start,
+                )
+                _m = models[model_name]
+                if _m.get("fit_success", False):
+                    _m["model_type"] = "phi_student_t_improved"
+                    _m["implementation"] = "improved"
+                    _st_improved_warm_start = (
+                        _m.get("q", 1e-5),
+                        _m.get("c", 1.0),
+                        _m.get("phi", 0.0),
+                    )
+            except Exception as e:
+                models[model_name] = {
+                    "fit_success": False,
+                    "error": str(e),
+                    "bic": float('inf'),
+                    "aic": float('inf'),
+                    "hyvarinen_score": float('-inf'),
+                    "crps": float('inf'),
+                    "nu": float(nu_fixed),
+                    "nu_fixed": True,
+                    "model_type": "phi_student_t_improved",
+                    "implementation": "improved",
+                }
+
+        _best_improved_bic = float('inf')
+        _best_improved_name = None
+        for _dn, _dm in models.items():
+            if _dn.startswith("phi_student_t_improved_nu_") and _dm.get("fit_success", False):
+                _dbic = _dm.get("bic", float('inf'))
+                if _dbic < _best_improved_bic:
+                    _best_improved_bic = _dbic
+                    _best_improved_name = _dn
+
+        if _best_improved_name is not None:
+            _best_dm = models[_best_improved_name]
+            _prof_q = float(_best_dm.get("q", 1e-5))
+            _prof_c = float(_best_dm.get("c", 1.0))
+            _prof_phi = float(_best_dm.get("phi", 0.0))
+            _prof_nu_init = float(_best_dm.get("nu", 8.0))
+            _prof_gamma_vov = float(_best_dm.get("gamma_vov", 0.0))
+
+            def _profile_improved_neg_ll(nu_candidate):
+                nu_c = float(np.clip(nu_candidate, NU_CONTINUOUS_BOUNDS[0], NU_CONTINUOUS_BOUNDS[1]))
+                try:
+                    _, _, _, _, ll = ImprovedPhiStudentTDriftModel.filter_phi_with_predictive(
+                        returns, vol, _prof_q, _prof_c, _prof_phi, nu_c,
+                        robust_wt=True,
+                        gamma_vov=_prof_gamma_vov,
+                        vov_rolling=_vov_rolling_improved if _prof_gamma_vov > 1e-12 else None,
+                    )
+                    if not np.isfinite(ll):
+                        return 1e12
+                    return -ll
+                except Exception:
+                    return 1e12
+
+            try:
+                _nu_opt_result = minimize_scalar(
+                    _profile_improved_neg_ll,
+                    bounds=NU_CONTINUOUS_BOUNDS,
+                    method='bounded',
+                    options={'xatol': 0.05, 'maxiter': 40},
+                )
+                _nu_mle = float(_nu_opt_result.x)
+
+                _h = NU_SE_FD_STEP
+                _ll_center = -_profile_improved_neg_ll(_nu_mle)
+                _ll_plus = -_profile_improved_neg_ll(_nu_mle + _h)
+                _ll_minus = -_profile_improved_neg_ll(_nu_mle - _h)
+                _d2ll = (_ll_plus - 2.0 * _ll_center + _ll_minus) / (_h * _h)
+                if _d2ll < -1e-12:
+                    _nu_se = 1.0 / math.sqrt(-_d2ll)
+                else:
+                    _nu_se = float('inf')
+
+                _ll_mle = -_profile_improved_neg_ll(_nu_mle)
+                _n_params_mle = 4
+                _bic_mle = -2.0 * _ll_mle + _n_params_mle * math.log(max(n_obs, 1))
+
+                _nu_mle_name = make_student_t_improved_mle_name()
+                _mle_model = dict(_best_dm)
+                _mle_model["nu"] = _nu_mle
+                _mle_model["nu_mle"] = _nu_mle
+                _mle_model["nu_se"] = min(_nu_se, 999.0)
+                _mle_model["nu_discrete_init"] = _prof_nu_init
+                _mle_model["nu_fixed"] = False
+                _mle_model["log_likelihood"] = _ll_mle
+                _mle_model["bic"] = _bic_mle
+                _mle_model["fit_success"] = True
+                _mle_model["continuous_nu_optimization"] = True
+                _mle_model["model_type"] = "phi_student_t_improved"
+                _mle_model["implementation"] = "improved"
+
+                models[_nu_mle_name] = _mle_model
+            except Exception:
+                pass
 
     # =========================================================================
     # Model 2: UNIFIED Phi-Student-t (February 2026 - Elite Architecture)
@@ -638,7 +799,7 @@ def fit_all_models_for_regime(
     from models.phi_student_t_unified import UnifiedPhiStudentTModel
     
     for nu_fixed in UNIFIED_NU_GRID:
-        unified_name = f"phi_student_t_unified_nu_{nu_fixed}"
+        unified_name = make_unified_student_t_name(nu_fixed)
         
         try:
             # Staged optimization for unified model
@@ -1060,6 +1221,179 @@ def fit_all_models_for_regime(
             }
 
     # =========================================================================
+    # Model 2a: IMPROVED UNIFIED Phi-Student-t
+    # =========================================================================
+    # Same BMA contract as phi_student_t_unified_nu_* with distinct model names
+    # and module dispatch. This lets the improved unified implementation compete
+    # without replacing the incumbent unified family.
+    # =========================================================================
+    try:
+        from models.phi_student_t_unified_improved import (
+            UnifiedPhiStudentTModel as ImprovedUnifiedPhiStudentTModel,
+        )
+        _improved_unified_available = True
+    except ImportError:
+        ImprovedUnifiedPhiStudentTModel = None
+        _improved_unified_available = False
+
+    if _improved_unified_available:
+        for nu_fixed in UNIFIED_NU_GRID:
+            unified_name = make_unified_student_t_improved_name(nu_fixed)
+            try:
+                config, diagnostics = ImprovedUnifiedPhiStudentTModel.optimize_params_unified(
+                    returns, vol,
+                    nu_base=float(nu_fixed),
+                    train_frac=0.7,
+                    asset_symbol=asset,
+                    gk_c_prior_value=gk_c_prior_value,
+                )
+
+                if not diagnostics.get("success", False):
+                    raise ValueError(
+                        f"Improved unified optimization failed: {diagnostics.get('error', 'Unknown')}"
+                    )
+
+                mu_u, P_u, mu_pred_u, S_pred_u, ll_u = ImprovedUnifiedPhiStudentTModel.filter_phi_unified(
+                    returns, vol, config
+                )
+                ks_u, pit_p_u, pit_metrics = ImprovedUnifiedPhiStudentTModel.pit_ks_unified(
+                    returns, mu_pred_u, S_pred_u, config
+                )
+
+                jump_active = (
+                    getattr(config, 'jump_intensity', 0.0) > 1e-6
+                    and getattr(config, 'jump_variance', 0.0) > 1e-12
+                )
+                rough_active = getattr(config, 'rough_hurst', 0.0) > 0.01
+                effective_n_params = n_params_unified + (4 if jump_active else 0) + (1 if rough_active else 0)
+                aic_u = compute_aic(ll_u, effective_n_params)
+                bic_u = compute_bic(ll_u, effective_n_params, n_obs)
+                mean_ll_u = ll_u / max(n_obs, 1)
+
+                n_train_u = int(n_obs * 0.7)
+                _calibrated_berk_u = pit_metrics.get("berkowitz_pvalue", 0.0)
+                _calibrated_berk_lr_u = pit_metrics.get("berkowitz_lr", 0.0)
+                _calibrated_pit_count_u = int(pit_metrics.get("pit_count", 0))
+                _calibrated_mad_u = pit_metrics.get("histogram_mad", 1.0)
+                _ad_p_u = pit_metrics.get("ad_pvalue", float('nan'))
+                try:
+                    _calib_diag_u = diagnostics.get('test_calib_diag')
+                    if (
+                        _calib_diag_u is not None
+                        and diagnostics.get('test_sigma') is not None
+                        and diagnostics.get('test_pit_pvalue') is not None
+                    ):
+                        _sigma_cal_u = diagnostics['test_sigma']
+                        _pit_p_u = diagnostics['test_pit_pvalue']
+                    else:
+                        _, _pit_p_u, _sigma_cal_u, _, _calib_diag_u = (
+                            ImprovedUnifiedPhiStudentTModel.filter_and_calibrate(
+                                returns, vol, config, train_frac=0.7
+                            )
+                        )
+                    if _pit_p_u is not None and np.isfinite(_pit_p_u):
+                        pit_p_u = float(_pit_p_u)
+                    _bd = _calib_diag_u.get('berkowitz_pvalue')
+                    if _bd is not None and np.isfinite(_bd):
+                        _calibrated_berk_u = float(_bd)
+                    _blr = _calib_diag_u.get('berkowitz_lr')
+                    if _blr is not None and np.isfinite(_blr):
+                        _calibrated_berk_lr_u = float(_blr)
+                    _bpc = _calib_diag_u.get('pit_count')
+                    if _bpc is not None and _bpc > 0:
+                        _calibrated_pit_count_u = int(_bpc)
+                    _md = _calib_diag_u.get('mad')
+                    if _md is not None and np.isfinite(_md):
+                        _calibrated_mad_u = float(_md)
+                    _ad_p_u = _calib_diag_u.get('ad_pvalue', float('nan'))
+                    _nu_eff_u = _calib_diag_u.get('nu_effective', getattr(config, 'nu_base', nu_fixed))
+                    returns_test_u = returns[n_train_u:]
+                    mu_effective_u = mu_pred_u[n_train_u:]
+
+                    if len(_sigma_cal_u) == len(returns_test_u) and np.all(_sigma_cal_u > 0):
+                        forecast_scale_u = np.maximum(_sigma_cal_u, 1e-10)
+                        nu_for_score = float(_nu_eff_u)
+                    else:
+                        nu_for_score = float(getattr(config, 'nu_base', nu_fixed))
+                        if nu_for_score > 2:
+                            forecast_scale_u = np.sqrt(S_pred_u[n_train_u:] * (nu_for_score - 2) / nu_for_score)
+                        else:
+                            forecast_scale_u = np.sqrt(S_pred_u[n_train_u:])
+                        forecast_scale_u = np.maximum(forecast_scale_u, 1e-10)
+                except Exception:
+                    nu_for_score = float(getattr(config, 'nu_base', nu_fixed))
+                    if nu_for_score > 2:
+                        forecast_scale_u = np.sqrt(S_pred_u * (nu_for_score - 2) / nu_for_score)
+                    else:
+                        forecast_scale_u = np.sqrt(S_pred_u)
+                    forecast_scale_u = np.maximum(forecast_scale_u, 1e-10)
+                    mu_effective_u = mu_pred_u
+                    returns_test_u = returns
+
+                hyvarinen_u = compute_hyvarinen_score_student_t(
+                    returns_test_u, mu_effective_u, forecast_scale_u, nu_for_score
+                )
+                crps_u = compute_crps_student_t_inline(
+                    returns_test_u, mu_effective_u, forecast_scale_u, nu_for_score
+                )
+
+                model_record = _scalar_config_dict(config)
+                model_record.update({
+                    "nu": float(nu_for_score),
+                    "nu_grid": float(nu_fixed),
+                    "log_likelihood": float(ll_u),
+                    "mean_log_likelihood": float(mean_ll_u),
+                    "bic": float(bic_u),
+                    "aic": float(aic_u),
+                    "hyvarinen_score": float(hyvarinen_u),
+                    "crps": float(crps_u),
+                    "ks_statistic": float(ks_u),
+                    "pit_ks_pvalue": float(pit_p_u),
+                    "ad_pvalue": float(_ad_p_u),
+                    "ad_pvalue_raw": float(
+                        pit_metrics.get("ad_pvalue_raw", _ad_p_u)
+                        if isinstance(pit_metrics, dict) else _ad_p_u
+                    ),
+                    "ad_correction": pit_metrics.get("ad_correction", {}) if isinstance(pit_metrics, dict) else {},
+                    "calibration_params": (
+                        pit_metrics.get("ad_correction", {}).get("calibration_params", {})
+                        if isinstance(pit_metrics, dict) else {}
+                    ),
+                    "pit_calibration_grade": (
+                        pit_metrics.get("calibration_grade", "F")
+                        if isinstance(pit_metrics, dict) else "F"
+                    ),
+                    "histogram_mad": float(_calibrated_mad_u),
+                    "berkowitz_pvalue": float(_calibrated_berk_u),
+                    "berkowitz_lr": float(_calibrated_berk_lr_u),
+                    "pit_count": int(_calibrated_pit_count_u),
+                    "fit_success": True,
+                    "unified_model": True,
+                    "degraded": diagnostics.get("degraded", False),
+                    "hessian_cond": diagnostics.get("hessian_cond", float('inf')),
+                    "n_params": int(effective_n_params),
+                    "nu_fixed": True,
+                    "model_type": "phi_student_t_unified_improved",
+                    "implementation": "improved",
+                })
+                models[unified_name] = model_record
+
+            except Exception as e:
+                models[unified_name] = {
+                    "fit_success": False,
+                    "error": str(e),
+                    "bic": float('inf'),
+                    "aic": float('inf'),
+                    "hyvarinen_score": float('-inf'),
+                    "crps": float('inf'),
+                    "nu": float(nu_fixed),
+                    "unified_model": True,
+                    "nu_fixed": True,
+                    "model_type": "phi_student_t_unified_improved",
+                    "implementation": "improved",
+                }
+
+    # =========================================================================
     # Model 2b: UNIFIED Gaussian (Feb 2026 - nu-free Calibration Pipeline)
     # =========================================================================
     # Includes internal momentum integration (Stage 1.5) and GAS-Q adaptive
@@ -1359,5 +1693,3 @@ def fit_all_models_for_regime(
             _md["phi"] = _phi_acf_floor
 
     return models
-
-

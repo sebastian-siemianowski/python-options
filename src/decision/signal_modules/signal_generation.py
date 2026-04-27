@@ -36,6 +36,7 @@ from decision.signal_modules.kalman_diagnostics import (  # Private names
 from decision.signal_modules.parameter_loading import *  # noqa: F403
 from decision.signal_modules.parameter_loading import (  # Private names
     _safe_get_nested, _load_tuned_kalman_params, _select_regime_params,
+    is_student_t_family_model_name,
 )
 from decision.signal_modules.kalman_filtering import *  # noqa: F403
 from decision.signal_modules.kalman_filtering import (  # Private names
@@ -175,7 +176,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
     km_prob = (feats.get("kalman_metadata") or {})
     noise_model = km_prob.get("kalman_noise_model")
     tuned_nu_meta = km_prob.get("kalman_nu")
-    is_student_world = noise_model and noise_model.startswith('phi_student_t_nu_')
+    is_student_world = noise_model and is_student_t_family_model_name(noise_model)
     if is_student_world and (tuned_nu_meta is None or not np.isfinite(tuned_nu_meta)):
         raise ValueError("Student-t model selected but ν missing from tuning cache")
     nu_prob = float(tuned_nu_meta) if is_student_world else nu_glob
@@ -530,7 +531,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         noise_model_mc = km_mc.get("kalman_noise_model", "gaussian")
         if nu_mc is not None and (not np.isfinite(nu_mc) or nu_mc <= 2.0):
             nu_mc = None
-        is_student_t_mc = noise_model_mc and noise_model_mc.startswith('phi_student_t_nu_')
+        is_student_t_mc = noise_model_mc and is_student_t_family_model_name(noise_model_mc)
         if not is_student_t_mc or nu_mc is None:
             noise_model_mc = "gaussian"
 
@@ -810,7 +811,7 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         predictive_std_diag = float(math.sqrt(max(predictive_var_diag, 1e-12)))
         z_predictive_diag = float(mH / predictive_std_diag) if predictive_std_diag > 0 else 0.0
         # Check for Student-t model (phi_student_t_nu_* naming)
-        is_student_t_diag = noise_model_mc and noise_model_mc.startswith('phi_student_t_nu_')
+        is_student_t_diag = noise_model_mc and is_student_t_family_model_name(noise_model_mc)
         if is_student_t_diag and nu_mc is not None:
             p_analytical = float(student_t.cdf(z_predictive_diag, df=float(nu_mc)))
         else:
@@ -1520,5 +1521,4 @@ def latest_signals(feats: Dict[str, pd.Series], horizons: List[int], last_close:
         _prev_vol = _curr_vol
 
     return sigs, thresholds
-
 

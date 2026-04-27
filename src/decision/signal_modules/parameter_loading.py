@@ -20,6 +20,21 @@ if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
 
+try:
+    from models.model_registry import is_student_t_family_model as is_student_t_family_model_name
+except ImportError:
+    def is_student_t_family_model_name(model_name: str) -> bool:
+        if not model_name:
+            return False
+        base_name = model_name[:-9] if model_name.endswith('_momentum') else model_name
+        return (
+            base_name.startswith('phi_student_t_nu_')
+            or base_name.startswith('phi_student_t_improved_nu_')
+            or base_name.startswith('phi_student_t_unified_nu_')
+            or base_name.startswith('phi_student_t_unified_improved_nu_')
+        )
+
+
 def _safe_get_nested(d: any, keys: list, default: any = None) -> any:
     """
     Safely get a nested value from a dict, returning default if any key is missing
@@ -186,7 +201,7 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
     def _is_student_t(model_name: str) -> bool:
         # Strip momentum suffix if present (legacy cache compatibility)
         base_name = model_name[:-9] if model_name.endswith('_momentum') else model_name
-        return base_name.startswith('phi_student_t_nu_') or base_name.startswith('phi_student_t_unified_nu_')
+        return is_student_t_family_model_name(base_name)
     
     # Helper to check if model has internal momentum augmentation active
     # (either via legacy _momentum suffix or via internal momentum_augmented flag)
@@ -286,6 +301,8 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
         'nu': float(nu_val) if nu_val is not None and np.isfinite(nu_val) else None,
         'noise_model': noise_model,
         'best_model': best_model,
+        'model_type': best_params.get('model_type'),
+        'implementation': best_params.get('implementation'),
         'is_momentum_model': is_momentum_model,
 
         # RV-Q specific parameters (q_base, gamma for proactive vol-adaptive noise)
@@ -387,7 +404,31 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
         'source': 'tuned_cache_bma',
         'timestamp': raw_data.get('timestamp') or raw_data.get('meta', {}).get('timestamp'),
         'model_posterior': model_posterior,
+        'best_model_params': best_params,
     }
+    for param_key in (
+        'unified_model', 'gaussian_unified', 'degraded',
+        'gamma_vov', 'alpha_asym', 'k_asym', 'ms_sensitivity',
+        'ms_ewm_lambda', 'q_stress_ratio', 'vov_damping',
+        'variance_inflation', 'mu_drift', 'risk_premium_sensitivity',
+        'skew_score_sensitivity', 'skew_persistence',
+        'garch_omega', 'garch_alpha', 'garch_beta', 'garch_leverage',
+        'garch_unconditional_var', 'rough_hurst',
+        'jump_intensity', 'jump_variance', 'jump_sensitivity', 'jump_mean',
+        'c_min', 'c_max', 'q_min', 'crps_ewm_lambda',
+        'rho_leverage', 'kappa_mean_rev', 'theta_long_var',
+        'crps_sigma_shrinkage', 'sigma_eta', 't_df_asym',
+        'regime_switch_prob', 'garch_kalman_weight', 'q_vol_coupling',
+        'loc_bias_var_coeff', 'loc_bias_drift_coeff',
+        'leverage_dynamic_decay', 'liq_stress_coeff', 'entropy_sigma_lambda',
+        'calibrated_gw', 'calibrated_nu_pit', 'calibrated_beta_probit_corr',
+        'calibrated_lambda_rho', 'calibrated_nu_crps',
+        'momentum_weight', 'gas_q_omega', 'gas_q_alpha', 'gas_q_beta',
+        'hansen_activated', 'hansen_lambda',
+        'cst_activated', 'cst_nu_crisis', 'cst_epsilon',
+    ):
+        if isinstance(best_params, dict) and param_key in best_params:
+            result[param_key] = best_params.get(param_key)
     return result
 
 
@@ -447,7 +488,7 @@ def _select_regime_params(
 
         # Helper to check if model is Student-t
         def _is_st(m: str) -> bool:
-            return m.startswith('phi_student_t_nu_')
+            return is_student_t_family_model_name(m)
 
         if model_posterior:
             best_model = max(model_posterior.keys(), key=lambda m: model_posterior.get(m, 0))
@@ -544,4 +585,3 @@ def _select_regime_params(
             'bic_weight': global_data.get('bic_weight', 0.5),
             'entropy_lambda': global_data.get('entropy_lambda', 0.05),
         }
-

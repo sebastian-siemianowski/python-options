@@ -3,7 +3,9 @@
 
 The model architecture was upgraded to unified models (momentum is internal).
 Current model keys: kalman_gaussian_unified, kalman_phi_gaussian_unified,
-phi_student_t_nu_{3,4,8,20}, phi_student_t_unified_nu_{3,4,8,20}.
+phi_student_t_nu_{3,4,8,20}, phi_student_t_improved_nu_{3,4,8,20},
+phi_student_t_unified_nu_{3,4,8,20}, and
+phi_student_t_unified_improved_nu_{3,4,8,20}.
 """
 import sys
 import os
@@ -41,13 +43,24 @@ class TestLogLikelihoodDiff(unittest.TestCase):
         """Unified and base phi_student_t models should have different LL."""
         for nu in [3, 4, 8, 20]:
             base = f'phi_student_t_nu_{nu}'
+            improved = f'phi_student_t_improved_nu_{nu}'
             unified = f'phi_student_t_unified_nu_{nu}'
+            unified_improved = f'phi_student_t_unified_improved_nu_{nu}'
             if base in self.models and unified in self.models:
                 base_ll = self.models[base]['log_likelihood']
                 unified_ll = self.models[unified]['log_likelihood']
                 # They may differ due to different optimization pipelines
                 self.assertTrue(np.isfinite(base_ll), f"{base} LL not finite")
                 self.assertTrue(np.isfinite(unified_ll), f"{unified} LL not finite")
+            if improved in self.models:
+                improved_ll = self.models[improved]['log_likelihood']
+                self.assertTrue(np.isfinite(improved_ll), f"{improved} LL not finite")
+            if unified_improved in self.models:
+                unified_improved_ll = self.models[unified_improved]['log_likelihood']
+                self.assertTrue(
+                    np.isfinite(unified_improved_ll),
+                    f"{unified_improved} LL not finite",
+                )
 
     def test_gaussian_models_exist(self):
         """Unified Gaussian models should be present."""
@@ -55,8 +68,13 @@ class TestLogLikelihoodDiff(unittest.TestCase):
         self.assertIn('kalman_phi_gaussian_unified', self.models)
 
     def test_expected_model_count(self):
-        """Should have 11 models (2 Gaussian + 4 base + 4 unified Student-t + 1 nu_mle)."""
-        self.assertEqual(len(self.models), 11)
+        """Should include original and improved Student-t families side by side."""
+        self.assertGreaterEqual(len(self.models), 20)
+        for nu in [3, 4, 8, 20]:
+            self.assertIn(f'phi_student_t_nu_{nu}', self.models)
+            self.assertIn(f'phi_student_t_improved_nu_{nu}', self.models)
+            self.assertIn(f'phi_student_t_unified_nu_{nu}', self.models)
+            self.assertIn(f'phi_student_t_unified_improved_nu_{nu}', self.models)
 
 
 if __name__ == "__main__":

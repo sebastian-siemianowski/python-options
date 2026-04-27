@@ -41,10 +41,14 @@ export function formatModelName(raw: string | undefined | null): string {
   if (MODEL_DISPLAY_NAMES[raw]) return MODEL_DISPLAY_NAMES[raw];
 
   // ── Student-t pattern matching ────────────────────────────────
-  const nuMatch = raw.match(/phi_student_t_(?:unified_)?nu_(\d+)/);
+  const nuMatch = raw.match(/phi_student_t_(?:(unified_improved|unified|improved)_)?nu_(mle|\d+)/);
   if (nuMatch) {
-    const nu = nuMatch[1];
-    let name = raw.includes('_unified') ? `Student-t Uni ν=${nu}` : `Student-t ν=${nu}`;
+    const variant = nuMatch[1] || '';
+    const nu = nuMatch[2];
+    let name = `Student-t ν=${nu}`;
+    if (variant === 'unified_improved') name = `Student-t Uni Improved ν=${nu}`;
+    else if (variant === 'unified') name = `Student-t Uni ν=${nu}`;
+    else if (variant === 'improved') name = `Student-t Improved ν=${nu}`;
 
     // Enhancements (order matters for display)
     if (raw.includes('_vov')) {
@@ -89,10 +93,11 @@ export function formatModelNameShort(raw: string | undefined | null): string {
   if (SHORT_MAP[raw]) return SHORT_MAP[raw];
 
   // Student-t patterns (unified and standard)
-  const nuMatch = raw.match(/phi_student_t_(?:unified_)?nu_(\d+)/);
+  const nuMatch = raw.match(/phi_student_t_(?:(unified_improved|unified|improved)_)?nu_(mle|\d+)/);
   if (nuMatch) {
-    const unified = raw.includes('_unified') ? 'U' : '';
-    let s = `T${unified}(${nuMatch[1]})`;
+    const variant = nuMatch[1] || '';
+    const tag = variant === 'unified_improved' ? 'UI' : variant === 'unified' ? 'U' : variant === 'improved' ? 'I' : '';
+    let s = `T${tag}(${nuMatch[2]})`;
     if (raw.includes('_momentum')) s += '+M';
     if (raw.includes('_vov'))     s += 'V';
     if (raw.includes('_two_piece')) s += '2P';

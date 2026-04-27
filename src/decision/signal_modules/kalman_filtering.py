@@ -28,6 +28,7 @@ from decision.signal_modules.volatility_imports import *  # noqa: F403
 # Explicit private-name imports from sibling modules
 from decision.signal_modules.parameter_loading import (
     _safe_get_nested, _load_tuned_kalman_params, _select_regime_params,
+    is_student_t_family_model_name,
 )
 from decision.signal_modules.kalman_diagnostics import (
     _test_innovation_whiteness, _compute_kalman_log_likelihood,
@@ -292,8 +293,8 @@ def _kalman_filter_drift(
     
     noise_model = (tuned_params or {}).get('noise_model', 'gaussian')
     is_rv_q = noise_model.startswith('rv_q_')
-    requires_phi = 'phi' in noise_model or noise_model.startswith('phi_student_t_nu_') or is_rv_q
-    is_student_t = noise_model.startswith('phi_student_t_nu_') or (is_rv_q and 'student_t' in noise_model)
+    requires_phi = 'phi' in noise_model or is_student_t_family_model_name(noise_model) or is_rv_q
+    is_student_t = is_student_t_family_model_name(noise_model) or (is_rv_q and 'student_t' in noise_model)
 
     # =========================================================================
     # PARAMETER EXTRACTION: Batch-tuned parameters from cache
@@ -568,7 +569,19 @@ def _kalman_filter_drift(
     # Check for Unified Student-T model (February 2026 - Elite Architecture)
     if tuned_params is not None and tuned_params.get('unified_model') and not tuned_params.get('gaussian_unified') and gas_q_result is None:
         try:
-            from models.phi_student_t_unified import UnifiedStudentTConfig, UnifiedPhiStudentTModel
+            _use_improved_unified = (
+                tuned_params.get('model_type') == 'phi_student_t_unified_improved'
+                or tuned_params.get('implementation') == 'improved'
+                or str(tuned_params.get('best_model', '')).startswith('phi_student_t_unified_improved_nu_')
+                or str(noise_model).startswith('phi_student_t_unified_improved_nu_')
+            )
+            if _use_improved_unified:
+                from models.phi_student_t_unified_improved import (
+                    UnifiedStudentTConfig,
+                    UnifiedPhiStudentTModel,
+                )
+            else:
+                from models.phi_student_t_unified import UnifiedStudentTConfig, UnifiedPhiStudentTModel
             import numpy as _np_sig
             
             # Build unified config from tuned params with ALL evolved parameters
@@ -680,7 +693,8 @@ def _kalman_filter_drift(
                 rough_active = unified_config.rough_hurst > 0.01
                 rp_active = abs(getattr(unified_config, 'risk_premium_sensitivity', 0.0)) > 1e-4
                 skew_active = getattr(unified_config, 'skew_score_sensitivity', 0.0) > 1e-6
-                print(f"Using unified Student-T filter: ν={unified_config.nu_base}, "
+                _impl_label = "improved unified" if _use_improved_unified else "unified"
+                print(f"Using {_impl_label} Student-T filter: ν={unified_config.nu_base}, "
                       f"α={unified_config.alpha_asym:.3f}, γ_vov={unified_config.gamma_vov:.2f}, "
                       f"β={unified_config.variance_inflation:.3f}, "
                       f"garch=({unified_config.garch_alpha:.3f},{unified_config.garch_beta:.3f}), "
@@ -1011,5 +1025,3 @@ def _kalman_filter_drift(
         "twsc_scale_factor": float(_twsc_factor),
         "calibration_params": (tuned_params.get('global') or {}).get('calibration_params', {}) if tuned_params else {},
     }
-
-

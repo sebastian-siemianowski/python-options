@@ -133,6 +133,36 @@ def make_student_t_name(nu: int) -> str:
     return f"phi_student_t_nu_{nu}"
 
 
+def make_student_t_improved_name(nu: int) -> str:
+    """Generate canonical name for improved Student-t model with given ν."""
+    return f"phi_student_t_improved_nu_{nu}"
+
+
+def make_student_t_mle_name() -> str:
+    """Generate canonical name for continuous-ν Student-t profile model."""
+    return "phi_student_t_nu_mle"
+
+
+def make_student_t_improved_mle_name() -> str:
+    """Generate canonical name for improved continuous-ν Student-t profile model."""
+    return "phi_student_t_improved_nu_mle"
+
+
+def make_unified_student_t_name(nu: int) -> str:
+    """Generate canonical name for unified Student-t model with given ν seed."""
+    return f"phi_student_t_unified_nu_{nu}"
+
+
+def make_unified_student_t_improved_name(nu: int) -> str:
+    """Generate canonical name for improved unified Student-t model with given ν seed."""
+    return f"phi_student_t_unified_improved_nu_{nu}"
+
+
+def make_gaussian_unified_name(phi_mode: bool = False) -> str:
+    """Generate canonical name for unified Gaussian models."""
+    return "kalman_phi_gaussian_unified" if phi_mode else "kalman_gaussian_unified"
+
+
 def make_hansen_skew_t_name(nu: float, lambda_: float) -> str:
     """
     Generate canonical name for Hansen Skew-t model.
@@ -217,6 +247,19 @@ def is_rv_q_model(name: str) -> bool:
     return name.startswith("rv_q_")
 
 
+def is_student_t_family_model(name: str) -> bool:
+    """Check if a model name is any registered Student-t family variant."""
+    if not name:
+        return False
+    base_name = name[:-9] if name.endswith("_momentum") else name
+    return (
+        base_name.startswith("phi_student_t_nu_")
+        or base_name.startswith("phi_student_t_improved_nu_")
+        or base_name.startswith("phi_student_t_unified_nu_")
+        or base_name.startswith("phi_student_t_unified_improved_nu_")
+    )
+
+
 def parse_cst_name(name: str) -> Optional[Tuple[float, float, float]]:
     """Parse CST model name to extract (epsilon, nu_normal, nu_crisis)."""
     import re
@@ -296,6 +339,22 @@ def build_model_registry() -> Dict[str, ModelSpec]:
         default_params={"q": 1e-6, "c": 1.0, "phi": 0.95},
         description="AR(1) Kalman filter with Gaussian innovations",
     )
+
+    for phi_mode in (False, True):
+        name = make_gaussian_unified_name(phi_mode)
+        registry[name] = ModelSpec(
+            name=name,
+            family=ModelFamily.GAUSSIAN,
+            support=SupportType.FULL,
+            n_params=8,
+            param_names=("q", "c", "phi"),
+            default_params={"q": 1e-6, "c": 1.0, "phi": 0.95 if phi_mode else 1.0},
+            description=(
+                "Unified AR(1) Gaussian calibration pipeline"
+                if phi_mode else
+                "Unified Gaussian calibration pipeline"
+            ),
+        )
     
     # =========================================================================
     # STUDENT-T FAMILY (discrete ν grid)
@@ -325,6 +384,81 @@ def build_model_registry() -> Dict[str, ModelSpec]:
                 param_names=("q", "c", "phi", "nu"),
                 default_params={"q": 1e-6, "c": 1.0, "phi": 0.95, "nu": float(nu)},
                 description=f"AR(1) Kalman with Student-t(ν={nu}) innovations [refined]",
+                grid_values={"nu": [float(nu)]},
+            )
+
+    registry[make_student_t_mle_name()] = ModelSpec(
+        name=make_student_t_mle_name(),
+        family=ModelFamily.STUDENT_T,
+        support=SupportType.FULL,
+        n_params=4,
+        param_names=("q", "c", "phi", "nu"),
+        default_params={"q": 1e-6, "c": 1.0, "phi": 0.95, "nu": 8.0},
+        description="AR(1) Kalman with profile-MLE Student-t degrees of freedom",
+    )
+
+    # Improved Student-t implementation: fitted side by side with the canonical
+    # implementation so BMA can decide which likelihood/calibration path wins.
+    for nu in STUDENT_T_NU_GRID:
+        name = make_student_t_improved_name(nu)
+        registry[name] = ModelSpec(
+            name=name,
+            family=ModelFamily.STUDENT_T,
+            support=SupportType.FULL,
+            n_params=4,
+            param_names=("q", "c", "phi", "nu"),
+            default_params={"q": 1e-6, "c": 1.0, "phi": 0.95, "nu": float(nu)},
+            description=f"Improved AR(1) Kalman with Student-t(ν={nu}) innovations",
+            grid_values={"nu": [float(nu)]},
+        )
+
+    registry[make_student_t_improved_mle_name()] = ModelSpec(
+        name=make_student_t_improved_mle_name(),
+        family=ModelFamily.STUDENT_T,
+        support=SupportType.FULL,
+        n_params=4,
+        param_names=("q", "c", "phi", "nu"),
+        default_params={"q": 1e-6, "c": 1.0, "phi": 0.95, "nu": 8.0},
+        description="Improved AR(1) Kalman with profile-MLE Student-t degrees of freedom",
+    )
+
+    # Unified Student-t implementations. The original and improved pipelines
+    # share the same parameter contract but remain separate hypotheses.
+    unified_defaults = {
+        "q": 1e-6,
+        "c": 1.0,
+        "phi": 0.95,
+        "nu": 8.0,
+        "gamma_vov": 0.3,
+        "alpha_asym": 0.0,
+        "ms_sensitivity": 2.0,
+        "q_stress_ratio": 10.0,
+    }
+    unified_param_names = (
+        "q", "c", "phi", "nu", "gamma_vov", "alpha_asym",
+        "ms_sensitivity", "q_stress_ratio",
+    )
+    for nu in STUDENT_T_NU_GRID:
+        for name, description in (
+            (
+                make_unified_student_t_name(nu),
+                f"Unified Student-t pipeline seeded at ν={nu}",
+            ),
+            (
+                make_unified_student_t_improved_name(nu),
+                f"Improved unified Student-t pipeline seeded at ν={nu}",
+            ),
+        ):
+            defaults = dict(unified_defaults)
+            defaults["nu"] = float(nu)
+            registry[name] = ModelSpec(
+                name=name,
+                family=ModelFamily.STUDENT_T,
+                support=SupportType.FULL,
+                n_params=14,
+                param_names=unified_param_names,
+                default_params=defaults,
+                description=description,
                 grid_values={"nu": [float(nu)]},
             )
     
@@ -646,10 +780,17 @@ def get_base_models_for_tuning() -> List[str]:
     # Gaussian family first
     models.append(make_gaussian_name())
     models.append(make_phi_gaussian_name())
+    models.append(make_gaussian_unified_name(False))
+    models.append(make_gaussian_unified_name(True))
     
     # Student-t family (original grid)
     for nu in STUDENT_T_NU_GRID:
         models.append(make_student_t_name(nu))
+        models.append(make_student_t_improved_name(nu))
+        models.append(make_unified_student_t_name(nu))
+        models.append(make_unified_student_t_improved_name(nu))
+    models.append(make_student_t_mle_name())
+    models.append(make_student_t_improved_mle_name())
     
     return models
 

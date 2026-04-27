@@ -1283,12 +1283,19 @@ def main() -> None:
                     model_short = 'φ-T(Mix)'
                 if is_momentum:
                     model_short += '+Momentum'
-            elif 'phi_student_t_nu_' in model_name:
+            elif 'phi_student_t' in model_name and 'nu_' in model_name:
                 # Extract nu value
-                nu_match = re.search(r'nu_(\d+)', model_name)
+                nu_match = re.search(r'nu_(mle|\d+)', model_name)
                 if nu_match:
                     nu_val = nu_match.group(1)
-                    model_short = f'φ-T(ν={nu_val})'
+                    prefix = 'φ-T'
+                    if 'unified_improved' in model_name:
+                        prefix = 'φ-T-Uni-Imp'
+                    elif 'unified' in model_name:
+                        prefix = 'φ-T-Uni'
+                    elif 'improved' in model_name:
+                        prefix = 'φ-T-Imp'
+                    model_short = f'{prefix}(ν={nu_val})'
                     if is_momentum:
                         model_short += '+Momentum'
             elif is_momentum:

@@ -2524,7 +2524,12 @@ Examples:
                         elif noise_model.startswith('phi_skew_t_nu_'):
                             phi_skew_t_count += 1
                             student_t_count += 1  # Also count as heavy-tailed
-                        elif noise_model.startswith('phi_student_t_nu_'):
+                        elif noise_model.startswith((
+                            'phi_student_t_nu_',
+                            'phi_student_t_improved_nu_',
+                            'phi_student_t_unified_nu_',
+                            'phi_student_t_unified_improved_nu_',
+                        )):
                             phi_student_t_count += 1
                             student_t_count += 1  # Count all heavy-tailed models together
                         elif noise_model == 'phi_gaussian' or 'phi' in noise_model.lower():
@@ -2660,7 +2665,10 @@ Examples:
                                     model_str += "⚠"
                             
                                 unified_model_count += 1
-                        elif model_type.startswith('phi_student_t_nu_') and nu_val is not None:
+                        elif model_type.startswith((
+                            'phi_student_t_nu_',
+                            'phi_student_t_improved_nu_',
+                        )) and nu_val is not None:
                             # Check for Enhanced Student-t variants
                             gamma_vov = global_result.get('gamma_vov')
                             nu_left = global_result.get('nu_left')
@@ -2915,7 +2923,10 @@ Examples:
                 model_key = "φ-t-Unified-20"
             else:
                 model_key = "φ-t-Unified-8"
-        elif base_noise_model.startswith('phi_student_t_nu_') and nu_val is not None:
+        elif base_noise_model.startswith((
+            'phi_student_t_nu_',
+            'phi_student_t_improved_nu_',
+        )) and nu_val is not None:
             model_key = f"φ-t(ν={int(nu_val)})"
         elif base_noise_model == 'kalman_phi_gaussian' or phi_val is not None:
             model_key = "φ-Gaussian"
@@ -3054,7 +3065,7 @@ Examples:
         elif noise_model.startswith('phi_skew_t_nu_'):
             phi_skew_t_count += 1
             student_t_count += 1
-        elif 'phi_student_t_nu_' in noise_model:
+        elif 'phi_student_t' in noise_model and 'nu_' in noise_model:
             # phi_student_t_nu_8 or phi_student_t_nu_8_momentum
             phi_student_t_count += 1
             student_t_count += 1

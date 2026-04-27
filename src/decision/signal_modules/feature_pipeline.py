@@ -29,7 +29,10 @@ from decision.signal_modules.hmm_regimes import *  # noqa: F403
 from ingestion.data_utils import _ensure_float_series
 from decision.signal_modules.data_fetching import _fit_student_nu_mle
 from decision.signal_modules.kalman_filtering import _kalman_filter_drift
-from decision.signal_modules.parameter_loading import _load_tuned_kalman_params
+from decision.signal_modules.parameter_loading import (
+    _load_tuned_kalman_params,
+    is_student_t_family_model_name,
+)
 
 
 def compute_features(
@@ -158,9 +161,18 @@ def compute_features(
     # Load tuned parameters and model selection results
     tuned_params = None
     best_model = 'kalman_gaussian'
-    # Valid Kalman model names (primary grid [4, 8, 20] + adaptive refinement + legacy)
-    kalman_keys = {'kalman_gaussian', 'kalman_phi_gaussian'}
+    # Valid Kalman model names (primary grid + adaptive/refined/unified families)
+    kalman_keys = {
+        'kalman_gaussian',
+        'kalman_phi_gaussian',
+        'kalman_gaussian_unified',
+        'kalman_phi_gaussian_unified',
+    }
     kalman_keys.update({f'phi_student_t_nu_{nu}' for nu in [3, 4, 5, 6, 7, 8, 10, 12, 14, 15, 16, 20, 25]})
+    kalman_keys.update({f'phi_student_t_improved_nu_{nu}' for nu in [3, 4, 8, 20]})
+    kalman_keys.update({f'phi_student_t_unified_nu_{nu}' for nu in [3, 4, 8, 20]})
+    kalman_keys.update({f'phi_student_t_unified_improved_nu_{nu}' for nu in [3, 4, 8, 20]})
+    kalman_keys.update({'phi_student_t_nu_mle', 'phi_student_t_improved_nu_mle'})
     tuned_noise_model = 'gaussian'
     tuned_nu = None
     if asset_symbol is not None:
@@ -168,8 +180,8 @@ def compute_features(
         if tuned_params:
             best_model = tuned_params.get('best_model', 'kalman_gaussian')
             tuned_noise_model = tuned_params.get('noise_model', 'gaussian')
-            # Get nu for Student-t models (phi_student_t_nu_* naming)
-            if tuned_noise_model.startswith('phi_student_t_nu_'):
+            # Get nu for any Student-t family model.
+            if is_student_t_family_model_name(tuned_noise_model):
                 tuned_nu = tuned_params.get('nu')
 
     # Print BMA model information
@@ -343,14 +355,22 @@ def compute_features(
                 return {'short': short, 'desc': desc, 'family': family}
             
             # Handle phi_student_t_nu_* with any ν value
-            if base_name.startswith('phi_student_t_nu_'):
+            if is_student_t_family_model_name(base_name):
                 try:
-                    nu_val = int(base_name.split('_')[-1])
-                    short = f'φ-T(ν={nu_val})'
+                    nu_match = re.search(r'nu_(mle|\d+)', base_name)
+                    nu_val = nu_match.group(1) if nu_match else "?"
+                    prefix = 'φ-T'
+                    if 'unified_improved' in base_name:
+                        prefix = 'φ-T-Uni-Imp'
+                    elif 'unified' in base_name:
+                        prefix = 'φ-T-Uni'
+                    elif 'improved' in base_name:
+                        prefix = 'φ-T-Imp'
+                    short = f'{prefix}(ν={nu_val})'
                     if is_momentum:
                         short += '+Mom'  # Legacy cache compatibility
                     family = 'student_t'
-                    desc = f'Student-t with ν={nu_val}'
+                    desc = f'Student-t family model with ν={nu_val}'
                     if is_momentum:
                         desc += ' (legacy momentum)'
                     return {'short': short, 'desc': desc, 'family': family}
@@ -1093,7 +1113,7 @@ def compute_features(
     nu = nu.clip(lower=4.5, upper=500.0)
 
     # Tail parameter: prefer tuned ν from cache for Student-t world; otherwise keep legacy estimate
-    is_student_t_world = tuned_noise_model.startswith('phi_student_t_nu_')
+    is_student_t_world = is_student_t_family_model_name(tuned_noise_model)
     if is_student_t_world and tuned_nu is not None and np.isfinite(tuned_nu):
         # Level-7 rule: ν is fixed from tuning cache in Student-t world
         nu_hat = float(tuned_nu)
