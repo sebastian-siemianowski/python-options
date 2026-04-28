@@ -157,27 +157,19 @@ def _oos_quality(
 
 def _worker(args: tuple[str, float, bool, str]) -> Dict[str, Any]:
     symbol, nu, disable_train_state, model = args
-    env_key = (
-        "PHI_STUDENT_T_IMPROVED_DISABLE_TRAIN_STATE_KERNEL"
-        if model == "improved" else "PHI_STUDENT_T_DISABLE_TRAIN_STATE_KERNEL"
-    )
     cv_env_key = "PHI_STUDENT_T_IMPROVED_DISABLE_CV_TEST_KERNEL" if model == "improved" else None
-    fused_env_key = "PHI_STUDENT_T_IMPROVED_DISABLE_FUSED_CV_OBJECTIVE" if model == "improved" else None
-    state_only_env_key = "PHI_STUDENT_T_IMPROVED_DISABLE_STATE_ONLY_KERNEL" if model == "improved" else None
+    state_only_env_key = (
+        "PHI_STUDENT_T_IMPROVED_DISABLE_STATE_ONLY_KERNEL"
+        if model == "improved" else "PHI_STUDENT_T_DISABLE_STATE_ONLY_KERNEL"
+    )
     if disable_train_state:
-        os.environ[env_key] = "1"
         if cv_env_key is not None:
             os.environ[cv_env_key] = "1"
-        if fused_env_key is not None:
-            os.environ[fused_env_key] = "1"
         if state_only_env_key is not None:
             os.environ[state_only_env_key] = "1"
     else:
-        os.environ.pop(env_key, None)
         if cv_env_key is not None:
             os.environ.pop(cv_env_key, None)
-        if fused_env_key is not None:
-            os.environ.pop(fused_env_key, None)
         if state_only_env_key is not None:
             os.environ.pop(state_only_env_key, None)
     returns, vol = _prepare_asset(symbol)
@@ -204,7 +196,6 @@ def _worker(args: tuple[str, float, bool, str]) -> Dict[str, Any]:
         "ll": float(ll),
         "converged": bool(diag.get("optimizer_converged", False)),
         "optimizer_message": str(diag.get("optimizer_message", "")),
-        "fused_cv_objective_enabled": bool(diag.get("fused_cv_objective_enabled", False)),
         "state_only_kernel_enabled": bool(diag.get("state_only_kernel_enabled", False)),
         "cv_test_kernel_enabled": bool(diag.get("cv_test_kernel_enabled", False)),
         "cv_var_calibration_enabled": bool(diag.get("cv_var_calibration_enabled", False)),

@@ -1766,32 +1766,23 @@ class PhiStudentTDriftModel:
         # Numba kernel uses the OSA-adjusted initial state from training, which
         # is sufficient for CV scoring.
         _use_numba_cv = False
-        _numba_cv_fold_stats = None
         try:
             from models.numba_wrappers import run_phi_student_t_cv_test_fold as _numba_cv_fold
-            from models.numba_wrappers import run_phi_student_t_cv_test_fold_stats as _numba_cv_fold_stats
-            from models.numba_wrappers import run_phi_student_t_train_state as _numba_train_state
+            from models.numba_wrappers import run_phi_student_t_train_state_only as _numba_train_state_only
             _use_numba_cv = True
         except (ImportError, Exception):
-            _numba_train_state = None
+            _numba_train_state_only = None
             pass
 
         # Pre-compute VoV array for Numba (contiguous float64)
         _vov_full = None
         if _has_vov_opt and vov_rolling is not None:
             _vov_full = np.ascontiguousarray(vov_rolling.flatten(), dtype=np.float64)
-        _use_train_state_kernel = (
+        _use_train_state_only_kernel = (
             _use_numba_cv
-            and _numba_train_state is not None
-            and os.environ.get("PHI_STUDENT_T_DISABLE_TRAIN_STATE_KERNEL", "") != "1"
+            and _numba_train_state_only is not None
+            and os.environ.get("PHI_STUDENT_T_DISABLE_STATE_ONLY_KERNEL", "") != "1"
         )
-        _use_cv_var_cal = (
-            os.environ.get("PHI_STUDENT_T_ENABLE_CV_VAR_CAL", "") == "1"
-            and os.environ.get("PHI_STUDENT_T_DISABLE_CV_VAR_CAL", "") != "1"
-        )
-        _cv_var_cal_lambda = float(os.environ.get("PHI_STUDENT_T_CV_VAR_CAL_LAMBDA", "0.002"))
-        _cv_var_cal_min_obs = int(os.environ.get("PHI_STUDENT_T_CV_VAR_CAL_MIN_OBS", "30"))
-        _cv_var_cal_z2_cap = float(os.environ.get("PHI_STUDENT_T_CV_VAR_CAL_Z2_CAP", "50.0"))
 
         def neg_cv_ll(params):
             log_q, log_c, phi = params
@@ -1802,15 +1793,12 @@ class PhiStudentTDriftModel:
                 return 1e12
 
             total_ll = 0.0
-            total_z2 = 0.0
-            total_z2_count = 0
             for ts, te_f, vs, ve in folds:
                 if te_f - ts < 3:
                     continue
-                if _use_train_state_kernel:
-                    mu_p, P_p, _ = _numba_train_state(
+                if _use_train_state_only_kernel:
+                    mu_p, P_p = _numba_train_state_only(
                         _returns_r, _vol_sq, q, c, phi_clip, nu_val,
-                        log_norm_const, neg_exp, inv_nu,
                         ts, te_f,
                         gamma_vov=gamma_vov if _has_vov_opt else 0.0,
                         vov_rolling=_vov_full,
@@ -1832,19 +1820,7 @@ class PhiStudentTDriftModel:
                     )
                     mu_p = float(mu_f[-1])
                     P_p = float(P_f[-1])
-                if _use_numba_cv and _use_cv_var_cal and _numba_cv_fold_stats is not None:
-                    ll_fold, z2_count, z2_sum = _numba_cv_fold_stats(
-                        _returns_r, _vol_sq, q, c, phi_clip,
-                        _nu_scale, log_norm_const, neg_exp, inv_nu,
-                        mu_p, P_p, vs, ve,
-                        nu_val=nu_val,
-                        gamma_vov=gamma_vov if _has_vov_opt else 0.0,
-                        vov_rolling=_vov_full,
-                    )
-                    total_ll += ll_fold
-                    total_z2 += z2_sum
-                    total_z2_count += z2_count
-                elif _use_numba_cv:
+                if _use_numba_cv:
                     total_ll += _numba_cv_fold(
                         _returns_r, _vol_sq, q, c, phi_clip,
                         _nu_scale, log_norm_const, neg_exp, inv_nu,
@@ -1875,9 +1851,6 @@ class PhiStudentTDriftModel:
                         # Robust Kalman gain (Meinhold & Singpurwalla 1989)
                         K = P_p / S
                         z_sq_cv = (inn * inn) / S
-                        if _use_cv_var_cal and _misfinite(z_sq_cv):
-                            total_z2 += min(z_sq_cv, _cv_var_cal_z2_cap)
-                            total_z2_count += 1
                         w_cv = _nu_p1 / (nu_val + z_sq_cv)
                         mu_p = mu_p + K * w_cv * inn
                         P_p = (1.0 - w_cv * K) * P_p
@@ -1895,20 +1868,7 @@ class PhiStudentTDriftModel:
             _phi_tau = max(_phi_tau, PHI_SHRINKAGE_TAU_MIN)
             _phi_shrink_pen = 0.5 * (phi_clip ** 2) / (_phi_tau ** 2)
 
-            _var_cal_pen = 0.0
-            if (
-                _use_cv_var_cal
-                and _cv_var_cal_lambda > 0.0
-                and total_z2_count >= _cv_var_cal_min_obs
-            ):
-                _mean_z2 = total_z2 / float(total_z2_count)
-                _var_cal_pen = (
-                    _cv_var_cal_lambda
-                    * float(total_z2_count)
-                    * (_mlog(max(_mean_z2, 1e-8)) ** 2)
-                )
-
-            return -(total_ll - prior_pen - _phi_shrink_pen - _var_cal_pen)
+            return -(total_ll - prior_pen - _phi_shrink_pen)
 
         from scipy.optimize import minimize as sp_minimize
 
@@ -2014,8 +1974,7 @@ class PhiStudentTDriftModel:
             "n_folds": len(folds),
             "log10_q": log_q_opt,
             "n_optimizer_starts": len(top_starts),
-            "cv_var_calibration_enabled": bool(_use_cv_var_cal),
-            "cv_var_calibration_lambda": float(_cv_var_cal_lambda),
+            "state_only_kernel_enabled": bool(_use_train_state_only_kernel),
         }
 
         return q_opt, c_opt, phi_opt, cv_ll, diagnostics

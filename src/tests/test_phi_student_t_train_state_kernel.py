@@ -16,12 +16,9 @@ from models.numba_wrappers import (
     is_numba_available,
     run_phi_gaussian_train_state,
     run_phi_student_t_cv_test_fold,
-    run_phi_student_t_cv_test_fold_stats,
-    run_phi_student_t_improved_cv_objective,
+    run_phi_student_t_train_state_only,
     run_phi_student_t_improved_cv_test_fold,
     run_phi_student_t_improved_train_state_only,
-    run_phi_student_t_improved_train_state,
-    run_phi_student_t_train_state,
 )
 
 
@@ -66,17 +63,10 @@ class PhiStudentTTrainStateKernelTest(unittest.TestCase):
         c = 1.4
         phi = 0.58
         nu = 4.0
-        log_norm = (
-            gammaln((nu + 1.0) / 2.0)
-            - gammaln(nu / 2.0)
-            - 0.5 * np.log(nu * np.pi)
-        )
-        neg_exp = -((nu + 1.0) / 2.0)
-        inv_nu = 1.0 / nu
 
         start = 0
         end = 180
-        mu_f, P_f, _, _, ll_ref = PhiStudentTDriftModel._filter_phi_core(
+        mu_f, P_f, _, _, _ = PhiStudentTDriftModel._filter_phi_core(
             returns[start:end],
             vol[start:end],
             q,
@@ -88,16 +78,13 @@ class PhiStudentTTrainStateKernelTest(unittest.TestCase):
             gamma_vov=0.5,
             vov_rolling=vov[start:end],
         )
-        mu_last, P_last, ll_fast = run_phi_student_t_train_state(
+        mu_last, P_last = run_phi_student_t_train_state_only(
             returns,
             vol_sq,
             q,
             c,
             phi,
             nu,
-            log_norm,
-            neg_exp,
-            inv_nu,
             start,
             end,
             gamma_vov=0.5,
@@ -108,63 +95,6 @@ class PhiStudentTTrainStateKernelTest(unittest.TestCase):
 
         self.assertAlmostEqual(mu_last, float(mu_f[-1]), places=13)
         self.assertAlmostEqual(P_last, float(P_f[-1]), places=13)
-        self.assertAlmostEqual(ll_fast, float(ll_ref), places=10)
-
-    def test_cv_fold_stats_preserve_scalar_ll(self):
-        rng = np.random.default_rng(99)
-        returns = np.ascontiguousarray(rng.standard_t(7, size=180) * 0.009, dtype=np.float64)
-        vol = np.ascontiguousarray(
-            np.maximum(0.004, 0.010 + 0.001 * rng.standard_normal(180)),
-            dtype=np.float64,
-        )
-        vol_sq = np.ascontiguousarray(vol * vol, dtype=np.float64)
-        vov = PhiStudentTDriftModel._precompute_vov(vol)
-
-        q = 1.2e-6
-        c = 1.1
-        phi = 0.35
-        nu = 8.0
-        log_norm = (
-            gammaln((nu + 1.0) / 2.0)
-            - gammaln(nu / 2.0)
-            - 0.5 * np.log(nu * np.pi)
-        )
-        neg_exp = -((nu + 1.0) / 2.0)
-        inv_nu = 1.0 / nu
-        nu_scale = (nu - 2.0) / nu
-
-        mu_last, P_last, _ = run_phi_student_t_train_state(
-            returns,
-            vol_sq,
-            q,
-            c,
-            phi,
-            nu,
-            log_norm,
-            neg_exp,
-            inv_nu,
-            0,
-            110,
-            gamma_vov=0.3,
-            vov_rolling=vov,
-            robust_wt=True,
-            online_scale_adapt=True,
-        )
-        ll_scalar = run_phi_student_t_cv_test_fold(
-            returns, vol_sq, q, c, phi, nu_scale,
-            log_norm, neg_exp, inv_nu, mu_last, P_last, 110, 150,
-            nu_val=nu, gamma_vov=0.3, vov_rolling=vov,
-        )
-        ll_stats, obs_count, z2_sum = run_phi_student_t_cv_test_fold_stats(
-            returns, vol_sq, q, c, phi, nu_scale,
-            log_norm, neg_exp, inv_nu, mu_last, P_last, 110, 150,
-            nu_val=nu, gamma_vov=0.3, vov_rolling=vov,
-        )
-
-        self.assertAlmostEqual(ll_stats, ll_scalar, places=12)
-        self.assertEqual(obs_count, 40)
-        self.assertTrue(np.isfinite(z2_sum))
-        self.assertGreater(z2_sum, 0.0)
 
     def test_improved_train_state_matches_improved_filter_terminal_state(self):
         rng = np.random.default_rng(7)
@@ -180,18 +110,11 @@ class PhiStudentTTrainStateKernelTest(unittest.TestCase):
         c = 1.2
         phi = 0.42
         nu = 8.0
-        log_norm = (
-            gammaln((nu + 1.0) / 2.0)
-            - gammaln(nu / 2.0)
-            - 0.5 * np.log(nu * np.pi)
-        )
-        neg_exp = -((nu + 1.0) / 2.0)
-        inv_nu = 1.0 / nu
         scale_factor = (nu - 2.0) / nu
 
         start = 0
         end = 170
-        mu_f, P_f, _, _, ll_ref = ImprovedPhiStudentTDriftModel._filter_phi_core(
+        mu_f, P_f, _, _, _ = ImprovedPhiStudentTDriftModel._filter_phi_core(
             returns[start:end],
             vol[start:end],
             q,
@@ -203,16 +126,13 @@ class PhiStudentTTrainStateKernelTest(unittest.TestCase):
             gamma_vov=0.4,
             vov_rolling=vov[start:end],
         )
-        mu_last, P_last, ll_fast = run_phi_student_t_improved_train_state(
+        mu_last, P_last = run_phi_student_t_improved_train_state_only(
             returns,
             vol_sq,
             q,
             c,
             phi,
             nu,
-            log_norm,
-            neg_exp,
-            inv_nu,
             scale_factor,
             start,
             end,
@@ -223,65 +143,6 @@ class PhiStudentTTrainStateKernelTest(unittest.TestCase):
 
         self.assertAlmostEqual(mu_last, float(mu_f[-1]), places=13)
         self.assertAlmostEqual(P_last, float(P_f[-1]), places=13)
-        self.assertAlmostEqual(ll_fast, float(ll_ref), places=10)
-
-    def test_improved_state_only_matches_train_state_terminal_state(self):
-        rng = np.random.default_rng(11)
-        returns = np.ascontiguousarray(rng.standard_t(6, size=240) * 0.010, dtype=np.float64)
-        vol = np.ascontiguousarray(
-            np.maximum(0.005, 0.011 + 0.002 * rng.standard_normal(240)),
-            dtype=np.float64,
-        )
-        vol_sq = np.ascontiguousarray(vol * vol, dtype=np.float64)
-        vov = ImprovedPhiStudentTDriftModel._precompute_vov(vol)
-
-        q = 1.8e-6
-        c = 1.2
-        phi = 0.42
-        nu = 8.0
-        log_norm = (
-            gammaln((nu + 1.0) / 2.0)
-            - gammaln(nu / 2.0)
-            - 0.5 * np.log(nu * np.pi)
-        )
-        neg_exp = -0.5 * (nu + 1.0)
-        inv_nu = 1.0 / nu
-        scale_factor = (nu - 2.0) / nu
-
-        mu_full, P_full, _ = run_phi_student_t_improved_train_state(
-            returns,
-            vol_sq,
-            q,
-            c,
-            phi,
-            nu,
-            log_norm,
-            neg_exp,
-            inv_nu,
-            scale_factor,
-            0,
-            170,
-            gamma_vov=0.4,
-            vov_rolling=vov,
-            online_scale_adapt=True,
-        )
-        mu_fast, P_fast = run_phi_student_t_improved_train_state_only(
-            returns,
-            vol_sq,
-            q,
-            c,
-            phi,
-            nu,
-            scale_factor,
-            0,
-            170,
-            gamma_vov=0.4,
-            vov_rolling=vov,
-            online_scale_adapt=True,
-        )
-
-        self.assertAlmostEqual(mu_fast, mu_full, places=13)
-        self.assertAlmostEqual(P_fast, P_full, places=13)
 
     def test_improved_cv_fold_kernel_matches_python_loop(self):
         rng = np.random.default_rng(13)
@@ -306,16 +167,13 @@ class PhiStudentTTrainStateKernelTest(unittest.TestCase):
         inv_nu = 1.0 / nu
         scale_factor = (nu - 2.0) / nu
 
-        mu_last, P_last, _ = run_phi_student_t_improved_train_state(
+        mu_last, P_last = run_phi_student_t_improved_train_state_only(
             returns,
             vol_sq,
             q,
             c,
             phi,
             nu,
-            log_norm,
-            neg_exp,
-            inv_nu,
             scale_factor,
             0,
             135,
@@ -390,120 +248,6 @@ class PhiStudentTTrainStateKernelTest(unittest.TestCase):
         self.assertEqual(n_fast, 55)
         self.assertEqual(z2_count_fast, z2_count_ref)
         self.assertAlmostEqual(z2_fast, z2_ref, places=11)
-
-    def test_improved_fused_cv_objective_matches_composed_kernels(self):
-        rng = np.random.default_rng(31)
-        returns = np.ascontiguousarray(rng.standard_t(5, size=220) * 0.0105, dtype=np.float64)
-        vol = np.ascontiguousarray(
-            np.maximum(0.004, 0.011 + 0.002 * rng.standard_normal(220)),
-            dtype=np.float64,
-        )
-        vol_sq = np.ascontiguousarray(vol * vol, dtype=np.float64)
-        vov = ImprovedPhiStudentTDriftModel._precompute_vov(vol)
-
-        q = 1.9e-6
-        c = 1.28
-        phi = 0.37
-        nu = 8.0
-        gamma_vov = 0.3
-        log_norm = (
-            gammaln((nu + 1.0) / 2.0)
-            - gammaln(nu / 2.0)
-            - 0.5 * np.log(nu * np.pi)
-        )
-        neg_exp = -0.5 * (nu + 1.0)
-        inv_nu = 1.0 / nu
-        scale_factor = (nu - 2.0) / nu
-        folds = [(0, 90, 90, 130), (0, 130, 130, 175)]
-
-        ll_ref = 0.0
-        n_ref = 0
-        z2_count_ref = 0
-        z2_ref = 0.0
-        for ts, te, vs, ve in folds:
-            mu_last, P_last, _ = run_phi_student_t_improved_train_state(
-                returns,
-                vol_sq,
-                q,
-                c,
-                phi,
-                nu,
-                log_norm,
-                neg_exp,
-                inv_nu,
-                scale_factor,
-                ts,
-                te,
-                gamma_vov=gamma_vov,
-                vov_rolling=vov,
-                online_scale_adapt=True,
-                p_min=1e-12,
-                p_max_default=1.0,
-            )
-            ll_fold, n_fold, z2_count_fold, z2_fold = run_phi_student_t_improved_cv_test_fold(
-                returns,
-                vol_sq,
-                q,
-                c,
-                phi,
-                nu,
-                log_norm,
-                neg_exp,
-                inv_nu,
-                scale_factor,
-                mu_last,
-                P_last,
-                vs,
-                ve,
-                gamma_vov=gamma_vov,
-                vov_rolling=vov,
-                online_scale_adapt=True,
-                p_floor=1e-12,
-                p_cap=1.0,
-                z2_cap=50.0,
-            )
-            ll_ref += ll_fold
-            n_ref += n_fold
-            z2_count_ref += z2_count_fold
-            z2_ref += z2_fold
-
-        fold_train_start = np.ascontiguousarray([f[0] for f in folds], dtype=np.int64)
-        fold_train_end = np.ascontiguousarray([f[1] for f in folds], dtype=np.int64)
-        fold_val_start = np.ascontiguousarray([f[2] for f in folds], dtype=np.int64)
-        fold_val_end = np.ascontiguousarray([f[3] for f in folds], dtype=np.int64)
-        fold_vol_median = np.ascontiguousarray(
-            [max(float(np.median(vol_sq[f[0]:f[1]])), 1e-12) for f in folds],
-            dtype=np.float64,
-        )
-        ll_fast, n_fast, z2_count_fast, z2_fast = run_phi_student_t_improved_cv_objective(
-            returns,
-            vol_sq,
-            fold_train_start,
-            fold_train_end,
-            fold_val_start,
-            fold_val_end,
-            fold_vol_median,
-            q,
-            c,
-            phi,
-            nu,
-            log_norm,
-            neg_exp,
-            inv_nu,
-            scale_factor,
-            gamma_vov=gamma_vov,
-            vov_rolling=vov,
-            online_scale_adapt=True,
-            p_floor=1e-12,
-            p_max_default=1.0,
-            validation_p_cap=1.0,
-            z2_cap=50.0,
-        )
-
-        self.assertAlmostEqual(ll_fast, ll_ref, places=10)
-        self.assertEqual(n_fast, n_ref)
-        self.assertEqual(z2_count_fast, z2_count_ref)
-        self.assertAlmostEqual(z2_fast, z2_ref, places=10)
 
 
 if __name__ == "__main__":

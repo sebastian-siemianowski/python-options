@@ -51,12 +51,9 @@ try:
         chi2_ewm_correction_kernel,
         pit_var_stretching_kernel,
         phi_student_t_cv_test_fold_kernel,
-        phi_student_t_cv_test_fold_stats_kernel,
-        phi_student_t_train_state_kernel,
-        phi_student_t_improved_cv_objective_kernel,
+        phi_student_t_train_state_only_kernel,
         phi_student_t_improved_cv_test_fold_kernel,
         phi_student_t_improved_train_state_only_kernel,
-        phi_student_t_improved_train_state_kernel,
         compute_ms_process_noise_ewm_kernel,
         stage6_ewm_fold_kernel,
         ewm_mu_correction_kernel,
@@ -1915,114 +1912,35 @@ def run_phi_student_t_cv_test_fold(
     )
 
 
-def run_phi_student_t_cv_test_fold_stats(
-    returns: np.ndarray,
-    vol_sq: np.ndarray,
-    q: float,
-    c: float,
-    phi: float,
-    nu_scale: float,
-    log_norm_const: float,
-    neg_exp: float,
-    inv_nu: float,
-    mu_init: float,
-    P_init: float,
-    test_start: int,
-    test_end: int,
-    nu_val: float = 8.0,
-    gamma_vov: float = 0.0,
-    vov_rolling: np.ndarray = None,
-) -> Tuple[float, int, float]:
-    """Run a phi-Student-t CV fold and return LL plus dispersion stats."""
-    if not _NUMBA_AVAILABLE:
-        raise ImportError("Numba kernels not available")
-    use_vov = 1 if (gamma_vov > 1e-12 and vov_rolling is not None) else 0
-    if vov_rolling is None:
-        vov_rolling = np.empty(1, dtype=np.float64)
-    ll_fold, obs_count, z2_sum = phi_student_t_cv_test_fold_stats_kernel(
-        returns, vol_sq,
-        float(q), float(c), float(phi),
-        float(nu_scale), float(log_norm_const), float(neg_exp),
-        float(inv_nu),
-        float(mu_init), float(P_init),
-        int(test_start), int(test_end),
-        float(nu_val), float(gamma_vov),
-        vov_rolling, int(use_vov),
-    )
-    return float(ll_fold), int(obs_count), float(z2_sum)
-
-
-def run_phi_student_t_train_state(
+def run_phi_student_t_train_state_only(
     returns: np.ndarray,
     vol_sq: np.ndarray,
     q: float,
     c: float,
     phi: float,
     nu: float,
-    log_norm_const: float,
-    neg_exp: float,
-    inv_nu: float,
     train_start: int,
     train_end: int,
     gamma_vov: float = 0.0,
     vov_rolling: np.ndarray = None,
     robust_wt: bool = True,
     online_scale_adapt: bool = True,
-) -> Tuple[float, float, float]:
-    """Run terminal-state Student-t training fold without array allocation."""
+) -> Tuple[float, float]:
+    """Run terminal-state Student-t training fold without discarded LL work."""
     if not _NUMBA_AVAILABLE:
         raise ImportError("Numba kernels not available")
     use_vov = 1 if (gamma_vov > 1e-12 and vov_rolling is not None) else 0
     if vov_rolling is None:
         vov_rolling = np.empty(1, dtype=np.float64)
-    mu, P, ll = phi_student_t_train_state_kernel(
+    mu, P = phi_student_t_train_state_only_kernel(
         returns, vol_sq,
         float(q), float(c), float(phi), float(nu),
-        float(log_norm_const), float(neg_exp), float(inv_nu),
         int(train_start), int(train_end),
         float(gamma_vov), vov_rolling, int(use_vov),
         1 if robust_wt else 0,
         1 if online_scale_adapt else 0,
     )
-    return float(mu), float(P), float(ll)
-
-
-def run_phi_student_t_improved_train_state(
-    returns: np.ndarray,
-    vol_sq: np.ndarray,
-    q: float,
-    c: float,
-    phi: float,
-    nu: float,
-    log_norm_const: float,
-    neg_exp: float,
-    inv_nu: float,
-    scale_factor: float,
-    train_start: int,
-    train_end: int,
-    gamma_vov: float = 0.0,
-    vov_rolling: np.ndarray = None,
-    online_scale_adapt: bool = True,
-    p_min: float = 1e-12,
-    p_max_default: float = 1.0,
-) -> Tuple[float, float, float]:
-    """Run terminal-state improved Student-t training fold without arrays."""
-    if not _NUMBA_AVAILABLE:
-        raise ImportError("Numba kernels not available")
-    use_vov = 1 if (gamma_vov > 1e-12 and vov_rolling is not None) else 0
-    if vov_rolling is None:
-        vov_rolling = np.empty(1, dtype=np.float64)
-    mu, P, ll = phi_student_t_improved_train_state_kernel(
-        returns, vol_sq,
-        float(q), float(c), float(phi), float(nu),
-        float(log_norm_const), float(neg_exp), float(inv_nu),
-        float(scale_factor),
-        int(train_start), int(train_end),
-        float(gamma_vov), vov_rolling, int(use_vov),
-        1 if online_scale_adapt else 0,
-        float(p_min), float(p_max_default),
-    )
-    return float(mu), float(P), float(ll)
+    return float(mu), float(P)
 
 
 def run_phi_student_t_improved_train_state_only(
@@ -2119,64 +2037,6 @@ def run_phi_student_t_improved_cv_test_fold(
         float(z2_cap),
     )
     return float(ll_fold), int(obs_count), int(z2_count), float(z2_sum)
-
-
-def run_phi_student_t_improved_cv_objective(
-    returns: np.ndarray,
-    vol_sq: np.ndarray,
-    fold_train_start: np.ndarray,
-    fold_train_end: np.ndarray,
-    fold_val_start: np.ndarray,
-    fold_val_end: np.ndarray,
-    fold_vol_var_median: np.ndarray,
-    q: float,
-    c: float,
-    phi: float,
-    nu: float,
-    log_norm_const: float,
-    neg_exp: float,
-    inv_nu: float,
-    scale_factor: float,
-    gamma_vov: float = 0.0,
-    vov_rolling: np.ndarray = None,
-    online_scale_adapt: bool = True,
-    p_floor: float = 1e-12,
-    p_max_default: float = 1.0,
-    validation_p_cap: float = 1.0,
-    z2_cap: float = 50.0,
-) -> Tuple[float, int, int, float]:
-    """Run the fused improved Student-t CV objective in one compiled pass."""
-    if not _NUMBA_AVAILABLE:
-        raise ImportError("Numba kernels not available")
-    use_vov = 1 if (gamma_vov > 1e-12 and vov_rolling is not None) else 0
-    if vov_rolling is None:
-        vov_rolling = np.empty(1, dtype=np.float64)
-    ll_total, obs_count, z2_count, z2_sum = phi_student_t_improved_cv_objective_kernel(
-        returns,
-        vol_sq,
-        fold_train_start,
-        fold_train_end,
-        fold_val_start,
-        fold_val_end,
-        fold_vol_var_median,
-        float(q),
-        float(c),
-        float(phi),
-        float(nu),
-        float(log_norm_const),
-        float(neg_exp),
-        float(inv_nu),
-        float(scale_factor),
-        float(gamma_vov),
-        vov_rolling,
-        int(use_vov),
-        1 if online_scale_adapt else 0,
-        float(p_floor),
-        float(p_max_default),
-        float(validation_p_cap),
-        float(z2_cap),
-    )
-    return float(ll_total), int(obs_count), int(z2_count), float(z2_sum)
 
 
 # =============================================================================

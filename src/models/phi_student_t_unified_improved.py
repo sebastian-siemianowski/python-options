@@ -4375,17 +4375,7 @@ class UnifiedPhiStudentTModel:
             except Exception:
                 return None
 
-        _use_stage5_threads = os.environ.get("UNIFIED_STAGE5_DISABLE_THREADS", "") != "1"
-        if _use_stage5_threads:
-            try:
-                from concurrent.futures import ThreadPoolExecutor
-                _n_workers = min(len(NU_GRID), os.cpu_count() or 4)
-                with ThreadPoolExecutor(max_workers=_n_workers) as executor:
-                    _results = list(executor.map(_evaluate_nu, NU_GRID))
-            except Exception:
-                _results = [_evaluate_nu(nu) for nu in NU_GRID]
-        else:
-            _results = [_evaluate_nu(nu) for nu in NU_GRID]
+        _results = [_evaluate_nu(nu) for nu in NU_GRID]
 
         for _res in _results:
             if _res is not None:

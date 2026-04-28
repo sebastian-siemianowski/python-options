@@ -108,10 +108,8 @@ try:
         # Filter accelerators
         run_phi_student_t_augmented_filter,
         run_phi_student_t_enhanced_filter,
-        run_phi_student_t_improved_cv_objective,
         run_phi_student_t_improved_cv_test_fold,
         run_phi_student_t_improved_train_state_only,
-        run_phi_student_t_improved_train_state,
         # CDF/PDF array kernels (vectorized replacements for scipy)
         run_student_t_cdf_array,
         run_student_t_pdf_array,
@@ -131,10 +129,8 @@ except ImportError:
     run_student_t_filter_with_lfo_cv = None
     run_student_t_filter_with_lfo_cv_batch = None
     run_phi_student_t_augmented_filter = None
-    run_phi_student_t_improved_cv_objective = None
     run_phi_student_t_improved_cv_test_fold = None
     run_phi_student_t_improved_train_state_only = None
-    run_phi_student_t_improved_train_state = None
     run_student_t_cdf_array = None
     run_student_t_pdf_array = None
 
@@ -2020,17 +2016,6 @@ class PhiStudentTDriftModel:
         if len(folds) > 3:
             fold_idx = np.unique(np.round(np.linspace(0, len(folds) - 1, 3)).astype(int))
             folds = [folds[int(i)] for i in fold_idx]
-        fold_train_start = np.ascontiguousarray([f[0] for f in folds], dtype=np.int64)
-        fold_train_end = np.ascontiguousarray([f[1] for f in folds], dtype=np.int64)
-        fold_val_start = np.ascontiguousarray([f[2] for f in folds], dtype=np.int64)
-        fold_val_end = np.ascontiguousarray([f[3] for f in folds], dtype=np.int64)
-        fold_vol_var_median = np.ascontiguousarray(
-            [
-                max(float(np.median(vol_sq[f[0]:f[1]])), 1e-12)
-                for f in folds
-            ],
-            dtype=np.float64,
-        )
 
         log_norm_const = math.lgamma((nu_val + 1.0) / 2.0) - math.lgamma(nu_val / 2.0) - 0.5 * math.log(nu_val * math.pi)
         neg_exp = -0.5 * (nu_val + 1.0)
@@ -2043,21 +2028,10 @@ class PhiStudentTDriftModel:
         p_cap = max(float(_P_MAX), 100.0 * vol_var_med, 1e-6)
         asset_class = _detect_asset_class(asset_symbol, returns=ret_train0) if asset_symbol else None
         phi_prior_center, phi_prior_tau, phi_prior_strength = asset_phi_profile(asset_class)
-        use_fused_cv_objective = (
-            _USE_NUMBA
-            and run_phi_student_t_improved_cv_objective is not None
-            and os.environ.get("PHI_STUDENT_T_IMPROVED_ENABLE_FUSED_CV_OBJECTIVE", "") == "1"
-            and os.environ.get("PHI_STUDENT_T_IMPROVED_DISABLE_FUSED_CV_OBJECTIVE", "") != "1"
-        )
         use_train_state_only_kernel = (
             _USE_NUMBA
             and run_phi_student_t_improved_train_state_only is not None
             and os.environ.get("PHI_STUDENT_T_IMPROVED_DISABLE_STATE_ONLY_KERNEL", "") != "1"
-        )
-        use_train_state_kernel = (
-            _USE_NUMBA
-            and run_phi_student_t_improved_train_state is not None
-            and os.environ.get("PHI_STUDENT_T_IMPROVED_DISABLE_TRAIN_STATE_KERNEL", "") != "1"
         )
         use_cv_test_kernel = (
             _USE_NUMBA
@@ -2088,144 +2062,104 @@ class PhiStudentTDriftModel:
             total_count = 0
             total_z2 = 0.0
             total_z2_count = 0
-            if use_fused_cv_objective:
+            for ts, te_f, vs, ve in folds:
                 try:
-                    total_ll, total_count, total_z2_count, total_z2 = run_phi_student_t_improved_cv_objective(
-                        returns,
-                        vol_sq,
-                        fold_train_start,
-                        fold_train_end,
-                        fold_val_start,
-                        fold_val_end,
-                        fold_vol_var_median,
-                        q,
-                        c,
-                        phi_clip,
-                        nu_val,
-                        log_norm_const,
-                        neg_exp,
-                        inv_nu,
-                        scale_factor,
-                        gamma_vov=gamma_vov if has_vov else 0.0,
-                        vov_rolling=vov_full,
-                        online_scale_adapt=use_osa,
-                        p_floor=p_floor,
-                        p_max_default=float(_P_MAX),
-                        validation_p_cap=p_cap,
-                        z2_cap=cv_var_cal_z2_cap,
-                    )
-                except Exception:
-                    return 1e12
-            else:
-                for ts, te_f, vs, ve in folds:
-                    try:
-                        if use_train_state_only_kernel:
-                            mu_p, P_p = run_phi_student_t_improved_train_state_only(
-                                returns, vol_sq, q, c, phi_clip, nu_val,
-                                scale_factor,
-                                ts, te_f,
-                                gamma_vov=gamma_vov if has_vov else 0.0,
-                                vov_rolling=vov_full,
-                                online_scale_adapt=use_osa,
-                                p_min=p_floor,
-                                p_max_default=float(_P_MAX),
-                            )
-                        elif use_train_state_kernel:
-                            mu_p, P_p, _ = run_phi_student_t_improved_train_state(
-                                returns, vol_sq, q, c, phi_clip, nu_val,
-                                log_norm_const, neg_exp, inv_nu, scale_factor,
-                                ts, te_f,
-                                gamma_vov=gamma_vov if has_vov else 0.0,
-                                vov_rolling=vov_full,
-                                online_scale_adapt=use_osa,
-                                p_min=p_floor,
-                                p_max_default=float(_P_MAX),
-                            )
-                        else:
-                            vov_tr = vov_rolling[ts:te_f] if has_vov else None
-                            mu_f, P_f, _, _, _ = cls._filter_phi_core(
-                                returns[ts:te_f], vol[ts:te_f], q, c, phi_clip, nu_val,
-                                robust_wt=True,
-                                online_scale_adapt=use_osa,
-                                gamma_vov=gamma_vov if has_vov else 0.0,
-                                vov_rolling=vov_tr,
-                            )
-                            if len(mu_f) == 0:
-                                continue
-                            mu_p = float(mu_f[-1])
-                            P_p = float(P_f[-1])
-                        if use_cv_test_kernel:
-                            ll_fold, obs_count, z2_count, z2_sum = run_phi_student_t_improved_cv_test_fold(
-                                returns,
-                                vol_sq,
-                                q,
-                                c,
-                                phi_clip,
-                                nu_val,
-                                log_norm_const,
-                                neg_exp,
-                                inv_nu,
-                                scale_factor,
-                                mu_p,
-                                P_p,
-                                vs,
-                                ve,
-                                gamma_vov=gamma_vov if has_vov else 0.0,
-                                vov_rolling=vov_full,
-                                online_scale_adapt=use_osa,
-                                p_floor=p_floor,
-                                p_cap=p_cap,
-                                z2_cap=cv_var_cal_z2_cap,
-                            )
-                            total_ll += ll_fold
-                            total_count += obs_count
-                            if use_cv_var_cal:
-                                total_z2 += z2_sum
-                                total_z2_count += z2_count
+                    if use_train_state_only_kernel:
+                        mu_p, P_p = run_phi_student_t_improved_train_state_only(
+                            returns, vol_sq, q, c, phi_clip, nu_val,
+                            scale_factor,
+                            ts, te_f,
+                            gamma_vov=gamma_vov if has_vov else 0.0,
+                            vov_rolling=vov_full,
+                            online_scale_adapt=use_osa,
+                            p_min=p_floor,
+                            p_max_default=float(_P_MAX),
+                        )
+                    else:
+                        vov_tr = vov_rolling[ts:te_f] if has_vov else None
+                        mu_f, P_f, _, _, _ = cls._filter_phi_core(
+                            returns[ts:te_f], vol[ts:te_f], q, c, phi_clip, nu_val,
+                            robust_wt=True,
+                            online_scale_adapt=use_osa,
+                            gamma_vov=gamma_vov if has_vov else 0.0,
+                            vov_rolling=vov_tr,
+                        )
+                        if len(mu_f) == 0:
                             continue
-                        c_adj = 1.0
-                        ewm_z2 = (nu_val / (nu_val - 2.0)) if nu_val > 2.0 else 1.0
-                        chi2_tgt = ewm_z2
-                        chi2_lam = 0.985
-                        osa_strength = min(1.0, (chi2_tgt - 1.0) / 0.5) if nu_val > 2.0 else 1.0
-                        phi_sq = phi_clip * phi_clip
-
-                        for t in range(vs, ve):
-                            mu_pred = phi_clip * mu_p
-                            P_pred = max(phi_sq * P_p + q, p_floor)
-                            c_eff = c * c_adj
-                            R_t = max(c_eff * vol_sq[t], 1e-20)
-                            if has_vov:
-                                R_t *= max(0.05, 1.0 + gamma_vov * vov_rolling[t])
-                            S = max(P_pred + R_t, 1e-20)
-                            scale = max(math.sqrt(S * scale_factor), 1e-10)
-                            inn = returns[t] - mu_pred
-                            z = inn / scale
-                            ll_t = log_norm_const - math.log(scale) + neg_exp * math.log1p((z * z) * inv_nu)
-                            if math.isfinite(ll_t):
-                                total_ll += ll_t
-                                total_count += 1
-
-                            z_sq_s = (inn * inn) / S
-                            if use_cv_var_cal and math.isfinite(z_sq_s):
-                                total_z2 += min(z_sq_s, cv_var_cal_z2_cap)
-                                total_z2_count += 1
-                            w_t = float(np.clip((nu_val + 1.0) / (nu_val + z_sq_s), 0.05, 20.0))
-                            R_eff = R_t / max(w_t, 1e-8)
-                            S_eff = max(P_pred + R_eff, 1e-20)
-                            K = P_pred / S_eff
-                            mu_p = mu_pred + K * inn
-                            P_p = (1.0 - K) * (1.0 - K) * P_pred + K * K * R_eff
-                            P_p = max(p_floor, min(P_p, p_cap))
-
-                            if use_osa:
-                                z2w = min(z * z, chi2_tgt * 50.0)
-                                ewm_z2 = chi2_lam * ewm_z2 + (1.0 - chi2_lam) * z2w
-                                ratio = float(np.clip(ewm_z2 / max(chi2_tgt, 1e-12), 0.35, 2.85))
-                                c_adj = 1.0 + osa_strength * (math.sqrt(ratio) - 1.0)
-                                c_adj = float(np.clip(c_adj, 0.4, 2.5))
-                    except Exception:
+                        mu_p = float(mu_f[-1])
+                        P_p = float(P_f[-1])
+                    if use_cv_test_kernel:
+                        ll_fold, obs_count, z2_count, z2_sum = run_phi_student_t_improved_cv_test_fold(
+                            returns,
+                            vol_sq,
+                            q,
+                            c,
+                            phi_clip,
+                            nu_val,
+                            log_norm_const,
+                            neg_exp,
+                            inv_nu,
+                            scale_factor,
+                            mu_p,
+                            P_p,
+                            vs,
+                            ve,
+                            gamma_vov=gamma_vov if has_vov else 0.0,
+                            vov_rolling=vov_full,
+                            online_scale_adapt=use_osa,
+                            p_floor=p_floor,
+                            p_cap=p_cap,
+                            z2_cap=cv_var_cal_z2_cap,
+                        )
+                        total_ll += ll_fold
+                        total_count += obs_count
+                        if use_cv_var_cal:
+                            total_z2 += z2_sum
+                            total_z2_count += z2_count
                         continue
+                    c_adj = 1.0
+                    ewm_z2 = (nu_val / (nu_val - 2.0)) if nu_val > 2.0 else 1.0
+                    chi2_tgt = ewm_z2
+                    chi2_lam = 0.985
+                    osa_strength = min(1.0, (chi2_tgt - 1.0) / 0.5) if nu_val > 2.0 else 1.0
+                    phi_sq = phi_clip * phi_clip
+
+                    for t in range(vs, ve):
+                        mu_pred = phi_clip * mu_p
+                        P_pred = max(phi_sq * P_p + q, p_floor)
+                        c_eff = c * c_adj
+                        R_t = max(c_eff * vol_sq[t], 1e-20)
+                        if has_vov:
+                            R_t *= max(0.05, 1.0 + gamma_vov * vov_rolling[t])
+                        S = max(P_pred + R_t, 1e-20)
+                        scale = max(math.sqrt(S * scale_factor), 1e-10)
+                        inn = returns[t] - mu_pred
+                        z = inn / scale
+                        ll_t = log_norm_const - math.log(scale) + neg_exp * math.log1p((z * z) * inv_nu)
+                        if math.isfinite(ll_t):
+                            total_ll += ll_t
+                            total_count += 1
+
+                        z_sq_s = (inn * inn) / S
+                        if use_cv_var_cal and math.isfinite(z_sq_s):
+                            total_z2 += min(z_sq_s, cv_var_cal_z2_cap)
+                            total_z2_count += 1
+                        w_t = float(np.clip((nu_val + 1.0) / (nu_val + z_sq_s), 0.05, 20.0))
+                        R_eff = R_t / max(w_t, 1e-8)
+                        S_eff = max(P_pred + R_eff, 1e-20)
+                        K = P_pred / S_eff
+                        mu_p = mu_pred + K * inn
+                        P_p = (1.0 - K) * (1.0 - K) * P_pred + K * K * R_eff
+                        P_p = max(p_floor, min(P_p, p_cap))
+
+                        if use_osa:
+                            z2w = min(z * z, chi2_tgt * 50.0)
+                            ewm_z2 = chi2_lam * ewm_z2 + (1.0 - chi2_lam) * z2w
+                            ratio = float(np.clip(ewm_z2 / max(chi2_tgt, 1e-12), 0.35, 2.85))
+                            c_adj = 1.0 + osa_strength * (math.sqrt(ratio) - 1.0)
+                            c_adj = float(np.clip(c_adj, 0.4, 2.5))
+                except Exception:
+                    continue
 
             if total_count <= 0:
                 return 1e12
@@ -2356,7 +2290,6 @@ class PhiStudentTDriftModel:
             "cv_objective": float(best_val),
             "optimizer_maxiter": int(optimizer_maxiter),
             "optimizer_maxls": int(optimizer_maxls),
-            "fused_cv_objective_enabled": bool(use_fused_cv_objective),
             "state_only_kernel_enabled": bool(use_train_state_only_kernel),
             "cv_test_kernel_enabled": bool(use_cv_test_kernel),
             "cv_var_calibration_enabled": bool(use_cv_var_cal),
