@@ -2067,16 +2067,29 @@ def _evaluate_metrics(
     else:
         crps = float(np.mean(_crps_gaussian(mu_cor, sig_cor, data.actual)))
 
-    # Hit rate: directional accuracy
-    pred_dirs = np.sign(data.predicted)
+    # Hit rate: directional accuracy after probability calibration.  Using
+    # raw predicted returns here made calibrated hit-rate diagnostics identical
+    # to raw hit-rate diagnostics and hid direction changes from the optimizer.
+    pred_dirs = np.where(cal_p > 0.5, 1.0, np.where(cal_p < 0.5, -1.0, 0.0))
     actual_dirs = np.sign(data.actual)
     nonzero = pred_dirs != 0
     hit_rate = float(np.mean(pred_dirs[nonzero] == actual_dirs[nonzero])) if nonzero.sum() > 0 else 0.5
 
-    # Magnitude ratio
-    avg_pred_abs = float(np.mean(np.abs(data.predicted)))
+    # Magnitude ratio after EMOS correction.
+    avg_pred_abs = float(np.mean(np.abs(mu_cor)))
     avg_actual_abs = float(np.mean(np.abs(data.actual)))
     mag_ratio = avg_pred_abs / max(avg_actual_abs, 1e-8)
+
+    pnl = pred_dirs[nonzero] * data.actual[nonzero]
+    if len(pnl) > 0:
+        gains = pnl[pnl > 0.0]
+        losses = pnl[pnl < 0.0]
+        profit_factor = float(np.sum(gains) / max(abs(np.sum(losses)), 1e-8))
+        pnl_std = float(np.std(pnl))
+        strategy_sharpe = float(np.mean(pnl) / pnl_std * math.sqrt(252.0)) if pnl_std > 1e-12 else 0.0
+    else:
+        profit_factor = 0.0
+        strategy_sharpe = 0.0
 
     # v7.4: Fast path — skip expensive diagnostics for intermediate steps
     _core = {
@@ -2084,6 +2097,8 @@ def _evaluate_metrics(
         "crps": round(crps, 6),
         "hit_rate": round(hit_rate, 6),
         "mag_ratio": round(mag_ratio, 6),
+        "profit_factor": round(profit_factor, 6),
+        "strategy_sharpe": round(strategy_sharpe, 6),
     }
     if not full:
         _core.update({
@@ -3254,9 +3269,15 @@ def _run_pipeline(
         "n_eval": all_data.n_eval,
         # Diagnostics
         "hit_rate_raw": identity_metrics["hit_rate"],
+        "hit_rate_calibrated": cal_metrics["hit_rate"],
         "brier_raw": identity_metrics["brier"],
         "brier_calibrated": cal_metrics["brier"],
         "mag_ratio_raw": identity_metrics["mag_ratio"],
+        "mag_ratio_calibrated": cal_metrics["mag_ratio"],
+        "profit_factor_raw": identity_metrics["profit_factor"],
+        "profit_factor_calibrated": cal_metrics["profit_factor"],
+        "strategy_sharpe_raw": identity_metrics["strategy_sharpe"],
+        "strategy_sharpe_calibrated": cal_metrics["strategy_sharpe"],
         "crps_raw": identity_metrics["crps"],
         "crps_calibrated": cal_metrics["crps"],
         "regimes_fitted": list(by_regime.keys()),

@@ -51,6 +51,7 @@ try:
         chi2_ewm_correction_kernel,
         pit_var_stretching_kernel,
         phi_student_t_cv_test_fold_kernel,
+        phi_student_t_cv_test_fold_stats_kernel,
         phi_student_t_train_state_kernel,
         phi_student_t_improved_train_state_kernel,
         compute_ms_process_noise_ewm_kernel,
@@ -1909,6 +1910,43 @@ def run_phi_student_t_cv_test_fold(
         float(nu_val), float(gamma_vov),
         vov_rolling, int(use_vov),
     )
+
+
+def run_phi_student_t_cv_test_fold_stats(
+    returns: np.ndarray,
+    vol_sq: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu_scale: float,
+    log_norm_const: float,
+    neg_exp: float,
+    inv_nu: float,
+    mu_init: float,
+    P_init: float,
+    test_start: int,
+    test_end: int,
+    nu_val: float = 8.0,
+    gamma_vov: float = 0.0,
+    vov_rolling: np.ndarray = None,
+) -> Tuple[float, int, float]:
+    """Run a phi-Student-t CV fold and return LL plus dispersion stats."""
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    use_vov = 1 if (gamma_vov > 1e-12 and vov_rolling is not None) else 0
+    if vov_rolling is None:
+        vov_rolling = np.empty(1, dtype=np.float64)
+    ll_fold, obs_count, z2_sum = phi_student_t_cv_test_fold_stats_kernel(
+        returns, vol_sq,
+        float(q), float(c), float(phi),
+        float(nu_scale), float(log_norm_const), float(neg_exp),
+        float(inv_nu),
+        float(mu_init), float(P_init),
+        int(test_start), int(test_end),
+        float(nu_val), float(gamma_vov),
+        vov_rolling, int(use_vov),
+    )
+    return float(ll_fold), int(obs_count), float(z2_sum)
 
 
 def run_phi_student_t_train_state(

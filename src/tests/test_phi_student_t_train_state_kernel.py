@@ -15,6 +15,8 @@ from models.gaussian import GaussianDriftModel
 from models.numba_wrappers import (
     is_numba_available,
     run_phi_gaussian_train_state,
+    run_phi_student_t_cv_test_fold,
+    run_phi_student_t_cv_test_fold_stats,
     run_phi_student_t_improved_train_state,
     run_phi_student_t_train_state,
 )
@@ -104,6 +106,62 @@ class PhiStudentTTrainStateKernelTest(unittest.TestCase):
         self.assertAlmostEqual(mu_last, float(mu_f[-1]), places=13)
         self.assertAlmostEqual(P_last, float(P_f[-1]), places=13)
         self.assertAlmostEqual(ll_fast, float(ll_ref), places=10)
+
+    def test_cv_fold_stats_preserve_scalar_ll(self):
+        rng = np.random.default_rng(99)
+        returns = np.ascontiguousarray(rng.standard_t(7, size=180) * 0.009, dtype=np.float64)
+        vol = np.ascontiguousarray(
+            np.maximum(0.004, 0.010 + 0.001 * rng.standard_normal(180)),
+            dtype=np.float64,
+        )
+        vol_sq = np.ascontiguousarray(vol * vol, dtype=np.float64)
+        vov = PhiStudentTDriftModel._precompute_vov(vol)
+
+        q = 1.2e-6
+        c = 1.1
+        phi = 0.35
+        nu = 8.0
+        log_norm = (
+            gammaln((nu + 1.0) / 2.0)
+            - gammaln(nu / 2.0)
+            - 0.5 * np.log(nu * np.pi)
+        )
+        neg_exp = -((nu + 1.0) / 2.0)
+        inv_nu = 1.0 / nu
+        nu_scale = (nu - 2.0) / nu
+
+        mu_last, P_last, _ = run_phi_student_t_train_state(
+            returns,
+            vol_sq,
+            q,
+            c,
+            phi,
+            nu,
+            log_norm,
+            neg_exp,
+            inv_nu,
+            0,
+            110,
+            gamma_vov=0.3,
+            vov_rolling=vov,
+            robust_wt=True,
+            online_scale_adapt=True,
+        )
+        ll_scalar = run_phi_student_t_cv_test_fold(
+            returns, vol_sq, q, c, phi, nu_scale,
+            log_norm, neg_exp, inv_nu, mu_last, P_last, 110, 150,
+            nu_val=nu, gamma_vov=0.3, vov_rolling=vov,
+        )
+        ll_stats, obs_count, z2_sum = run_phi_student_t_cv_test_fold_stats(
+            returns, vol_sq, q, c, phi, nu_scale,
+            log_norm, neg_exp, inv_nu, mu_last, P_last, 110, 150,
+            nu_val=nu, gamma_vov=0.3, vov_rolling=vov,
+        )
+
+        self.assertAlmostEqual(ll_stats, ll_scalar, places=12)
+        self.assertEqual(obs_count, 40)
+        self.assertTrue(np.isfinite(z2_sum))
+        self.assertGreater(z2_sum, 0.0)
 
     def test_improved_train_state_matches_improved_filter_terminal_state(self):
         rng = np.random.default_rng(7)

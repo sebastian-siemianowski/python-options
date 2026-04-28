@@ -2031,6 +2031,13 @@ class PhiStudentTDriftModel:
             and run_phi_student_t_improved_train_state is not None
             and os.environ.get("PHI_STUDENT_T_IMPROVED_DISABLE_TRAIN_STATE_KERNEL", "") != "1"
         )
+        use_cv_var_cal = (
+            os.environ.get("PHI_STUDENT_T_IMPROVED_ENABLE_CV_VAR_CAL", "") == "1"
+            and os.environ.get("PHI_STUDENT_T_IMPROVED_DISABLE_CV_VAR_CAL", "") != "1"
+        )
+        cv_var_cal_lambda = float(os.environ.get("PHI_STUDENT_T_IMPROVED_CV_VAR_CAL_LAMBDA", "0.002"))
+        cv_var_cal_min_obs = int(os.environ.get("PHI_STUDENT_T_IMPROVED_CV_VAR_CAL_MIN_OBS", "30"))
+        cv_var_cal_z2_cap = float(os.environ.get("PHI_STUDENT_T_IMPROVED_CV_VAR_CAL_Z2_CAP", "50.0"))
 
         def neg_cv_ll(params):
             log_q, log_c, phi_raw = params
@@ -2044,6 +2051,8 @@ class PhiStudentTDriftModel:
 
             total_ll = 0.0
             total_count = 0
+            total_z2 = 0.0
+            total_z2_count = 0
             for ts, te_f, vs, ve in folds:
                 try:
                     if use_train_state_kernel:
@@ -2094,6 +2103,9 @@ class PhiStudentTDriftModel:
                             total_count += 1
 
                         z_sq_s = (inn * inn) / S
+                        if use_cv_var_cal and math.isfinite(z_sq_s):
+                            total_z2 += min(z_sq_s, cv_var_cal_z2_cap)
+                            total_z2_count += 1
                         w_t = float(np.clip((nu_val + 1.0) / (nu_val + z_sq_s), 0.05, 20.0))
                         R_eff = R_t / max(w_t, 1e-8)
                         S_eff = max(P_pred + R_eff, 1e-20)
@@ -2132,8 +2144,16 @@ class PhiStudentTDriftModel:
 
             # Average LL gives comparable regularisation across different CV layouts.
             mean_ll = total_ll / float(total_count)
+            var_cal_pen = 0.0
+            if (
+                use_cv_var_cal
+                and cv_var_cal_lambda > 0.0
+                and total_z2_count >= cv_var_cal_min_obs
+            ):
+                mean_z2 = total_z2 / float(total_z2_count)
+                var_cal_pen = cv_var_cal_lambda * (math.log(max(mean_z2, 1e-8)) ** 2)
             return -(mean_ll - prior_pen / max(total_count, 1) - c_prior_pen / max(len(folds), 1)
-                     - phi_shrink_pen / max(total_count, 1) - stationarity_pen)
+                     - phi_shrink_pen / max(total_count, 1) - stationarity_pen - var_cal_pen)
 
         log_q_min = math.log10(q_min_eff)
         log_q_max = math.log10(max(q_max_eff, q_min_eff * 10.0))
@@ -2230,6 +2250,8 @@ class PhiStudentTDriftModel:
             "phi_prior_strength": float(phi_prior_strength),
             "n_grid_candidates": int(len(grid_candidates)),
             "cv_objective": float(best_val),
+            "cv_var_calibration_enabled": bool(use_cv_var_cal),
+            "cv_var_calibration_lambda": float(cv_var_cal_lambda),
         }
 
         return q_opt, c_opt, phi_opt, cv_ll, diagnostics

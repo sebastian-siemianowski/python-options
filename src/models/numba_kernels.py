@@ -6295,6 +6295,7 @@ def phi_student_t_cv_test_fold_kernel(
             S = 1e-12
 
         inn = returns[t] - mu_p
+        z_sq_cv = (inn * inn) / S
         scale = np.sqrt(S * nu_scale)
         if scale > 1e-12:
             z = inn / scale
@@ -6304,7 +6305,6 @@ def phi_student_t_cv_test_fold_kernel(
 
         # Robust Kalman gain (Meinhold & Singpurwalla 1989)
         K = P_p / S
-        z_sq_cv = (inn * inn) / S
         w_cv = nu_p1 / (nu_val + z_sq_cv)
         mu_p = mu_p + K * w_cv * inn
         P_p = (1.0 - w_cv * K) * P_p
@@ -6312,6 +6312,69 @@ def phi_student_t_cv_test_fold_kernel(
             P_p = 1e-12
 
     return ll_fold
+
+
+@njit(cache=True, fastmath=False)
+def phi_student_t_cv_test_fold_stats_kernel(
+    returns: np.ndarray,
+    vol_sq: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu_scale: float,
+    log_norm_const: float,
+    neg_exp: float,
+    inv_nu: float,
+    mu_init: float,
+    P_init: float,
+    test_start: int,
+    test_end: int,
+    nu_val: float,
+    gamma_vov: float,
+    vov_rolling: np.ndarray,
+    use_vov: int,
+) -> tuple:
+    """CV fold likelihood plus capped innovation² / variance diagnostics."""
+    mu_p = mu_init
+    P_p = P_init
+    ll_fold = 0.0
+    obs_count = 0
+    z2_sum = 0.0
+    z2_cap = 50.0
+    phi_sq = phi * phi
+    nu_p1 = nu_val + 1.0
+
+    for t in range(test_start, test_end):
+        mu_p = phi * mu_p
+        P_p = phi_sq * P_p + q
+
+        R_t = c * vol_sq[t]
+        if use_vov == 1:
+            R_t *= (1.0 + gamma_vov * vov_rolling[t])
+        S = P_p + R_t
+        if S < 1e-12:
+            S = 1e-12
+
+        inn = returns[t] - mu_p
+        z_sq_cv = (inn * inn) / S
+        scale = np.sqrt(S * nu_scale)
+        if scale > 1e-12:
+            z = inn / scale
+            ll_t = log_norm_const - np.log(scale) + neg_exp * np.log(1.0 + z * z * inv_nu)
+            if ll_t == ll_t:
+                ll_fold += ll_t
+                obs_count += 1
+                if z_sq_cv == z_sq_cv:
+                    z2_sum += z_sq_cv if z_sq_cv < z2_cap else z2_cap
+
+        K = P_p / S
+        w_cv = nu_p1 / (nu_val + z_sq_cv)
+        mu_p = mu_p + K * w_cv * inn
+        P_p = (1.0 - w_cv * K) * P_p
+        if P_p < 1e-12:
+            P_p = 1e-12
+
+    return ll_fold, obs_count, z2_sum
 
 
 @njit(cache=True, fastmath=False)

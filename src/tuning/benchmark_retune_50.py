@@ -138,6 +138,16 @@ def _summarize_cache(cache: Dict[str, Dict[str, Any]], assets: List[str]) -> Dic
 def _summarize_signal_calibration(cache: Dict[str, Dict[str, Any]], assets: List[str]) -> Dict[str, Any]:
     brier_delta: List[float] = []
     crps_delta: List[float] = []
+    hit_delta: List[float] = []
+    hit_raw: List[float] = []
+    hit_cal: List[float] = []
+    mag_delta: List[float] = []
+    profit_delta: List[float] = []
+    profit_raw: List[float] = []
+    profit_cal: List[float] = []
+    sharpe_delta: List[float] = []
+    sharpe_raw: List[float] = []
+    sharpe_cal: List[float] = []
     pit_cal: List[float] = []
     calibrated_assets = 0
     for sym in assets:
@@ -159,6 +169,34 @@ def _summarize_signal_calibration(cache: Dict[str, Dict[str, Any]], assets: List
             cc = h.get("crps_calibrated")
             if isinstance(cr, (int, float)) and isinstance(cc, (int, float)):
                 crps_delta.append(float(cr) - float(cc))
+            hr = h.get("hit_rate_raw")
+            hc = h.get("hit_rate_calibrated")
+            if isinstance(hr, (int, float)):
+                hit_raw.append(float(hr))
+            if isinstance(hc, (int, float)):
+                hit_cal.append(float(hc))
+            if isinstance(hr, (int, float)) and isinstance(hc, (int, float)):
+                hit_delta.append(float(hc) - float(hr))
+            mr = h.get("mag_ratio_raw")
+            mc = h.get("mag_ratio_calibrated")
+            if isinstance(mr, (int, float)) and isinstance(mc, (int, float)):
+                mag_delta.append(abs(float(mr) - 1.0) - abs(float(mc) - 1.0))
+            pr = h.get("profit_factor_raw")
+            pc = h.get("profit_factor_calibrated")
+            if isinstance(pr, (int, float)):
+                profit_raw.append(float(pr))
+            if isinstance(pc, (int, float)):
+                profit_cal.append(float(pc))
+            if isinstance(pr, (int, float)) and isinstance(pc, (int, float)):
+                profit_delta.append(float(pc) - float(pr))
+            sr = h.get("strategy_sharpe_raw")
+            sc = h.get("strategy_sharpe_calibrated")
+            if isinstance(sr, (int, float)):
+                sharpe_raw.append(float(sr))
+            if isinstance(sc, (int, float)):
+                sharpe_cal.append(float(sc))
+            if isinstance(sr, (int, float)) and isinstance(sc, (int, float)):
+                sharpe_delta.append(float(sc) - float(sr))
             pp = h.get("pit_p_cal")
             if isinstance(pp, (int, float)) and math.isfinite(float(pp)):
                 pit_cal.append(float(pp))
@@ -167,6 +205,16 @@ def _summarize_signal_calibration(cache: Dict[str, Dict[str, Any]], assets: List
         "signals_calibrated_assets": calibrated_assets,
         "signals_brier_improvement_mean": statistics.fmean(brier_delta) if brier_delta else None,
         "signals_crps_improvement_mean": statistics.fmean(crps_delta) if crps_delta else None,
+        "signals_hit_rate_raw_mean": statistics.fmean(hit_raw) if hit_raw else None,
+        "signals_hit_rate_calibrated_mean": statistics.fmean(hit_cal) if hit_cal else None,
+        "signals_hit_rate_improvement_mean": statistics.fmean(hit_delta) if hit_delta else None,
+        "signals_mag_ratio_error_improvement_mean": statistics.fmean(mag_delta) if mag_delta else None,
+        "signals_profit_factor_raw_mean": statistics.fmean(profit_raw) if profit_raw else None,
+        "signals_profit_factor_calibrated_mean": statistics.fmean(profit_cal) if profit_cal else None,
+        "signals_profit_factor_improvement_mean": statistics.fmean(profit_delta) if profit_delta else None,
+        "signals_strategy_sharpe_raw_mean": statistics.fmean(sharpe_raw) if sharpe_raw else None,
+        "signals_strategy_sharpe_calibrated_mean": statistics.fmean(sharpe_cal) if sharpe_cal else None,
+        "signals_strategy_sharpe_improvement_mean": statistics.fmean(sharpe_delta) if sharpe_delta else None,
         "signals_pit_cal_mean": statistics.fmean(pit_cal) if pit_cal else None,
         "signals_pit_cal_min": min(pit_cal) if pit_cal else None,
     }
@@ -184,6 +232,7 @@ def main() -> None:
     parser.add_argument("--prior-lambda", type=float, default=1.0)
     parser.add_argument("--lambda-regime", type=float, default=0.05)
     parser.add_argument("--skip-calibration", action="store_true")
+    parser.add_argument("--skip-tune", action="store_true")
     args = parser.parse_args()
 
     assets = sort_assets_by_complexity(list(BENCHMARK_50))
@@ -207,25 +256,28 @@ def main() -> None:
         for sym in assets
     ]
 
-    t0 = time.perf_counter()
     failures: Dict[str, str] = {}
     durations: Dict[str, float] = {}
-    with ProcessPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(_quiet_tune_worker, arg): arg[0] for arg in worker_args}
-        for fut in as_completed(futures):
-            sym = futures[fut]
-            try:
-                asset, result, error, _traceback_str, elapsed = fut.result()
-                durations[asset] = elapsed
-                if result:
-                    cache[asset] = result
-                else:
-                    failures[asset] = error or "tuning returned no result"
-            except Exception as exc:
-                failures[sym] = str(exc)
+    if args.skip_tune:
+        tune_seconds = 0.0
+    else:
+        t0 = time.perf_counter()
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(_quiet_tune_worker, arg): arg[0] for arg in worker_args}
+            for fut in as_completed(futures):
+                sym = futures[fut]
+                try:
+                    asset, result, error, _traceback_str, elapsed = fut.result()
+                    durations[asset] = elapsed
+                    if result:
+                        cache[asset] = result
+                    else:
+                        failures[asset] = error or "tuning returned no result"
+                except Exception as exc:
+                    failures[sym] = str(exc)
 
-    tune_seconds = time.perf_counter() - t0
-    save_cache_json(cache, args.cache_json)
+        tune_seconds = time.perf_counter() - t0
+        save_cache_json(cache, args.cache_json)
 
     calibration_seconds = 0.0
     if not args.skip_calibration:
