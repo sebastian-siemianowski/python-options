@@ -17,6 +17,7 @@ from models.numba_wrappers import (
     run_phi_gaussian_train_state,
     run_phi_student_t_cv_test_fold,
     run_phi_student_t_cv_test_fold_stats,
+    run_phi_student_t_improved_cv_test_fold,
     run_phi_student_t_improved_train_state,
     run_phi_student_t_train_state,
 )
@@ -221,6 +222,114 @@ class PhiStudentTTrainStateKernelTest(unittest.TestCase):
         self.assertAlmostEqual(mu_last, float(mu_f[-1]), places=13)
         self.assertAlmostEqual(P_last, float(P_f[-1]), places=13)
         self.assertAlmostEqual(ll_fast, float(ll_ref), places=10)
+
+    def test_improved_cv_fold_kernel_matches_python_loop(self):
+        rng = np.random.default_rng(13)
+        returns = np.ascontiguousarray(rng.standard_t(5, size=210) * 0.011, dtype=np.float64)
+        vol = np.ascontiguousarray(
+            np.maximum(0.005, 0.012 + 0.0025 * rng.standard_normal(210)),
+            dtype=np.float64,
+        )
+        vol_sq = np.ascontiguousarray(vol * vol, dtype=np.float64)
+        vov = ImprovedPhiStudentTDriftModel._precompute_vov(vol)
+
+        q = 2.1e-6
+        c = 1.35
+        phi = 0.48
+        nu = 6.0
+        log_norm = (
+            gammaln((nu + 1.0) / 2.0)
+            - gammaln(nu / 2.0)
+            - 0.5 * np.log(nu * np.pi)
+        )
+        neg_exp = -0.5 * (nu + 1.0)
+        inv_nu = 1.0 / nu
+        scale_factor = (nu - 2.0) / nu
+
+        mu_last, P_last, _ = run_phi_student_t_improved_train_state(
+            returns,
+            vol_sq,
+            q,
+            c,
+            phi,
+            nu,
+            log_norm,
+            neg_exp,
+            inv_nu,
+            scale_factor,
+            0,
+            135,
+            gamma_vov=0.3,
+            vov_rolling=vov,
+            online_scale_adapt=True,
+        )
+        ll_fast, n_fast, z2_count_fast, z2_fast = run_phi_student_t_improved_cv_test_fold(
+            returns,
+            vol_sq,
+            q,
+            c,
+            phi,
+            nu,
+            log_norm,
+            neg_exp,
+            inv_nu,
+            scale_factor,
+            mu_last,
+            P_last,
+            135,
+            190,
+            gamma_vov=0.3,
+            vov_rolling=vov,
+            online_scale_adapt=True,
+            p_floor=1e-12,
+            p_cap=1.0,
+            z2_cap=50.0,
+        )
+
+        mu_p = mu_last
+        P_p = P_last
+        c_adj = 1.0
+        chi2_tgt = nu / (nu - 2.0)
+        ewm_z2 = chi2_tgt
+        osa_strength = min(1.0, (chi2_tgt - 1.0) / 0.5)
+        ll_ref = 0.0
+        z2_ref = 0.0
+        z2_count_ref = 0
+        phi_sq = phi * phi
+        for t in range(135, 190):
+            mu_pred = phi * mu_p
+            P_pred = max(phi_sq * P_p + q, 1e-12)
+            R_t = max(c * c_adj * vol_sq[t], 1e-20)
+            R_t *= max(0.05, 1.0 + 0.3 * vov[t])
+            S = max(P_pred + R_t, 1e-20)
+            scale = max(np.sqrt(S * scale_factor), 1e-10)
+            inn = returns[t] - mu_pred
+            z = inn / scale
+            ll_ref += log_norm - np.log(scale) + neg_exp * np.log1p((z * z) * inv_nu)
+            z_sq_s = (inn * inn) / S
+            z2_ref += min(z_sq_s, 50.0)
+            z2_count_ref += 1
+            w_t = float(np.clip((nu + 1.0) / (nu + z_sq_s), 0.05, 20.0))
+            R_eff = R_t / max(w_t, 1e-8)
+            S_eff = max(P_pred + R_eff, 1e-20)
+            K = P_pred / S_eff
+            mu_p = mu_pred + K * inn
+            P_p = (1.0 - K) * (1.0 - K) * P_pred + K * K * R_eff
+            P_p = max(1e-12, min(P_p, 1.0))
+            z2w = min(z * z, chi2_tgt * 50.0)
+            ewm_z2 = 0.985 * ewm_z2 + 0.015 * z2w
+            ratio = float(np.clip(ewm_z2 / chi2_tgt, 0.35, 2.85))
+            dev = ratio - 1.0 if ratio >= 1.0 else 1.0 - ratio
+            if dev < 0.04:
+                c_adj = 1.0
+            else:
+                c_adj = 1.0 + osa_strength * (np.sqrt(ratio) - 1.0)
+                c_adj = float(np.clip(c_adj, 0.4, 2.5))
+
+        self.assertAlmostEqual(ll_fast, ll_ref, places=11)
+        self.assertEqual(n_fast, 55)
+        self.assertEqual(z2_count_fast, z2_count_ref)
+        self.assertAlmostEqual(z2_fast, z2_ref, places=11)
 
 
 if __name__ == "__main__":

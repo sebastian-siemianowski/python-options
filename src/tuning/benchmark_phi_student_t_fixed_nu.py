@@ -161,10 +161,15 @@ def _worker(args: tuple[str, float, bool, str]) -> Dict[str, Any]:
         "PHI_STUDENT_T_IMPROVED_DISABLE_TRAIN_STATE_KERNEL"
         if model == "improved" else "PHI_STUDENT_T_DISABLE_TRAIN_STATE_KERNEL"
     )
+    cv_env_key = "PHI_STUDENT_T_IMPROVED_DISABLE_CV_TEST_KERNEL" if model == "improved" else None
     if disable_train_state:
         os.environ[env_key] = "1"
+        if cv_env_key is not None:
+            os.environ[cv_env_key] = "1"
     else:
         os.environ.pop(env_key, None)
+        if cv_env_key is not None:
+            os.environ.pop(cv_env_key, None)
     returns, vol = _prepare_asset(symbol)
     model_cls = ImprovedPhiStudentTDriftModel if model == "improved" else PhiStudentTDriftModel
     split = max(80, min(int(len(returns) * 0.70), len(returns) - 30))
@@ -188,6 +193,10 @@ def _worker(args: tuple[str, float, bool, str]) -> Dict[str, Any]:
         "phi": float(phi),
         "ll": float(ll),
         "converged": bool(diag.get("optimizer_converged", False)),
+        "optimizer_message": str(diag.get("optimizer_message", "")),
+        "cv_test_kernel_enabled": bool(diag.get("cv_test_kernel_enabled", False)),
+        "cv_var_calibration_enabled": bool(diag.get("cv_var_calibration_enabled", False)),
+        "optimizer_maxiter": int(diag.get("optimizer_maxiter", 0) or 0),
         "fun": float(diag.get("objective", float("nan"))),
         **quality,
     }
@@ -228,38 +237,40 @@ def main() -> None:
     parser.add_argument("--nu", type=float, default=8.0)
     parser.add_argument("--model", choices=["canonical", "improved"], default="canonical")
     parser.add_argument("--metrics-json", default="src/data/benchmarks/phi_student_t_fixed_nu_metrics.json")
+    parser.add_argument("--after-only", action="store_true")
     args = parser.parse_args()
 
     assets = list(BENCHMARK_50)
     workers = args.workers if args.workers > 0 else _physical_workers()
     workers = max(1, min(workers, len(assets)))
-    before = _run("before_train_state_kernel", assets, args.nu, workers, True, args.model)
+    before = None if args.after_only else _run("before_train_state_kernel", assets, args.nu, workers, True, args.model)
     after = _run("after_train_state_kernel", assets, args.nu, workers, False, args.model)
 
     paired = []
-    for sym, after_result in after["results"].items():
-        before_result = before["results"].get(sym)
-        if not before_result:
-            continue
-        paired.append({
-            "symbol": sym,
-            "seconds_delta": before_result["seconds"] - after_result["seconds"],
-            "q_delta": before_result["q"] - after_result["q"],
-            "c_delta": before_result["c"] - after_result["c"],
-            "phi_delta": before_result["phi"] - after_result["phi"],
-            "ll_delta": before_result["ll"] - after_result["ll"],
-        })
+    if before is not None:
+        for sym, after_result in after["results"].items():
+            before_result = before["results"].get(sym)
+            if not before_result:
+                continue
+            paired.append({
+                "symbol": sym,
+                "seconds_delta": before_result["seconds"] - after_result["seconds"],
+                "q_delta": before_result["q"] - after_result["q"],
+                "c_delta": before_result["c"] - after_result["c"],
+                "phi_delta": before_result["phi"] - after_result["phi"],
+                "ll_delta": before_result["ll"] - after_result["ll"],
+            })
 
     speedup = (
         before["total_seconds"] / after["total_seconds"]
-        if after["total_seconds"] > 0 else math.nan
+        if before is not None and after["total_seconds"] > 0 else None
     )
     summary = {
         "workers": workers,
         "model": args.model,
         "nu": args.nu,
         "speedup_total": speedup,
-        "before_total_seconds": before["total_seconds"],
+        "before_total_seconds": before["total_seconds"] if before is not None else None,
         "after_total_seconds": after["total_seconds"],
         "paired_count": len(paired),
         "max_abs_q_delta": max((abs(p["q_delta"]) for p in paired), default=None),

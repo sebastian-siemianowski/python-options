@@ -6665,6 +6665,147 @@ def phi_student_t_improved_train_state_kernel(
     return mu, P, log_likelihood
 
 
+@njit(cache=True, fastmath=False)
+def phi_student_t_improved_cv_test_fold_kernel(
+    returns: np.ndarray,
+    vol_sq: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu: float,
+    log_norm_const: float,
+    neg_exp: float,
+    inv_nu: float,
+    scale_factor: float,
+    mu_init: float,
+    P_init: float,
+    test_start: int,
+    test_end: int,
+    gamma_vov: float,
+    vov_rolling: np.ndarray,
+    use_vov: int,
+    online_scale_adapt: int,
+    p_floor: float,
+    p_cap: float,
+    z2_cap: float,
+) -> tuple:
+    """
+    Validation-fold scorer for phi_student_t_improved.
+
+    Mirrors the Python loop inside PhiStudentTDriftModel.optimize_params_fixed_nu:
+    Student-t predictive log score, precision-weighted Joseph covariance update,
+    optional VoV inflation, and graduated online scale adaptation.  The kernel
+    returns the sufficient statistics used by the optimizer objective.
+    """
+    mu_p = mu_init
+    P_p = P_init
+    total_ll = 0.0
+    obs_count = 0
+    z2_count = 0
+    z2_sum = 0.0
+
+    phi_sq = phi * phi
+    nu_p1 = nu + 1.0
+    chi2_tgt = nu / (nu - 2.0) if nu > 2.0 else 1.0
+    chi2_lam = 0.985
+    chi2_1m = 1.0 - chi2_lam
+    chi2_cap = chi2_tgt * 50.0
+    ewm_z2 = chi2_tgt
+    c_adj = 1.0
+    osa_strength = (chi2_tgt - 1.0) / 0.5 if nu > 2.0 else 1.0
+    if osa_strength > 1.0:
+        osa_strength = 1.0
+    elif osa_strength < 0.0:
+        osa_strength = 0.0
+
+    if p_floor < 1e-12:
+        p_floor = 1e-12
+    if p_cap < p_floor * 10.0:
+        p_cap = p_floor * 10.0
+    if z2_cap <= 0.0:
+        z2_cap = 50.0
+
+    for t in range(test_start, test_end):
+        mu_pred = phi * mu_p
+        P_pred = phi_sq * P_p + q
+        if P_pred < p_floor:
+            P_pred = p_floor
+
+        c_eff = c * c_adj
+        R_t = c_eff * vol_sq[t]
+        if R_t < 1e-20:
+            R_t = 1e-20
+        if use_vov == 1:
+            vov_mult = 1.0 + gamma_vov * vov_rolling[t]
+            if vov_mult < 0.05:
+                vov_mult = 0.05
+            R_t *= vov_mult
+
+        S = P_pred + R_t
+        if S < 1e-20:
+            S = 1e-20
+        scale = np.sqrt(S * scale_factor)
+        if scale < 1e-10:
+            scale = 1e-10
+
+        inn = returns[t] - mu_pred
+        z = inn / scale
+        ll_t = log_norm_const - np.log(scale) + neg_exp * np.log1p((z * z) * inv_nu)
+        if np.isfinite(ll_t):
+            total_ll += ll_t
+            obs_count += 1
+
+        z_sq_s = (inn * inn) / S
+        if np.isfinite(z_sq_s):
+            if z_sq_s < z2_cap:
+                z2_sum += z_sq_s
+            else:
+                z2_sum += z2_cap
+            z2_count += 1
+
+        w_t = nu_p1 / (nu + z_sq_s)
+        if w_t < 0.05:
+            w_t = 0.05
+        elif w_t > 20.0:
+            w_t = 20.0
+        R_eff = R_t / w_t
+        if R_eff < 1e-20:
+            R_eff = 1e-20
+        S_eff = P_pred + R_eff
+        if S_eff < 1e-20:
+            S_eff = 1e-20
+        K = P_pred / S_eff
+        one_minus_K = 1.0 - K
+        mu_p = mu_pred + K * inn
+        P_p = one_minus_K * one_minus_K * P_pred + K * K * R_eff
+        if P_p < p_floor:
+            P_p = p_floor
+        elif P_p > p_cap:
+            P_p = p_cap
+
+        if online_scale_adapt == 1:
+            z2w = z * z
+            if z2w > chi2_cap:
+                z2w = chi2_cap
+            ewm_z2 = chi2_lam * ewm_z2 + chi2_1m * z2w
+            ratio = ewm_z2 / chi2_tgt if chi2_tgt > 1e-12 else 1.0
+            if ratio < 0.35:
+                ratio = 0.35
+            elif ratio > 2.85:
+                ratio = 2.85
+            dev = ratio - 1.0 if ratio >= 1.0 else 1.0 - ratio
+            if dev < 0.04:
+                c_adj = 1.0
+            else:
+                c_adj = 1.0 + osa_strength * (np.sqrt(ratio) - 1.0)
+                if c_adj < 0.4:
+                    c_adj = 0.4
+                elif c_adj > 2.5:
+                    c_adj = 2.5
+
+    return total_ll, obs_count, z2_count, z2_sum
+
+
 @njit(cache=True, fastmath=True)
 def phi_gaussian_cv_test_fold_kernel(
     returns: np.ndarray,

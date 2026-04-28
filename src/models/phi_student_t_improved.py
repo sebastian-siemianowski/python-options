@@ -108,6 +108,7 @@ try:
         # Filter accelerators
         run_phi_student_t_augmented_filter,
         run_phi_student_t_enhanced_filter,
+        run_phi_student_t_improved_cv_test_fold,
         run_phi_student_t_improved_train_state,
         # CDF/PDF array kernels (vectorized replacements for scipy)
         run_student_t_cdf_array,
@@ -128,6 +129,7 @@ except ImportError:
     run_student_t_filter_with_lfo_cv = None
     run_student_t_filter_with_lfo_cv_batch = None
     run_phi_student_t_augmented_filter = None
+    run_phi_student_t_improved_cv_test_fold = None
     run_phi_student_t_improved_train_state = None
     run_student_t_cdf_array = None
     run_student_t_pdf_array = None
@@ -2031,13 +2033,20 @@ class PhiStudentTDriftModel:
             and run_phi_student_t_improved_train_state is not None
             and os.environ.get("PHI_STUDENT_T_IMPROVED_DISABLE_TRAIN_STATE_KERNEL", "") != "1"
         )
+        use_cv_test_kernel = (
+            _USE_NUMBA
+            and run_phi_student_t_improved_cv_test_fold is not None
+            and os.environ.get("PHI_STUDENT_T_IMPROVED_DISABLE_CV_TEST_KERNEL", "") != "1"
+        )
         use_cv_var_cal = (
-            os.environ.get("PHI_STUDENT_T_IMPROVED_ENABLE_CV_VAR_CAL", "") == "1"
+            os.environ.get("PHI_STUDENT_T_IMPROVED_ENABLE_CV_VAR_CAL", "1") == "1"
             and os.environ.get("PHI_STUDENT_T_IMPROVED_DISABLE_CV_VAR_CAL", "") != "1"
         )
-        cv_var_cal_lambda = float(os.environ.get("PHI_STUDENT_T_IMPROVED_CV_VAR_CAL_LAMBDA", "0.002"))
+        cv_var_cal_lambda = float(os.environ.get("PHI_STUDENT_T_IMPROVED_CV_VAR_CAL_LAMBDA", "0.01205"))
         cv_var_cal_min_obs = int(os.environ.get("PHI_STUDENT_T_IMPROVED_CV_VAR_CAL_MIN_OBS", "30"))
         cv_var_cal_z2_cap = float(os.environ.get("PHI_STUDENT_T_IMPROVED_CV_VAR_CAL_Z2_CAP", "50.0"))
+        optimizer_maxiter = int(os.environ.get("PHI_STUDENT_T_IMPROVED_MAXITER", "45"))
+        optimizer_maxls = int(os.environ.get("PHI_STUDENT_T_IMPROVED_MAXLS", "30"))
 
         def neg_cv_ll(params):
             log_q, log_c, phi_raw = params
@@ -2079,6 +2088,35 @@ class PhiStudentTDriftModel:
                             continue
                         mu_p = float(mu_f[-1])
                         P_p = float(P_f[-1])
+                    if use_cv_test_kernel:
+                        ll_fold, obs_count, z2_count, z2_sum = run_phi_student_t_improved_cv_test_fold(
+                            returns,
+                            vol_sq,
+                            q,
+                            c,
+                            phi_clip,
+                            nu_val,
+                            log_norm_const,
+                            neg_exp,
+                            inv_nu,
+                            scale_factor,
+                            mu_p,
+                            P_p,
+                            vs,
+                            ve,
+                            gamma_vov=gamma_vov if has_vov else 0.0,
+                            vov_rolling=vov_full,
+                            online_scale_adapt=use_osa,
+                            p_floor=p_floor,
+                            p_cap=p_cap,
+                            z2_cap=cv_var_cal_z2_cap,
+                        )
+                        total_ll += ll_fold
+                        total_count += obs_count
+                        if use_cv_var_cal:
+                            total_z2 += z2_sum
+                            total_z2_count += z2_count
+                        continue
                     c_adj = 1.0
                     ewm_z2 = (nu_val / (nu_val - 2.0)) if nu_val > 2.0 else 1.0
                     chi2_tgt = ewm_z2
@@ -2215,7 +2253,7 @@ class PhiStudentTDriftModel:
                     neg_cv_ll, [lq0, lc0, ph0],
                     method='L-BFGS-B',
                     bounds=[(log_q_min, log_q_max), (log_c_min, log_c_max), (phi_min_eff, phi_max_eff)],
-                    options={'maxiter': 28, 'ftol': 1e-7, 'gtol': 1e-5, 'maxls': 12},
+                    options={'maxiter': optimizer_maxiter, 'ftol': 1e-7, 'gtol': 1e-5, 'maxls': optimizer_maxls},
                 )
                 val = float(res.fun) if np.isfinite(res.fun) else float('inf')
                 if val < best_val:
@@ -2250,6 +2288,9 @@ class PhiStudentTDriftModel:
             "phi_prior_strength": float(phi_prior_strength),
             "n_grid_candidates": int(len(grid_candidates)),
             "cv_objective": float(best_val),
+            "optimizer_maxiter": int(optimizer_maxiter),
+            "optimizer_maxls": int(optimizer_maxls),
+            "cv_test_kernel_enabled": bool(use_cv_test_kernel),
             "cv_var_calibration_enabled": bool(use_cv_var_cal),
             "cv_var_calibration_lambda": float(cv_var_cal_lambda),
         }
