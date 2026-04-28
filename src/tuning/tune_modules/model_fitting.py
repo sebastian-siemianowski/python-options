@@ -89,6 +89,33 @@ def _scalar_config_dict(config: Any) -> Dict[str, Any]:
     return out
 
 
+def _cached_test_pit_summary(diagnostics: Dict[str, Any]) -> Optional[Tuple[float, float, Dict[str, Any]]]:
+    """Reuse optimize-time test PIT diagnostics instead of recomputing full-sample PIT."""
+    pit_values = diagnostics.get("test_pit_values")
+    pit_p = diagnostics.get("test_pit_pvalue")
+    if pit_values is None or pit_p is None:
+        return None
+    try:
+        arr = np.asarray(pit_values, dtype=np.float64)
+        arr = arr[np.isfinite(arr)]
+        if arr.size == 0 or not np.isfinite(float(pit_p)):
+            return None
+        arr = np.clip(np.sort(arr), 0.0, 1.0)
+        n = arr.size
+        upper = np.arange(1, n + 1, dtype=np.float64) / n
+        lower = np.arange(0, n, dtype=np.float64) / n
+        ks_stat = float(max(np.max(upper - arr), np.max(arr - lower)))
+        metrics = dict(diagnostics.get("test_calib_diag") or {})
+        metrics.setdefault("pit_count", int(n))
+        if "mad" in metrics:
+            metrics.setdefault("histogram_mad", metrics["mad"])
+        metrics.setdefault("berkowitz_pvalue", 0.0)
+        metrics.setdefault("berkowitz_lr", 0.0)
+        return ks_stat, float(pit_p), metrics
+    except Exception:
+        return None
+
+
 # =============================================================================
 # ELITE TUNING DIAGNOSTICS HELPER (v2.0 - February 2026)
 # =============================================================================
@@ -819,10 +846,16 @@ def fit_all_models_for_regime(
                 returns, vol, config
             )
 
-            # PIT calibration using predictive distribution
-            ks_u, pit_p_u, pit_metrics = UnifiedPhiStudentTModel.pit_ks_unified(
-                returns, mu_pred_u, S_pred_u, config
-            )
+            # PIT calibration using optimize-time test diagnostics when present.
+            # This avoids a redundant full-sample PIT pass and keeps selection
+            # aligned with the out-of-sample fold used by filter_and_calibrate.
+            _cached_pit_u = _cached_test_pit_summary(diagnostics)
+            if _cached_pit_u is not None:
+                ks_u, pit_p_u, pit_metrics = _cached_pit_u
+            else:
+                ks_u, pit_p_u, pit_metrics = UnifiedPhiStudentTModel.pit_ks_unified(
+                    returns, mu_pred_u, S_pred_u, config
+                )
 
             # Information criteria — adjust param count if jump/rough layers active
             jump_active = getattr(config, 'jump_intensity', 0.0) > 1e-6 and getattr(config, 'jump_variance', 0.0) > 1e-12
@@ -1256,9 +1289,13 @@ def fit_all_models_for_regime(
                 mu_u, P_u, mu_pred_u, S_pred_u, ll_u = ImprovedUnifiedPhiStudentTModel.filter_phi_unified(
                     returns, vol, config
                 )
-                ks_u, pit_p_u, pit_metrics = ImprovedUnifiedPhiStudentTModel.pit_ks_unified(
-                    returns, mu_pred_u, S_pred_u, config
-                )
+                _cached_pit_u = _cached_test_pit_summary(diagnostics)
+                if _cached_pit_u is not None:
+                    ks_u, pit_p_u, pit_metrics = _cached_pit_u
+                else:
+                    ks_u, pit_p_u, pit_metrics = ImprovedUnifiedPhiStudentTModel.pit_ks_unified(
+                        returns, mu_pred_u, S_pred_u, config
+                    )
 
                 jump_active = (
                     getattr(config, 'jump_intensity', 0.0) > 1e-6

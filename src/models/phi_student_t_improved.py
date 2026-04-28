@@ -20,6 +20,7 @@ Gaussian shrinkage prior on φ: φ_r ~ N(φ_global, τ²).
 from __future__ import annotations
 
 import math
+import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Any
@@ -108,6 +109,7 @@ try:
         # Filter accelerators
         run_phi_student_t_augmented_filter,
         run_phi_student_t_enhanced_filter,
+        run_phi_student_t_improved_train_state,
         # CDF/PDF array kernels (vectorized replacements for scipy)
         run_student_t_cdf_array,
         run_student_t_pdf_array,
@@ -127,6 +129,7 @@ except ImportError:
     run_student_t_filter_with_lfo_cv = None
     run_student_t_filter_with_lfo_cv_batch = None
     run_phi_student_t_augmented_filter = None
+    run_phi_student_t_improved_train_state = None
     run_student_t_cdf_array = None
     run_student_t_pdf_array = None
 
@@ -2018,11 +2021,17 @@ class PhiStudentTDriftModel:
         inv_nu = 1.0 / nu_val
         scale_factor = (nu_val - 2.0) / nu_val if nu_val > 2.0 else 1.0
         has_vov = gamma_vov > 1e-12 and vov_rolling is not None
+        vov_full = np.ascontiguousarray(vov_rolling, dtype=np.float64) if has_vov else None
         use_osa = True
         p_floor = max(float(_P_MIN), 1e-12)
         p_cap = max(float(_P_MAX), 100.0 * vol_var_med, 1e-6)
         asset_class = _detect_asset_class(asset_symbol, returns=ret_train0) if asset_symbol else None
         phi_prior_center, phi_prior_tau, phi_prior_strength = asset_phi_profile(asset_class)
+        use_train_state_kernel = (
+            _USE_NUMBA
+            and run_phi_student_t_improved_train_state is not None
+            and os.environ.get("PHI_STUDENT_T_IMPROVED_DISABLE_TRAIN_STATE_KERNEL", "") != "1"
+        )
 
         def neg_cv_ll(params):
             log_q, log_c, phi_raw = params
@@ -2038,18 +2047,30 @@ class PhiStudentTDriftModel:
             total_count = 0
             for ts, te_f, vs, ve in folds:
                 try:
-                    vov_tr = vov_rolling[ts:te_f] if has_vov else None
-                    mu_f, P_f, _, _, _ = cls._filter_phi_core(
-                        returns[ts:te_f], vol[ts:te_f], q, c, phi_clip, nu_val,
-                        robust_wt=True,
-                        online_scale_adapt=use_osa,
-                        gamma_vov=gamma_vov if has_vov else 0.0,
-                        vov_rolling=vov_tr,
-                    )
-                    if len(mu_f) == 0:
-                        continue
-                    mu_p = float(mu_f[-1])
-                    P_p = float(P_f[-1])
+                    if use_train_state_kernel:
+                        mu_p, P_p, _ = run_phi_student_t_improved_train_state(
+                            returns, vol_sq, q, c, phi_clip, nu_val,
+                            log_norm_const, neg_exp, inv_nu, scale_factor,
+                            ts, te_f,
+                            gamma_vov=gamma_vov if has_vov else 0.0,
+                            vov_rolling=vov_full,
+                            online_scale_adapt=use_osa,
+                            p_min=p_floor,
+                            p_max_default=float(_P_MAX),
+                        )
+                    else:
+                        vov_tr = vov_rolling[ts:te_f] if has_vov else None
+                        mu_f, P_f, _, _, _ = cls._filter_phi_core(
+                            returns[ts:te_f], vol[ts:te_f], q, c, phi_clip, nu_val,
+                            robust_wt=True,
+                            online_scale_adapt=use_osa,
+                            gamma_vov=gamma_vov if has_vov else 0.0,
+                            vov_rolling=vov_tr,
+                        )
+                        if len(mu_f) == 0:
+                            continue
+                        mu_p = float(mu_f[-1])
+                        P_p = float(P_f[-1])
                     c_adj = 1.0
                     ewm_z2 = (nu_val / (nu_val - 2.0)) if nu_val > 2.0 else 1.0
                     chi2_tgt = ewm_z2

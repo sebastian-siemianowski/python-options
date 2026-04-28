@@ -50,6 +50,8 @@ try:
         chi2_ewm_correction_kernel,
         pit_var_stretching_kernel,
         phi_student_t_cv_test_fold_kernel,
+        phi_student_t_train_state_kernel,
+        phi_student_t_improved_train_state_kernel,
         compute_ms_process_noise_ewm_kernel,
         stage6_ewm_fold_kernel,
         ewm_mu_correction_kernel,
@@ -1885,6 +1887,79 @@ def run_phi_student_t_cv_test_fold(
         float(nu_val), float(gamma_vov),
         vov_rolling, int(use_vov),
     )
+
+
+def run_phi_student_t_train_state(
+    returns: np.ndarray,
+    vol_sq: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu: float,
+    log_norm_const: float,
+    neg_exp: float,
+    inv_nu: float,
+    train_start: int,
+    train_end: int,
+    gamma_vov: float = 0.0,
+    vov_rolling: np.ndarray = None,
+    robust_wt: bool = True,
+    online_scale_adapt: bool = True,
+) -> Tuple[float, float, float]:
+    """Run terminal-state Student-t training fold without array allocation."""
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    use_vov = 1 if (gamma_vov > 1e-12 and vov_rolling is not None) else 0
+    if vov_rolling is None:
+        vov_rolling = np.empty(1, dtype=np.float64)
+    mu, P, ll = phi_student_t_train_state_kernel(
+        returns, vol_sq,
+        float(q), float(c), float(phi), float(nu),
+        float(log_norm_const), float(neg_exp), float(inv_nu),
+        int(train_start), int(train_end),
+        float(gamma_vov), vov_rolling, int(use_vov),
+        1 if robust_wt else 0,
+        1 if online_scale_adapt else 0,
+    )
+    return float(mu), float(P), float(ll)
+
+
+def run_phi_student_t_improved_train_state(
+    returns: np.ndarray,
+    vol_sq: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu: float,
+    log_norm_const: float,
+    neg_exp: float,
+    inv_nu: float,
+    scale_factor: float,
+    train_start: int,
+    train_end: int,
+    gamma_vov: float = 0.0,
+    vov_rolling: np.ndarray = None,
+    online_scale_adapt: bool = True,
+    p_min: float = 1e-12,
+    p_max_default: float = 1.0,
+) -> Tuple[float, float, float]:
+    """Run terminal-state improved Student-t training fold without arrays."""
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    use_vov = 1 if (gamma_vov > 1e-12 and vov_rolling is not None) else 0
+    if vov_rolling is None:
+        vov_rolling = np.empty(1, dtype=np.float64)
+    mu, P, ll = phi_student_t_improved_train_state_kernel(
+        returns, vol_sq,
+        float(q), float(c), float(phi), float(nu),
+        float(log_norm_const), float(neg_exp), float(inv_nu),
+        float(scale_factor),
+        int(train_start), int(train_end),
+        float(gamma_vov), vov_rolling, int(use_vov),
+        1 if online_scale_adapt else 0,
+        float(p_min), float(p_max_default),
+    )
+    return float(mu), float(P), float(ll)
 
 
 # =============================================================================

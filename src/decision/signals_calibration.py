@@ -26,11 +26,11 @@ Integration:
 Usage:
   # Programmatic (from tune_ux.py):
   from decision.signals_calibration import run_signals_calibration
-  cache = run_signals_calibration(cache, workers=0)  # 0=auto, uses all CPUs
+  cache = run_signals_calibration(cache, workers=0)  # 0=auto, physical CPUs minus one
 
   # Standalone:
   python src/decision/signals_calibration.py --assets SPY,QQQ,GLD
-  python src/decision/signals_calibration.py --workers 0  # auto-detect CPUs
+  python src/decision/signals_calibration.py --workers 0  # auto-detect physical CPUs
 ===============================================================================
 """
 from __future__ import annotations
@@ -41,6 +41,7 @@ import io
 import math
 import multiprocessing as mp
 import os
+import subprocess
 import sys
 import time
 import traceback
@@ -67,6 +68,46 @@ os.environ.setdefault("OFFLINE_MODE", "1")
 
 import numpy as np
 import pandas as pd
+
+
+def _physical_processor_count() -> int:
+    """Best-effort physical CPU count, falling back to logical CPUs."""
+    count = os.cpu_count() or 2
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.check_output(["sysctl", "-n", "hw.physicalcpu"], text=True).strip()
+            count = int(out)
+        except Exception:
+            pass
+    elif sys.platform.startswith("linux"):
+        try:
+            packages = set()
+            physical_id = None
+            core_id = None
+            with open("/proc/cpuinfo", "r", encoding="utf-8", errors="ignore") as f:
+                for raw_line in f:
+                    line = raw_line.strip()
+                    if not line:
+                        if physical_id is not None and core_id is not None:
+                            packages.add((physical_id, core_id))
+                        physical_id = None
+                        core_id = None
+                        continue
+                    if line.startswith("physical id"):
+                        physical_id = line.split(":", 1)[1].strip()
+                    elif line.startswith("core id"):
+                        core_id = line.split(":", 1)[1].strip()
+            if packages:
+                count = len(packages)
+        except Exception:
+            pass
+    return max(1, count)
+
+
+def _auto_worker_count(job_count: int) -> int:
+    if job_count <= 0:
+        return 1
+    return max(1, min(_physical_processor_count() - 1, job_count))
 
 # ---------------------------------------------------------------------------
 # Rich imports (optional)
@@ -3361,7 +3402,7 @@ def run_signals_calibration(
 
     Args:
         cache: Full tune cache dict {symbol: params}
-        workers: Number of parallel workers (0=auto, uses all CPUs)
+        workers: Number of parallel workers (0=auto, physical processors minus one)
         eval_days: Walk-forward window (trading days)
         eval_spacing: Days between eval points
         assets: Optional subset of assets to calibrate
@@ -3372,9 +3413,6 @@ def run_signals_calibration(
     Returns:
         Updated cache with "signals_calibration" added to each asset
     """
-    # v4.0: Auto-detect CPU count when workers=0
-    if workers <= 0:
-        workers = os.cpu_count() or 8
     # Determine which assets to calibrate
     if assets:
         symbols = [s for s in assets if s in cache]
@@ -3383,6 +3421,12 @@ def run_signals_calibration(
 
     if not symbols:
         return cache
+
+    # v4.0: Auto-detect physical processor count when workers=0
+    if workers <= 0:
+        workers = _auto_worker_count(len(symbols))
+    else:
+        workers = max(1, min(workers, len(symbols)))
 
     total = len(symbols)
     t0 = time.time()
@@ -3598,7 +3642,7 @@ def main():
     parser.add_argument("--eval-days", type=int, default=DEFAULT_EVAL_DAYS)
     parser.add_argument("--eval-spacing", type=int, default=DEFAULT_EVAL_SPACING)
     parser.add_argument("--workers", type=int, default=0,
-                        help="Worker count (0=auto, uses all CPUs)")
+                        help="Worker processes (0=auto, physical processors minus one)")
     parser.add_argument("--no-parallel", action="store_true")
     parser.add_argument("--fast", action="store_true",
                         help="Fast mode: spacing=10 (~50 eval points, 3x faster)")
@@ -3626,7 +3670,8 @@ def main():
     if args.assets:
         asset_list = [s.strip() for s in args.assets.split(",")]
 
-    w = 1 if args.no_parallel else (args.workers if args.workers > 0 else (os.cpu_count() or 8))
+    job_count = len(asset_list) if asset_list else len(cache)
+    w = 1 if args.no_parallel else (args.workers if args.workers > 0 else _auto_worker_count(job_count))
 
     cache = run_signals_calibration(
         cache,

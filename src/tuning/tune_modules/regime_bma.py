@@ -684,6 +684,7 @@ def tune_regime_model_averaging(
                  if global_models[m].get("fit_success", False) and global_models[m].get("ad_pvalue") is not None
                  and np.isfinite(global_models[m]["ad_pvalue"])}
     fallback_weight_metadata = None
+    global_pit_penalty_report = None
     
     if global_crps and CRPS_SCORING_ENABLED:
         global_raw_weights, fallback_weight_metadata = compute_regime_aware_model_weights(
@@ -730,6 +731,37 @@ def tune_regime_model_averaging(
             global_models[m]['entropy_lambda'] = DEFAULT_ENTROPY_LAMBDA
         else:
             global_models[m]['combined_score'] = float(np.log(w)) if w > 0 else float('-inf')
+
+    # Apply the same asymmetric PIT trust penalty used by regime posteriors.
+    # Global models are borrowed by sparse regimes, so a low-PIT global winner
+    # must not gain authority solely from BIC/CRPS fit.
+    weights_pre_pit = global_raw_weights.copy()
+    if PIT_PENALTY_AVAILABLE:
+        global_raw_weights, global_pit_penalty_report = apply_pit_penalties_to_weights(
+            raw_weights=global_raw_weights,
+            model_pit_pvalues=global_pit,
+            regime=-1,
+            n_samples=n_obs,
+        )
+
+        for m in global_models:
+            if global_pit_penalty_report and m in global_pit_penalty_report.model_penalties:
+                penalty_result = global_pit_penalty_report.model_penalties[m]
+                global_models[m]['pit_violation_severity'] = float(penalty_result.violation_severity)
+                global_models[m]['pit_penalty_raw'] = float(penalty_result.raw_penalty)
+                global_models[m]['pit_penalty_effective'] = float(penalty_result.effective_penalty)
+                global_models[m]['pit_triggers_exit'] = penalty_result.triggers_exit
+                global_models[m]['model_weight_pre_pit'] = float(weights_pre_pit.get(m, 0.0))
+                global_models[m]['model_weight_post_pit'] = float(global_raw_weights.get(m, 0.0))
+
+        if global_pit_penalty_report and global_pit_penalty_report.selection_diverged:
+            _log(
+                f"     ⚠️  Global PIT penalty changed selection: "
+                f"{global_pit_penalty_report.best_model_by_fit} → "
+                f"{global_pit_penalty_report.best_model_after_penalty}"
+            )
+        if global_pit_penalty_report and global_pit_penalty_report.n_violated > 0:
+            _log(f"     → Global PIT violations: {global_pit_penalty_report.n_violated} models penalized")
     
     global_posterior = normalize_weights(global_raw_weights)
     
@@ -914,6 +946,18 @@ def tune_regime_model_averaging(
         if global_models[m].get("fit_success", False) and np.isfinite(global_models[m].get("combined_score", float('inf')))
     ]
     global_combined_score_min = min(global_combined_scores) if global_combined_scores else None
+
+    global_pit_penalty_meta = None
+    if global_pit_penalty_report is not None:
+        global_pit_penalty_meta = {
+            "n_violated": global_pit_penalty_report.n_violated,
+            "n_exit_triggered": global_pit_penalty_report.n_exit_triggered,
+            "selection_diverged": global_pit_penalty_report.selection_diverged,
+            "best_model_by_fit": global_pit_penalty_report.best_model_by_fit,
+            "best_model_after_penalty": global_pit_penalty_report.best_model_after_penalty,
+            "max_penalty_model": global_pit_penalty_report.max_penalty_model,
+            "max_penalty_value": float(global_pit_penalty_report.max_penalty_value),
+        }
     
     result = {
         "global": {
@@ -925,6 +969,8 @@ def tune_regime_model_averaging(
             "model_selection_method": model_selection_method,
             "bic_weight": bic_weight if model_selection_method == 'combined' else None,
             "entropy_lambda": DEFAULT_ENTROPY_LAMBDA if model_selection_method == 'combined' else None,
+            "pit_penalty_applied": global_pit_penalty_report is not None,
+            "pit_penalty": global_pit_penalty_meta,
             # Elite Tuning metadata (v2.0 - February 2026)
             "elite_tuning_enabled": ELITE_TUNING_AVAILABLE and ELITE_TUNING_ENABLED,
             "elite_tuning_preset": ELITE_TUNING_PRESET if ELITE_TUNING_AVAILABLE else None,
@@ -948,5 +994,3 @@ def tune_regime_model_averaging(
     }
     
     return result
-
-

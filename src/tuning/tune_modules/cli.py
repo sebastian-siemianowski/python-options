@@ -11,6 +11,7 @@ import json
 import argparse
 import traceback
 import multiprocessing
+import subprocess
 from typing import Dict, Any, List, Optional, Tuple
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -23,7 +24,7 @@ from tuning.tune_modules.utilities import *  # noqa: F401,F403
 from tuning.tune_modules.volatility_fitting import load_cache, save_cache_json  # noqa: E402
 from tuning.tune_modules.calibration_pipeline import run_calibration_pipeline, save_calibration_report  # noqa: E402
 from tuning.tune_modules.asset_tuning import _tune_worker  # noqa: E402
-from tuning.tune_modules.process_noise import load_asset_list  # noqa: E402
+from tuning.tune_modules.process_noise import load_asset_list, sort_assets_by_complexity  # noqa: E402
 
 
 __all__ = [
@@ -73,6 +74,49 @@ def _extract_previous_posteriors(cached_entry: Optional[Dict]) -> Optional[Dict[
     return previous_posteriors
 
 
+def _physical_processor_count() -> int:
+    """Best-effort physical CPU count, falling back to logical CPUs."""
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.check_output(["sysctl", "-n", "hw.physicalcpu"], text=True).strip()
+            value = int(out)
+            if value > 0:
+                return value
+        except Exception:
+            pass
+    if sys.platform.startswith("linux"):
+        try:
+            packages = set()
+            physical_id = None
+            core_id = None
+            with open("/proc/cpuinfo", "r", encoding="utf-8", errors="ignore") as f:
+                for raw_line in f:
+                    line = raw_line.strip()
+                    if not line:
+                        if physical_id is not None and core_id is not None:
+                            packages.add((physical_id, core_id))
+                        physical_id = None
+                        core_id = None
+                        continue
+                    if line.startswith("physical id"):
+                        physical_id = line.split(":", 1)[1].strip()
+                    elif line.startswith("core id"):
+                        core_id = line.split(":", 1)[1].strip()
+            if packages:
+                return len(packages)
+        except Exception:
+            pass
+    return max(1, multiprocessing.cpu_count())
+
+
+def _resolve_worker_count(requested_workers: int, job_count: int) -> int:
+    if job_count <= 0:
+        return 1
+    if requested_workers and requested_workers > 0:
+        return max(1, min(requested_workers, job_count))
+    return max(1, min(_physical_processor_count() - 1, job_count))
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Estimate optimal Kalman drift parameters with Kalman Phi Student-t noise support",
@@ -116,6 +160,8 @@ Examples:
     # Story 2.6: Calibration pipeline
     parser.add_argument('--calibrate', action='store_true',
                        help='Run walk-forward calibration pipeline instead of tuning')
+    parser.add_argument('--workers', type=int, default=0,
+                       help='Parallel worker processes for tuning (0=auto, physical processors minus one)')
 
     args = parser.parse_args()
 
@@ -239,9 +285,8 @@ Examples:
         assets_to_process.append(asset)
 
     if assets_to_process:
-        # Parallel processing using all available CPU cores
-        import multiprocessing
-        n_workers = multiprocessing.cpu_count()
+        assets_to_process = sort_assets_by_complexity(assets_to_process)
+        n_workers = _resolve_worker_count(args.workers, len(assets_to_process))
         print(f"\n🚀 Running {len(assets_to_process)} assets with parallel regime-conditional tuning ({n_workers} workers)...")
 
         # Prepare arguments for workers, extracting previous posteriors from cache for temporal smoothing
@@ -253,7 +298,7 @@ Examples:
                 (asset, args.start, args.end, args.prior_mean, args.prior_lambda, args.lambda_regime, prev_posteriors)
             )
 
-        # Process in parallel using all CPU cores
+        # Process in parallel with bounded physical processors.
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
             futures = {executor.submit(_tune_worker, arg): arg[0] for arg in worker_args}
 
@@ -643,5 +688,3 @@ Examples:
     render_calibration_issues_table(cache, failure_reasons)
     
     print("\n" + "=" * 80)
-
-

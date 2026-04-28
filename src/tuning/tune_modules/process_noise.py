@@ -4,6 +4,8 @@ Process noise tuning: tune_asset_q, asset list management, complexity estimation
 Extracted from tune.py (Story 2.2).
 """
 import os
+import subprocess
+import sys
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -781,7 +783,33 @@ def sort_assets_by_complexity(assets: list, prices_dir: str = None) -> list:
 
 def get_optimal_worker_count() -> int:
     """Story 3.2: Optimal worker count for parallel tuning."""
-    cpu = os.cpu_count() or 4
-    return min(cpu - 1, 8)  # Leave 1 core for OS, cap at 8
-
-
+    cpu = os.cpu_count() or 2
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.check_output(["sysctl", "-n", "hw.physicalcpu"], text=True).strip()
+            cpu = int(out)
+        except Exception:
+            pass
+    elif sys.platform.startswith("linux"):
+        try:
+            packages = set()
+            physical_id = None
+            core_id = None
+            with open("/proc/cpuinfo", "r", encoding="utf-8", errors="ignore") as f:
+                for raw_line in f:
+                    line = raw_line.strip()
+                    if not line:
+                        if physical_id is not None and core_id is not None:
+                            packages.add((physical_id, core_id))
+                        physical_id = None
+                        core_id = None
+                        continue
+                    if line.startswith("physical id"):
+                        physical_id = line.split(":", 1)[1].strip()
+                    elif line.startswith("core id"):
+                        core_id = line.split(":", 1)[1].strip()
+            if packages:
+                cpu = len(packages)
+        except Exception:
+            pass
+    return max(1, cpu - 1)  # Leave one physical processor for the OS/UI.

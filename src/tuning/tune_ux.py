@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 from typing import Dict, List, Optional
 from datetime import datetime
@@ -34,6 +35,7 @@ if SCRIPT_DIR not in sys.path:
 # Import core tuning functionality
 from tuning.tune import (
     load_asset_list,
+    sort_assets_by_complexity,
     load_cache,
     save_cache_json,
     _tune_worker,
@@ -135,6 +137,55 @@ REGIME_COLORS = {
     "HIGH_VOL_RANGE": "orange1",
     "CRISIS_JUMP": "red",
 }
+
+
+def _physical_processor_count() -> int:
+    """Best-effort physical CPU count, falling back to logical CPUs."""
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.check_output(["sysctl", "-n", "hw.physicalcpu"], text=True).strip()
+            value = int(out)
+            if value > 0:
+                return value
+        except Exception:
+            pass
+    if sys.platform.startswith("linux"):
+        try:
+            packages = set()
+            physical_id = None
+            core_id = None
+            with open("/proc/cpuinfo", "r", encoding="utf-8", errors="ignore") as f:
+                for raw_line in f:
+                    line = raw_line.strip()
+                    if not line:
+                        if physical_id is not None and core_id is not None:
+                            packages.add((physical_id, core_id))
+                        physical_id = None
+                        core_id = None
+                        continue
+                    if line.startswith("physical id"):
+                        physical_id = line.split(":", 1)[1].strip()
+                    elif line.startswith("core id"):
+                        core_id = line.split(":", 1)[1].strip()
+            if packages:
+                return len(packages)
+        except Exception:
+            pass
+    return max(1, multiprocessing.cpu_count())
+
+
+def _resolve_worker_count(requested_workers: int, job_count: int) -> int:
+    if job_count <= 0:
+        return 1
+    if requested_workers and requested_workers > 0:
+        return max(1, min(requested_workers, job_count))
+    return max(1, min(_physical_processor_count() - 1, job_count))
+
+
+def _signal_calibration_asset_scope(args, assets: List[str]) -> Optional[List[str]]:
+    if args.assets or args.assets_file or args.max_assets or args.force_escalation:
+        return list(dict.fromkeys(assets))
+    return None
 
 
 def create_tuning_console() -> Console:
@@ -321,11 +372,11 @@ def render_tuning_header(prior_mean: float, prior_lambda: float, lambda_regime: 
     console.print(Align.center(subtitle))
     console.print()
     now = datetime.now()
-    cores = multiprocessing.cpu_count()
+    cores = _physical_processor_count()
     ctx = Text()
     ctx.append(f"{now.strftime('%H:%M')}", style="bold white")
     ctx.append("  ·  ", style="dim")
-    ctx.append(f"{cores} cores", style="dim")
+    ctx.append(f"{cores} physical processors", style="dim")
     ctx.append("  ·  ", style="dim")
     ctx.append(f"{now.strftime('%b %d, %Y')}", style="dim")
     console.print(Align.center(ctx))
@@ -2309,7 +2360,7 @@ Examples:
     parser.add_argument('--skip-calibration', action='store_true',
                        help='Skip Pass 2 signal calibration (walk-forward p_up/magnitude/threshold correction)')
     parser.add_argument('--workers', type=int, default=0,
-                       help='Number of parallel workers for signal calibration (0=auto, uses all CPUs)')
+                       help='Parallel worker processes for tuning and signal calibration (0=auto, physical processors minus one)')
 
     args = parser.parse_args()
 
@@ -2456,9 +2507,9 @@ Examples:
             assets_to_process.append(asset)
 
     if assets_to_process:
+        assets_to_process = sort_assets_by_complexity(assets_to_process)
         # Parallel processing
-        import multiprocessing
-        n_workers = multiprocessing.cpu_count()
+        n_workers = _resolve_worker_count(args.workers, len(assets_to_process))
         
         render_tuning_progress_start(
             len(assets_to_process), 
@@ -2848,13 +2899,13 @@ Examples:
     if not getattr(args, 'skip_calibration', False):
         try:
             from decision.signals_calibration import run_signals_calibration
-            n_workers = getattr(args, 'workers', 0)
-            if n_workers <= 0:
-                n_workers = os.cpu_count() or 8
+            calibration_assets = _signal_calibration_asset_scope(args, assets)
+            calibration_job_count = len(calibration_assets) if calibration_assets else max(len(cache), 1)
+            n_workers = _resolve_worker_count(getattr(args, 'workers', 0), calibration_job_count)
             cache = run_signals_calibration(
                 cache,
                 workers=n_workers,
-                assets=None,  # calibrate all cached assets
+                assets=calibration_assets,
                 quiet=False,
             )
             # Re-save with calibration data

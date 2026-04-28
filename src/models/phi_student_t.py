@@ -20,6 +20,7 @@ Gaussian shrinkage prior on φ: φ_r ~ N(φ_global, τ²).
 from __future__ import annotations
 
 import math
+import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Any
@@ -1768,14 +1769,21 @@ class PhiStudentTDriftModel:
         _use_numba_cv = False
         try:
             from models.numba_wrappers import run_phi_student_t_cv_test_fold as _numba_cv_fold
+            from models.numba_wrappers import run_phi_student_t_train_state as _numba_train_state
             _use_numba_cv = True
         except (ImportError, Exception):
+            _numba_train_state = None
             pass
 
         # Pre-compute VoV array for Numba (contiguous float64)
         _vov_full = None
         if _has_vov_opt and vov_rolling is not None:
             _vov_full = np.ascontiguousarray(vov_rolling.flatten(), dtype=np.float64)
+        _use_train_state_kernel = (
+            _use_numba_cv
+            and _numba_train_state is not None
+            and os.environ.get("PHI_STUDENT_T_DISABLE_TRAIN_STATE_KERNEL", "") != "1"
+        )
 
         def neg_cv_ll(params):
             log_q, log_c, phi = params
@@ -1787,22 +1795,33 @@ class PhiStudentTDriftModel:
 
             total_ll = 0.0
             for ts, te_f, vs, ve in folds:
-                ret_tr = _returns_r[ts:te_f]
-                vol_tr = vol[ts:te_f]
-                if len(ret_tr) < 3:
+                if te_f - ts < 3:
                     continue
-                # Use enhanced filter for training fold (March 2026)
-                # Ensures parameters optimized against the same filter used in inference
-                _vov_tr = vov_rolling[ts:te_f] if _has_vov_opt else None
-                mu_f, P_f, _, _, _ = cls._filter_phi_core(
-                    ret_tr, vol_tr, q, c, phi_clip, nu_val,
-                    robust_wt=True,
-                    online_scale_adapt=_use_osa_opt,
-                    gamma_vov=gamma_vov if _has_vov_opt else 0.0,
-                    vov_rolling=_vov_tr,
-                )
-                mu_p = float(mu_f[-1])
-                P_p = float(P_f[-1])
+                if _use_train_state_kernel:
+                    mu_p, P_p, _ = _numba_train_state(
+                        _returns_r, _vol_sq, q, c, phi_clip, nu_val,
+                        log_norm_const, neg_exp, inv_nu,
+                        ts, te_f,
+                        gamma_vov=gamma_vov if _has_vov_opt else 0.0,
+                        vov_rolling=_vov_full,
+                        robust_wt=True,
+                        online_scale_adapt=_use_osa_opt,
+                    )
+                else:
+                    ret_tr = _returns_r[ts:te_f]
+                    vol_tr = vol[ts:te_f]
+                    # Use enhanced filter for training fold (March 2026)
+                    # Ensures parameters optimized against the same filter used in inference
+                    _vov_tr = vov_rolling[ts:te_f] if _has_vov_opt else None
+                    mu_f, P_f, _, _, _ = cls._filter_phi_core(
+                        ret_tr, vol_tr, q, c, phi_clip, nu_val,
+                        robust_wt=True,
+                        online_scale_adapt=_use_osa_opt,
+                        gamma_vov=gamma_vov if _has_vov_opt else 0.0,
+                        vov_rolling=_vov_tr,
+                    )
+                    mu_p = float(mu_f[-1])
+                    P_p = float(P_f[-1])
                 if _use_numba_cv:
                     total_ll += _numba_cv_fold(
                         _returns_r, _vol_sq, q, c, phi_clip,

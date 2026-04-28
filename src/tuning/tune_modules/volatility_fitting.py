@@ -5,6 +5,7 @@ Extracted from tune.py (Story 2.3).
 """
 import os
 import json
+from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 
 import numpy as np
@@ -345,6 +346,8 @@ try:
         load_tuned_params as _load_per_asset,
         save_tuned_params as _save_per_asset,
         load_full_cache as _load_full_cache,
+        _normalize_symbol as _normalize_cache_symbol,
+        CURRENT_CACHE_VERSION,
         list_cached_symbols,
         get_cache_stats as get_kalman_cache_stats,
         TUNE_CACHE_DIR,
@@ -354,13 +357,85 @@ except ImportError:
     PER_ASSET_CACHE_AVAILABLE = False
 
 
+def _is_json_file_path(path: Optional[str]) -> bool:
+    return bool(path) and os.path.splitext(str(path))[1].lower() == ".json"
+
+
+def _is_default_cache_dir(path: Optional[str]) -> bool:
+    if not path:
+        return True
+    try:
+        return os.path.abspath(path) == os.path.abspath(TUNE_CACHE_DIR)
+    except Exception:
+        return False
+
+
+def _load_per_asset_cache_dir(cache_dir: str) -> Dict[str, Dict]:
+    cache: Dict[str, Dict] = {}
+    if not os.path.isdir(cache_dir):
+        return cache
+    for fname in sorted(os.listdir(cache_dir)):
+        if not fname.endswith(".json") or fname in {".keep", "kalman_q_cache.json"}:
+            continue
+        path = os.path.join(cache_dir, fname)
+        try:
+            with open(path, "r") as f:
+                params = json.load(f)
+            if params.get("cache_version", "1.0") != CURRENT_CACHE_VERSION:
+                continue
+            symbol = params.get("symbol") or fname[:-5]
+            cache[symbol] = params
+        except Exception as e:
+            print(f"Warning: Failed to load cache file {path}: {e}")
+    return cache
+
+
+def _load_one_from_cache_dir(symbol: str, cache_dir: str) -> Optional[Dict]:
+    if not cache_dir or not os.path.isdir(cache_dir):
+        return None
+    path = os.path.join(cache_dir, f"{_normalize_cache_symbol(symbol)}.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r") as f:
+            params = json.load(f)
+        if params.get("cache_version", "1.0") != CURRENT_CACHE_VERSION:
+            return None
+        return params
+    except Exception:
+        return None
+
+
+def _save_per_asset_cache_dir(cache: Dict[str, Dict], cache_dir: str, encoder_cls) -> int:
+    os.makedirs(cache_dir, exist_ok=True)
+    saved_count = 0
+    for symbol, params in cache.items():
+        try:
+            normalized = _normalize_cache_symbol(symbol)
+            payload = {
+                **params,
+                "symbol": symbol,
+                "normalized_symbol": normalized,
+                "cache_version": CURRENT_CACHE_VERSION,
+                "saved_at": datetime.now().isoformat(),
+            }
+            cache_path = os.path.join(cache_dir, f"{normalized}.json")
+            temp_path = cache_path + ".tmp"
+            with open(temp_path, "w") as f:
+                json.dump(payload, f, indent=2, cls=encoder_cls)
+            os.replace(temp_path, cache_path)
+            saved_count += 1
+        except Exception as e:
+            print(f"Warning: Failed to save {symbol} to per-asset cache: {e}")
+    return saved_count
+
+
 def load_cache(cache_json: str) -> Dict[str, Dict]:
     """
     Load existing cache from per-asset files or legacy single JSON file.
     
-    The cache_json parameter is kept for backward compatibility but is ignored
-    when per-asset cache is available. It falls back to the legacy behavior
-    if the per-asset module is not found.
+    cache_json may be the default per-asset cache directory, a custom
+    per-asset cache directory, or a legacy single JSON file.
     
     Args:
         cache_json: Path to legacy cache file (used as fallback)
@@ -370,9 +445,12 @@ def load_cache(cache_json: str) -> Dict[str, Dict]:
     """
     # Try per-asset cache first
     if PER_ASSET_CACHE_AVAILABLE:
-        cache = _load_full_cache()
-        if cache:
-            return cache
+        if _is_default_cache_dir(cache_json):
+            cache = _load_full_cache()
+            if cache:
+                return cache
+        elif cache_json and not _is_json_file_path(cache_json):
+            return _load_per_asset_cache_dir(cache_json)
     
     # Fallback to legacy single-file cache
     # Note: cache_json might be a directory path (from retune), so check isfile()
@@ -400,7 +478,10 @@ def load_single_asset_cache(symbol: str, cache_json: str = None) -> Optional[Dic
         Dict with tuned parameters or None if not cached
     """
     if PER_ASSET_CACHE_AVAILABLE:
-        return _load_per_asset(symbol)
+        if _is_default_cache_dir(cache_json):
+            return _load_per_asset(symbol)
+        if cache_json and not _is_json_file_path(cache_json):
+            return _load_one_from_cache_dir(symbol, cache_json)
     
     # Fallback to legacy cache (only if it's a file, not a directory)
     if cache_json and os.path.isfile(cache_json):
@@ -442,7 +523,10 @@ def save_cache_json(cache: Dict[str, Dict], cache_json: str) -> None:
             return super().default(obj)
     
     # Use per-asset cache
-    if PER_ASSET_CACHE_AVAILABLE:
+    if PER_ASSET_CACHE_AVAILABLE and not _is_json_file_path(cache_json):
+        if cache_json and not _is_default_cache_dir(cache_json) and not _is_json_file_path(cache_json):
+            _save_per_asset_cache_dir(cache, cache_json, NumpyEncoder)
+            return
         saved_count = 0
         for symbol, params in cache.items():
             try:
@@ -499,4 +583,3 @@ def save_cache_json(cache: Dict[str, Dict], cache_json: str) -> None:
 
 
 # Compatibility wrappers to preserve existing API surface
-
