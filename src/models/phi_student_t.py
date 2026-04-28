@@ -1921,10 +1921,26 @@ class PhiStudentTDriftModel:
                     except Exception:
                         continue
 
-        # Sort by objective, take top 3 for L-BFGS-B
+        # Sort by objective.  Extra L-BFGS starts are only worth paying for
+        # when the coarse-grid scores are close enough that local topology is
+        # genuinely ambiguous.  A ten-nat objective margin keeps the old
+        # multi-start safety valve for hard assets while deleting redundant
+        # starts for the common well-separated case.
         grid_candidates.sort(key=lambda x: x[0])
-        top_starts = grid_candidates[:3] if grid_candidates else [
-            (1e20, -5.0, 0.0, 0.0)]
+        if grid_candidates:
+            if os.environ.get("PHI_STUDENT_T_DISABLE_START_PRUNE", "") == "1":
+                top_starts = grid_candidates[:3]
+            else:
+                best_grid_val = grid_candidates[0][0]
+                prune_margin = float(os.environ.get("PHI_STUDENT_T_START_PRUNE_MARGIN", "10.0"))
+                top_starts = [
+                    cand for cand in grid_candidates[:3]
+                    if cand[0] <= best_grid_val + prune_margin
+                ]
+                if not top_starts:
+                    top_starts = grid_candidates[:1]
+        else:
+            top_starts = [(1e20, -5.0, 0.0, 0.0)]
 
         best_result = None
         best_val = 1e20
@@ -1958,6 +1974,7 @@ class PhiStudentTDriftModel:
             "optimizer_converged": best_result.success,
             "n_folds": len(folds),
             "log10_q": log_q_opt,
+            "n_optimizer_starts": len(top_starts),
         }
 
         return q_opt, c_opt, phi_opt, cv_ll, diagnostics

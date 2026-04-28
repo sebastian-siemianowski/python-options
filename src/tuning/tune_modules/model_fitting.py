@@ -647,8 +647,10 @@ def fit_all_models_for_regime(
             else:
                 _nu_se = float('inf')
 
-            # Profile LL at the optimum
-            _ll_mle = -_profile_neg_ll(_nu_mle)
+            # Profile LL at the optimum.  Reuse the center evaluation from
+            # the finite-difference Hessian instead of running the full filter
+            # a fourth time at the same nu.
+            _ll_mle = _ll_center
 
             # Only create the continuous model if it improves on discrete
             _n_params_mle = 4  # q, c, phi, nu (same param count as discrete)
@@ -782,7 +784,7 @@ def fit_all_models_for_regime(
                 else:
                     _nu_se = float('inf')
 
-                _ll_mle = -_profile_improved_neg_ll(_nu_mle)
+                _ll_mle = _ll_center
                 _n_params_mle = 4
                 _bic_mle = -2.0 * _ll_mle + _n_params_mle * math.log(max(n_obs, 1))
 

@@ -366,8 +366,11 @@ def optimize_rv_q_params(
     n_train = int(len(returns) * train_frac)
     r_train = returns[:n_train]
     v_train = vol[:n_train]
-    v_train_sq, d_train = _precompute_rv_q_vol_inputs(v_train)
     use_precomputed = os.environ.get("RV_Q_ENABLE_PRECOMPUTED_KERNEL", "") == "1"
+    if use_precomputed:
+        v_train_sq, d_train = _precompute_rv_q_vol_inputs(v_train)
+    else:
+        v_train_sq = d_train = None
 
     # Precompute gamma values for Student-t
     if nu is not None:
@@ -488,7 +491,10 @@ def optimize_rv_q_params(
     if n_train < len(returns):
         r_test = returns[n_train:]
         v_test = vol[n_train:]
-        v_test_sq, d_test = _precompute_rv_q_vol_inputs(v_test)
+        if use_precomputed:
+            v_test_sq, d_test = _precompute_rv_q_vol_inputs(v_test)
+        else:
+            v_test_sq = d_test = None
         n_test = len(r_test)
 
         # RV-Q out-of-sample
