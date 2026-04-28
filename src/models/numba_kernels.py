@@ -6666,6 +6666,154 @@ def phi_student_t_improved_train_state_kernel(
 
 
 @njit(cache=True, fastmath=False)
+def phi_student_t_improved_train_state_only_kernel(
+    returns: np.ndarray,
+    vol_sq: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu: float,
+    scale_factor: float,
+    train_start: int,
+    train_end: int,
+    gamma_vov: float,
+    vov_rolling: np.ndarray,
+    use_vov: int,
+    online_scale_adapt: int,
+    p_min: float,
+    p_max_default: float,
+) -> tuple:
+    """
+    Terminal-state filter for optimizer CV folds.
+
+    Same state path as phi_student_t_improved_train_state_kernel, but deletes
+    training log-likelihood work because optimize_params_fixed_nu only needs
+    the terminal (mu, P) before scoring the validation fold.
+    """
+    n = train_end - train_start
+    if n <= 0:
+        return 0.0, 1e-4
+
+    vol_sum = 0.0
+    for t in range(train_start, train_end):
+        vol_sum += vol_sq[t]
+    vol_var_med = vol_sum / n
+    if n > 2:
+        tmp = np.empty(n)
+        for i in range(n):
+            tmp[i] = vol_sq[train_start + i]
+        tmp.sort()
+        mid = n // 2
+        if n % 2 == 1:
+            vol_var_med = tmp[mid]
+        else:
+            vol_var_med = 0.5 * (tmp[mid - 1] + tmp[mid])
+    if vol_var_med < 1e-12:
+        vol_var_med = 1e-12
+
+    p_floor = p_min if p_min > 1e-12 else 1e-12
+    p_cap = p_max_default
+    if 100.0 * vol_var_med > p_cap:
+        p_cap = 100.0 * vol_var_med
+    if 1000.0 * q > p_cap:
+        p_cap = 1000.0 * q
+    if p_floor * 10.0 > p_cap:
+        p_cap = p_floor * 10.0
+
+    phi_sq = phi * phi
+    chi2_tgt = nu / (nu - 2.0) if nu > 2.0 else 1.0
+    chi2_lam = 0.985
+    chi2_1m = 1.0 - chi2_lam
+    chi2_cap = chi2_tgt * 50.0
+    ewm_z2 = chi2_tgt
+    c_adj = 1.0
+    osa_strength = (chi2_tgt - 1.0) / 0.5 if nu > 2.0 else 1.0
+    if osa_strength > 1.0:
+        osa_strength = 1.0
+    elif osa_strength < 0.0:
+        osa_strength = 0.0
+
+    mu = 0.0
+    P = vol_var_med
+    if 10.0 * q > P:
+        P = 10.0 * q
+    if P < p_floor:
+        P = p_floor
+    elif P > p_cap:
+        P = p_cap
+    nu_p1 = nu + 1.0
+
+    for t in range(train_start, train_end):
+        mu_pred = phi * mu
+        P_pred = phi_sq * P + q
+        if P_pred < p_floor:
+            P_pred = p_floor
+
+        c_eff = c * c_adj if online_scale_adapt == 1 else c
+        R_t = c_eff * vol_sq[t]
+        if R_t < 1e-20:
+            R_t = 1e-20
+        if use_vov == 1:
+            vov_mult = 1.0 + gamma_vov * vov_rolling[t]
+            if vov_mult < 0.05:
+                vov_mult = 0.05
+            elif vov_mult > 20.0:
+                vov_mult = 20.0
+            R_t *= vov_mult
+            if R_t < 1e-20:
+                R_t = 1e-20
+
+        S = P_pred + R_t
+        if S < 1e-20:
+            S = 1e-20
+        innovation = returns[t] - mu_pred
+        z_sq_s = (innovation * innovation) / S
+        w_t = nu_p1 / (nu + z_sq_s)
+        if w_t < 0.05:
+            w_t = 0.05
+        elif w_t > 20.0:
+            w_t = 20.0
+        R_eff = R_t / w_t
+        S_eff = P_pred + R_eff
+        if S_eff < 1e-20:
+            S_eff = 1e-20
+        K = P_pred / S_eff
+        one_minus_K = 1.0 - K
+        mu = mu_pred + K * innovation
+        P = one_minus_K * one_minus_K * P_pred + K * K * R_eff
+        if P < p_floor:
+            P = p_floor
+        elif P > p_cap:
+            P = p_cap
+
+        if online_scale_adapt == 1:
+            scale = np.sqrt(S * scale_factor)
+            if scale < 1e-10:
+                scale = 1e-10
+            z = innovation / scale
+            z2w = z * z
+            if z2w > chi2_cap:
+                z2w = chi2_cap
+            ewm_z2 = chi2_lam * ewm_z2 + chi2_1m * z2w
+            ratio = ewm_z2 / chi2_tgt if chi2_tgt > 1e-12 else 1.0
+            if ratio < 0.35:
+                ratio = 0.35
+            elif ratio > 2.85:
+                ratio = 2.85
+            dev = ratio - 1.0 if ratio >= 1.0 else 1.0 - ratio
+            if dev < 0.04:
+                c_adj = 1.0
+            else:
+                c_adj = 1.0 + osa_strength * (np.sqrt(ratio) - 1.0)
+                if c_adj < 0.4:
+                    c_adj = 0.4
+                elif c_adj > 2.5:
+                    c_adj = 2.5
+
+    return mu, P
+
+
+@njit(cache=True, fastmath=False)
 def phi_student_t_improved_cv_test_fold_kernel(
     returns: np.ndarray,
     vol_sq: np.ndarray,
@@ -6804,6 +6952,251 @@ def phi_student_t_improved_cv_test_fold_kernel(
                     c_adj = 2.5
 
     return total_ll, obs_count, z2_count, z2_sum
+
+
+@njit(cache=True, fastmath=False)
+def phi_student_t_improved_cv_objective_kernel(
+    returns: np.ndarray,
+    vol_sq: np.ndarray,
+    fold_train_start: np.ndarray,
+    fold_train_end: np.ndarray,
+    fold_val_start: np.ndarray,
+    fold_val_end: np.ndarray,
+    fold_vol_var_median: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu: float,
+    log_norm_const: float,
+    neg_exp: float,
+    inv_nu: float,
+    scale_factor: float,
+    gamma_vov: float,
+    vov_rolling: np.ndarray,
+    use_vov: int,
+    online_scale_adapt: int,
+    p_floor: float,
+    p_max_default: float,
+    validation_p_cap: float,
+    z2_cap: float,
+) -> tuple:
+    """
+    Fused CV objective for phi_student_t_improved.
+
+    First-principles rewrite of the optimizer hot path: for every expanding
+    fold, compute the terminal training state and validation-fold statistics in
+    one compiled pass.  This avoids Python fold orchestration and repeated small
+    wrapper calls while preserving the exact train/update math of the separate
+    improved train-state and CV-fold kernels.
+    """
+    n_folds = len(fold_train_start)
+    total_ll = 0.0
+    total_count = 0
+    total_z2_count = 0
+    total_z2_sum = 0.0
+
+    phi_sq = phi * phi
+    nu_p1 = nu + 1.0
+    chi2_tgt = nu / (nu - 2.0) if nu > 2.0 else 1.0
+    chi2_lam = 0.985
+    chi2_1m = 1.0 - chi2_lam
+    chi2_cap = chi2_tgt * 50.0
+    osa_strength = (chi2_tgt - 1.0) / 0.5 if nu > 2.0 else 1.0
+    if osa_strength > 1.0:
+        osa_strength = 1.0
+    elif osa_strength < 0.0:
+        osa_strength = 0.0
+
+    if p_floor < 1e-12:
+        p_floor = 1e-12
+    if z2_cap <= 0.0:
+        z2_cap = 50.0
+
+    for f in range(n_folds):
+        ts = int(fold_train_start[f])
+        te = int(fold_train_end[f])
+        vs = int(fold_val_start[f])
+        ve = int(fold_val_end[f])
+        if te <= ts or ve <= vs:
+            continue
+
+        vol_var_med = fold_vol_var_median[f]
+        if vol_var_med < 1e-12:
+            vol_var_med = 1e-12
+
+        train_p_cap = p_max_default
+        if 100.0 * vol_var_med > train_p_cap:
+            train_p_cap = 100.0 * vol_var_med
+        if 1000.0 * q > train_p_cap:
+            train_p_cap = 1000.0 * q
+        if p_floor * 10.0 > train_p_cap:
+            train_p_cap = p_floor * 10.0
+
+        mu = 0.0
+        P = vol_var_med
+        if 10.0 * q > P:
+            P = 10.0 * q
+        if P < p_floor:
+            P = p_floor
+        elif P > train_p_cap:
+            P = train_p_cap
+
+        ewm_z2 = chi2_tgt
+        c_adj = 1.0
+
+        for t in range(ts, te):
+            mu_pred = phi * mu
+            P_pred = phi_sq * P + q
+            if P_pred < p_floor:
+                P_pred = p_floor
+
+            c_eff = c * c_adj if online_scale_adapt == 1 else c
+            R_t = c_eff * vol_sq[t]
+            if R_t < 1e-20:
+                R_t = 1e-20
+            if use_vov == 1:
+                vov_mult = 1.0 + gamma_vov * vov_rolling[t]
+                if vov_mult < 0.05:
+                    vov_mult = 0.05
+                elif vov_mult > 20.0:
+                    vov_mult = 20.0
+                R_t *= vov_mult
+                if R_t < 1e-20:
+                    R_t = 1e-20
+
+            S = P_pred + R_t
+            if S < 1e-20:
+                S = 1e-20
+            scale = np.sqrt(S * scale_factor)
+            if scale < 1e-10:
+                scale = 1e-10
+
+            inn = returns[t] - mu_pred
+            z = inn / scale
+            z_sq_s = (inn * inn) / S
+            w_t = nu_p1 / (nu + z_sq_s)
+            if w_t < 0.05:
+                w_t = 0.05
+            elif w_t > 20.0:
+                w_t = 20.0
+            R_eff = R_t / w_t
+            S_eff = P_pred + R_eff
+            if S_eff < 1e-20:
+                S_eff = 1e-20
+            K = P_pred / S_eff
+            one_minus_K = 1.0 - K
+            mu = mu_pred + K * inn
+            P = one_minus_K * one_minus_K * P_pred + K * K * R_eff
+            if P < p_floor:
+                P = p_floor
+            elif P > train_p_cap:
+                P = train_p_cap
+
+            if online_scale_adapt == 1:
+                z2w = z * z
+                if z2w > chi2_cap:
+                    z2w = chi2_cap
+                ewm_z2 = chi2_lam * ewm_z2 + chi2_1m * z2w
+                ratio = ewm_z2 / chi2_tgt if chi2_tgt > 1e-12 else 1.0
+                if ratio < 0.35:
+                    ratio = 0.35
+                elif ratio > 2.85:
+                    ratio = 2.85
+                dev = ratio - 1.0 if ratio >= 1.0 else 1.0 - ratio
+                if dev < 0.04:
+                    c_adj = 1.0
+                else:
+                    c_adj = 1.0 + osa_strength * (np.sqrt(ratio) - 1.0)
+                    if c_adj < 0.4:
+                        c_adj = 0.4
+                    elif c_adj > 2.5:
+                        c_adj = 2.5
+
+        val_p_cap = validation_p_cap
+        if val_p_cap < p_floor * 10.0:
+            val_p_cap = p_floor * 10.0
+        ewm_z2 = chi2_tgt
+        c_adj = 1.0
+
+        for t in range(vs, ve):
+            mu_pred = phi * mu
+            P_pred = phi_sq * P + q
+            if P_pred < p_floor:
+                P_pred = p_floor
+
+            c_eff = c * c_adj
+            R_t = c_eff * vol_sq[t]
+            if R_t < 1e-20:
+                R_t = 1e-20
+            if use_vov == 1:
+                vov_mult = 1.0 + gamma_vov * vov_rolling[t]
+                if vov_mult < 0.05:
+                    vov_mult = 0.05
+                R_t *= vov_mult
+
+            S = P_pred + R_t
+            if S < 1e-20:
+                S = 1e-20
+            scale = np.sqrt(S * scale_factor)
+            if scale < 1e-10:
+                scale = 1e-10
+
+            inn = returns[t] - mu_pred
+            z = inn / scale
+            ll_t = log_norm_const - np.log(scale) + neg_exp * np.log1p((z * z) * inv_nu)
+            if np.isfinite(ll_t):
+                total_ll += ll_t
+                total_count += 1
+
+            z_sq_s = (inn * inn) / S
+            if np.isfinite(z_sq_s):
+                if z_sq_s < z2_cap:
+                    total_z2_sum += z_sq_s
+                else:
+                    total_z2_sum += z2_cap
+                total_z2_count += 1
+
+            w_t = nu_p1 / (nu + z_sq_s)
+            if w_t < 0.05:
+                w_t = 0.05
+            elif w_t > 20.0:
+                w_t = 20.0
+            R_eff = R_t / w_t
+            if R_eff < 1e-20:
+                R_eff = 1e-20
+            S_eff = P_pred + R_eff
+            if S_eff < 1e-20:
+                S_eff = 1e-20
+            K = P_pred / S_eff
+            one_minus_K = 1.0 - K
+            mu = mu_pred + K * inn
+            P = one_minus_K * one_minus_K * P_pred + K * K * R_eff
+            if P < p_floor:
+                P = p_floor
+            elif P > val_p_cap:
+                P = val_p_cap
+
+            if online_scale_adapt == 1:
+                z2w = z * z
+                if z2w > chi2_cap:
+                    z2w = chi2_cap
+                ewm_z2 = chi2_lam * ewm_z2 + chi2_1m * z2w
+                ratio = ewm_z2 / chi2_tgt if chi2_tgt > 1e-12 else 1.0
+                if ratio < 0.35:
+                    ratio = 0.35
+                elif ratio > 2.85:
+                    ratio = 2.85
+                dev = ratio - 1.0 if ratio >= 1.0 else 1.0 - ratio
+                if dev < 0.04:
+                    c_adj = 1.0
+                else:
+                    c_adj = 1.0 + osa_strength * (np.sqrt(ratio) - 1.0)
+                    if c_adj < 0.4:
+                        c_adj = 0.4
+                    elif c_adj > 2.5:
+                        c_adj = 2.5
+
+    return total_ll, total_count, total_z2_count, total_z2_sum
 
 
 @njit(cache=True, fastmath=True)
