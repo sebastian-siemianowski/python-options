@@ -20,8 +20,8 @@ Gaussian shrinkage prior on φ: φ_r ~ N(φ_global, τ²).
 from __future__ import annotations
 
 import math
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+import os
+from dataclasses import dataclass, field, fields
 from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
@@ -962,42 +962,22 @@ class UnifiedStudentTConfig:
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization."""
-        return {
-            'q': self.q,
-            'c': self.c,
-            'phi': self.phi,
-            'nu_base': self.nu_base,
-            'alpha_asym': self.alpha_asym,
-            'k_asym': self.k_asym,
-            'q_calm': self.q_calm,
-            'q_stress_ratio': self.q_stress_ratio,
-            'ms_sensitivity': self.ms_sensitivity,
-            'ms_ewm_lambda': self.ms_ewm_lambda,
-            'gamma_vov': self.gamma_vov,
-            'vov_damping': self.vov_damping,
-            'c_min': self.c_min,
-            'c_max': self.c_max,
-            'q_min': self.q_min,
-            # GJR-GARCH parameters
-            'garch_omega': self.garch_omega,
-            'garch_alpha': self.garch_alpha,
-            'garch_beta': self.garch_beta,
-            'garch_leverage': self.garch_leverage,
-            'garch_unconditional_var': self.garch_unconditional_var,
-            # Rough volatility memory (Gatheral-Jaisson-Rosenbaum 2018)
-            'rough_hurst': self.rough_hurst,
-            # Jump-diffusion parameters
-            'jump_intensity': self.jump_intensity,
-            'jump_variance': self.jump_variance,
-            'jump_sensitivity': self.jump_sensitivity,
-            'jump_mean': self.jump_mean,
-            # GARCH-Kalman reconciliation + Q_t coupling + location bias
-            'garch_kalman_weight': self.garch_kalman_weight,
-            'q_vol_coupling': self.q_vol_coupling,
-            'loc_bias_var_coeff': self.loc_bias_var_coeff,
-            'loc_bias_drift_coeff': self.loc_bias_drift_coeff,
-        }
+        """Convert scalar configuration fields to a JSON-friendly dictionary."""
+        out: Dict[str, Any] = {}
+        for cfg_field in fields(self):
+            key = cfg_field.name
+            if key == 'exogenous_input':
+                continue
+            value = getattr(self, key)
+            if isinstance(value, np.generic):
+                value = value.item()
+            if isinstance(value, bool) or value is None:
+                out[key] = value
+            elif isinstance(value, (int, float)):
+                out[key] = value
+            elif isinstance(value, str):
+                out[key] = value
+        return out
 
 
 def compute_ms_process_noise_smooth(
@@ -3470,8 +3450,16 @@ class UnifiedPhiStudentTModel:
             q_calm = float(config.q_calm) if config.q_calm is not None else q_base
             q_stress = q_calm * float(config.q_stress_ratio)
             ms_enabled = abs(q_stress - q_calm) > 1e-12
+            _pre_q_t = getattr(config, '_precomputed_q_t', None)
+            _pre_p_stress = getattr(config, '_precomputed_p_stress', None)
 
-            if ms_enabled:
+            if (
+                _pre_q_t is not None and _pre_p_stress is not None
+                and len(_pre_q_t) == n and len(_pre_p_stress) == n
+            ):
+                q_t = np.ascontiguousarray(_pre_q_t, dtype=np.float64)
+                p_stress = np.ascontiguousarray(_pre_p_stress, dtype=np.float64)
+            elif ms_enabled:
                 q_t, p_stress = compute_ms_process_noise_smooth(
                     vol, q_calm, q_stress, config.ms_sensitivity,
                     getattr(config, 'ms_ewm_lambda', 0.0)
@@ -3481,11 +3469,19 @@ class UnifiedPhiStudentTModel:
                 p_stress = np.zeros(n)
 
             window = config.vov_window
-            vov_rolling = precompute_vov(vol, window) if n > window and gamma_vov > 1e-12 else np.zeros(n, dtype=np.float64)
+            _pre_vov = getattr(config, '_precomputed_vov_rolling', None)
+            if _pre_vov is not None and len(_pre_vov) == n:
+                vov_rolling = np.ascontiguousarray(_pre_vov, dtype=np.float64)
+            else:
+                vov_rolling = precompute_vov(vol, window) if n > window and gamma_vov > 1e-12 else np.zeros(n, dtype=np.float64)
 
             # Exogenous / momentum
-            _has_exo = config.exogenous_input is not None
-            momentum = np.ascontiguousarray(config.exogenous_input.flatten(), dtype=np.float64) if _has_exo else np.zeros(n, dtype=np.float64)
+            _pre_momentum = getattr(config, '_precomputed_momentum', None)
+            if _pre_momentum is not None and len(_pre_momentum) == n:
+                momentum = np.ascontiguousarray(_pre_momentum, dtype=np.float64)
+            else:
+                _has_exo = config.exogenous_input is not None
+                momentum = np.ascontiguousarray(config.exogenous_input.flatten(), dtype=np.float64) if _has_exo else np.zeros(n, dtype=np.float64)
 
             if _simple_mode:
                 # Base kernel: no advanced features — marginally faster
@@ -4208,10 +4204,36 @@ class UnifiedPhiStudentTModel:
         best_avg_ks_p = 0.0
         best_global_beta = 1.0
         best_global_mu_drift = 0.0
+        _use_stage5_precompute = os.environ.get("UNIFIED_STAGE5_ENABLE_PRECOMPUTE", "") == "1"
+        _stage5_q_t = _stage5_p_stress = _stage5_vov = _stage5_momentum = None
+        if _use_stage5_precompute:
+            _q_calm = q_opt
+            _q_stress = _q_calm * q_stress_ratio
+            if abs(_q_stress - _q_calm) > 1e-12:
+                _stage5_q_t, _stage5_p_stress = compute_ms_process_noise_smooth(
+                    vol_train, _q_calm, _q_stress, sens_opt, 0.0
+                )
+            else:
+                _stage5_q_t = np.full(n_train, q_opt, dtype=np.float64)
+                _stage5_p_stress = np.zeros(n_train, dtype=np.float64)
+            _stage5_vov = (
+                precompute_vov(vol_train, UnifiedStudentTConfig.vov_window)
+                if n_train > UnifiedStudentTConfig.vov_window and gamma_opt > 1e-12
+                else np.zeros(n_train, dtype=np.float64)
+            )
+            _stage5_momentum = np.zeros(n_train, dtype=np.float64)
 
-        # ── March 2026: Parallel ν evaluation ──
-        # Each ν iteration is independent (no shared state). Numba kernels
-        # release the GIL, so ThreadPoolExecutor provides real parallelism.
+        def _attach_stage5_precomputed(cfg):
+            if _use_stage5_precompute:
+                cfg._precomputed_q_t = _stage5_q_t
+                cfg._precomputed_p_stress = _stage5_p_stress
+                cfg._precomputed_vov_rolling = _stage5_vov
+                cfg._precomputed_momentum = _stage5_momentum
+            return cfg
+
+        # ν evaluations are independent and the Numba kernels release the GIL.
+        # Keep the proven threaded path on by default; use the env switch only
+        # for controlled oversubscription experiments.
         def _evaluate_nu(test_nu):
             """Evaluate a single ν candidate. Returns (score, nu, beta, mu_drift) or None."""
             try:
@@ -4224,6 +4246,7 @@ class UnifiedPhiStudentTModel:
                     skew_score_sensitivity=skew_kappa_opt,
                     skew_persistence=skew_persistence_fixed,
                 )
+                temp_config = _attach_stage5_precomputed(temp_config)
 
                 _, _, mu_pred_tr, S_pred_tr, _ = cls.filter_phi_unified(
                     returns_train, vol_train, temp_config
@@ -4352,15 +4375,16 @@ class UnifiedPhiStudentTModel:
             except Exception:
                 return None
 
-        # Run ν evaluations in parallel using threads (Numba releases GIL)
-        import os
-        from concurrent.futures import ThreadPoolExecutor
-        _n_workers = min(len(NU_GRID), os.cpu_count() or 4)
-        try:
-            with ThreadPoolExecutor(max_workers=_n_workers) as executor:
-                _results = list(executor.map(_evaluate_nu, NU_GRID))
-        except Exception:
-            # Fallback to sequential if threading fails
+        _use_stage5_threads = os.environ.get("UNIFIED_STAGE5_DISABLE_THREADS", "") != "1"
+        if _use_stage5_threads:
+            try:
+                from concurrent.futures import ThreadPoolExecutor
+                _n_workers = min(len(NU_GRID), os.cpu_count() or 4)
+                with ThreadPoolExecutor(max_workers=_n_workers) as executor:
+                    _results = list(executor.map(_evaluate_nu, NU_GRID))
+            except Exception:
+                _results = [_evaluate_nu(nu) for nu in NU_GRID]
+        else:
             _results = [_evaluate_nu(nu) for nu in NU_GRID]
 
         for _res in _results:
@@ -4382,6 +4406,7 @@ class UnifiedPhiStudentTModel:
             skew_score_sensitivity=skew_kappa_opt,
             skew_persistence=skew_persistence_fixed,
         )
+        temp_config = _attach_stage5_precomputed(temp_config)
 
         _, _, mu_pred_train, S_pred_train, _ = cls.filter_phi_unified(
             returns_train, vol_train, temp_config

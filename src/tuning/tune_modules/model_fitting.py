@@ -1185,6 +1185,11 @@ def fit_all_models_for_regime(
                 "kappa_mean_rev": float(getattr(config, 'kappa_mean_rev', 0.0)),
                 "theta_long_var": float(getattr(config, 'theta_long_var', 0.0)),
                 "crps_sigma_shrinkage": float(getattr(config, 'crps_sigma_shrinkage', 1.0)),
+                # Asset-adaptive PIT correction profile
+                "chisq_ewm_lambda": float(getattr(config, 'chisq_ewm_lambda', 0.98)),
+                "pit_var_lambda": float(getattr(config, 'pit_var_lambda', 0.97)),
+                "pit_var_dz_lo": float(getattr(config, 'pit_var_dz_lo', 0.30)),
+                "pit_var_dz_hi": float(getattr(config, 'pit_var_dz_hi', 0.55)),
                 # CRPS-enhancement: vol-of-vol noise, asymmetric df, regime switching
                 "sigma_eta": float(getattr(config, 'sigma_eta', 0.0)),
                 "t_df_asym": float(getattr(config, 't_df_asym', 0.0)),
@@ -1515,6 +1520,11 @@ def fit_all_models_for_regime(
                 "garch_unconditional_var": float(g_config.garch_unconditional_var),
                 "crps_ewm_lambda": float(g_config.crps_ewm_lambda),
                 "crps_sigma_shrinkage": float(g_config.crps_sigma_shrinkage),
+                # Asset-adaptive PIT correction profile
+                "chisq_ewm_lambda": float(getattr(g_config, 'chisq_ewm_lambda', 0.98)),
+                "pit_var_lambda": float(getattr(g_config, 'pit_var_lambda', 0.97)),
+                "pit_var_dz_lo": float(getattr(g_config, 'pit_var_dz_lo', 0.30)),
+                "pit_var_dz_hi": float(getattr(g_config, 'pit_var_dz_hi', 0.55)),
                 # v7.8 elite MC enhancements
                 "leverage_dynamic_decay": float(getattr(g_config, 'leverage_dynamic_decay', 0.0)),
                 "liq_stress_coeff": float(getattr(g_config, 'liq_stress_coeff', 0.0)),

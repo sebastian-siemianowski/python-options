@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import math
 import os
-from typing import Dict, Tuple, Optional
+from typing import Any, Dict, Tuple, Optional
 
 import numpy as np
 from scipy.optimize import minimize
@@ -312,6 +312,22 @@ class GaussianUnifiedConfig:
     @property
     def gas_q_enabled(self) -> bool:
         return (abs(self.gas_q_alpha) > 1e-10 or abs(self.gas_q_beta) > 1e-10)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return scalar JSON-friendly calibration parameters."""
+        out: Dict[str, Any] = {}
+        for key, value in self.__dict__.items():
+            if key.startswith("_") or key == "momentum_lookbacks":
+                continue
+            if isinstance(value, np.generic):
+                value = value.item()
+            if isinstance(value, bool) or value is None:
+                out[key] = value
+            elif isinstance(value, (int, float)):
+                out[key] = value
+            elif isinstance(value, str):
+                out[key] = value
+        return out
 
     @classmethod
     def auto_configure(cls, returns: np.ndarray, vol: np.ndarray,

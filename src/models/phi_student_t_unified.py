@@ -20,8 +20,8 @@ Gaussian shrinkage prior on φ: φ_r ~ N(φ_global, τ²).
 from __future__ import annotations
 
 import math
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+import os
+from dataclasses import dataclass, field, fields
 from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
@@ -29,6 +29,25 @@ from scipy.optimize import minimize
 from scipy.special import gammaln
 from scipy.stats import norm
 from scipy.stats import t as student_t
+
+try:
+    from .student_t_common import (
+        compute_ad_statistic as common_compute_ad_statistic,
+        compute_cvm_statistic as common_compute_cvm_statistic,
+        ewm_lagged_correction,
+        precompute_vov,
+        variance_to_scale,
+        variance_to_scale_vec,
+    )
+except ImportError:
+    from models.student_t_common import (
+        compute_ad_statistic as common_compute_ad_statistic,
+        compute_cvm_statistic as common_compute_cvm_statistic,
+        ewm_lagged_correction,
+        precompute_vov,
+        variance_to_scale,
+        variance_to_scale_vec,
+    )
 
 try:
     from .asset_classification import (
@@ -939,42 +958,22 @@ class UnifiedStudentTConfig:
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization."""
-        return {
-            'q': self.q,
-            'c': self.c,
-            'phi': self.phi,
-            'nu_base': self.nu_base,
-            'alpha_asym': self.alpha_asym,
-            'k_asym': self.k_asym,
-            'q_calm': self.q_calm,
-            'q_stress_ratio': self.q_stress_ratio,
-            'ms_sensitivity': self.ms_sensitivity,
-            'ms_ewm_lambda': self.ms_ewm_lambda,
-            'gamma_vov': self.gamma_vov,
-            'vov_damping': self.vov_damping,
-            'c_min': self.c_min,
-            'c_max': self.c_max,
-            'q_min': self.q_min,
-            # GJR-GARCH parameters
-            'garch_omega': self.garch_omega,
-            'garch_alpha': self.garch_alpha,
-            'garch_beta': self.garch_beta,
-            'garch_leverage': self.garch_leverage,
-            'garch_unconditional_var': self.garch_unconditional_var,
-            # Rough volatility memory (Gatheral-Jaisson-Rosenbaum 2018)
-            'rough_hurst': self.rough_hurst,
-            # Jump-diffusion parameters
-            'jump_intensity': self.jump_intensity,
-            'jump_variance': self.jump_variance,
-            'jump_sensitivity': self.jump_sensitivity,
-            'jump_mean': self.jump_mean,
-            # GARCH-Kalman reconciliation + Q_t coupling + location bias
-            'garch_kalman_weight': self.garch_kalman_weight,
-            'q_vol_coupling': self.q_vol_coupling,
-            'loc_bias_var_coeff': self.loc_bias_var_coeff,
-            'loc_bias_drift_coeff': self.loc_bias_drift_coeff,
-        }
+        """Convert scalar configuration fields to a JSON-friendly dictionary."""
+        out: Dict[str, Any] = {}
+        for cfg_field in fields(self):
+            key = cfg_field.name
+            if key == 'exogenous_input':
+                continue
+            value = getattr(self, key)
+            if isinstance(value, np.generic):
+                value = value.item()
+            if isinstance(value, bool) or value is None:
+                out[key] = value
+            elif isinstance(value, (int, float)):
+                out[key] = value
+            elif isinstance(value, str):
+                out[key] = value
+        return out
 
 
 def compute_ms_process_noise_smooth(
@@ -1847,23 +1846,12 @@ class UnifiedPhiStudentTModel:
     @staticmethod
     def _variance_to_scale(variance: float, nu: float) -> float:
         """Convert predictive variance to Student-t scale: scale = √(Var × (ν-2)/ν) for ν > 2."""
-        if variance <= 1e-20:
-            return 1e-10
-        if nu > 2:
-            return np.sqrt(variance * (nu - 2) / nu)
-        else:
-            # For ν ≤ 2, variance is infinite; use variance as proxy for scale²
-            return np.sqrt(variance)
+        return variance_to_scale(variance, nu)
 
     @staticmethod
     def _variance_to_scale_vec(variance: np.ndarray, nu: float) -> np.ndarray:
         """Vectorized version of _variance_to_scale for array inputs."""
-        variance_safe = np.maximum(variance, 1e-20)
-        if nu > 2:
-            scale = np.sqrt(variance_safe * (nu - 2) / nu)
-        else:
-            scale = np.sqrt(variance_safe)
-        return np.where(scale < 1e-10, 1e-10, scale)
+        return variance_to_scale_vec(variance, nu)
 
     @staticmethod
     def compute_effective_nu(
@@ -1916,21 +1904,7 @@ class UnifiedPhiStudentTModel:
     @staticmethod
     def _precompute_vov(vol: np.ndarray, window: int = 20) -> np.ndarray:
         """Rolling std of log-vol (O(n) via cumulative sums). Shared across ν."""
-        n = len(vol)
-        if n <= window:
-            return np.zeros(n, dtype=np.float64)
-        log_vol = np.log(np.maximum(vol, 1e-10))
-        cs1 = np.concatenate(([0.0], np.cumsum(log_vol)))
-        cs2 = np.concatenate(([0.0], np.cumsum(log_vol * log_vol)))
-        inv_w = 1.0 / float(window)
-        idx = np.arange(window, n)
-        s1 = cs1[idx] - cs1[idx - window]
-        s2 = cs2[idx] - cs2[idx - window]
-        var_arr = np.maximum(s2 * inv_w - (s1 * inv_w) ** 2, 0.0)
-        vov = np.empty(n, dtype=np.float64)
-        vov[window:] = np.sqrt(var_arr)
-        vov[:window] = vov[window]
-        return vov
+        return precompute_vov(vol, window)
 
     # =====================================================================
     # NU_REFINE grids (Lange, Little & Taylor 1989)
@@ -1964,14 +1938,7 @@ class UnifiedPhiStudentTModel:
         More sensitive to the middle of the distribution than KS
         (which only captures max deviation). Lower = better calibrated.
         """
-        n = len(pit_values)
-        if n < 2:
-            return float('inf')
-        u = np.sort(pit_values)
-        i_vals = np.arange(1, n + 1)
-        w2 = float(np.sum((u - (2.0 * i_vals - 1.0) / (2.0 * n)) ** 2)
-                   ) + 1.0 / (12.0 * n)
-        return w2
+        return common_compute_cvm_statistic(pit_values)
 
     # =====================================================================
     # Anderson-Darling statistic for Uniform(0,1) (Anderson & Darling 1952)
@@ -1987,15 +1954,7 @@ class UnifiedPhiStudentTModel:
         heavy-tail deficiency and light-tail excess simultaneously.
         Lower = better calibrated.
         """
-        n = len(pit_values)
-        if n < 2:
-            return float('inf')
-        u = np.sort(np.clip(pit_values, 1e-10, 1.0 - 1e-10))
-        i_vals = np.arange(1, n + 1)
-        log_u = np.log(u)
-        log_1mu = np.log(1.0 - u[::-1])  # u_{n+1-i}
-        a2 = -float(n) - float(np.sum((2.0 * i_vals - 1.0) * (log_u + log_1mu))) / float(n)
-        return max(a2, 0.0)
+        return common_compute_ad_statistic(pit_values)
 
     # =====================================================================
     # optimize_params_unified — COMPLETE unified φ-t pipeline
@@ -3564,8 +3523,16 @@ class UnifiedPhiStudentTModel:
             q_calm = float(config.q_calm) if config.q_calm is not None else q_base
             q_stress = q_calm * float(config.q_stress_ratio)
             ms_enabled = abs(q_stress - q_calm) > 1e-12
+            _pre_q_t = getattr(config, '_precomputed_q_t', None)
+            _pre_p_stress = getattr(config, '_precomputed_p_stress', None)
 
-            if ms_enabled:
+            if (
+                _pre_q_t is not None and _pre_p_stress is not None
+                and len(_pre_q_t) == n and len(_pre_p_stress) == n
+            ):
+                q_t = np.ascontiguousarray(_pre_q_t, dtype=np.float64)
+                p_stress = np.ascontiguousarray(_pre_p_stress, dtype=np.float64)
+            elif ms_enabled:
                 q_t, p_stress = compute_ms_process_noise_smooth(
                     vol, q_calm, q_stress, config.ms_sensitivity,
                     getattr(config, 'ms_ewm_lambda', 0.0)
@@ -3576,24 +3543,21 @@ class UnifiedPhiStudentTModel:
 
             # VoV rolling std
             window = config.vov_window
-            if n > window and gamma_vov > 1e-12:
-                log_vol = np.log(np.maximum(vol, 1e-10))
-                cs1 = np.concatenate(([0.0], np.cumsum(log_vol)))
-                cs2 = np.concatenate(([0.0], np.cumsum(log_vol * log_vol)))
-                inv_w = 1.0 / float(window)
-                idx_end = np.arange(window, n)
-                s1 = cs1[idx_end] - cs1[idx_end - window]
-                s2 = cs2[idx_end] - cs2[idx_end - window]
-                var_arr = np.maximum(s2 * inv_w - (s1 * inv_w) ** 2, 0.0)
-                vov_rolling = np.empty(n, dtype=np.float64)
-                vov_rolling[window:] = np.sqrt(var_arr)
-                vov_rolling[:window] = vov_rolling[window] if n > window else 0.0
+            _pre_vov = getattr(config, '_precomputed_vov_rolling', None)
+            if _pre_vov is not None and len(_pre_vov) == n:
+                vov_rolling = np.ascontiguousarray(_pre_vov, dtype=np.float64)
+            elif n > window and gamma_vov > 1e-12:
+                vov_rolling = cls._precompute_vov(vol, window)
             else:
                 vov_rolling = np.zeros(n, dtype=np.float64)
 
             # Exogenous / momentum
-            _has_exo = config.exogenous_input is not None
-            momentum = np.ascontiguousarray(config.exogenous_input.flatten(), dtype=np.float64) if _has_exo else np.zeros(n, dtype=np.float64)
+            _pre_momentum = getattr(config, '_precomputed_momentum', None)
+            if _pre_momentum is not None and len(_pre_momentum) == n:
+                momentum = np.ascontiguousarray(_pre_momentum, dtype=np.float64)
+            else:
+                _has_exo = config.exogenous_input is not None
+                momentum = np.ascontiguousarray(config.exogenous_input.flatten(), dtype=np.float64) if _has_exo else np.zeros(n, dtype=np.float64)
 
             if _simple_mode:
                 # Base kernel: no advanced features — marginally faster
@@ -3605,16 +3569,7 @@ class UnifiedPhiStudentTModel:
 
                 # Apply EWM correction if lambda was configured
                 if _ewm_lambda >= 0.01 and n > 2:
-                    lam = _ewm_lambda
-                    alpha_ewm = 1.0 - lam
-                    innov_lagged = returns[:-1] - mu_p[:-1]
-                    ewm_corrections = np.empty(n, dtype=np.float64)
-                    ewm_corrections[0] = 0.0
-                    ewm_mu_val = 0.0
-                    for t in range(n - 1):
-                        ewm_mu_val = lam * ewm_mu_val + alpha_ewm * innov_lagged[t]
-                        ewm_corrections[t + 1] = ewm_mu_val
-                    mu_p = mu_p + ewm_corrections
+                    mu_p = mu_p + ewm_lagged_correction(returns, mu_p, _ewm_lambda)
             else:
                 # Extended kernel: handles risk prem, skew, jumps, drift, EWM
                 from models.numba_wrappers import run_unified_phi_student_t_filter_extended
@@ -3656,23 +3611,11 @@ class UnifiedPhiStudentTModel:
             q_t = np.full(n, q_base)
             p_stress = np.zeros(n)
 
-        log_vol = np.log(np.maximum(vol, 1e-10))
         window = config.vov_window
         if n > window and gamma_vov > 1e-12:
-            cs1 = np.concatenate(([0.0], np.cumsum(log_vol)))
-            cs2 = np.concatenate(([0.0], np.cumsum(log_vol * log_vol)))
-            inv_w = 1.0 / float(window)
-            # For t in [window, n): sum of log_vol[t-window:t]
-            # cs1[t] - cs1[t-window], for t = window..n-1
-            idx_end = np.arange(window, n)    # t values
-            s1 = cs1[idx_end] - cs1[idx_end - window]
-            s2 = cs2[idx_end] - cs2[idx_end - window]
-            var_arr = np.maximum(s2 * inv_w - (s1 * inv_w) ** 2, 0.0)
-            vov_rolling = np.empty(n, dtype=np.float64)
-            vov_rolling[window:] = np.sqrt(var_arr)
-            vov_rolling[:window] = vov_rolling[window] if n > window else 0.0
+            vov_rolling = cls._precompute_vov(vol, window)
         else:
-            vov_rolling = np.zeros(n)
+            vov_rolling = np.zeros(n, dtype=np.float64)
 
         phi_sq = phi_val * phi_val
         R_base = c_val * (vol ** 2)
@@ -3910,20 +3853,8 @@ class UnifiedPhiStudentTModel:
         if _ewm_lambda < 0.01:
             _ewm_lambda = 0.95  # Default fallback: conservative tracking
         if n > 2:
-            # Vectorized EWM: ewm_mu[t] = λ·ewm_mu[t-1] + (1-λ)·ε_{t-1}
-            # Equivalent to exponential filter on lagged innovations
-            innov_lagged = returns[:-1] - mu_pred_arr[:-1]  # ε_{t-1} for t=1..n-1
-            alpha_ewm = 1.0 - _ewm_lambda
-            # Recursive filter: use scipy.signal.lfilter for O(n)
-            # ewm_mu[t] = λ^t·ewm_mu[0] + α·Σ_{k=0}^{t-1} λ^{t-1-k}·innov[k]
-            # This is a 1st-order IIR filter: y[t] = λ·y[t-1] + α·x[t]
-            ewm_corrections = np.empty(n, dtype=np.float64)
-            ewm_corrections[0] = 0.0
-            ewm_mu_val = 0.0
-            for t in range(n - 1):
-                ewm_mu_val = _ewm_lambda * ewm_mu_val + alpha_ewm * innov_lagged[t]
-                ewm_corrections[t + 1] = ewm_mu_val
-            mu_pred_arr = mu_pred_arr + ewm_corrections
+            mu_pred_arr = mu_pred_arr + ewm_lagged_correction(
+                returns, mu_pred_arr, _ewm_lambda)
 
         return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, float(log_likelihood)
 
@@ -4352,10 +4283,36 @@ class UnifiedPhiStudentTModel:
         best_avg_ks_p = 0.0
         best_global_beta = 1.0
         best_global_mu_drift = 0.0
+        _use_stage5_precompute = os.environ.get("UNIFIED_STAGE5_ENABLE_PRECOMPUTE", "") == "1"
+        _stage5_q_t = _stage5_p_stress = _stage5_vov = _stage5_momentum = None
+        if _use_stage5_precompute:
+            _q_calm = q_opt
+            _q_stress = _q_calm * q_stress_ratio
+            if abs(_q_stress - _q_calm) > 1e-12:
+                _stage5_q_t, _stage5_p_stress = compute_ms_process_noise_smooth(
+                    vol_train, _q_calm, _q_stress, sens_opt, 0.0
+                )
+            else:
+                _stage5_q_t = np.full(n_train, q_opt, dtype=np.float64)
+                _stage5_p_stress = np.zeros(n_train, dtype=np.float64)
+            _stage5_vov = (
+                cls._precompute_vov(vol_train, UnifiedStudentTConfig.vov_window)
+                if n_train > UnifiedStudentTConfig.vov_window and gamma_opt > 1e-12
+                else np.zeros(n_train, dtype=np.float64)
+            )
+            _stage5_momentum = np.zeros(n_train, dtype=np.float64)
 
-        # ── March 2026: Parallel ν evaluation ──
-        # Each ν iteration is independent (no shared state). Numba kernels
-        # release the GIL, so ThreadPoolExecutor provides real parallelism.
+        def _attach_stage5_precomputed(cfg):
+            if _use_stage5_precompute:
+                cfg._precomputed_q_t = _stage5_q_t
+                cfg._precomputed_p_stress = _stage5_p_stress
+                cfg._precomputed_vov_rolling = _stage5_vov
+                cfg._precomputed_momentum = _stage5_momentum
+            return cfg
+
+        # ν evaluations are independent and the Numba kernels release the GIL.
+        # Keep the proven threaded path on by default; use the env switch only
+        # for controlled oversubscription experiments.
         def _evaluate_nu(test_nu):
             """Evaluate a single ν candidate. Returns (score, nu, beta, mu_drift) or None."""
             try:
@@ -4368,6 +4325,7 @@ class UnifiedPhiStudentTModel:
                     skew_score_sensitivity=skew_kappa_opt,
                     skew_persistence=skew_persistence_fixed,
                 )
+                temp_config = _attach_stage5_precomputed(temp_config)
 
                 _, _, mu_pred_tr, S_pred_tr, _ = cls.filter_phi_unified(
                     returns_train, vol_train, temp_config
@@ -4496,15 +4454,16 @@ class UnifiedPhiStudentTModel:
             except Exception:
                 return None
 
-        # Run ν evaluations in parallel using threads (Numba releases GIL)
-        import os
-        from concurrent.futures import ThreadPoolExecutor
-        _n_workers = min(len(NU_GRID), os.cpu_count() or 4)
-        try:
-            with ThreadPoolExecutor(max_workers=_n_workers) as executor:
-                _results = list(executor.map(_evaluate_nu, NU_GRID))
-        except Exception:
-            # Fallback to sequential if threading fails
+        _use_stage5_threads = os.environ.get("UNIFIED_STAGE5_DISABLE_THREADS", "") != "1"
+        if _use_stage5_threads:
+            try:
+                from concurrent.futures import ThreadPoolExecutor
+                _n_workers = min(len(NU_GRID), os.cpu_count() or 4)
+                with ThreadPoolExecutor(max_workers=_n_workers) as executor:
+                    _results = list(executor.map(_evaluate_nu, NU_GRID))
+            except Exception:
+                _results = [_evaluate_nu(nu) for nu in NU_GRID]
+        else:
             _results = [_evaluate_nu(nu) for nu in NU_GRID]
 
         for _res in _results:
@@ -4526,6 +4485,7 @@ class UnifiedPhiStudentTModel:
             skew_score_sensitivity=skew_kappa_opt,
             skew_persistence=skew_persistence_fixed,
         )
+        temp_config = _attach_stage5_precomputed(temp_config)
 
         _, _, mu_pred_train, S_pred_train, _ = cls.filter_phi_unified(
             returns_train, vol_train, temp_config

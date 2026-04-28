@@ -759,6 +759,36 @@ def extract_model_params_for_sampling(
         result["gamma"] = fitted_params.get("gamma", spec.default_params.get("gamma", 1.0))
         if "nu" in spec.param_names:
             result["nu"] = fitted_params.get("nu", spec.default_params.get("nu"))
+
+    passthrough_params = (
+        # Unified Student-t and Gaussian calibration transport.
+        "nu_base", "gamma_vov", "alpha_asym", "k_asym",
+        "ms_sensitivity", "ms_ewm_lambda", "q_stress_ratio", "vov_damping",
+        "variance_inflation", "mu_drift", "risk_premium_sensitivity",
+        "skew_score_sensitivity", "skew_persistence",
+        "garch_omega", "garch_alpha", "garch_beta", "garch_leverage",
+        "garch_unconditional_var", "rough_hurst",
+        "jump_intensity", "jump_variance", "jump_sensitivity", "jump_mean",
+        "crps_ewm_lambda", "crps_sigma_shrinkage",
+        "rho_leverage", "kappa_mean_rev", "theta_long_var",
+        "sigma_eta", "t_df_asym", "regime_switch_prob",
+        "garch_kalman_weight", "q_vol_coupling",
+        "loc_bias_var_coeff", "loc_bias_drift_coeff",
+        "leverage_dynamic_decay", "liq_stress_coeff", "entropy_sigma_lambda",
+        "chisq_ewm_lambda", "pit_var_lambda", "pit_var_dz_lo", "pit_var_dz_hi",
+        "calibrated_gw", "calibrated_nu_pit", "calibrated_nu_crps",
+        "calibrated_beta_probit_corr", "calibrated_lambda_rho",
+        "momentum_weight", "gas_q_omega", "gas_q_alpha", "gas_q_beta",
+        "hansen_activated", "hansen_lambda",
+        "cst_activated", "cst_nu_crisis", "cst_epsilon",
+    )
+    for key in passthrough_params:
+        if key not in result and key in fitted_params:
+            value = fitted_params[key]
+            if isinstance(value, np.generic):
+                value = value.item()
+            if isinstance(value, (int, float, bool, str)) or value is None:
+                result[key] = value
     
     return result
 

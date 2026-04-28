@@ -416,6 +416,7 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
         'garch_unconditional_var', 'rough_hurst',
         'jump_intensity', 'jump_variance', 'jump_sensitivity', 'jump_mean',
         'c_min', 'c_max', 'q_min', 'crps_ewm_lambda',
+        'chisq_ewm_lambda', 'pit_var_lambda', 'pit_var_dz_lo', 'pit_var_dz_hi',
         'rho_leverage', 'kappa_mean_rev', 'theta_long_var',
         'crps_sigma_shrinkage', 'sigma_eta', 't_df_asym',
         'regime_switch_prob', 'garch_kalman_weight', 'q_vol_coupling',
