@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market chain chain-force chain-dry stocks options-tune options-tune-force options-tune-dry arena arena-data arena-tune arena-results arena-safe-storage arena-safe pit pit-metals pit-full pit-g metals-diag diag diag-pit diag-debug diag-refine verify verify-quick verify-signals verify-signals-quick verify-stocks calibrate-signals
+.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market chain chain-force chain-dry stocks tune-stocks options-tune options-tune-force options-tune-dry arena arena-data arena-tune arena-results arena-safe-storage arena-safe pit pit-metals pit-full pit-g metals-diag diag diag-pit diag-debug diag-refine verify verify-quick verify-signals verify-signals-quick verify-stocks calibrate-signals
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║                              MAKEFILE USAGE                                  ║
@@ -509,6 +509,14 @@ stocks: .venv/.deps_installed
 	@.venv/bin/python src/data_ops/refresh_data.py --skip-trim --retries 5 --workers 12 --batch-size 16 $(ARGS)
 	@echo "Step 2/2: Generating signals..."
 	@$(MAKE) fx-plnjpy
+
+tune-stocks: .venv/.deps_installed
+	@echo "Step 1/3: Running tune..."
+	@$(MAKE) tune ARGS="$(ARGS)"
+	@echo "Step 2/3: Refreshing market data..."
+	@.venv/bin/python src/data_ops/refresh_data.py --skip-trim --retries 5 --workers 12 --batch-size 16 $(ARGS)
+	@echo "Step 3/3: Generating signals..."
+	@$(MAKE) fx-plnjpy ARGS="$(ARGS)"
 
 # ┌──────────────────────────────────────────────────────────────────────────────┐
 # │  🔗 OPTIONS CHAIN ANALYSIS (Hierarchical Bayesian Framework)                 │

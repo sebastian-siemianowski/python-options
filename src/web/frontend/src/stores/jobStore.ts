@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-export type JobMode = 'tune' | 'stocks' | 'retune' | 'calibrate';
+export type JobMode = 'tune' | 'stocks' | 'retune' | 'calibrate' | 'tune-stocks';
 export type JobStatus = 'idle' | 'running' | 'completed' | 'failed' | 'error' | 'stopped';
 
 type EventType =
@@ -9,6 +9,7 @@ type EventType =
   | 'asset'
   | 'model'
   | 'refresh'
+  | 'progress'
   | 'heartbeat'
   | 'log'
   | 'completed'
@@ -287,6 +288,7 @@ export const JOB_MODE_LABELS: Record<JobMode, { title: string; shortTitle: strin
   stocks: { title: 'Refresh stocks', shortTitle: 'Stocks', desc: 'Refreshing prices and signals', color: '#3b82f6' },
   retune: { title: 'Run Tune', shortTitle: 'Tune', desc: 'Full retune pipeline', color: '#8b5cf6' },
   calibrate: { title: 'Calibrate', shortTitle: 'Calibrate', desc: 'Repairing calibration failures', color: '#10b981' },
+  'tune-stocks': { title: 'Run Both', shortTitle: 'Both', desc: 'Tune models, then refresh prices and signals', color: '#14b8a6' },
 };
 
 function metricKindFromPhase(kind?: string, title?: string): string | null {
@@ -806,6 +808,26 @@ export const useJobStore = create<JobState>((set, get) => ({
                   now,
                   { exact: true },
                 );
+              }
+            }
+            break;
+
+          case 'progress':
+            {
+              const now = Date.now();
+              const key = data.kind ? stageKeyFor(data.kind, data.step) : state.activeStageKey;
+              const done = data.done ?? 0;
+              const fail = data.fail ?? 0;
+              const total = data.total ?? Math.max(done + fail, state.counters.total);
+              next.stageMetrics = updateStageCounts(
+                next.stageMetrics ?? state.stageMetrics,
+                key,
+                { done, fail, total },
+                now,
+                { exact: true },
+              );
+              if (key === state.activeStageKey || data.kind === 'signals') {
+                next.counters = { done, fail, total };
               }
             }
             break;

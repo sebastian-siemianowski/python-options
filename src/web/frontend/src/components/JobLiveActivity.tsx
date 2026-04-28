@@ -96,6 +96,7 @@ function stageTone(kind: string) {
 
 const RETUNE_STAGE_ORDER = ['download', 'backup', 'tune', 'calibration'];
 const STOCKS_STAGE_ORDER = ['download', 'signals'];
+const TUNE_STOCKS_STAGE_ORDER = ['tune', 'download', 'signals'];
 
 function stagePercent(stage: JobStageMetric | null | undefined) {
   if (!stage || stage.total <= 0) return stage?.status === 'completed' ? 100 : 0;
@@ -148,7 +149,7 @@ export default function JobLiveActivity() {
     ? Math.round((activeCounters.total - processed) / rate)
     : null;
   const currentPhase = phases.length > 0 ? phases[phases.length - 1] : null;
-  const liveTitle = mode === 'retune' || mode === 'tune' || mode === 'calibrate'
+  const liveTitle = mode === 'retune' || mode === 'tune' || mode === 'calibrate' || mode === 'tune-stocks'
     ? 'Live Tune Activity'
     : 'Live Market Refresh';
   const liveSubtitle = isRunning
@@ -726,7 +727,9 @@ function MetricTile({ label, value, suffix, color, pulse }: { label: string; val
 
 function StageTelemetryPanel({ stages, activeKey, mode }: { stages: JobStageMetric[]; activeKey: string | null; mode: JobMode }) {
   const byKind = new Map(stages.map((stage) => [stage.kind, stage]));
-  const orderedKinds = mode === 'retune'
+  const orderedKinds = mode === 'tune-stocks'
+    ? TUNE_STOCKS_STAGE_ORDER
+    : mode === 'retune'
     ? RETUNE_STAGE_ORDER
     : mode === 'stocks'
       ? STOCKS_STAGE_ORDER

@@ -37,6 +37,9 @@ _PROJECT_JOB_PROCESS_PATTERNS = (
     "src/tuning/tune_ux.py",
     "src/tuning/tune.py",
     "src/decision/signals.py",
+    "make stocks",
+    "make fx-plnjpy",
+    "make tune-stocks",
 )
 
 
@@ -205,9 +208,9 @@ async def retune_stream(mode: str = "retune"):
     streams stdout/stderr line by line.
 
     Query params:
-      mode: "retune" (default), "tune", "calibrate"
+      mode: "retune" (default), "tune", "calibrate", "stocks", "tune-stocks"
     """
-    valid_modes = {"retune", "tune", "calibrate", "stocks"}
+    valid_modes = {"retune", "tune", "calibrate", "stocks", "tune-stocks"}
     if mode not in valid_modes:
         mode = "retune"
 
@@ -322,6 +325,8 @@ async def retune_stream(mode: str = "retune"):
                         yield f"data: {json.dumps({'type': 'refresh', 'pass': payload.get('pass'), 'total_passes': payload.get('total_passes'), 'ok': payload.get('ok'), 'pending': payload.get('pending')})}\n\n"
                     elif ev == "heartbeat":
                         yield f"data: {json.dumps({'type': 'heartbeat', 'done': payload.get('done', 0), 'total': payload.get('total', 0), 'elapsed_s': payload.get('elapsed_s', 0), 'phase_step': payload.get('phase_step'), 'phase_title': payload.get('phase_title')})}\n\n"
+                    elif ev == "progress":
+                        yield f"data: {json.dumps({'type': 'progress', 'kind': payload.get('kind'), 'done': payload.get('done', 0), 'fail': payload.get('fail', 0), 'total': payload.get('total', 0)})}\n\n"
                     elif ev == "error":
                         # Structured error extracted from a Python traceback.
                         yield f"data: {json.dumps({'type': 'error', 'error_type': payload.get('error_type'), 'message': payload.get('message', '')})}\n\n"
@@ -356,11 +361,13 @@ async def retune_stream(mode: str = "retune"):
         except asyncio.CancelledError:
             if process:
                 await _terminate_process_tree(process)
+            await _kill_matching_project_job_processes()
             return
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
             if process and process.returncode is None:
                 await _terminate_process_tree(process)
+            await _kill_matching_project_job_processes()
         finally:
             if process:
                 async with _ACTIVE_RETUNE_LOCK:

@@ -509,7 +509,7 @@ function SignalsPageInner() {
   }
   const collapseAll = () => setExpandedSectors(new Set());
 
-  const openOrStartJob = (mode: 'stocks' | 'retune') => {
+  const openOrStartJob = (mode: 'stocks' | 'retune' | 'tune-stocks') => {
     if (isJobRunning) {
       showJobSurface();
       setJobExpanded(true);
@@ -535,6 +535,7 @@ function SignalsPageInner() {
         totalRows={rows.length}
         onRefreshStocks={() => openOrStartJob('stocks')}
         onRunTune={() => openOrStartJob('retune')}
+        onRunBoth={() => openOrStartJob('tune-stocks')}
         onViewProgress={() => {
           showJobSurface();
           setJobExpanded(true);
@@ -1112,6 +1113,7 @@ function SignalOperationsBar({
   totalRows,
   onRefreshStocks,
   onRunTune,
+  onRunBoth,
   onViewProgress,
   onStop,
 }: {
@@ -1126,12 +1128,14 @@ function SignalOperationsBar({
   totalRows: number;
   onRefreshStocks: () => void;
   onRunTune: () => void;
+  onRunBoth: () => void;
   onViewProgress: () => void;
   onStop: () => void;
 }) {
   const isRunning = status === 'running';
   const isStocks = mode === 'stocks';
-  const isTune = mode === 'retune' || mode === 'tune' || mode === 'calibrate';
+  const isBoth = mode === 'tune-stocks';
+  const isTune = mode === 'retune' || mode === 'tune' || mode === 'calibrate' || isBoth;
   const activeStage = stageMetrics.find((stage) => stage.key === activeStageKey) ?? stageMetrics.find((stage) => stage.status === 'running') ?? stageMetrics[stageMetrics.length - 1] ?? null;
   const activeCounters = activeStage ? { done: activeStage.done, fail: activeStage.fail, total: activeStage.total } : counters;
   const processed = activeCounters.done + activeCounters.fail;
@@ -1147,12 +1151,18 @@ function SignalOperationsBar({
         : status === 'stopped' ? '#94a3b8'
           : '#a78bfa';
   const statusLabel = isRunning
-    ? mode === 'stocks' ? 'Refreshing market data' : 'Tuning models'
+    ? isBoth ? 'Tuning, then refreshing' : mode === 'stocks' ? 'Refreshing market data' : 'Tuning models'
     : status === 'completed' ? 'Last job complete'
       : status === 'stopped' ? 'Stopped'
         : status === 'failed' || status === 'error' ? 'Needs attention'
           : 'Ready';
-  const pipelineStages = isStocks
+  const pipelineStages = isBoth
+    ? [
+        { key: 'tune', label: 'Tune stocks', tone: '#c084fc' },
+        { key: 'download', label: 'Refresh prices', tone: '#60a5fa' },
+        { key: 'signals', label: 'Generate signals', tone: '#38d9f5' },
+      ]
+    : isStocks
     ? [
         { key: 'download', label: 'Refresh prices', tone: '#60a5fa' },
         { key: 'signals', label: 'Generate signals', tone: '#38d9f5' },
@@ -1171,10 +1181,10 @@ function SignalOperationsBar({
     }
     if (!isRunning) return status === 'completed' ? pipelineStages.length : 0;
     if (title.includes('refresh') || title.includes('download')) return 1;
-    if (title.includes('signal')) return isStocks ? 2 : 1;
+    if (title.includes('signal')) return isBoth ? 3 : isStocks ? 2 : 1;
     if (title.includes('backup')) return 2;
     if (title.includes('calibrat')) return 4;
-    if (title.includes('fit') || title.includes('tune') || title.includes('model')) return 3;
+    if (title.includes('fit') || title.includes('tune') || title.includes('model')) return isBoth ? 1 : 3;
     return Math.max(1, Math.min(pipelineStages.length, Math.ceil((progressPct / 100) * pipelineStages.length)));
   })();
   const activeStageLabel = activeStage?.kind === 'download'
@@ -1194,11 +1204,14 @@ function SignalOperationsBar({
         ? 'Backing up cache'
         : 'Working';
   const runTuneSubtitle = isRunning
-    ? isTune ? 'Live fitting in progress' : 'Open the live activity drawer'
+    ? isTune && !isBoth ? 'Live fitting in progress' : 'Open the live activity drawer'
     : 'Full BMA retune, streamed live';
   const stocksSubtitle = isRunning
     ? isStocks ? 'Refreshing market data' : 'Open the live activity drawer'
     : 'Prices, cache, and signals';
+  const runBothSubtitle = isRunning
+    ? isBoth ? 'Tune first, refresh next' : 'Open the live activity drawer'
+    : 'Tune first, then refresh stocks';
 
   return (
     <div className="mb-6 fade-up">
@@ -1291,14 +1304,14 @@ function SignalOperationsBar({
           </div>
 
           <div className="flex flex-col justify-center gap-3 2xl:w-[520px]">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 2xl:grid-cols-1">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 2xl:grid-cols-1">
               <OperationButton
-                icon={isTune && isRunning ? <Loader2 className="h-5 w-5 animate-spin" /> : <Play className="h-5 w-5" />}
-                title={isRunning ? isTune ? 'Tuning live…' : 'View live activity' : 'Run Tune'}
+                icon={isTune && !isBoth && isRunning ? <Loader2 className="h-5 w-5 animate-spin" /> : <Play className="h-5 w-5" />}
+                title={isRunning ? isTune && !isBoth ? 'Tuning live…' : 'View live activity' : 'Run Tune'}
                 subtitle={runTuneSubtitle}
-                eyebrow={isRunning && isTune ? 'Streaming now' : 'Recommended'}
+                eyebrow={isRunning && isTune && !isBoth ? 'Streaming now' : 'Recommended'}
                 color="#a78bfa"
-                active={isTune && isRunning}
+                active={isTune && !isBoth && isRunning}
                 primary
                 onClick={onRunTune}
               />
@@ -1310,6 +1323,15 @@ function SignalOperationsBar({
                 color="#60a5fa"
                 active={isStocks && isRunning}
                 onClick={onRefreshStocks}
+              />
+              <OperationButton
+                icon={isBoth && isRunning ? <Loader2 className="h-5 w-5 animate-spin" /> : <Zap className="h-5 w-5" />}
+                title={isRunning ? isBoth ? 'Running both…' : 'View live activity' : 'Run Both'}
+                subtitle={runBothSubtitle}
+                eyebrow="One click"
+                color="#14b8a6"
+                active={isBoth && isRunning}
+                onClick={onRunBoth}
               />
             </div>
 

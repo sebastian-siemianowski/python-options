@@ -35,7 +35,7 @@ PRICES_DIR = REPO_ROOT / "src" / "data" / "prices"
 TUNE_DIR = REPO_ROOT / "src" / "data" / "tune"
 
 # Only these modes are accepted
-VALID_MODES = {"stocks", "tune", "retune", "calibrate"}
+VALID_MODES = {"stocks", "tune", "retune", "calibrate", "tune-stocks"}
 
 
 def _emit(payload: dict) -> None:
@@ -184,6 +184,36 @@ def _phase_plan(mode: str) -> List[Phase]:
                 TUNE_DIR,
                 ".json",
                 re.compile(r"Step 3/3:\s*Running tune", re.IGNORECASE),
+            ),
+        ]
+    if mode == "tune-stocks":
+        return [
+            Phase(
+                "Fitting models",
+                "tune",
+                TUNE_DIR,
+                ".json",
+                re.compile(r"Step 1/3:\s*Running tune", re.IGNORECASE),
+            ),
+            Phase(
+                "Refreshing market data",
+                "download",
+                PRICES_DIR,
+                ".csv",
+                re.compile(r"Step 2/3:\s*Refreshing", re.IGNORECASE),
+            ),
+            Phase(
+                "Generating dashboard signals",
+                "signals",
+                None,
+                None,
+                re.compile(
+                    r"Step 3/3:\s*Generating"
+                    r"|▸\s*VALIDATION"
+                    r"|▸\s*PROCESSING"
+                    r"|\d+\s+assets\s+requested",
+                    re.IGNORECASE,
+                ),
             ),
         ]
     return [Phase("Working", "work", None, None, None)]
@@ -369,6 +399,9 @@ def _run(mode: str) -> int:
     pass_complete_rx = re.compile(
         r"✓\s*(\d+)\s*/\s*(\d+)\s*complete", re.IGNORECASE
     )
+    signals_processed_rx = re.compile(
+        r"✓\s*(\d+)\s+assets\s+processed", re.IGNORECASE
+    )
     # Symbols known to have failed (parsed from refresh errors / tune fallbacks).
     fail_rx = re.compile(r"^\s*(?:✗|✘|FAILED|ERROR)[:\s]+(\S+)", re.IGNORECASE)
     # Python traceback capture so the UI can show the actual failure reason.
@@ -391,6 +424,8 @@ def _run(mode: str) -> int:
     raw_log_line_count = 0
     latest_refresh_ok = 0
     latest_refresh_total = 0
+    latest_signals_done = 0
+    latest_signals_total = 0
 
     try:
         assert proc.stdout is not None
@@ -588,6 +623,21 @@ def _run(mode: str) -> int:
                                 "total_passes": total_p,
                             }
                         )
+
+            if current_phase.kind == "signals":
+                msg = signals_processed_rx.search(line)
+                if msg:
+                    latest_signals_done = int(msg.group(1))
+                    latest_signals_total = latest_signals_done
+                    _emit(
+                        {
+                            "event": "progress",
+                            "kind": "signals",
+                            "done": latest_signals_done,
+                            "fail": 0,
+                            "total": latest_signals_total,
+                        }
+                    )
                 mpp = pass_progress_rx.search(line)
                 if mpp:
                     ok_n = int(mpp.group(1))
@@ -695,8 +745,8 @@ def _run(mode: str) -> int:
         {
             "event": "done",
             "status": "ok" if rc == 0 else "fail",
-            "done": max(len(final_done), latest_refresh_ok),
-            "total": max(total, latest_refresh_total),
+            "done": max(len(final_done), latest_refresh_ok, latest_signals_done),
+            "total": max(total, latest_refresh_total, latest_signals_total),
             "elapsed_s": round(time.time() - start_ts, 1),
             "exit_code": rc,
             "error": last_error,
