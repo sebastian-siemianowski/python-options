@@ -5282,23 +5282,7 @@ class UnifiedPhiStudentTModel:
             def _bk(pa):
                 n_pa = len(pa)
                 if n_pa < 20: return 0.0, 0.0, 0.0
-                # Inline KS test vs uniform: D = max|F_n(x) - x| for sorted PIT
-                sorted_pa = np.sort(pa)
-                ecdf = np.arange(1, n_pa + 1) / n_pa
-                D_plus = np.max(ecdf - sorted_pa)
-                D_minus = np.max(sorted_pa - np.arange(0, n_pa) / n_pa)
-                D = max(D_plus, D_minus)
-                # Kolmogorov-Smirnov p-value approximation (asymptotic)
-                sqrt_n = math.sqrt(n_pa)
-                lam = (sqrt_n + 0.12 + 0.11 / sqrt_n) * D
-                if lam < 0.001:
-                    kp = 1.0
-                elif lam > 3.0:
-                    kp = 0.0
-                else:
-                    # Two-term Kolmogorov approximation
-                    kp = 2.0 * _math_exp(-2.0 * lam * lam)
-                    if kp > 1.0: kp = 1.0
+                _, kp = _fast_ks_uniform(pa)
                 # Anderson-Darling test: 3-10× more tail-sensitive than KS
                 # Use AD as a soft penalty on KS rather than geometric mean,
                 # because AD is systematically stricter and would crush Stage 6

@@ -8,6 +8,7 @@ Validates:
 """
 import sys
 import os
+import subprocess
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -70,8 +71,16 @@ class TestParallelTuning(unittest.TestCase):
     def test_optimal_workers(self):
         """Worker count is positive and reasonable."""
         workers = get_optimal_worker_count()
+        physical_cpus = os.cpu_count() or 2
+        if sys.platform == "darwin":
+            try:
+                physical_cpus = int(
+                    subprocess.check_output(["sysctl", "-n", "hw.physicalcpu"], text=True).strip()
+                )
+            except Exception:
+                pass
         self.assertGreaterEqual(workers, 1)
-        self.assertLessEqual(workers, 8)
+        self.assertLessEqual(workers, max(1, physical_cpus - 1))
 
     def tearDown(self):
         import shutil

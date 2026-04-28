@@ -118,3 +118,4 @@ htmlcov/
 /test_unified_pit_baseline.json
 /src/data/calibration_records/
 /src/tests/snapshots/
+/src/data/benchmarks

@@ -1501,8 +1501,9 @@ class GaussianDriftModel:
         _std_buf = np.zeros(n_train, dtype=np.float64) if _use_numba_cv else None
         _use_train_state_kernel = (
             _USE_NUMBA
+            and phi_mode
             and run_phi_gaussian_train_state is not None
-            and os.environ.get("PHI_GAUSSIAN_ENABLE_TRAIN_STATE_KERNEL", "") == "1"
+            and os.environ.get("PHI_GAUSSIAN_DISABLE_TRAIN_STATE_KERNEL", "") != "1"
         )
 
         def neg_cv_ll(params):

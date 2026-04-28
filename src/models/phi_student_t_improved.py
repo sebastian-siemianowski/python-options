@@ -2045,6 +2045,7 @@ class PhiStudentTDriftModel:
         cv_var_cal_lambda = float(os.environ.get("PHI_STUDENT_T_IMPROVED_CV_VAR_CAL_LAMBDA", "0.01205"))
         cv_var_cal_min_obs = int(os.environ.get("PHI_STUDENT_T_IMPROVED_CV_VAR_CAL_MIN_OBS", "30"))
         cv_var_cal_z2_cap = float(os.environ.get("PHI_STUDENT_T_IMPROVED_CV_VAR_CAL_Z2_CAP", "50.0"))
+        sign_brier_weight = float(os.environ.get("PHI_STUDENT_T_IMPROVED_SIGN_BRIER_WEIGHT", "0.005"))
         optimizer_maxiter = int(os.environ.get("PHI_STUDENT_T_IMPROVED_MAXITER", "45"))
         optimizer_maxls = int(os.environ.get("PHI_STUDENT_T_IMPROVED_MAXLS", "30"))
 
@@ -2062,6 +2063,8 @@ class PhiStudentTDriftModel:
             total_count = 0
             total_z2 = 0.0
             total_z2_count = 0
+            total_sign_brier = 0.0
+            total_sign_count = 0
             for ts, te_f, vs, ve in folds:
                 try:
                     if use_train_state_only_kernel:
@@ -2089,7 +2092,14 @@ class PhiStudentTDriftModel:
                         mu_p = float(mu_f[-1])
                         P_p = float(P_f[-1])
                     if use_cv_test_kernel:
-                        ll_fold, obs_count, z2_count, z2_sum = run_phi_student_t_improved_cv_test_fold(
+                        (
+                            ll_fold,
+                            obs_count,
+                            z2_count,
+                            z2_sum,
+                            sign_count,
+                            sign_brier_sum,
+                        ) = run_phi_student_t_improved_cv_test_fold(
                             returns,
                             vol_sq,
                             q,
@@ -2113,6 +2123,8 @@ class PhiStudentTDriftModel:
                         )
                         total_ll += ll_fold
                         total_count += obs_count
+                        total_sign_brier += sign_brier_sum
+                        total_sign_count += sign_count
                         if use_cv_var_cal:
                             total_z2 += z2_sum
                             total_z2_count += z2_count
@@ -2139,6 +2151,12 @@ class PhiStudentTDriftModel:
                         if math.isfinite(ll_t):
                             total_ll += ll_t
                             total_count += 1
+                            if sign_brier_weight > 0.0:
+                                p_up = 1.0 - float(_fast_t_cdf(np.array([(0.0 - mu_pred) / scale]), nu_val)[0])
+                                p_up = float(np.clip(p_up, 0.0, 1.0))
+                                y_up = 1.0 if returns[t] > 0.0 else 0.0
+                                total_sign_brier += (p_up - y_up) ** 2
+                                total_sign_count += 1
 
                         z_sq_s = (inn * inn) / S
                         if use_cv_var_cal and math.isfinite(z_sq_s):
@@ -2190,8 +2208,12 @@ class PhiStudentTDriftModel:
             ):
                 mean_z2 = total_z2 / float(total_z2_count)
                 var_cal_pen = cv_var_cal_lambda * (math.log(max(mean_z2, 1e-8)) ** 2)
+            sign_brier_pen = 0.0
+            if sign_brier_weight > 0.0 and total_sign_count > 0:
+                sign_brier_pen = sign_brier_weight * (total_sign_brier / float(total_sign_count))
             return -(mean_ll - prior_pen / max(total_count, 1) - c_prior_pen / max(len(folds), 1)
-                     - phi_shrink_pen / max(total_count, 1) - stationarity_pen - var_cal_pen)
+                     - phi_shrink_pen / max(total_count, 1) - stationarity_pen - var_cal_pen
+                     - sign_brier_pen)
 
         log_q_min = math.log10(q_min_eff)
         log_q_max = math.log10(max(q_max_eff, q_min_eff * 10.0))
@@ -2294,6 +2316,7 @@ class PhiStudentTDriftModel:
             "cv_test_kernel_enabled": bool(use_cv_test_kernel),
             "cv_var_calibration_enabled": bool(use_cv_var_cal),
             "cv_var_calibration_lambda": float(cv_var_cal_lambda),
+            "sign_brier_weight": float(sign_brier_weight),
         }
 
         return q_opt, c_opt, phi_opt, cv_ll, diagnostics

@@ -27,6 +27,7 @@ import {
 } from 'lightweight-charts';
 import { ArrowUpRight, BarChart3, Activity, TrendingUp, AlertTriangle, ExternalLink } from 'lucide-react';
 import { api, type OHLCVBar } from '../api';
+import { isHeikinAshiUp, toHeikinAshiBars } from '../utils/heikinAshi';
 
 // Cast OHLCVBar.time (string) to Time type lightweight-charts expects.
 // 'YYYY-MM-DD' strings are accepted natively.
@@ -143,6 +144,7 @@ export default function SignalDetailPanel({
     const n = RANGE_DAYS[range];
     return bars.length > n ? bars.slice(-n) : bars;
   }, [bars, range]);
+  const chartBars = useMemo(() => toHeikinAshiBars(visibleBars), [visibleBars]);
 
   const lastBar = visibleBars[visibleBars.length - 1];
   const firstBar = visibleBars[0];
@@ -217,7 +219,7 @@ export default function SignalDetailPanel({
             value={chartType}
             onChange={(v) => setChartType(v as ChartType)}
             options={[
-              { value: 'candles', label: 'Candles', icon: <BarChart3 className="w-3 h-3" /> },
+              { value: 'candles', label: 'Heikin Ashi', icon: <BarChart3 className="w-3 h-3" /> },
               { value: 'line', label: 'Line', icon: <Activity className="w-3 h-3" /> },
               { value: 'area', label: 'Area', icon: <TrendingUp className="w-3 h-3" /> },
             ]}
@@ -280,7 +282,7 @@ export default function SignalDetailPanel({
           ) : error || visibleBars.length < 2 ? (
             <ChartEmpty message={error ? 'Chart unavailable' : 'No data yet'} />
           ) : (
-            <TradingViewChart bars={visibleBars} chartType={chartType} key={`${ticker}-${chartType}`} />
+            <TradingViewChart bars={chartBars} chartType={chartType} key={`${ticker}-${chartType}-${range}`} />
           )}
         </div>
 
@@ -337,7 +339,7 @@ function TradingViewChart({ bars, chartType }: { bars: OHLCVBar[]; chartType: Ch
     });
     chartRef.current = chart;
 
-    // Main price series
+    // Main Heikin Ashi price series
     let priceSeries: ISeriesApi<'Candlestick'> | ISeriesApi<'Line'> | ISeriesApi<'Area'>;
     if (chartType === 'candles') {
       priceSeries = chart.addSeries(CandlestickSeries, TV_THEME.candles);
@@ -372,7 +374,7 @@ function TradingViewChart({ bars, chartType }: { bars: OHLCVBar[]; chartType: Ch
       bars.map((b) => ({
         time: b.time,
         value: b.volume,
-        color: b.close >= b.open ? TV_THEME.volumeUp : TV_THEME.volumeDown,
+        color: isHeikinAshiUp(b) ? TV_THEME.volumeUp : TV_THEME.volumeDown,
       })),
     );
 

@@ -4,6 +4,7 @@ import sys
 
 import numpy as np
 from scipy.special import gammaln
+from scipy.stats import t as student_t_dist
 
 SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if SRC_DIR not in sys.path:
@@ -15,7 +16,6 @@ from models.gaussian import GaussianDriftModel
 from models.numba_wrappers import (
     is_numba_available,
     run_phi_gaussian_train_state,
-    run_phi_student_t_cv_test_fold,
     run_phi_student_t_train_state_only,
     run_phi_student_t_improved_cv_test_fold,
     run_phi_student_t_improved_train_state_only,
@@ -181,7 +181,14 @@ class PhiStudentTTrainStateKernelTest(unittest.TestCase):
             vov_rolling=vov,
             online_scale_adapt=True,
         )
-        ll_fast, n_fast, z2_count_fast, z2_fast = run_phi_student_t_improved_cv_test_fold(
+        (
+            ll_fast,
+            n_fast,
+            z2_count_fast,
+            z2_fast,
+            sign_count_fast,
+            sign_brier_fast,
+        ) = run_phi_student_t_improved_cv_test_fold(
             returns,
             vol_sq,
             q,
@@ -213,6 +220,8 @@ class PhiStudentTTrainStateKernelTest(unittest.TestCase):
         ll_ref = 0.0
         z2_ref = 0.0
         z2_count_ref = 0
+        sign_brier_ref = 0.0
+        sign_count_ref = 0
         phi_sq = phi * phi
         for t in range(135, 190):
             mu_pred = phi * mu_p
@@ -224,6 +233,10 @@ class PhiStudentTTrainStateKernelTest(unittest.TestCase):
             inn = returns[t] - mu_pred
             z = inn / scale
             ll_ref += log_norm - np.log(scale) + neg_exp * np.log1p((z * z) * inv_nu)
+            p_up = 1.0 - float(student_t_dist.cdf((0.0 - mu_pred) / scale, df=nu))
+            y_up = 1.0 if returns[t] > 0.0 else 0.0
+            sign_brier_ref += (p_up - y_up) ** 2
+            sign_count_ref += 1
             z_sq_s = (inn * inn) / S
             z2_ref += min(z_sq_s, 50.0)
             z2_count_ref += 1
@@ -248,6 +261,8 @@ class PhiStudentTTrainStateKernelTest(unittest.TestCase):
         self.assertEqual(n_fast, 55)
         self.assertEqual(z2_count_fast, z2_count_ref)
         self.assertAlmostEqual(z2_fast, z2_ref, places=11)
+        self.assertEqual(sign_count_fast, sign_count_ref)
+        self.assertAlmostEqual(sign_brier_fast, sign_brier_ref, places=11)
 
 
 if __name__ == "__main__":

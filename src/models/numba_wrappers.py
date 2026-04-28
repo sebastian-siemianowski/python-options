@@ -2013,7 +2013,7 @@ def run_phi_student_t_improved_cv_test_fold(
     use_vov = 1 if (gamma_vov > 1e-12 and vov_rolling is not None) else 0
     if vov_rolling is None:
         vov_rolling = np.empty(1, dtype=np.float64)
-    ll_fold, obs_count, z2_count, z2_sum = phi_student_t_improved_cv_test_fold_kernel(
+    ll_fold, obs_count, z2_count, z2_sum, sign_count, sign_brier_sum = phi_student_t_improved_cv_test_fold_kernel(
         returns,
         vol_sq,
         float(q),
@@ -2036,7 +2036,14 @@ def run_phi_student_t_improved_cv_test_fold(
         float(p_cap),
         float(z2_cap),
     )
-    return float(ll_fold), int(obs_count), int(z2_count), float(z2_sum)
+    return (
+        float(ll_fold),
+        int(obs_count),
+        int(z2_count),
+        float(z2_sum),
+        int(sign_count),
+        float(sign_brier_sum),
+    )
 
 
 # =============================================================================

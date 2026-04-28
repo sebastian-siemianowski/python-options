@@ -65,7 +65,7 @@ def get_summary_rows(cache_path: str = DEFAULT_CACHE_PATH) -> List[Dict[str, Any
     data = get_cached_signals(cache_path)
     if data is None:
         return []
-    return data.get("summary_rows", [])
+    return [_decorate_summary_row(row) for row in data.get("summary_rows", [])]
 
 
 def get_asset_blocks(cache_path: str = DEFAULT_CACHE_PATH) -> List[Dict[str, Any]]:
@@ -131,7 +131,11 @@ def get_cache_age_seconds(cache_path: str = DEFAULT_CACHE_PATH) -> Optional[floa
     return time.time() - os.path.getmtime(cache_path)
 
 
-# Sector consolidation mapping — mirrors signals_ux.py
+# Sector consolidation mapping — mirrors signals_ux.py.
+#
+# Signals page display is intentionally a little more opinionated than the raw
+# model cache: currencies get their own panel, while the key market indices sit
+# with commodities/crypto so the macro pulse is visible near the top.
 SECTOR_CONSOLIDATION = {
     "Indices / Broad ETFs": "Indices & ETFs",
     "Indices": "Indices & ETFs",
@@ -142,8 +146,56 @@ SECTOR_CONSOLIDATION = {
     "AI Hardware / Edge Compute": "AI & Infrastructure",
     "AI Power Semiconductors": "AI & Infrastructure",
     "Semiconductor Equipment": "Semiconductors",
-    "FX / Commodities / Crypto": "FX, Commodities & Crypto",
+    "FX / Commodities / Crypto": "Core Markets, Commodities & Crypto",
 }
+
+KEY_MARKET_SYMBOLS = {"^GSPC", "^NDX", "SPY", "QQQ"}
+ISO_CURRENCY_CODES = {
+    "AUD", "BRL", "CAD", "CHF", "CNY", "CZK", "DKK", "EUR", "GBP", "HKD",
+    "HUF", "INR", "JPY", "KRW", "MXN", "NOK", "NZD", "PLN", "SEK", "SGD",
+    "TRY", "USD", "ZAR",
+}
+
+
+def _extract_symbol_from_label(label: str) -> str:
+    """Extract `SYM` from labels like `Company Name (SYM)`."""
+    if not label:
+        return ""
+    if "(" in label and ")" in label:
+        return label.rsplit("(", 1)[-1].split(")", 1)[0].strip()
+    return label.strip()
+
+
+def _row_symbol(row: Dict[str, Any]) -> str:
+    return str(row.get("symbol") or _extract_symbol_from_label(row.get("asset_label", ""))).strip().upper()
+
+
+def _is_currency_symbol(symbol: str) -> bool:
+    """Return true for fiat FX pairs such as PLNJPY=X, but not XAGUSD=X."""
+    if not symbol.endswith("=X"):
+        return False
+    pair = symbol[:-2].replace("/", "").replace("-", "").upper()
+    if len(pair) != 6:
+        return False
+    base, quote = pair[:3], pair[3:]
+    return base in ISO_CURRENCY_CODES and quote in ISO_CURRENCY_CODES
+
+
+def _display_sector_for_row(row: Dict[str, Any]) -> str:
+    symbol = _row_symbol(row)
+    if _is_currency_symbol(symbol):
+        return "Currencies"
+    if symbol in KEY_MARKET_SYMBOLS:
+        return "Core Markets, Commodities & Crypto"
+    return _consolidate_sector(row.get("sector", ""))
+
+
+def _decorate_summary_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(row)
+    raw_sector = row.get("sector", "")
+    out["raw_sector"] = raw_sector
+    out["sector"] = _display_sector_for_row(row)
+    return out
 
 
 def _consolidate_sector(sector: str) -> str:

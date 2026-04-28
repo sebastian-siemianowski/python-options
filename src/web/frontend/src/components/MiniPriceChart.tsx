@@ -1,10 +1,10 @@
 /**
- * MiniPriceChart – compact candlestick chart with SMA, Bollinger, and Forecast overlays.
+ * MiniPriceChart – compact Heikin Ashi/candlestick chart with SMA, Bollinger, and Forecast overlays.
  *
  * Designed for inline embedding (e.g. heatmap expanded rows).
  * All overlays are enabled by default — no toggle UI.
  */
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import {
   createChart,
   ColorType,
@@ -15,12 +15,14 @@ import {
   HistogramSeries,
 } from 'lightweight-charts';
 import type { OHLCVBar, Indicators, ForecastData } from '../api';
+import { isHeikinAshiUp, toHeikinAshiBars } from '../utils/heikinAshi';
 
 interface MiniPriceChartProps {
   ohlcv: OHLCVBar[];
   indicators?: Indicators | null;
   forecast?: ForecastData | null;
   height?: number;
+  candleMode?: 'standard' | 'heikinAshi';
 }
 
 export default function MiniPriceChart({
@@ -28,11 +30,16 @@ export default function MiniPriceChart({
   indicators,
   forecast,
   height = 340,
+  candleMode = 'standard',
 }: MiniPriceChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const chartBars = useMemo(
+    () => (candleMode === 'heikinAshi' ? toHeikinAshiBars(ohlcv) : ohlcv),
+    [candleMode, ohlcv],
+  );
 
   useEffect(() => {
-    if (!containerRef.current || !ohlcv.length) return;
+    if (!containerRef.current || !chartBars.length) return;
 
     const container = containerRef.current;
     const chart = createChart(container, {
@@ -65,7 +72,7 @@ export default function MiniPriceChart({
       },
     });
 
-    /* Candlesticks */
+    /* Main candles */
     const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#3ee8a5',
       downColor: '#ff6b8a',
@@ -76,7 +83,7 @@ export default function MiniPriceChart({
       lastValueVisible: true,
       priceLineVisible: true,
     });
-    candleSeries.setData(ohlcv);
+    candleSeries.setData(chartBars);
 
     /* Volume */
     const volumeSeries = chart.addSeries(HistogramSeries, {
@@ -85,10 +92,10 @@ export default function MiniPriceChart({
     });
     chart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.84, bottom: 0 } });
     volumeSeries.setData(
-      ohlcv.map((d) => ({
+      chartBars.map((d) => ({
         time: d.time,
         value: d.volume,
-        color: d.close >= d.open ? 'rgba(0,230,118,0.18)' : 'rgba(255,23,68,0.18)',
+        color: isHeikinAshiUp(d) ? 'rgba(0,230,118,0.18)' : 'rgba(255,23,68,0.18)',
       })),
     );
 
@@ -112,8 +119,8 @@ export default function MiniPriceChart({
     }
 
     /* Forecast + CI */
-    if (forecast?.forecasts?.length && ohlcv.length > 0) {
-      const lastCandle = ohlcv[ohlcv.length - 1];
+    if (forecast?.forecasts?.length && chartBars.length > 0) {
+      const lastCandle = chartBars[chartBars.length - 1];
       const lastPrice = lastCandle.close;
       const lastDate = new Date(lastCandle.time as string);
 
@@ -157,10 +164,11 @@ export default function MiniPriceChart({
       window.removeEventListener('resize', handleResize);
       chart.remove();
     };
-  }, [ohlcv, indicators, forecast, height]);
+  }, [chartBars, indicators, forecast, height]);
 
   /* Legend strip */
   const legendItems = [
+    ...(candleMode === 'heikinAshi' ? [{ label: 'Heikin Ashi', color: '#3ee8a5' }] : []),
     { label: 'SMA 20', color: '#f5c542' },
     { label: 'SMA 50', color: '#b49aff' },
     { label: 'SMA 200', color: '#c084fc' },

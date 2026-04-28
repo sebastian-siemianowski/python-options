@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState, memo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { api } from '../api';
+import { api, type OHLCVBar } from '../api';
+import { isHeikinAshiUp, toHeikinAshiBars } from '../utils/heikinAshi';
 
 interface SparklineProps {
   ticker: string;
@@ -62,9 +63,9 @@ function useNearViewport<T extends HTMLElement>(rootMargin = '720px') {
 }
 
 /**
- * Story 3.1 AC-1: Gradient area sparkline showing 30-day price movement.
- * Emerald if above 20-day SMA, rose if below. Gradient area fill underneath,
- * end-dot with concentric glow, and a tabular % chip in the top-right.
+ * Story 3.1 AC-1: compact row Heikin Ashi chart showing 30-day trend structure.
+ * The percent chip remains real close-to-close performance; the row chart is
+ * intentionally visual/noise-reduced.
  */
 function SparklineInner({ ticker, width = 60, height = 28 }: SparklineProps) {
   const { ref: visibilityRef, isNearViewport } = useNearViewport<HTMLDivElement>();
@@ -90,12 +91,13 @@ function SparklineInner({ ticker, width = 60, height = 28 }: SparklineProps) {
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, width, height);
 
-    const closes = bars.map((b: { close: number }) => b.close);
-    const minP = Math.min(...closes);
-    const maxP = Math.max(...closes);
+    const haBars = toHeikinAshiBars(bars as OHLCVBar[]);
+    const closes = haBars.map((b) => b.close);
+    const minP = Math.min(...haBars.map((b) => b.low));
+    const maxP = Math.max(...haBars.map((b) => b.high));
     const range = maxP - minP || 1;
     const pad = 2;
-    const padTop = 4; // leave room for chip
+    const padTop = 3;
     const w = width - pad * 2;
     const h = height - pad - padTop;
 
@@ -105,18 +107,18 @@ function SparklineInner({ ticker, width = 60, height = 28 }: SparklineProps) {
     const lastClose = closes[closes.length - 1];
     const aboveSma = lastClose >= sma20;
 
-    const strokeCol = aboveSma ? '#3ee8a5' : '#ff6b8a';
-    const fillStart = aboveSma ? 'rgba(62,232,165,0.32)' : 'rgba(255,107,138,0.32)';
+    const trendCol = aboveSma ? '#3ee8a5' : '#ff6b8a';
+    const fillStart = aboveSma ? 'rgba(62,232,165,0.16)' : 'rgba(255,107,138,0.16)';
     const fillEnd = aboveSma ? 'rgba(62,232,165,0.00)' : 'rgba(255,107,138,0.00)';
 
-    // Build path for line
-    const pts: [number, number][] = closes.map((c: number, i: number) => {
+    const yFor = (value: number) => padTop + h - ((value - minP) / range) * h;
+    const pts: [number, number][] = haBars.map((bar, i) => {
       const x = pad + (i / (closes.length - 1)) * w;
-      const y = padTop + h - ((c - minP) / range) * h;
+      const y = yFor(bar.close);
       return [x, y];
     });
 
-    // Gradient area fill
+    // Soft HA-close cloud so the tiny row chart keeps the old sparkline depth.
     ctx.beginPath();
     pts.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
     ctx.lineTo(pts[pts.length - 1][0], padTop + h);
@@ -128,14 +130,48 @@ function SparklineInner({ ticker, width = 60, height = 28 }: SparklineProps) {
     ctx.fillStyle = grad;
     ctx.fill();
 
-    // Line
+    // Heikin Ashi mini-candles: wick + body, compressed for table rows.
+    const slot = w / Math.max(1, haBars.length - 1);
+    const bodyW = Math.max(1.35, Math.min(3.2, slot * 0.54));
+    haBars.forEach((bar, i) => {
+      const x = pad + (i / (haBars.length - 1)) * w;
+      const up = isHeikinAshiUp(bar);
+      const candleColor = up ? '#3ee8a5' : '#ff6b8a';
+      const wickColor = up ? 'rgba(111,240,192,0.78)' : 'rgba(253,164,175,0.78)';
+      const highY = yFor(bar.high);
+      const lowY = yFor(bar.low);
+      const openY = yFor(bar.open);
+      const closeY = yFor(bar.close);
+      const topY = Math.min(openY, closeY);
+      const bottomY = Math.max(openY, closeY);
+      const bodyH = Math.max(1.2, bottomY - topY);
+
+      ctx.beginPath();
+      ctx.moveTo(x, highY);
+      ctx.lineTo(x, lowY);
+      ctx.strokeStyle = wickColor;
+      ctx.lineWidth = 0.85;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.roundRect(x - bodyW / 2, topY, bodyW, bodyH, 1.15);
+      ctx.fillStyle = candleColor;
+      ctx.globalAlpha = i === haBars.length - 1 ? 1 : 0.72;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    });
+
+    // Thin HA-close trace adds continuity without overpowering candle bodies.
     ctx.beginPath();
     pts.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
-    ctx.strokeStyle = strokeCol;
-    ctx.lineWidth = 1.75;
+    ctx.strokeStyle = trendCol;
+    ctx.lineWidth = 0.8;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
+    ctx.globalAlpha = 0.52;
     ctx.stroke();
+    ctx.globalAlpha = 1;
 
     // End dot with glow ring
     const [lastX, lastY] = pts[pts.length - 1];
@@ -145,7 +181,7 @@ function SparklineInner({ ticker, width = 60, height = 28 }: SparklineProps) {
     ctx.fill();
     ctx.beginPath();
     ctx.arc(lastX, lastY, 1.8, 0, Math.PI * 2);
-    ctx.fillStyle = strokeCol;
+    ctx.fillStyle = trendCol;
     ctx.fill();
   }, [data, width, height]);
 
@@ -169,7 +205,7 @@ function SparklineInner({ ticker, width = 60, height = 28 }: SparklineProps) {
   const up = pctChg >= 0;
 
   return (
-    <div ref={visibilityRef} style={{ width, height }}>
+    <div ref={visibilityRef} style={{ width, height }} title="30-day Heikin Ashi row chart">
       <canvas
         ref={canvasRef}
         style={{

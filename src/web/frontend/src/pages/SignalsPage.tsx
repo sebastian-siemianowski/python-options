@@ -1519,6 +1519,14 @@ const SECTOR_SORT_OPTIONS: { key: SectorSortBy; label: string; icon: React.React
   { key: 'count', label: 'Asset Count', icon: <Layers className="w-3 h-3" /> },
   { key: 'alpha', label: 'Alphabetical', icon: <Filter className="w-3 h-3" /> },
 ];
+const SECTOR_DISPLAY_PRIORITY: Record<string, number> = {
+  'Core Markets, Commodities & Crypto': 0,
+  Currencies: 1,
+};
+
+function sectorDisplayPriority(name: string): number {
+  return SECTOR_DISPLAY_PRIORITY[name] ?? 50;
+}
 
 function signalLabelColor(label: string): string {
   switch (label) {
@@ -1628,12 +1636,13 @@ function SectorPanels({
   const sorted = useMemo(() => {
     const arr = [...sectors];
     const signalScore = (s: SectorGroup) => (s.strong_buy ?? 0) * 3 + (s.buy ?? 0) * 2 - (s.sell ?? 0) * 2 - (s.strong_sell ?? 0) * 3;
+    const pinned = (a: SectorGroup, b: SectorGroup) => sectorDisplayPriority(a.name) - sectorDisplayPriority(b.name);
     switch (sectorSort) {
-      case 'momentum': return arr.sort((a, b) => (b.avg_momentum ?? 0) - (a.avg_momentum ?? 0));
-      case 'signal': return arr.sort((a, b) => signalScore(b) - signalScore(a));
-      case 'count': return arr.sort((a, b) => b.asset_count - a.asset_count);
-      case 'alpha': return arr.sort((a, b) => a.name.localeCompare(b.name));
-      case 'exp_ret': return arr.sort((a, b) => signalScore(b) - signalScore(a));
+      case 'momentum': return arr.sort((a, b) => pinned(a, b) || (b.avg_momentum ?? 0) - (a.avg_momentum ?? 0));
+      case 'signal': return arr.sort((a, b) => pinned(a, b) || signalScore(b) - signalScore(a));
+      case 'count': return arr.sort((a, b) => pinned(a, b) || b.asset_count - a.asset_count);
+      case 'alpha': return arr.sort((a, b) => pinned(a, b) || a.name.localeCompare(b.name));
+      case 'exp_ret': return arr.sort((a, b) => pinned(a, b) || signalScore(b) - signalScore(a));
       default: return arr;
     }
   }, [sectors, sectorSort]);
@@ -4909,6 +4918,7 @@ function ReversalDetailPanel({ r, label, onClose, onOpenFullChart }: {
             indicators={indQ.data?.indicators}
             forecast={forecastQ.data}
             height={320}
+            candleMode="heikinAshi"
           />
         )}
       </div>
@@ -5887,7 +5897,7 @@ function HighConvictionPanel({
                             {expandedView === 'chart' && (() => {
                               const tvSym = toTvSymbol(g.ticker);
                               const buildSrc = (interval: string, range: string) =>
-                                `https://s.tradingview.com/widgetembed/?frameElementId=tv_${encodeURIComponent(g.ticker)}_${range}&symbol=${encodeURIComponent(tvSym)}&interval=${interval}&range=${range}&hidesidetoolbar=0&hidetoptoolbar=0&symboledit=1&saveimage=0&toolbarbg=0f0f1a&theme=dark&style=1&timezone=Etc/UTC&withdateranges=1&hideideas=1&hideideasbutton=1&locale=en`;
+                                `https://s.tradingview.com/widgetembed/?frameElementId=tv_${encodeURIComponent(g.ticker)}_${range}&symbol=${encodeURIComponent(tvSym)}&interval=${interval}&range=${range}&hidesidetoolbar=0&hidetoptoolbar=0&symboledit=1&saveimage=0&toolbarbg=0f0f1a&theme=dark&style=8&timezone=Etc/UTC&withdateranges=1&hideideas=1&hideideasbutton=1&locale=en`;
                               return (
                                 <div
                                   className="rounded-2xl overflow-hidden"
@@ -5934,7 +5944,7 @@ function HighConvictionPanel({
                                               boxShadow: isActive ? `0 2px 6px -2px ${accent}aa` : 'none',
                                               letterSpacing: '0.02em',
                                             }}
-                                            title={`${r.label} · ${r.interval === 'D' ? 'Daily' : r.interval === 'W' ? 'Weekly' : `${r.interval}m`} candles${isPreloaded && !isActive ? ' · preloaded' : ''}`}
+                                            title={`${r.label} · ${r.interval === 'D' ? 'Daily' : r.interval === 'W' ? 'Weekly' : `${r.interval}m`} Heikin Ashi${isPreloaded && !isActive ? ' · preloaded' : ''}`}
                                           >
                                             {r.label}
                                             {isPreloaded && !isActive && (

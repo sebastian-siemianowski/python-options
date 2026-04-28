@@ -6619,6 +6619,8 @@ def phi_student_t_improved_cv_test_fold_kernel(
     obs_count = 0
     z2_count = 0
     z2_sum = 0.0
+    sign_brier_sum = 0.0
+    sign_count = 0
 
     phi_sq = phi * phi
     nu_p1 = nu + 1.0
@@ -6670,6 +6672,16 @@ def phi_student_t_improved_cv_test_fold_kernel(
         if np.isfinite(ll_t):
             total_ll += ll_t
             obs_count += 1
+            p_down = _student_t_cdf_scalar((0.0 - mu_pred) / scale, nu)
+            if p_down < 0.0:
+                p_down = 0.0
+            elif p_down > 1.0:
+                p_down = 1.0
+            p_up = 1.0 - p_down
+            y_up = 1.0 if returns[t] > 0.0 else 0.0
+            sign_err = p_up - y_up
+            sign_brier_sum += sign_err * sign_err
+            sign_count += 1
 
         z_sq_s = (inn * inn) / S
         if np.isfinite(z_sq_s):
@@ -6719,7 +6731,7 @@ def phi_student_t_improved_cv_test_fold_kernel(
                 elif c_adj > 2.5:
                     c_adj = 2.5
 
-    return total_ll, obs_count, z2_count, z2_sum
+    return total_ll, obs_count, z2_count, z2_sum, sign_count, sign_brier_sum
 
 @njit(cache=True, fastmath=True)
 def phi_gaussian_cv_test_fold_kernel(
