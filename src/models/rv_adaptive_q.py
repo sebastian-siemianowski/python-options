@@ -61,6 +61,7 @@ April 2026 -- Tune.md Epic 1, Story 1.1
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple, Any
+import os
 import numpy as np
 from scipy.optimize import minimize
 
@@ -156,6 +157,20 @@ class RVAdaptiveQResult:
 # FILTER WRAPPERS
 # =============================================================================
 
+def _precompute_rv_q_vol_inputs(vol: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Precompute vol^2 and delta_log(vol^2) once for RV-Q likelihood loops."""
+    vol_arr = np.ascontiguousarray(vol, dtype=np.float64)
+    vol_sq = np.ascontiguousarray(vol_arr * vol_arr, dtype=np.float64)
+    delta = np.zeros(len(vol_arr), dtype=np.float64)
+    if len(vol_arr) > 1:
+        curr = vol_arr[1:]
+        prev = vol_arr[:-1]
+        valid = (curr > 1e-15) & (prev > 1e-15)
+        out = np.zeros(len(curr), dtype=np.float64)
+        out[valid] = 2.0 * (np.log(curr[valid]) - np.log(prev[valid]))
+        delta[1:] = out
+    return vol_sq, np.ascontiguousarray(delta, dtype=np.float64)
+
 def rv_adaptive_q_filter_gaussian(
     returns: np.ndarray,
     vol: np.ndarray,
@@ -183,27 +198,43 @@ def rv_adaptive_q_filter_gaussian(
     -------
     RVAdaptiveQResult
     """
-    from models.numba_kernels import rv_adaptive_q_gaussian_filter_kernel
+    from models.numba_kernels import (
+        rv_adaptive_q_gaussian_filter_kernel,
+        rv_adaptive_q_gaussian_filter_precomputed_kernel,
+    )
 
     if config is None:
         config = RVAdaptiveQConfig()
 
     returns = np.ascontiguousarray(returns, dtype=np.float64)
     vol = np.ascontiguousarray(vol, dtype=np.float64)
+    use_precomputed = os.environ.get("RV_Q_ENABLE_PRECOMPUTED_KERNEL", "") == "1"
+    if use_precomputed:
+        vol_sq, delta_log_vol_sq = _precompute_rv_q_vol_inputs(vol)
 
     n = len(returns)
     mu_filtered = np.zeros(n, dtype=np.float64)
     P_filtered = np.zeros(n, dtype=np.float64)
     q_path = np.zeros(n, dtype=np.float64)
 
-    log_ll = rv_adaptive_q_gaussian_filter_kernel(
-        returns, vol,
-        config.q_base, config.gamma,
-        c, phi,
-        config.q_min, config.q_max,
-        1e-4,
-        mu_filtered, P_filtered, q_path,
-    )
+    if use_precomputed:
+        log_ll = rv_adaptive_q_gaussian_filter_precomputed_kernel(
+            returns, vol_sq, delta_log_vol_sq,
+            config.q_base, config.gamma,
+            c, phi,
+            config.q_min, config.q_max,
+            1e-4,
+            mu_filtered, P_filtered, q_path,
+        )
+    else:
+        log_ll = rv_adaptive_q_gaussian_filter_kernel(
+            returns, vol,
+            config.q_base, config.gamma,
+            c, phi,
+            config.q_min, config.q_max,
+            1e-4,
+            mu_filtered, P_filtered, q_path,
+        )
 
     return RVAdaptiveQResult(
         mu_filtered=mu_filtered,
@@ -236,7 +267,10 @@ def rv_adaptive_q_filter_student_t(
     -------
     RVAdaptiveQResult
     """
-    from models.numba_kernels import rv_adaptive_q_student_t_filter_kernel
+    from models.numba_kernels import (
+        rv_adaptive_q_student_t_filter_kernel,
+        rv_adaptive_q_student_t_filter_precomputed_kernel,
+    )
     from models.numba_wrappers import precompute_gamma_values
 
     if config is None:
@@ -244,6 +278,9 @@ def rv_adaptive_q_filter_student_t(
 
     returns = np.ascontiguousarray(returns, dtype=np.float64)
     vol = np.ascontiguousarray(vol, dtype=np.float64)
+    use_precomputed = os.environ.get("RV_Q_ENABLE_PRECOMPUTED_KERNEL", "") == "1"
+    if use_precomputed:
+        vol_sq, delta_log_vol_sq = _precompute_rv_q_vol_inputs(vol)
 
     n = len(returns)
     mu_filtered = np.zeros(n, dtype=np.float64)
@@ -252,15 +289,26 @@ def rv_adaptive_q_filter_student_t(
 
     log_gamma_half_nu, log_gamma_half_nu_plus_half = precompute_gamma_values(nu)
 
-    log_ll = rv_adaptive_q_student_t_filter_kernel(
-        returns, vol,
-        config.q_base, config.gamma,
-        c, phi, nu,
-        log_gamma_half_nu, log_gamma_half_nu_plus_half,
-        config.q_min, config.q_max,
-        1e-4,
-        mu_filtered, P_filtered, q_path,
-    )
+    if use_precomputed:
+        log_ll = rv_adaptive_q_student_t_filter_precomputed_kernel(
+            returns, vol_sq, delta_log_vol_sq,
+            config.q_base, config.gamma,
+            c, phi, nu,
+            log_gamma_half_nu, log_gamma_half_nu_plus_half,
+            config.q_min, config.q_max,
+            1e-4,
+            mu_filtered, P_filtered, q_path,
+        )
+    else:
+        log_ll = rv_adaptive_q_student_t_filter_kernel(
+            returns, vol,
+            config.q_base, config.gamma,
+            c, phi, nu,
+            log_gamma_half_nu, log_gamma_half_nu_plus_half,
+            config.q_min, config.q_max,
+            1e-4,
+            mu_filtered, P_filtered, q_path,
+        )
 
     return RVAdaptiveQResult(
         mu_filtered=mu_filtered,
@@ -307,6 +355,8 @@ def optimize_rv_q_params(
     from models.numba_kernels import (
         rv_adaptive_q_gaussian_filter_kernel,
         rv_adaptive_q_student_t_filter_kernel,
+        rv_adaptive_q_gaussian_filter_precomputed_kernel,
+        rv_adaptive_q_student_t_filter_precomputed_kernel,
     )
     from models.numba_wrappers import precompute_gamma_values
 
@@ -316,6 +366,8 @@ def optimize_rv_q_params(
     n_train = int(len(returns) * train_frac)
     r_train = returns[:n_train]
     v_train = vol[:n_train]
+    v_train_sq, d_train = _precompute_rv_q_vol_inputs(v_train)
+    use_precomputed = os.environ.get("RV_Q_ENABLE_PRECOMPUTED_KERNEL", "") == "1"
 
     # Precompute gamma values for Student-t
     if nu is not None:
@@ -330,20 +382,37 @@ def optimize_rv_q_params(
 
         try:
             if nu is not None:
-                ll = rv_adaptive_q_student_t_filter_kernel(
-                    r_train, v_train,
-                    q_base, gamma, c, phi, nu,
-                    lg_half_nu, lg_half_nu_plus_half,
-                    RV_Q_MIN, RV_Q_MAX, 1e-4,
-                    np.empty(0), np.empty(0), np.empty(0),
-                )
+                if use_precomputed:
+                    ll = rv_adaptive_q_student_t_filter_precomputed_kernel(
+                        r_train, v_train_sq, d_train,
+                        q_base, gamma, c, phi, nu,
+                        lg_half_nu, lg_half_nu_plus_half,
+                        RV_Q_MIN, RV_Q_MAX, 1e-4,
+                        np.empty(0), np.empty(0), np.empty(0),
+                    )
+                else:
+                    ll = rv_adaptive_q_student_t_filter_kernel(
+                        r_train, v_train,
+                        q_base, gamma, c, phi, nu,
+                        lg_half_nu, lg_half_nu_plus_half,
+                        RV_Q_MIN, RV_Q_MAX, 1e-4,
+                        np.empty(0), np.empty(0), np.empty(0),
+                    )
             else:
-                ll = rv_adaptive_q_gaussian_filter_kernel(
-                    r_train, v_train,
-                    q_base, gamma, c, phi,
-                    RV_Q_MIN, RV_Q_MAX, 1e-4,
-                    np.empty(0), np.empty(0), np.empty(0),
-                )
+                if use_precomputed:
+                    ll = rv_adaptive_q_gaussian_filter_precomputed_kernel(
+                        r_train, v_train_sq, d_train,
+                        q_base, gamma, c, phi,
+                        RV_Q_MIN, RV_Q_MAX, 1e-4,
+                        np.empty(0), np.empty(0), np.empty(0),
+                    )
+                else:
+                    ll = rv_adaptive_q_gaussian_filter_kernel(
+                        r_train, v_train,
+                        q_base, gamma, c, phi,
+                        RV_Q_MIN, RV_Q_MAX, 1e-4,
+                        np.empty(0), np.empty(0), np.empty(0),
+                    )
             if not np.isfinite(ll):
                 return 1e10
             return -ll
@@ -419,37 +488,68 @@ def optimize_rv_q_params(
     if n_train < len(returns):
         r_test = returns[n_train:]
         v_test = vol[n_train:]
+        v_test_sq, d_test = _precompute_rv_q_vol_inputs(v_test)
         n_test = len(r_test)
 
         # RV-Q out-of-sample
         if nu is not None:
-            ll_oos_rv = rv_adaptive_q_student_t_filter_kernel(
-                r_test, v_test,
-                q_base_opt, gamma_opt, c, phi, nu,
-                lg_half_nu, lg_half_nu_plus_half,
-                RV_Q_MIN, RV_Q_MAX, 1e-4,
-                np.empty(0), np.empty(0), np.empty(0),
-            )
-            ll_oos_static = rv_adaptive_q_student_t_filter_kernel(
-                r_test, v_test,
-                q_base_opt, 0.0, c, phi, nu,
-                lg_half_nu, lg_half_nu_plus_half,
-                RV_Q_MIN, RV_Q_MAX, 1e-4,
-                np.empty(0), np.empty(0), np.empty(0),
-            )
+            if use_precomputed:
+                ll_oos_rv = rv_adaptive_q_student_t_filter_precomputed_kernel(
+                    r_test, v_test_sq, d_test,
+                    q_base_opt, gamma_opt, c, phi, nu,
+                    lg_half_nu, lg_half_nu_plus_half,
+                    RV_Q_MIN, RV_Q_MAX, 1e-4,
+                    np.empty(0), np.empty(0), np.empty(0),
+                )
+                ll_oos_static = rv_adaptive_q_student_t_filter_precomputed_kernel(
+                    r_test, v_test_sq, d_test,
+                    q_base_opt, 0.0, c, phi, nu,
+                    lg_half_nu, lg_half_nu_plus_half,
+                    RV_Q_MIN, RV_Q_MAX, 1e-4,
+                    np.empty(0), np.empty(0), np.empty(0),
+                )
+            else:
+                ll_oos_rv = rv_adaptive_q_student_t_filter_kernel(
+                    r_test, v_test,
+                    q_base_opt, gamma_opt, c, phi, nu,
+                    lg_half_nu, lg_half_nu_plus_half,
+                    RV_Q_MIN, RV_Q_MAX, 1e-4,
+                    np.empty(0), np.empty(0), np.empty(0),
+                )
+                ll_oos_static = rv_adaptive_q_student_t_filter_kernel(
+                    r_test, v_test,
+                    q_base_opt, 0.0, c, phi, nu,
+                    lg_half_nu, lg_half_nu_plus_half,
+                    RV_Q_MIN, RV_Q_MAX, 1e-4,
+                    np.empty(0), np.empty(0), np.empty(0),
+                )
         else:
-            ll_oos_rv = rv_adaptive_q_gaussian_filter_kernel(
-                r_test, v_test,
-                q_base_opt, gamma_opt, c, phi,
-                RV_Q_MIN, RV_Q_MAX, 1e-4,
-                np.empty(0), np.empty(0), np.empty(0),
-            )
-            ll_oos_static = rv_adaptive_q_gaussian_filter_kernel(
-                r_test, v_test,
-                q_base_opt, 0.0, c, phi,
-                RV_Q_MIN, RV_Q_MAX, 1e-4,
-                np.empty(0), np.empty(0), np.empty(0),
-            )
+            if use_precomputed:
+                ll_oos_rv = rv_adaptive_q_gaussian_filter_precomputed_kernel(
+                    r_test, v_test_sq, d_test,
+                    q_base_opt, gamma_opt, c, phi,
+                    RV_Q_MIN, RV_Q_MAX, 1e-4,
+                    np.empty(0), np.empty(0), np.empty(0),
+                )
+                ll_oos_static = rv_adaptive_q_gaussian_filter_precomputed_kernel(
+                    r_test, v_test_sq, d_test,
+                    q_base_opt, 0.0, c, phi,
+                    RV_Q_MIN, RV_Q_MAX, 1e-4,
+                    np.empty(0), np.empty(0), np.empty(0),
+                )
+            else:
+                ll_oos_rv = rv_adaptive_q_gaussian_filter_kernel(
+                    r_test, v_test,
+                    q_base_opt, gamma_opt, c, phi,
+                    RV_Q_MIN, RV_Q_MAX, 1e-4,
+                    np.empty(0), np.empty(0), np.empty(0),
+                )
+                ll_oos_static = rv_adaptive_q_gaussian_filter_kernel(
+                    r_test, v_test,
+                    q_base_opt, 0.0, c, phi,
+                    RV_Q_MIN, RV_Q_MAX, 1e-4,
+                    np.empty(0), np.empty(0), np.empty(0),
+                )
 
         diagnostics["oos_ll_rv"] = ll_oos_rv
         diagnostics["oos_ll_static"] = ll_oos_static

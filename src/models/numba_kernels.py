@@ -2152,6 +2152,54 @@ def phi_gaussian_filter_kernel(
 
 
 @njit(cache=True, fastmath=True)
+def phi_gaussian_train_state_kernel(
+    returns: np.ndarray,
+    vol_sq: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    train_start: int,
+    train_end: int,
+    P0: float = 1e-4,
+) -> tuple:
+    """
+    Terminal-state φ-Gaussian filter for CV training prefixes.
+
+    Mirrors phi_gaussian_filter_kernel's state update but returns only the
+    final filtered state, avoiding full mu/P allocations in optimizer loops.
+    """
+    mu = 0.0
+    P = P0
+    phi_sq = phi * phi
+    log_likelihood = 0.0
+
+    for t in range(train_start, train_end):
+        mu_pred = phi * mu
+        P_pred = phi_sq * P + q
+        R = c * vol_sq[t]
+        innovation = returns[t] - mu_pred
+        S = P_pred + R
+
+        if S > _MIN_VARIANCE:
+            K = P_pred / S
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+
+            innov_sq_scaled = (innovation * innovation) / S
+            if innov_sq_scaled > 100.0:
+                innov_sq_scaled = 100.0
+            ll_contrib = -0.5 * (_LOG_2PI + np.log(S) + innov_sq_scaled)
+            if ll_contrib < -_MAX_LL_CONTRIB:
+                ll_contrib = -_MAX_LL_CONTRIB
+            log_likelihood += ll_contrib
+        else:
+            mu = mu_pred
+            P = P_pred
+
+    return mu, P if P > _MIN_VARIANCE else _MIN_VARIANCE, log_likelihood
+
+
+@njit(cache=True, fastmath=True)
 def phi_gaussian_filter_with_predictive_kernel(
     returns: np.ndarray,
     vol: np.ndarray,
@@ -5599,6 +5647,84 @@ def rv_adaptive_q_gaussian_filter_kernel(
 
 
 @njit(cache=True, fastmath=True)
+def rv_adaptive_q_gaussian_filter_precomputed_kernel(
+    returns: np.ndarray,
+    vol_sq: np.ndarray,
+    delta_log_vol_sq: np.ndarray,
+    q_base: float,
+    gamma: float,
+    c: float,
+    phi: float,
+    q_min: float = 1e-8,
+    q_max: float = 1e-2,
+    P0: float = 1e-4,
+    mu_filtered: np.ndarray = np.empty(0),
+    P_filtered: np.ndarray = np.empty(0),
+    q_path: np.ndarray = np.empty(0),
+) -> float:
+    """RV-Q Gaussian filter using precomputed vol_sq and delta_log(vol^2)."""
+    n = len(returns)
+    mu = 0.0
+    P = P0
+    log_ll = 0.0
+    phi_sq = phi * phi
+    log_2pi = 1.8378770664093453
+    _EPS = 1e-12
+
+    q_t = q_base
+    if q_t < q_min:
+        q_t = q_min
+    elif q_t > q_max:
+        q_t = q_max
+
+    for t in range(n):
+        if t > 0:
+            exponent = gamma * delta_log_vol_sq[t]
+            if exponent > 20.0:
+                exponent = 20.0
+            elif exponent < -20.0:
+                exponent = -20.0
+            q_t = q_base * np.exp(exponent)
+            if q_t < q_min:
+                q_t = q_min
+            elif q_t > q_max:
+                q_t = q_max
+
+        if len(q_path) > 0:
+            q_path[t] = q_t
+
+        mu_pred = phi * mu
+        P_pred = phi_sq * P + q_t
+        R = c * vol_sq[t]
+        innovation = returns[t] - mu_pred
+        S = P_pred + R
+
+        if S > _EPS:
+            K = P_pred / S
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+            if P < _EPS:
+                P = _EPS
+
+            z_sq = (innovation * innovation) / S
+            if z_sq > 100.0:
+                z_sq = 100.0
+            ll_t = -0.5 * (log_2pi + np.log(S) + z_sq)
+            if ll_t == ll_t:
+                log_ll += ll_t
+        else:
+            mu = mu_pred
+            P = P_pred
+
+        if len(mu_filtered) > 0:
+            mu_filtered[t] = mu
+        if len(P_filtered) > 0:
+            P_filtered[t] = P if P > _EPS else _EPS
+
+    return log_ll
+
+
+@njit(cache=True, fastmath=True)
 def rv_adaptive_q_student_t_filter_kernel(
     returns: np.ndarray,
     vol: np.ndarray,
@@ -5697,6 +5823,103 @@ def rv_adaptive_q_student_t_filter_kernel(
             forecast_scale = np.sqrt(S)
 
             # Student-t log-likelihood
+            ll_t = student_t_logpdf_kernel(
+                returns[t], nu, mu_pred, forecast_scale,
+                log_gamma_half_nu, log_gamma_half_nu_plus_half
+            )
+            if ll_t < -100.0:
+                ll_t = -100.0
+            log_ll += ll_t
+
+            K = P_pred / S
+            mu = mu_pred + K * innovation
+            P = (1.0 - K) * P_pred
+        else:
+            mu = mu_pred
+            P = P_pred
+
+        if len(mu_filtered) > 0:
+            mu_filtered[t] = mu
+        if len(P_filtered) > 0:
+            P_filtered[t] = P if P > _EPS else _EPS
+
+    return log_ll
+
+
+@njit(cache=True, fastmath=True)
+def rv_adaptive_q_student_t_filter_precomputed_kernel(
+    returns: np.ndarray,
+    vol_sq: np.ndarray,
+    delta_log_vol_sq: np.ndarray,
+    q_base: float,
+    gamma: float,
+    c: float,
+    phi: float,
+    nu: float,
+    log_gamma_half_nu: float,
+    log_gamma_half_nu_plus_half: float,
+    q_min: float = 1e-8,
+    q_max: float = 1e-2,
+    P0: float = 1e-4,
+    mu_filtered: np.ndarray = np.empty(0),
+    P_filtered: np.ndarray = np.empty(0),
+    q_path: np.ndarray = np.empty(0),
+) -> float:
+    """RV-Q Student-t filter using precomputed vol_sq and delta_log(vol^2)."""
+    n = len(returns)
+
+    _init_w = min(20, n)
+    if _init_w >= 3:
+        _sorted = np.sort(returns[:_init_w])
+        _mid = _init_w // 2
+        mu = _sorted[_mid] if _init_w % 2 == 1 else (_sorted[_mid - 1] + _sorted[_mid]) * 0.5
+        _mean_init = 0.0
+        for _ii in range(_init_w):
+            _mean_init += returns[_ii]
+        _mean_init /= _init_w
+        _var_init = 0.0
+        for _ii in range(_init_w):
+            _var_init += (returns[_ii] - _mean_init) ** 2
+        _var_init /= _init_w
+        P = max(_var_init, 1e-6)
+    else:
+        mu = 0.0
+        P = P0
+
+    log_ll = 0.0
+    phi_sq = phi * phi
+    _EPS = 1e-12
+
+    q_t = q_base
+    if q_t < q_min:
+        q_t = q_min
+    elif q_t > q_max:
+        q_t = q_max
+
+    for t in range(n):
+        if t > 0:
+            exponent = gamma * delta_log_vol_sq[t]
+            if exponent > 20.0:
+                exponent = 20.0
+            elif exponent < -20.0:
+                exponent = -20.0
+            q_t = q_base * np.exp(exponent)
+            if q_t < q_min:
+                q_t = q_min
+            elif q_t > q_max:
+                q_t = q_max
+
+        if len(q_path) > 0:
+            q_path[t] = q_t
+
+        mu_pred = phi * mu
+        P_pred = phi_sq * P + q_t
+        R = c * vol_sq[t]
+        innovation = returns[t] - mu_pred
+        S = P_pred + R
+
+        if S > _EPS:
+            forecast_scale = np.sqrt(S)
             ll_t = student_t_logpdf_kernel(
                 returns[t], nu, mu_pred, forecast_scale,
                 log_gamma_half_nu, log_gamma_half_nu_plus_half

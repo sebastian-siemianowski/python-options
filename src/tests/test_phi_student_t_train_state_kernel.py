@@ -11,8 +11,10 @@ if SRC_DIR not in sys.path:
 
 from models.phi_student_t import PhiStudentTDriftModel
 from models.phi_student_t_improved import PhiStudentTDriftModel as ImprovedPhiStudentTDriftModel
+from models.gaussian import GaussianDriftModel
 from models.numba_wrappers import (
     is_numba_available,
+    run_phi_gaussian_train_state,
     run_phi_student_t_improved_train_state,
     run_phi_student_t_train_state,
 )
@@ -20,6 +22,31 @@ from models.numba_wrappers import (
 
 @unittest.skipUnless(is_numba_available(), "Numba kernels unavailable")
 class PhiStudentTTrainStateKernelTest(unittest.TestCase):
+    def test_phi_gaussian_train_state_matches_filter_terminal_state(self):
+        rng = np.random.default_rng(23)
+        returns = np.ascontiguousarray(rng.normal(0.0003, 0.012, size=220), dtype=np.float64)
+        vol = np.ascontiguousarray(
+            np.maximum(0.004, 0.011 + 0.0015 * rng.standard_normal(220)),
+            dtype=np.float64,
+        )
+        vol_sq = np.ascontiguousarray(vol * vol, dtype=np.float64)
+
+        q = 1.5e-6
+        c = 1.35
+        phi = 0.62
+        start = 0
+        end = 175
+        mu_f, P_f, ll_ref = GaussianDriftModel.filter_phi(
+            returns[start:end], vol[start:end], q, c, phi
+        )
+        mu_last, P_last, ll_fast = run_phi_gaussian_train_state(
+            returns, vol_sq, q, c, phi, start, end
+        )
+
+        self.assertAlmostEqual(mu_last, float(mu_f[-1]), places=13)
+        self.assertAlmostEqual(P_last, float(P_f[-1]), places=13)
+        self.assertAlmostEqual(ll_fast, float(ll_ref), places=10)
+
     def test_train_state_matches_enhanced_filter_terminal_state(self):
         rng = np.random.default_rng(42)
         returns = np.ascontiguousarray(rng.standard_t(5, size=260) * 0.012, dtype=np.float64)

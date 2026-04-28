@@ -44,6 +44,7 @@ Gaussian observation noise (no ν parameter).
 from __future__ import annotations
 
 import math
+import os
 from typing import Dict, Tuple, Optional
 
 import numpy as np
@@ -143,6 +144,7 @@ try:
         run_phi_gaussian_filter,
         is_cv_kernel_available,
         run_gaussian_cv_test_fold,
+        run_phi_gaussian_train_state,
         run_phi_gaussian_filter_with_predictive,
         run_momentum_phi_gaussian_filter,
     )
@@ -154,6 +156,7 @@ except ImportError:
     run_gaussian_filter = None
     run_phi_gaussian_filter = None
     run_gaussian_cv_test_fold = None
+    run_phi_gaussian_train_state = None
     run_phi_gaussian_filter_with_predictive = None
     run_momentum_phi_gaussian_filter = None
 
@@ -1480,6 +1483,11 @@ class GaussianDriftModel:
 
         # Pre-allocate standardized residuals buffer for Numba kernel
         _std_buf = np.zeros(n_train, dtype=np.float64) if _use_numba_cv else None
+        _use_train_state_kernel = (
+            _USE_NUMBA
+            and run_phi_gaussian_train_state is not None
+            and os.environ.get("PHI_GAUSSIAN_ENABLE_TRAIN_STATE_KERNEL", "") == "1"
+        )
 
         def neg_cv_ll(params):
             if phi_mode:
@@ -1500,9 +1508,14 @@ class GaussianDriftModel:
 
             for ts, te, vs, ve in folds:
                 try:
-                    mu_f, P_f, _ = cls.filter_phi(_returns_r[ts:te], vol_train[ts:te], q, c, phi)
-                    mu_p = float(mu_f[-1])
-                    P_p = float(P_f[-1])
+                    if _use_train_state_kernel:
+                        mu_p, P_p, _ = run_phi_gaussian_train_state(
+                            _returns_r, _vol_sq, q, c, phi, ts, te,
+                        )
+                    else:
+                        mu_f, P_f, _ = cls.filter_phi(_returns_r[ts:te], vol_train[ts:te], q, c, phi)
+                        mu_p = float(mu_f[-1])
+                        P_p = float(P_f[-1])
 
                     if _use_numba_cv:
                         ll_fold, n_obs_fold, _ = _numba_cv_fold(

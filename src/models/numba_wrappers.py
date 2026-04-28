@@ -45,6 +45,7 @@ try:
         unified_phi_student_t_filter_extended_kernel,
         gaussian_cv_test_fold_kernel,
         phi_gaussian_cv_test_fold_kernel,
+        phi_gaussian_train_state_kernel,
         gas_q_filter_gaussian_kernel,
         build_garch_kernel,
         chi2_ewm_correction_kernel,
@@ -1703,6 +1704,27 @@ def run_phi_gaussian_cv_test_fold(
         int(test_start), int(test_end),
         std_buf, int(std_offset), int(std_max),
     )
+
+
+def run_phi_gaussian_train_state(
+    returns: np.ndarray,
+    vol_sq: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    train_start: int,
+    train_end: int,
+    P0: float = 1e-4,
+) -> Tuple[float, float, float]:
+    """Run terminal-state φ-Gaussian training fold without array allocation."""
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    mu, P, ll = phi_gaussian_train_state_kernel(
+        returns, vol_sq,
+        float(q), float(c), float(phi),
+        int(train_start), int(train_end), float(P0),
+    )
+    return float(mu), float(P), float(ll)
 
 
 def is_cv_kernel_available() -> bool:
