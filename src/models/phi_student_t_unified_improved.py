@@ -4204,7 +4204,7 @@ class UnifiedPhiStudentTModel:
         best_avg_ks_p = 0.0
         best_global_beta = 1.0
         best_global_mu_drift = 0.0
-        _use_stage5_precompute = os.environ.get("UNIFIED_STAGE5_ENABLE_PRECOMPUTE", "") == "1"
+        _use_stage5_precompute = os.environ.get("UNIFIED_STAGE5_DISABLE_PRECOMPUTE", "") != "1"
         _stage5_q_t = _stage5_p_stress = _stage5_vov = _stage5_momentum = None
         if _use_stage5_precompute:
             _q_calm = q_opt
