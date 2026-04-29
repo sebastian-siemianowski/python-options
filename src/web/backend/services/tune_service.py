@@ -54,6 +54,14 @@ def _invalidate_tune_cache() -> None:
     _tune_cache_time = 0.0
 
 
+def _model_weights(g: Dict[str, Any]) -> Dict[str, float]:
+    """Return the canonical BMA weights block from a tuned global payload."""
+    weights = g.get("model_weights")
+    if not isinstance(weights, dict) or not weights:
+        weights = g.get("model_posterior")
+    return weights if isinstance(weights, dict) else {}
+
+
 def list_tuned_assets() -> List[Dict[str, Any]]:
     """
     List all tuned assets with summary information (cached for performance).
@@ -83,7 +91,7 @@ def list_tuned_assets() -> List[Dict[str, Any]]:
         meta = data.get("meta", {})
 
         # Extract key parameters for the asset list
-        model_weights = g.get("model_weights", {})
+        model_weights = _model_weights(g)
         top_weight = max(model_weights.values()) if model_weights else 0.0
 
         # Derive PIT pass/fail from KS p-value (the actual field in tune files)

@@ -220,6 +220,32 @@ def _summarize_signal_calibration(cache: Dict[str, Dict[str, Any]], assets: List
     }
 
 
+def _summarize_durations_by_model(
+    cache: Dict[str, Dict[str, Any]],
+    durations: Dict[str, float],
+) -> Dict[str, Any]:
+    grouped: Dict[str, List[float]] = {}
+    for sym, seconds in durations.items():
+        entry = cache.get(sym)
+        if not isinstance(entry, dict):
+            model = "unknown"
+        else:
+            g = entry.get("global", entry)
+            model = str(g.get("best_model") or g.get("noise_model") or "unknown") if isinstance(g, dict) else "unknown"
+        grouped.setdefault(model, []).append(float(seconds))
+
+    out: Dict[str, Any] = {}
+    for model, vals in grouped.items():
+        vals_sorted = sorted(vals)
+        out[model] = {
+            "asset_count": len(vals_sorted),
+            "seconds_mean": statistics.fmean(vals_sorted),
+            "seconds_p50": statistics.median(vals_sorted),
+            "seconds_max": max(vals_sorted),
+        }
+    return dict(sorted(out.items(), key=lambda kv: (-kv[1]["seconds_mean"], kv[0])))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark retune on 50 stocks.")
     parser.add_argument("--cache-json", default="src/data/benchmarks/retune_50_cache")
@@ -299,6 +325,12 @@ def main() -> None:
         "duration_mean": statistics.fmean(durations.values()) if durations else None,
         "duration_p50": statistics.median(durations.values()) if durations else None,
         "duration_max": max(durations.values()) if durations else None,
+        "duration_by_asset": dict(sorted(durations.items(), key=lambda kv: kv[0])),
+        "slowest_assets": [
+            {"asset": sym, "seconds": seconds}
+            for sym, seconds in sorted(durations.items(), key=lambda kv: kv[1], reverse=True)[:10]
+        ],
+        "duration_by_best_model": _summarize_durations_by_model(cache, durations),
         "cache_summary": _summarize_cache(cache, assets),
         "signals_calibration_summary": _summarize_signal_calibration(cache, assets),
     }

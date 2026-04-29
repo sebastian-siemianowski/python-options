@@ -50,6 +50,7 @@ REFERENCE:
 """
 from __future__ import annotations
 
+import math
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Any, Callable
@@ -101,6 +102,38 @@ class IsotonicRecalibrationConfig:
 
 # Default configuration
 DEFAULT_RECALIBRATION_CONFIG = IsotonicRecalibrationConfig()
+
+
+def _fast_ks_uniform(pit_values: np.ndarray) -> Tuple[float, float]:
+    """Fast one-sample KS statistic against U(0, 1)."""
+    pit = np.asarray(pit_values, dtype=np.float64).ravel()
+    pit = pit[np.isfinite(pit)]
+    n = len(pit)
+    if n < 2:
+        return 1.0, 0.0
+
+    sorted_pit = np.sort(np.clip(pit, 0.0, 1.0))
+    ecdf = np.arange(1, n + 1, dtype=np.float64) / n
+    d_plus = float(np.max(ecdf - sorted_pit))
+    d_minus = float(np.max(sorted_pit - np.arange(0, n, dtype=np.float64) / n))
+    d_stat = max(d_plus, d_minus)
+
+    sqrt_n = math.sqrt(n)
+    lam = (sqrt_n + 0.12 + 0.11 / sqrt_n) * d_stat
+    if lam < 0.001:
+        p_value = 1.0
+    elif lam > 3.0:
+        p_value = 0.0
+    else:
+        lam2 = lam * lam
+        p_value = 2.0 * (
+            math.exp(-2.0 * lam2)
+            - math.exp(-8.0 * lam2)
+            + math.exp(-18.0 * lam2)
+            - math.exp(-32.0 * lam2)
+        )
+        p_value = min(1.0, max(0.0, p_value))
+    return d_stat, p_value
 
 
 # =============================================================================
@@ -458,8 +491,7 @@ class IsotonicRecalibrator:
     def _compute_ks(self, pit: np.ndarray) -> Tuple[float, float]:
         """Compute KS test statistic and p-value against uniform."""
         try:
-            result = stats.kstest(pit, 'uniform')
-            return float(result.statistic), float(result.pvalue)
+            return _fast_ks_uniform(pit)
         except Exception:
             return 1.0, 0.0
 

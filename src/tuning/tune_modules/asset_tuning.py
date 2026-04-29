@@ -30,6 +30,111 @@ __all__ = [
     "_tune_worker",
 ]
 
+REGIME_BMA_EFFECTIVE_MIN_SAMPLES = 120
+
+
+def _offline_mode_enabled() -> bool:
+    """True when the current tuning run is explicitly cache-only."""
+    return str(os.environ.get("OFFLINE_MODE", "")).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _build_global_data_from_bma(
+    asset: str,
+    bma_global: Dict[str, Any],
+    n_obs: int,
+    vol_estimator_used: str,
+) -> Dict[str, Any]:
+    """Build the legacy global block from the already-fitted BMA global models."""
+    models = bma_global.get("models", {}) if isinstance(bma_global, dict) else {}
+    posterior = bma_global.get("model_posterior", {}) if isinstance(bma_global, dict) else {}
+    valid_weights = {
+        m: float(w)
+        for m, w in posterior.items()
+        if isinstance(models.get(m), dict) and models[m].get("fit_success", False)
+    }
+    if valid_weights:
+        best_model = max(valid_weights, key=valid_weights.get)
+    else:
+        valid_models = [m for m, p in models.items() if isinstance(p, dict) and p.get("fit_success", False)]
+        best_model = valid_models[0] if valid_models else None
+    best_params = models.get(best_model, {}) if best_model else {}
+    if not isinstance(best_params, dict):
+        best_params = {}
+
+    return {
+        "asset": asset,
+        "q": float(best_params.get("q", 1e-6)),
+        "c": float(best_params.get("c", 1.0)),
+        "phi": best_params.get("phi"),
+        "nu": best_params.get("nu"),
+        "noise_model": best_model,
+        "best_model": best_model,
+        "q_base": best_params.get("q_base"),
+        "gamma": best_params.get("gamma"),
+        "rv_q_model": best_params.get("rv_q_model", False),
+        "unified_model": best_params.get("unified_model", False),
+        "gaussian_unified": best_params.get("gaussian_unified", False),
+        "alpha_asym": best_params.get("alpha_asym"),
+        "gamma_vov": best_params.get("gamma_vov"),
+        "ms_sensitivity": best_params.get("ms_sensitivity"),
+        "q_stress_ratio": best_params.get("q_stress_ratio"),
+        "vov_damping": best_params.get("vov_damping"),
+        "degraded": best_params.get("degraded", False),
+        "hessian_cond": best_params.get("hessian_cond"),
+        "pit_calibration_grade": best_params.get("pit_calibration_grade"),
+        "bic": float(best_params.get("bic", float("inf"))),
+        "aic": float(best_params.get("aic", float("inf"))),
+        "log_likelihood": float(best_params.get("log_likelihood", float("-inf"))),
+        "mean_log_likelihood": float(best_params.get("mean_log_likelihood", float("-inf"))),
+        "ks_statistic": float(best_params.get("ks_statistic", 0.0)),
+        "pit_ks_pvalue": float(best_params.get("pit_ks_pvalue", 0.0)),
+        "calibration_warning": best_params.get("pit_ks_pvalue", 1.0) < 0.05,
+        "n_obs": int(n_obs),
+        "volatility_estimator": vol_estimator_used,
+        "model_weights": posterior,
+        "model_posterior": posterior,
+        "models": models,
+        "model_comparison": {
+            m: {
+                "ll": p.get("log_likelihood", float("-inf")),
+                "bic": p.get("bic", float("inf")),
+                "aic": p.get("aic", float("inf")),
+                "fit_success": p.get("fit_success", False),
+            }
+            for m, p in models.items()
+            if isinstance(p, dict)
+        },
+        "hyvarinen_max": bma_global.get("hyvarinen_max"),
+        "combined_score_min": bma_global.get("combined_score_min"),
+        "bic_min": bma_global.get("bic_min"),
+        "model_selection_method": bma_global.get("model_selection_method"),
+        "bic_weight": bma_global.get("bic_weight"),
+        "entropy_lambda": bma_global.get("entropy_lambda"),
+        "pit_penalty_applied": bma_global.get("pit_penalty_applied", False),
+        "pit_penalty": bma_global.get("pit_penalty"),
+        "hansen_skew_t": None,
+        "hansen_skew_t_diagnostics": best_params.get("hansen_diagnostics"),
+        "hansen_vs_symmetric_comparison": None,
+        "evt": None,
+        "evt_diagnostics": {"fit_success": False, "error": "duplicate_global_fit_deleted"},
+        "evt_student_t_consistency": None,
+        "evt_splice": None,
+        "evt_splice_attempted": False,
+        "evt_splice_selected": False,
+        "contaminated_student_t": None,
+        "contaminated_student_t_diagnostics": best_params.get("cst_diagnostics"),
+        "contaminated_vs_single_comparison": None,
+        "nu_refinement": None,
+        "nu_refinement_attempted": False,
+        "nu_refinement_improved": False,
+        "market_conditioning_enabled": MARKET_CONDITIONING_ENABLED and MARKET_CONDITIONING_AVAILABLE,
+        "vix_nu_adjustment_enabled": (
+            MARKET_CONDITIONING_ENABLED
+            and MARKET_CONDITIONING_AVAILABLE
+            and best_params.get("nu") is not None
+        ),
+    }
+
 
 def tune_asset_with_bma(
     asset: str,
@@ -297,19 +402,6 @@ def tune_asset_with_bma(
         regime_counts = {r: int(np.sum(regime_labels == r)) for r in range(5)}
         _log(f"     Regime distribution: " + ", ".join([f"{REGIME_LABELS[r]}={c}" for r, c in sorted(regime_counts.items()) if c > 0]))
 
-        # First get global params (for backward compatibility)
-        _log(f"     🔧 Estimating global parameters...")
-        global_result = tune_asset_q(
-            asset=asset,
-            start_date=start_date,
-            end_date=end_date,
-            prior_log_q_mean=prior_log_q_mean,
-            prior_lambda=prior_lambda
-        )
-
-        if global_result is None:
-            return None
-
         # =================================================================
         # BAYESIAN MODEL AVERAGING: Fit ALL models for each regime
         # =================================================================
@@ -346,7 +438,7 @@ def tune_asset_with_bma(
             regime_labels=regime_labels,
             prior_log_q_mean=prior_log_q_mean,
             prior_lambda=prior_lambda,
-            min_samples=MIN_REGIME_SAMPLES,
+            min_samples=max(MIN_REGIME_SAMPLES, REGIME_BMA_EFFECTIVE_MIN_SAMPLES),
             temporal_alpha=DEFAULT_TEMPORAL_ALPHA,
             previous_posteriors=previous_posteriors,  # Use provided previous posteriors
             lambda_regime=lambda_regime,
@@ -366,10 +458,15 @@ def tune_asset_with_bma(
             if r_data.get("regime_meta", {}).get("collapse_warning", False):
                 collapse_warnings += 1
 
-        # Build combined result with BMA structure
-        # Note: tune_asset_q now returns {"has_bma": True, "global": {...}}
-        # We need to extract the inner global data
-        global_data = global_result.get('global', global_result)  # Backward compatible
+        # Build combined result with BMA structure. The BMA pass already fit
+        # global models, so derive legacy global fields from that result instead
+        # of paying for a second tune_asset_q global fit.
+        global_data = _build_global_data_from_bma(
+            asset=asset,
+            bma_global=bma_result.get("global", {}),
+            n_obs=len(returns),
+            vol_estimator_used=vol_estimator_used,
+        )
         
         result = {
             "asset": asset,
@@ -561,7 +658,7 @@ def tune_asset_with_bma(
         # Story 8.3: VIX-conditional nu
         # vix_conditional_nu(nu_base, vix_current) adjusts nu based on VIX level.
         # Fetch current VIX from market_conditioning module.
-        if VIX_CONDITIONAL_NU_AVAILABLE and _diag_nu is not None:
+        if VIX_CONDITIONAL_NU_AVAILABLE and _diag_nu is not None and not _offline_mode_enabled():
             try:
                 _vix_current = None
                 try:
@@ -614,14 +711,6 @@ def tune_asset_with_bma(
                 result["diagnostics"]["soft_regime_membership"] = {
                     "p_high_vol": float(_srm.p_high_vol) if hasattr(_srm, 'p_high_vol') else 0.0,
                     "p_trending": float(_srm.p_trending) if hasattr(_srm, 'p_trending') else 0.0,
-                }
-            except Exception:
-                pass
-            try:
-                _hmm = hmm_regime_fit(vol, returns)
-                result["diagnostics"]["hmm_regime"] = {
-                    "n_regimes": int(_hmm.n_regimes) if hasattr(_hmm, 'n_regimes') else 0,
-                    "converged": bool(_hmm.converged) if hasattr(_hmm, 'converged') else False,
                 }
             except Exception:
                 pass
@@ -802,5 +891,3 @@ def _tune_worker(args_tuple: Tuple[str, str, Optional[str], float, float, float,
         import traceback
         tb_str = traceback.format_exc()
         return (asset, None, str(e), tb_str)
-
-

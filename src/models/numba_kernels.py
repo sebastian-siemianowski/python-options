@@ -2336,14 +2336,26 @@ def phi_student_t_augmented_filter_kernel(
         S_pred_arr[t] = S
 
         innovation = returns[t] - mu_pred
-        K = P_pred / S
 
         if robust_wt:
             z_sq = (innovation * innovation) / S
             w_t = (nu + 1.0) / (nu + z_sq)
-            mu = mu_pred + K * w_t * innovation
-            P = (1.0 - w_t * K) * P_pred
+            if w_t < 0.05:
+                w_t = 0.05
+            elif w_t > 20.0:
+                w_t = 20.0
+            R_eff = R[t] / w_t
+            if R_eff < 1e-20:
+                R_eff = 1e-20
+            S_eff = P_pred + R_eff
+            if S_eff < 1e-20:
+                S_eff = 1e-20
+            K = P_pred / S_eff
+            mu = mu_pred + K * innovation
+            one_minus_K = 1.0 - K
+            P = one_minus_K * one_minus_K * P_pred + K * K * R_eff
         else:
+            K = P_pred / S
             mu = mu_pred + K * innovation
             P = (1.0 - K) * P_pred
 
@@ -2463,14 +2475,26 @@ def phi_student_t_enhanced_filter_kernel(
         S_pred_arr[t] = S
 
         innovation = returns[t] - mu_pred
-        K = P_pred / S
 
         if robust_wt:
             z_sq = (innovation * innovation) / S
             w_t = (nu + 1.0) / (nu + z_sq)
-            mu = mu_pred + K * w_t * innovation
-            P = (1.0 - w_t * K) * P_pred
+            if w_t < 0.05:
+                w_t = 0.05
+            elif w_t > 20.0:
+                w_t = 20.0
+            R_eff = R_t / w_t
+            if R_eff < 1e-20:
+                R_eff = 1e-20
+            S_eff = P_pred + R_eff
+            if S_eff < 1e-20:
+                S_eff = 1e-20
+            K = P_pred / S_eff
+            mu = mu_pred + K * innovation
+            one_minus_K = 1.0 - K
+            P = one_minus_K * one_minus_K * P_pred + K * K * R_eff
         else:
+            K = P_pred / S
             mu = mu_pred + K * innovation
             P = (1.0 - K) * P_pred
 
@@ -3376,14 +3400,10 @@ def unified_phi_student_t_filter_kernel(
         elif nu_eff > 50.0:
             nu_eff = 50.0
         
-        # Standard Kalman gain (robust weighting via w_t below)
-        K = P_pred / S
-        
         # Robust Student-t weighting (downweight outliers)
         z_sq = innovation * innovation / S
         w_t = (nu_eff + 1.0) / (nu_eff + z_sq)
-        
-        # State update with robust weighting
+        K = P_pred / S
         mu = mu_pred + K * w_t * innovation
         P = (1.0 - w_t * K) * P_pred
         if P < _MIN_VARIANCE:
@@ -3597,9 +3617,6 @@ def unified_phi_student_t_filter_extended_kernel(
             elif nu_eff > 50.0:
                 nu_eff = 50.0
 
-        # Standard Kalman gain (robust weighting via w_t below)
-        K = P_pred / S_diffusion
-
         # Robust Student-t weighting
         z_sq_diffusion = (innovation * innovation) / S_diffusion
         w_t = (nu_eff + 1.0) / (nu_eff + z_sq_diffusion)
@@ -3641,8 +3658,7 @@ def unified_phi_student_t_filter_extended_kernel(
 
             # Reduce Kalman update weight for likely jumps
             w_t *= (1.0 - 0.7 * p_jump_post)
-
-        # State update with robust weighting
+        K = P_pred / S_diffusion
         mu = mu_pred + K * w_t * innovation
         P = (1.0 - w_t * K) * P_pred
         if P < _MIN_VARIANCE:
@@ -6245,6 +6261,7 @@ def phi_student_t_cv_test_fold_kernel(
     gamma_vov: float,
     vov_rolling: np.ndarray,
     use_vov: int,
+    online_scale_adapt: int,
 ) -> float:
     """
     Numba-compiled φ-Student-t forward pass on a single CV test fold.
@@ -6282,14 +6299,31 @@ def phi_student_t_cv_test_fold_kernel(
     ll_fold = 0.0
     phi_sq = phi * phi
     nu_p1 = nu_val + 1.0
+    chi2_tgt = nu_val / (nu_val - 2.0) if nu_val > 2.0 else 1.0
+    chi2_lam = 0.98
+    chi2_1m = 1.0 - chi2_lam
+    chi2_cap = chi2_tgt * 50.0
+    ewm_z2 = chi2_tgt
+    c_adj = 1.0
+    osa_strength = (chi2_tgt - 1.0) / 0.5 if nu_val > 2.0 else 1.0
+    if osa_strength > 1.0:
+        osa_strength = 1.0
+    elif osa_strength < 0.0:
+        osa_strength = 0.0
 
     for t in range(test_start, test_end):
         mu_p = phi * mu_p
         P_p = phi_sq * P_p + q
 
-        R_t = c * vol_sq[t]
+        c_eff = c * c_adj if online_scale_adapt == 1 else c
+        R_t = c_eff * vol_sq[t]
         if use_vov == 1:
-            R_t *= (1.0 + gamma_vov * vov_rolling[t])
+            vov_mult = 1.0 + gamma_vov * vov_rolling[t]
+            if vov_mult < 0.05:
+                vov_mult = 0.05
+            elif vov_mult > 20.0:
+                vov_mult = 20.0
+            R_t *= vov_mult
         S = P_p + R_t
         if S < 1e-12:
             S = 1e-12
@@ -6303,13 +6337,51 @@ def phi_student_t_cv_test_fold_kernel(
             if ll_t == ll_t:  # isfinite check in Numba
                 ll_fold += ll_t
 
-        # Robust Kalman gain (Meinhold & Singpurwalla 1989)
-        K = P_p / S
+        # Precision-weighted Joseph update: the Student-t weight modifies
+        # observation precision, while the covariance update stays positive.
         w_cv = nu_p1 / (nu_val + z_sq_cv)
-        mu_p = mu_p + K * w_cv * inn
-        P_p = (1.0 - w_cv * K) * P_p
+        if w_cv < 0.05:
+            w_cv = 0.05
+        elif w_cv > 20.0:
+            w_cv = 20.0
+        R_eff = R_t / w_cv
+        if R_eff < 1e-20:
+            R_eff = 1e-20
+        S_eff = P_p + R_eff
+        if S_eff < 1e-20:
+            S_eff = 1e-20
+        K = P_p / S_eff
+        mu_p = mu_p + K * inn
+        one_minus_K = 1.0 - K
+        P_p = one_minus_K * one_minus_K * P_p + K * K * R_eff
         if P_p < 1e-12:
             P_p = 1e-12
+
+        if online_scale_adapt == 1 and scale > 1e-12:
+            z2w = z * z
+            if z2w > chi2_cap:
+                z2w = chi2_cap
+            ewm_z2 = chi2_lam * ewm_z2 + chi2_1m * z2w
+            ratio = ewm_z2 / chi2_tgt if chi2_tgt > 1e-12 else 1.0
+            if ratio < 0.3:
+                ratio = 0.3
+            elif ratio > 3.0:
+                ratio = 3.0
+            dev = ratio - 1.0 if ratio >= 1.0 else 1.0 - ratio
+            if ratio >= 1.0:
+                dz_lo = 0.25
+                dz_rng = 0.25
+            else:
+                dz_lo = 0.05
+                dz_rng = 0.10
+            if dev < dz_lo:
+                c_adj = 1.0
+            elif dev >= dz_lo + dz_rng:
+                c_adj = 1.0 + osa_strength * (np.sqrt(ratio) - 1.0)
+            else:
+                s_frac = (dev - dz_lo) / dz_rng
+                c_adj_raw = 1.0 + s_frac * (np.sqrt(ratio) - 1.0)
+                c_adj = 1.0 + osa_strength * (c_adj_raw - 1.0)
 
     return ll_fold
 
@@ -6390,14 +6462,26 @@ def phi_student_t_train_state_only_kernel(
             S = 1e-12
 
         innovation = returns[t] - mu_pred
-        K = P_pred / S
 
         if robust_wt == 1:
             z_sq_update = (innovation * innovation) / S
             w_t = nu_p1 / (nu + z_sq_update)
-            mu = mu_pred + K * w_t * innovation
-            P = (1.0 - w_t * K) * P_pred
+            if w_t < 0.05:
+                w_t = 0.05
+            elif w_t > 20.0:
+                w_t = 20.0
+            R_eff = R_t / w_t
+            if R_eff < 1e-20:
+                R_eff = 1e-20
+            S_eff = P_pred + R_eff
+            if S_eff < 1e-20:
+                S_eff = 1e-20
+            K = P_pred / S_eff
+            mu = mu_pred + K * innovation
+            one_minus_K = 1.0 - K
+            P = one_minus_K * one_minus_K * P_pred + K * K * R_eff
         else:
+            K = P_pred / S
             mu = mu_pred + K * innovation
             P = (1.0 - K) * P_pred
 

@@ -58,8 +58,10 @@ TICKER_ALIASES: dict[str, str] = {
     "CAP": "CAP.PA",       # Capgemini
     "DG": "DG.PA",         # Vinci
     "EXA": "EXA.PA",       # Exail Technologies
+    "AM": "AM.PA",         # Dassault Aviation
 
     # ── Warsaw GPW (suffix .WA) ─────────────────────────────────────────────
+    "ACP": "ACP.WA",       # Asseco Poland SA
     "SNT": "SNT.WA",       # Synektik SA
 
     # ── Oslo Boers (suffix .OL) ─────────────────────────────────────────────

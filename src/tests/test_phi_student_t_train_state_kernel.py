@@ -16,6 +16,7 @@ from models.gaussian import GaussianDriftModel
 from models.numba_wrappers import (
     is_numba_available,
     run_phi_gaussian_train_state,
+    run_phi_student_t_cv_test_fold,
     run_phi_student_t_train_state_only,
     run_phi_student_t_improved_cv_test_fold,
     run_phi_student_t_improved_train_state_only,
@@ -263,6 +264,108 @@ class PhiStudentTTrainStateKernelTest(unittest.TestCase):
         self.assertAlmostEqual(z2_fast, z2_ref, places=11)
         self.assertEqual(sign_count_fast, sign_count_ref)
         self.assertAlmostEqual(sign_brier_fast, sign_brier_ref, places=11)
+
+    def test_canonical_cv_fold_kernel_matches_python_joseph_osa_loop(self):
+        rng = np.random.default_rng(29)
+        returns = np.ascontiguousarray(rng.standard_t(4, size=220) * 0.013, dtype=np.float64)
+        vol = np.ascontiguousarray(
+            np.maximum(0.005, 0.012 + 0.002 * rng.standard_normal(220)),
+            dtype=np.float64,
+        )
+        vol_sq = np.ascontiguousarray(vol * vol, dtype=np.float64)
+        vov = PhiStudentTDriftModel._precompute_vov(vol)
+
+        q = 2.4e-6
+        c = 1.45
+        phi = 0.51
+        nu = 5.0
+        nu_scale = (nu - 2.0) / nu
+        log_norm = (
+            gammaln((nu + 1.0) / 2.0)
+            - gammaln(nu / 2.0)
+            - 0.5 * np.log(nu * np.pi)
+        )
+        neg_exp = -0.5 * (nu + 1.0)
+        inv_nu = 1.0 / nu
+
+        mu_last, P_last = run_phi_student_t_train_state_only(
+            returns,
+            vol_sq,
+            q,
+            c,
+            phi,
+            nu,
+            0,
+            150,
+            gamma_vov=0.25,
+            vov_rolling=vov,
+            robust_wt=True,
+            online_scale_adapt=True,
+        )
+        ll_fast = run_phi_student_t_cv_test_fold(
+            returns,
+            vol_sq,
+            q,
+            c,
+            phi,
+            nu_scale,
+            log_norm,
+            neg_exp,
+            inv_nu,
+            mu_last,
+            P_last,
+            150,
+            205,
+            nu_val=nu,
+            gamma_vov=0.25,
+            vov_rolling=vov,
+            online_scale_adapt=True,
+        )
+
+        mu_p = mu_last
+        P_p = P_last
+        c_adj = 1.0
+        chi2_tgt = nu / (nu - 2.0)
+        ewm_z2 = chi2_tgt
+        osa_strength = min(1.0, (chi2_tgt - 1.0) / 0.5)
+        ll_ref = 0.0
+        phi_sq = phi * phi
+        for t in range(150, 205):
+            mu_p = phi * mu_p
+            P_p = phi_sq * P_p + q
+            R_t = c * c_adj * vol_sq[t]
+            R_t *= max(0.05, min(20.0, 1.0 + 0.25 * vov[t]))
+            S = max(P_p + R_t, 1e-12)
+            inn = returns[t] - mu_p
+            z_sq_s = (inn * inn) / S
+            scale = np.sqrt(S * nu_scale)
+            z = inn / scale
+            ll_ref += log_norm - np.log(scale) + neg_exp * np.log1p(z * z * inv_nu)
+            w_t = float(np.clip((nu + 1.0) / (nu + z_sq_s), 0.05, 20.0))
+            R_eff = max(R_t / max(w_t, 1e-8), 1e-20)
+            S_eff = max(P_p + R_eff, 1e-20)
+            K = P_p / S_eff
+            mu_p = mu_p + K * inn
+            P_p = (1.0 - K) * (1.0 - K) * P_p + K * K * R_eff
+            P_p = max(P_p, 1e-12)
+            z2w = min(z * z, chi2_tgt * 50.0)
+            ewm_z2 = 0.98 * ewm_z2 + 0.02 * z2w
+            ratio = float(np.clip(ewm_z2 / chi2_tgt, 0.3, 3.0))
+            dev = ratio - 1.0 if ratio >= 1.0 else 1.0 - ratio
+            if ratio >= 1.0:
+                dz_lo, dz_rng = 0.25, 0.25
+            else:
+                dz_lo, dz_rng = 0.05, 0.10
+            if dev < dz_lo:
+                c_adj = 1.0
+            elif dev >= dz_lo + dz_rng:
+                c_adj = 1.0 + osa_strength * (np.sqrt(ratio) - 1.0)
+            else:
+                s_frac = (dev - dz_lo) / dz_rng
+                c_adj_raw = 1.0 + s_frac * (np.sqrt(ratio) - 1.0)
+                c_adj = 1.0 + osa_strength * (c_adj_raw - 1.0)
+
+        self.assertAlmostEqual(ll_fast, ll_ref, places=11)
 
 
 if __name__ == "__main__":

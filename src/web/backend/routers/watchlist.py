@@ -18,7 +18,7 @@ from typing import List
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from .ticker_aliases import canonicalize
+from .ticker_aliases import TICKER_ALIASES, canonicalize
 
 router = APIRouter()
 
@@ -169,13 +169,36 @@ class ProxyMapResponse(BaseModel):
 
 @router.get("/proxy-map", response_model=ProxyMapResponse)
 def get_proxy_map() -> ProxyMapResponse:
+    proxies: dict[str, str] = {}
     try:
         # Import lazily so this module has no hard dependency on ingestion at
         # import time (the ingestion module pulls heavy numeric deps).
-        from ingestion.data_utils import PROXY_OVERRIDES  # type: ignore
+        from ingestion.data_utils import DEFAULT_ASSET_UNIVERSE, PROXY_OVERRIDES, normalize_yahoo_ticker  # type: ignore
     except Exception:
-        return ProxyMapResponse(proxies={})
-    # Defensive copy as plain dict of str->str.
-    return ProxyMapResponse(
-        proxies={str(k).upper(): str(v) for k, v in PROXY_OVERRIDES.items()}
-    )
+        DEFAULT_ASSET_UNIVERSE = []
+        PROXY_OVERRIDES = {}
+        normalize_yahoo_ticker = None
+
+    # Defensive copy as plain dict of str->str. Include both explicit proxy
+    # overrides and deterministic Yahoo normalisations from the internal
+    # universe so persisted raw watchlist symbols can match tuned signal rows.
+    for key, value in PROXY_OVERRIDES.items():
+        proxies[str(key).upper()] = str(value).upper()
+
+    for key, value in TICKER_ALIASES.items():
+        proxies[str(key).upper()] = str(value).upper()
+
+    if normalize_yahoo_ticker is not None:
+        for symbol in DEFAULT_ASSET_UNIVERSE:
+            try:
+                normalized, meta = normalize_yahoo_ticker(str(symbol), perform_lookup=False)
+            except Exception:
+                continue
+            if normalized and str(normalized).upper() != str(symbol).upper():
+                proxies[str(symbol).upper()] = str(normalized).upper()
+                if isinstance(meta, dict):
+                    original = meta.get("original")
+                    if original:
+                        proxies[str(original).upper()] = str(normalized).upper()
+
+    return ProxyMapResponse(proxies=proxies)

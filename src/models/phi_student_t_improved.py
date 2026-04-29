@@ -1797,6 +1797,16 @@ class PhiStudentTDriftModel:
         return float(np.clip(float(nu), max(2.001, float(nu_min)), max(float(nu_min), float(nu_max))))
 
     @staticmethod
+    def _use_online_scale_adaptation(nu: float) -> bool:
+        mode = os.environ.get("PHI_STUDENT_T_IMPROVED_OSA_MODE", "always").strip().lower()
+        if mode in {"0", "off", "false", "disabled", "none"}:
+            return False
+        if mode in {"tail", "tail_adaptive", "adaptive", "heavy_tail"}:
+            nu_max = float(os.environ.get("PHI_STUDENT_T_IMPROVED_OSA_NU_MAX", "8.0"))
+            return float(nu) <= nu_max
+        return True
+
+    @staticmethod
     def _variance_to_scale(variance: float, nu: float) -> float:
         """Convert predictive variance to Student-t scale with hard finite guards."""
         return variance_to_scale(variance, nu)
@@ -2023,7 +2033,7 @@ class PhiStudentTDriftModel:
         scale_factor = (nu_val - 2.0) / nu_val if nu_val > 2.0 else 1.0
         has_vov = gamma_vov > 1e-12 and vov_rolling is not None
         vov_full = np.ascontiguousarray(vov_rolling, dtype=np.float64) if has_vov else None
-        use_osa = True
+        use_osa = cls._use_online_scale_adaptation(nu_val)
         p_floor = max(float(_P_MIN), 1e-12)
         p_cap = max(float(_P_MAX), 100.0 * vol_var_med, 1e-6)
         asset_class = _detect_asset_class(asset_symbol, returns=ret_train0) if asset_symbol else None
@@ -2435,7 +2445,7 @@ class PhiStudentTDriftModel:
         # Graduated OSA: always enabled (March 2026 v2)
         # chi² target ν/(ν-2) naturally graduates strength:
         #   ν=3: tgt=3.0 (strong), ν=8: tgt=1.33 (moderate), ν=20: tgt=1.11 (gentle)
-        _use_osa = True
+        _use_osa = cls._use_online_scale_adaptation(nu_fixed)
         mu_st, P_st, mu_pred_st, S_pred_st, ll_full_st = cls.filter_phi_with_predictive(
             returns, vol, q_st, c_st, phi_st, nu_fixed,
             robust_wt=True,
@@ -2603,75 +2613,87 @@ class PhiStudentTDriftModel:
         # If the model is already well-calibrated (PIT ≥ 0.10), use the
         # narrow grid (preserves speed). If PIT < 0.10, activate the
         # extended grid to search wider ν space (targets DFSC/APLM/ESLT).
+        _nu_refinement_enabled = (
+            os.environ.get("PHI_STUDENT_T_IMPROVED_REFINE_NU", "1").strip().lower()
+            not in {"0", "off", "false", "disabled", "none"}
+        )
+        _dynamic_nu_candidates_enabled = (
+            os.environ.get("PHI_STUDENT_T_IMPROVED_DYNAMIC_NU_CANDIDATES", "0").strip().lower()
+            not in {"0", "off", "false", "disabled", "none"}
+        )
         _pit_needs_rescue = pit_p_st < 0.10
-        if _pit_needs_rescue:
+        if not _nu_refinement_enabled:
+            _nu_refine_grid = []
+        elif _pit_needs_rescue:
             _nu_refine_grid = list(cls._NU_REFINE_EXTENDED.get(nu_fixed, []))
         else:
             _nu_refine_grid = list(cls._NU_REFINE.get(nu_fixed, []))
 
         # ── Continuous ν via Newton-Raphson (Lange-Little-Taylor 1989) ──
         # Raised NR cap from 30→60 to explore near-Gaussian tails
-        try:
-            from scipy.special import digamma as _digamma, polygamma as _pg_nr
-            _z_nu = (returns - mu_pred_st) / np.maximum(forecast_scale_st, 1e-10)
-            _z2_nu = _z_nu * _z_nu
-            _nu_nr = float(nu_fixed)
-            for _nr_iter in range(3):
-                _nv = _nu_nr
-                _nv2 = _nv / 2.0
-                _nvp = (_nv + 1.0) / 2.0
-                _ph = _digamma(_nv2)
-                _ph1 = _digamma(_nvp)
-                _tr = _pg_nr(1, _nv2)
-                _tr1 = _pg_nr(1, _nvp)
-                _nz_arr = _nv + _z2_nu
-                _s_vec = (-_ph + _ph1 + math.log(_nv) - np.log(_nz_arr)
-                          + (_z2_nu - 1.0) / _nz_arr)
-                _ds_vec = (-0.5 * _tr + 0.5 * _tr1 + 1.0 / _nv
-                           - 1.0 / _nz_arr
-                           - (_z2_nu - 1.0) / (_nz_arr ** 2))
-                _s_mean = float(np.mean(_s_vec)) / 2.0
-                _ds_mean = float(np.mean(_ds_vec)) / 2.0
-                if abs(_ds_mean) < 1e-15:
-                    break
-                _nu_nr = max(2.1, min(60.0, _nu_nr - _s_mean / _ds_mean))
-            if 2.1 <= _nu_nr <= 60.0:
-                if all(abs(_nu_nr - _g) > 0.3 for _g in _nu_refine_grid):
-                    _nu_refine_grid.append(_nu_nr)
-        except Exception:
-            pass
+        if _nu_refinement_enabled and _dynamic_nu_candidates_enabled:
+            try:
+                from scipy.special import digamma as _digamma, polygamma as _pg_nr
+                _z_nu = (returns - mu_pred_st) / np.maximum(forecast_scale_st, 1e-10)
+                _z2_nu = _z_nu * _z_nu
+                _nu_nr = float(nu_fixed)
+                for _nr_iter in range(3):
+                    _nv = _nu_nr
+                    _nv2 = _nv / 2.0
+                    _nvp = (_nv + 1.0) / 2.0
+                    _ph = _digamma(_nv2)
+                    _ph1 = _digamma(_nvp)
+                    _tr = _pg_nr(1, _nv2)
+                    _tr1 = _pg_nr(1, _nvp)
+                    _nz_arr = _nv + _z2_nu
+                    _s_vec = (-_ph + _ph1 + math.log(_nv) - np.log(_nz_arr)
+                              + (_z2_nu - 1.0) / _nz_arr)
+                    _ds_vec = (-0.5 * _tr + 0.5 * _tr1 + 1.0 / _nv
+                               - 1.0 / _nz_arr
+                               - (_z2_nu - 1.0) / (_nz_arr ** 2))
+                    _s_mean = float(np.mean(_s_vec)) / 2.0
+                    _ds_mean = float(np.mean(_ds_vec)) / 2.0
+                    if abs(_ds_mean) < 1e-15:
+                        break
+                    _nu_nr = max(2.1, min(60.0, _nu_nr - _s_mean / _ds_mean))
+                if 2.1 <= _nu_nr <= 60.0:
+                    if all(abs(_nu_nr - _g) > 0.3 for _g in _nu_refine_grid):
+                        _nu_refine_grid.append(_nu_nr)
+            except Exception:
+                pass
 
         # ── Score-driven GAS ν (Creal-Koopman-Lucas 2013) ──────────────
-        try:
-            from scipy.special import digamma as _dg, polygamma as _pg
-            _z_gas = (returns - mu_pred_st) / np.maximum(forecast_scale_st, 1e-10)
-            _z2_gas = _z_gas * _z_gas
-            _n_gas = len(_z2_gas)
-            _nu_t = float(nu_fixed)
-            _omega_gas = float(nu_fixed) * 0.02
-            _beta_gas = 0.98
-            _alpha_gas = 0.15
-            _nu_series = np.empty(_n_gas, dtype=np.float64)
-            for _ig in range(_n_gas):
-                _nu_t = max(2.2, min(50.0, _nu_t))
-                _nu_series[_ig] = _nu_t
-                _nv2 = _nu_t / 2.0
-                _nvp = (_nu_t + 1.0) / 2.0
-                _s_t = (0.5 * (_dg(_nvp) - _dg(_nv2) - 1.0 / _nu_t
-                         + math.log(_nu_t / (_nu_t + _z2_gas[_ig]))
-                         + (_nu_t + 1.0) * _z2_gas[_ig]
-                         / (_nu_t * (_nu_t + _z2_gas[_ig]))))
-                _I_nu = 0.5 * (_pg(1, _nvp) - _pg(1, _nv2)
-                               - 2.0 * (_nu_t + 3.0)
-                               / (_nu_t * (_nu_t + 1.0) ** 2))
-                _fisher_inv_sqrt = 1.0 / math.sqrt(max(_I_nu, 1e-8))
-                _nu_t = _omega_gas + _beta_gas * _nu_t + _alpha_gas * _s_t * _fisher_inv_sqrt
-            _nu_gas_med = float(np.median(_nu_series[max(0, _n_gas // 4):]))
-            _nu_gas_med = max(2.2, min(60.0, _nu_gas_med))
-            if all(abs(_nu_gas_med - _g) > 0.3 for _g in _nu_refine_grid):
-                _nu_refine_grid.append(_nu_gas_med)
-        except Exception:
-            pass
+        if _nu_refinement_enabled and _dynamic_nu_candidates_enabled:
+            try:
+                from scipy.special import digamma as _dg, polygamma as _pg
+                _z_gas = (returns - mu_pred_st) / np.maximum(forecast_scale_st, 1e-10)
+                _z2_gas = _z_gas * _z_gas
+                _n_gas = len(_z2_gas)
+                _nu_t = float(nu_fixed)
+                _omega_gas = float(nu_fixed) * 0.02
+                _beta_gas = 0.98
+                _alpha_gas = 0.15
+                _nu_series = np.empty(_n_gas, dtype=np.float64)
+                for _ig in range(_n_gas):
+                    _nu_t = max(2.2, min(50.0, _nu_t))
+                    _nu_series[_ig] = _nu_t
+                    _nv2 = _nu_t / 2.0
+                    _nvp = (_nu_t + 1.0) / 2.0
+                    _s_t = (0.5 * (_dg(_nvp) - _dg(_nv2) - 1.0 / _nu_t
+                             + math.log(_nu_t / (_nu_t + _z2_gas[_ig]))
+                             + (_nu_t + 1.0) * _z2_gas[_ig]
+                             / (_nu_t * (_nu_t + _z2_gas[_ig]))))
+                    _I_nu = 0.5 * (_pg(1, _nvp) - _pg(1, _nv2)
+                                   - 2.0 * (_nu_t + 3.0)
+                                   / (_nu_t * (_nu_t + 1.0) ** 2))
+                    _fisher_inv_sqrt = 1.0 / math.sqrt(max(_I_nu, 1e-8))
+                    _nu_t = _omega_gas + _beta_gas * _nu_t + _alpha_gas * _s_t * _fisher_inv_sqrt
+                _nu_gas_med = float(np.median(_nu_series[max(0, _n_gas // 4):]))
+                _nu_gas_med = max(2.2, min(60.0, _nu_gas_med))
+                if all(abs(_nu_gas_med - _g) > 0.3 for _g in _nu_refine_grid):
+                    _nu_refine_grid.append(_nu_gas_med)
+            except Exception:
+                pass
 
         # ── ν grid search: skip-refilter + profile c + PIT-rescue ──────
         # March 2026 v2: Five interleaved improvements
@@ -2921,7 +2943,7 @@ class PhiStudentTDriftModel:
                 _mom_u_t = momentum_wrapper._exogenous_input
                 _mom_phi_eff = apply_phi_shrinkage_for_mr(
                     phi_st, momentum_wrapper.config)
-                _use_osa_mom = True  # Graduated OSA
+                _use_osa_mom = cls._use_online_scale_adaptation(_best_nu_eff)
                 _, _, mu_pred_mom, S_pred_mom, _ = cls.filter_phi_with_predictive(
                     returns, vol, q_st, c_st, _mom_phi_eff, _best_nu_eff,
                     exogenous_input=_mom_u_t,
@@ -2976,6 +2998,7 @@ class PhiStudentTDriftModel:
         _hansen_activated = False
         _hansen_lambda = 0.0
         _hansen_diag = None
+        _use_osa_aug = cls._use_online_scale_adaptation(_best_nu_eff)
         try:
             from models.hansen_skew_t import fit_hansen_skew_t_mle, hansen_skew_t_cdf
             # Compute standardised residuals for Hansen MLE
@@ -2999,7 +3022,7 @@ class PhiStudentTDriftModel:
                                     returns, vol, q_st, c_st, phi_st, _best_nu_eff,
                                     hansen_lambda=_lam_h,
                                     exogenous_input=_exo,
-                                    online_scale_adapt=True,
+                                    online_scale_adapt=_use_osa_aug,
                                     gamma_vov=gamma_vov if gamma_vov else 0.0,
                                     vov_rolling=vov_rolling,
                                 )
@@ -3007,7 +3030,8 @@ class PhiStudentTDriftModel:
                                 # Python fallback if Numba not available
                                 mu_f_h, P_f_h, mu_p_h, S_p_h, ll_h = cls._filter_phi_core(
                                     returns, vol, q_st, c_st, phi_st, _best_nu_eff,
-                                    robust_wt=True, online_scale_adapt=True,
+                                    robust_wt=True,
+                                    online_scale_adapt=_use_osa_aug,
                                     gamma_vov=gamma_vov if gamma_vov else 0.0,
                                     vov_rolling=vov_rolling,
                                 )
@@ -3050,7 +3074,7 @@ class PhiStudentTDriftModel:
                                     returns, vol, q_st, c_st, phi_st, _best_nu_eff,
                                     mu_pred_precomputed=mu_p_h,
                                     S_pred_precomputed=S_p_h,
-                                    scale_already_adapted=True,
+                                    scale_already_adapted=_use_osa_aug,
                                 )
                                 ks_st = pit_ext_h["ks_statistic"]
                                 pit_p_st = pit_ext_h["pit_ks_pvalue"]
@@ -3100,7 +3124,7 @@ class PhiStudentTDriftModel:
                                 nu_crisis=_nc,
                                 epsilon=_eps,
                                 exogenous_input=_exo_cst,
-                                online_scale_adapt=True,
+                                online_scale_adapt=_use_osa_aug,
                                 gamma_vov=gamma_vov if gamma_vov else 0.0,
                                 vov_rolling=vov_rolling,
                             )
@@ -3148,7 +3172,7 @@ class PhiStudentTDriftModel:
                         returns, vol, q_st, c_st, phi_st, _best_nu_eff,
                         mu_pred_precomputed=mu_p_c,
                         S_pred_precomputed=S_p_c,
-                        scale_already_adapted=True,
+                        scale_already_adapted=_use_osa_aug,
                     )
                     ks_st = pit_ext_c["ks_statistic"]
                     pit_p_st = pit_ext_c["pit_ks_pvalue"]
@@ -3273,6 +3297,8 @@ class PhiStudentTDriftModel:
             "histogram_mad": float(_mad_st),
             "fit_success": True,
             "diagnostics": diag_st,
+            "nu_refinement_enabled": bool(_nu_refinement_enabled),
+            "dynamic_nu_candidates_enabled": bool(_dynamic_nu_candidates_enabled),
             "nu_fixed": True,
             "momentum_augmented": _mom_activated,
             "momentum_diagnostics": _mom_diag,
@@ -3514,7 +3540,7 @@ class PhiStudentTDriftModel:
         online_scale_adapt: bool = False,
         gamma_vov: float = 0.0,
         vov_rolling: np.ndarray = None,
-        prediction_bias_lambda: float = 0.95,
+        prediction_bias_lambda: float = 0.98,
         prediction_bias_cap_z: float = 0.18,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
         """phi-Student-t filter returning predictive mu_pred and S_pred for PIT.
@@ -3542,6 +3568,14 @@ class PhiStudentTDriftModel:
             gamma_vov=gamma_vov,
             vov_rolling=vov_rolling,
         )
+        prediction_bias_lambda = float(os.environ.get(
+            "PHI_STUDENT_T_IMPROVED_PRED_BIAS_LAMBDA",
+            str(prediction_bias_lambda),
+        ))
+        prediction_bias_cap_z = float(os.environ.get(
+            "PHI_STUDENT_T_IMPROVED_PRED_BIAS_CAP_Z",
+            str(prediction_bias_cap_z),
+        ))
         if prediction_bias_lambda >= 0.01 and len(mu_pred) > 2:
             correction = ewm_lagged_correction(returns, mu_pred, prediction_bias_lambda)
             cap_z = float(np.clip(prediction_bias_cap_z, 0.0, 1.0))

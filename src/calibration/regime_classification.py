@@ -353,6 +353,56 @@ def _backward_pass(obs: np.ndarray, A: np.ndarray,
     return beta
 
 
+def _emission_matrix(obs: np.ndarray, means: np.ndarray, variances: np.ndarray) -> np.ndarray:
+    """Vectorized Gaussian emission probabilities, shape (T, K)."""
+    var_safe = np.maximum(np.asarray(variances, dtype=np.float64), 1e-12)
+    diff = obs[:, None] - means[None, :]
+    denom = np.sqrt(2.0 * math.pi * var_safe)
+    emissions = np.exp(-0.5 * diff * diff / var_safe[None, :]) / denom[None, :]
+    return np.maximum(emissions, 1e-300)
+
+
+def _forward_backward_fast(
+    obs: np.ndarray,
+    A: np.ndarray,
+    pi0: np.ndarray,
+    means: np.ndarray,
+    variances: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Scaled forward/backward pass with vectorized emissions."""
+    T = len(obs)
+    K = len(pi0)
+    emissions = _emission_matrix(obs, means, variances)
+    alpha = np.empty((T, K), dtype=np.float64)
+    beta = np.empty((T, K), dtype=np.float64)
+    scales = np.empty(T, dtype=np.float64)
+
+    alpha[0] = pi0 * emissions[0]
+    scales[0] = float(alpha[0].sum())
+    if scales[0] > 1e-300:
+        alpha[0] /= scales[0]
+    else:
+        alpha[0] = 1.0 / K
+        scales[0] = 1e-300
+
+    for t in range(1, T):
+        alpha[t] = (alpha[t - 1] @ A) * emissions[t]
+        scales[t] = float(alpha[t].sum())
+        if scales[t] > 1e-300:
+            alpha[t] /= scales[t]
+        else:
+            alpha[t] = 1.0 / K
+            scales[t] = 1e-300
+
+    beta[T - 1] = 1.0
+    for t in range(T - 2, -1, -1):
+        beta[t] = A @ (emissions[t + 1] * beta[t + 1])
+        if scales[t + 1] > 1e-300:
+            beta[t] /= scales[t + 1]
+
+    return alpha, beta, scales, emissions
+
+
 def hmm_regime_fit(
     vol: np.ndarray,
     drift: np.ndarray,
@@ -429,8 +479,8 @@ def hmm_regime_fit(
 
     for iteration in range(n_iter):
         # E-step: Forward-Backward
-        alpha, scales = _forward_pass(obs, A, pi0, means, variances)
-        beta = _backward_pass(obs, A, means, variances, scales)
+        alpha, beta, scales, emissions = _forward_backward_fast(
+            obs, A, pi0, means, variances)
 
         # Compute gamma_t(k) = P(state_t = k | obs)
         gamma = alpha * beta
@@ -439,18 +489,15 @@ def hmm_regime_fit(
         gamma /= gamma_sum
 
         # Compute xi_t(i,j) = P(state_t=i, state_{t+1}=j | obs)
-        xi = np.zeros((T - 1, K, K))
-        for t in range(T - 1):
-            for i in range(K):
-                for j in range(K):
-                    xi[t, i, j] = (
-                        alpha[t, i] * A[i, j]
-                        * _gaussian_emission(obs[t + 1], means[j], variances[j])
-                        * beta[t + 1, j]
-                    )
-            xi_sum = xi[t].sum()
-            if xi_sum > 1e-300:
-                xi[t] /= xi_sum
+        next_likelihood = emissions[1:] * beta[1:]
+        xi = alpha[:-1, :, None] * A[None, :, :] * next_likelihood[:, None, :]
+        xi_sum = xi.sum(axis=(1, 2), keepdims=True)
+        xi = np.divide(
+            xi,
+            np.maximum(xi_sum, 1e-300),
+            out=np.zeros_like(xi),
+            where=xi_sum > 1e-300,
+        )
 
         # M-step
         # Update pi0
@@ -459,11 +506,11 @@ def hmm_regime_fit(
         pi0 /= pi0.sum()
 
         # Update A
+        A_num = xi.sum(axis=0)
+        A_den = gamma[:T - 1].sum(axis=0)
         for i in range(K):
-            denom = gamma[:T - 1, i].sum()
-            if denom > 1e-10:
-                for j in range(K):
-                    A[i, j] = xi[:, i, j].sum() / denom
+            if A_den[i] > 1e-10:
+                A[i] = A_num[i] / A_den[i]
             else:
                 A[i] = np.ones(K) / K
         # Normalize rows
@@ -473,13 +520,19 @@ def hmm_regime_fit(
                 A[i] /= row_sum
 
         # Update emission means and variances
-        for k in range(K):
-            g_sum = gamma[:, k].sum()
-            if g_sum > 1e-10:
-                means[k] = np.sum(gamma[:, k] * obs) / g_sum
-                diff = obs - means[k]
-                variances[k] = np.sum(gamma[:, k] * diff ** 2) / g_sum
-                variances[k] = max(variances[k], 1e-6)
+        g_sums = gamma.sum(axis=0)
+        valid_g = g_sums > 1e-10
+        if np.any(valid_g):
+            means_new = means.copy()
+            means_new[valid_g] = (gamma[:, valid_g].T @ obs) / g_sums[valid_g]
+            means = means_new
+            diff = obs[:, None] - means[None, :]
+            variances_new = variances.copy()
+            variances_new[valid_g] = (
+                (gamma[:, valid_g] * diff[:, valid_g] * diff[:, valid_g]).sum(axis=0)
+                / g_sums[valid_g]
+            )
+            variances = np.maximum(variances_new, 1e-6)
 
         # Log-likelihood
         ll = float(np.sum(np.log(np.maximum(scales, 1e-300))))

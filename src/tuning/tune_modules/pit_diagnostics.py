@@ -464,5 +464,3 @@ def compute_extended_pit_metrics_student_t(
         "histogram_mad": float(hist_mad),
         "pit_values": pit_clean,  # For isotonic recalibration (March 2026)
     }
-
-

@@ -3435,6 +3435,10 @@ class UnifiedPhiStudentTModel:
         jump_intensity = float(getattr(config, 'jump_intensity', 0.0))
         _mu_drift_val = float(getattr(config, 'mu_drift', 0.0))
         _ewm_lambda = float(getattr(config, 'crps_ewm_lambda', 0.0))
+        _ewm_fallback_lambda = float(os.environ.get(
+            "PHI_STUDENT_T_UNIFIED_IMPROVED_EWM_FALLBACK_LAMBDA",
+            "0.98",
+        ))
 
         _simple_mode = (
             abs(risk_prem) < 1e-10
@@ -3491,7 +3495,6 @@ class UnifiedPhiStudentTModel:
                     alpha, k_asym, momentum, 1e-4
                 )
 
-                # Apply EWM correction if lambda was configured
                 if _ewm_lambda >= 0.01 and n > 2:
                     mu_p = mu_p + ewm_lagged_correction(returns, mu_p, _ewm_lambda)
             else:
@@ -3500,9 +3503,7 @@ class UnifiedPhiStudentTModel:
                 skew_rho = float(getattr(config, 'skew_persistence', 0.97))
                 jump_sensitivity = float(getattr(config, 'jump_sensitivity', 1.0))
                 jump_mean = float(getattr(config, 'jump_mean', 0.0))
-                # Compute EWM lambda with default fallback
                 ewm_lam = _ewm_lambda if _ewm_lambda >= 0.01 else 0.95
-
                 mu_f, P_f, mu_p, S_p, ll = run_unified_phi_student_t_filter_extended(
                     returns, vol, c_val, phi_val, nu_base,
                     q_t, p_stress, vov_rolling, gamma_vov, damping,
@@ -3665,11 +3666,6 @@ class UnifiedPhiStudentTModel:
                 elif nu_eff > 50.0:
                     nu_eff = 50.0
 
-            # -----------------------------------------------------------------
-            # Kalman gain and state update use DIFFUSION-ONLY variance
-            # -----------------------------------------------------------------
-            K = P_pred / S_diffusion
-
             z_sq_diffusion = (innovation * innovation) / S_diffusion
             w_t = (nu_eff + 1.0) / (nu_eff + z_sq_diffusion)
 
@@ -3710,7 +3706,7 @@ class UnifiedPhiStudentTModel:
 
                 # Reduce Kalman update weight for likely jumps
                 w_t *= (1.0 - 0.7 * p_jump_post)
-
+            K = P_pred / S_diffusion
             mu = mu_pred + K * w_t * innovation
             P = (1.0 - w_t * K) * P_pred
             if P < 1e-12:
@@ -3772,7 +3768,7 @@ class UnifiedPhiStudentTModel:
         # Uses Stage 5f lambda, fallback 0.95 (~20-day half-life).
         _ewm_lambda = float(getattr(config, 'crps_ewm_lambda', 0.0))
         if _ewm_lambda < 0.01:
-            _ewm_lambda = 0.95  # Default fallback: conservative tracking
+            _ewm_lambda = _ewm_fallback_lambda
         if n > 2:
             mu_pred_arr = mu_pred_arr + ewm_lagged_correction(
                 returns, mu_pred_arr, _ewm_lambda)

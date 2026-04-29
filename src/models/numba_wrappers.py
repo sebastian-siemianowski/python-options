@@ -1888,6 +1888,7 @@ def run_phi_student_t_cv_test_fold(
     nu_val: float = 8.0,
     gamma_vov: float = 0.0,
     vov_rolling: np.ndarray = None,
+    online_scale_adapt: bool = True,
 ) -> float:
     """
     Run Numba-accelerated phi-Student-t CV test-fold forward pass.
@@ -1909,6 +1910,7 @@ def run_phi_student_t_cv_test_fold(
         int(test_start), int(test_end),
         float(nu_val), float(gamma_vov),
         vov_rolling, int(use_vov),
+        1 if online_scale_adapt else 0,
     )
 
 

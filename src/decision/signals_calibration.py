@@ -184,6 +184,8 @@ BETA_CLIP_HI = 0.995
 EMOS_IDENTITY = {"a": 0.0, "b": 1.0, "c": 0.0, "d": 1.0}
 EMOS_MIN_POINTS = 12
 EMOS_SIGMA_FLOOR = 0.01  # prevents degenerate sigma (in percent-space during calibration)
+EMOS_SUBREGIME_STAGE3_MIN_POINTS = 120
+CV_GUARD_SUBREGIME_MIN_POINTS = 150
 
 # v7.1: Realized-vol sigma floor
 SIGMA_FLOOR_FRAC = 0.5  # sigma_pred must be >= 50% of realized vol (MAD-based)
@@ -1447,13 +1449,29 @@ def _optimize_label_thresholds(
         {"buy_thr": float, "sell_thr": float, "best_score": float,
          "label_accuracy_raw": float, "label_accuracy_opt": float}
     """
+    p_for_grid = p_ups
+    if p_up_map is not None:
+        nb_for_map = _nb()
+        if (nb_for_map is not None and "beta_batch" in nb_for_map
+                and p_up_map.get("type") == "beta"):
+            p_for_grid = nb_for_map["beta_batch"](
+                p_ups.astype(np.float64),
+                p_up_map.get("a", 1.0),
+                p_up_map.get("b", 1.0),
+                p_up_map.get("c", 0.0),
+                p_up_map.get("clip_lo", BETA_CLIP_LO),
+                p_up_map.get("clip_hi", BETA_CLIP_HI),
+            )
+        else:
+            p_for_grid = np.array([apply_p_up_map(p, p_up_map) for p in p_ups], dtype=np.float64)
+
     nb = _nb()
     if nb is not None and len(p_ups) >= MIN_EVAL_POINTS:
         try:
             buy_grid = np.array(BUY_THR_GRID, dtype=np.float64)
             sell_grid = np.array(SELL_THR_GRID, dtype=np.float64)
             best_buy, best_sell, best_score = nb["grid_search_thresholds"](
-                p_ups.astype(np.float64),
+                p_for_grid.astype(np.float64),
                 actual_ups.astype(np.float64),
                 exp_rets.astype(np.float64),
                 actual_rets.astype(np.float64),
@@ -1467,10 +1485,10 @@ def _optimize_label_thresholds(
             if np.isfinite(best_score):
                 # Compute raw accuracy with default thresholds
                 raw_acc = _label_accuracy_at_thresholds(
-                    p_ups, actual_ups, exp_rets, actual_rets, 0.58, 0.42
+                    p_for_grid, actual_ups, exp_rets, actual_rets, 0.58, 0.42
                 )
                 opt_acc = _label_accuracy_at_thresholds(
-                    p_ups, actual_ups, exp_rets, actual_rets, best_buy, best_sell
+                    p_for_grid, actual_ups, exp_rets, actual_rets, best_buy, best_sell
                 )
                 return {
                     "buy_thr": float(best_buy),
@@ -1497,8 +1515,8 @@ def _optimize_label_thresholds(
                 continue
 
             score = _eval_threshold_pair(
-                p_ups, actual_ups, exp_rets, actual_rets, buy_thr, sell_thr,
-                p_up_map=p_up_map,
+                p_for_grid, actual_ups, exp_rets, actual_rets, buy_thr, sell_thr,
+                p_up_map=None,
             )
             if score > best_score:
                 best_score = score
@@ -1506,10 +1524,10 @@ def _optimize_label_thresholds(
                 best_sell = sell_thr
 
     raw_acc = _label_accuracy_at_thresholds(
-        p_ups, actual_ups, exp_rets, actual_rets, 0.58, 0.42
+        p_for_grid, actual_ups, exp_rets, actual_rets, 0.58, 0.42
     )
     opt_acc = _label_accuracy_at_thresholds(
-        p_ups, actual_ups, exp_rets, actual_rets, best_buy, best_sell
+        p_for_grid, actual_ups, exp_rets, actual_rets, best_buy, best_sell
     )
 
     return {
@@ -1781,51 +1799,6 @@ def calibrate_single_asset(
         os.environ["TUNING_QUIET"] = "1"
         os.environ["OFFLINE_MODE"] = "1"
 
-        # Mock risk temperature to avoid Yahoo Finance hangs
-        import decision.risk_temperature as _rt_mod
-        from types import SimpleNamespace
-
-        def _mock_risk_temp(**kwargs):
-            return SimpleNamespace(
-                risk_temperature=0.5,
-                scale_factor=1.0,
-                overnight_budget_applied=False,
-                overnight_max_position=None,
-                metals_stress=0.0,
-                fx_stress=0.0,
-                equity_stress=0.0,
-                commodity_stress=0.0,
-                duration_stress=0.0,
-            )
-
-        _rt_mod.get_cached_risk_temperature = _mock_risk_temp
-        _rt_mod._risk_temp_cache = {}
-
-        # Suppress console output from signals.py
-        import contextlib
-        from decision.signals import (
-            compute_features,
-            latest_signals,
-            _load_tuned_kalman_params,
-        )
-        import decision.signals as _sig_mod
-        if hasattr(_sig_mod, "console") and _sig_mod.console is not None:
-            _sig_mod.console = type(_sig_mod.console)(file=io.StringIO(), force_terminal=False)
-
-        # Load data
-        ohlc_df = _load_ohlc(symbol)
-        if ohlc_df is None:
-            return symbol, None, "No OHLC data"
-
-        px = _extract_close(ohlc_df)
-        if px is None or len(px) < MIN_PRICE_POINTS:
-            return symbol, None, "Insufficient price data"
-
-        tuned_params = _load_tuned_kalman_params(symbol)
-
-        n = len(px)
-        start_idx = max(MIN_PRICE_POINTS, n - eval_days)
-
         # v4.0: Check records cache (skip-if-fresh)
         cached_records = None if force_collect else _load_records(symbol)
 
@@ -1833,6 +1806,54 @@ def calibrate_single_asset(
             # Cache hit — skip the expensive walk-forward loop
             records = cached_records
         else:
+            # Cache miss or forced — import the full signal engine only when
+            # walk-forward collection is actually required.
+            import contextlib
+            from types import SimpleNamespace
+
+            # Mock risk temperature to avoid Yahoo Finance hangs
+            import decision.risk_temperature as _rt_mod
+
+            def _mock_risk_temp(**kwargs):
+                return SimpleNamespace(
+                    risk_temperature=0.5,
+                    scale_factor=1.0,
+                    overnight_budget_applied=False,
+                    overnight_max_position=None,
+                    metals_stress=0.0,
+                    fx_stress=0.0,
+                    equity_stress=0.0,
+                    commodity_stress=0.0,
+                    duration_stress=0.0,
+                )
+
+            _rt_mod.get_cached_risk_temperature = _mock_risk_temp
+            _rt_mod._risk_temp_cache = {}
+
+            # Suppress console output from signals.py
+            from decision.signals import (
+                compute_features,
+                latest_signals,
+                _load_tuned_kalman_params,
+            )
+            import decision.signals as _sig_mod
+            if hasattr(_sig_mod, "console") and _sig_mod.console is not None:
+                _sig_mod.console = type(_sig_mod.console)(file=io.StringIO(), force_terminal=False)
+
+            # Load data
+            ohlc_df = _load_ohlc(symbol)
+            if ohlc_df is None:
+                return symbol, None, "No OHLC data"
+
+            px = _extract_close(ohlc_df)
+            if px is None or len(px) < MIN_PRICE_POINTS:
+                return symbol, None, "Insufficient price data"
+
+            tuned_params = _load_tuned_kalman_params(symbol)
+
+            n = len(px)
+            start_idx = max(MIN_PRICE_POINTS, n - eval_days)
+
             # Cache miss or forced — run walk-forward collection
             # Collect records per horizon
             records: Dict[int, List[Dict]] = {h: [] for h in CALIBRATE_HORIZONS}
@@ -2038,8 +2059,8 @@ def _evaluate_metrics(
         beta_a = p_up_map.get("a", 1.0)
         beta_b = p_up_map.get("b", 1.0)
         beta_c = p_up_map.get("c", 0.0)
-        clip_lo = p_up_map.get("clip_lo", 0.01)
-        clip_hi = p_up_map.get("clip_hi", 0.99)
+        clip_lo = p_up_map.get("clip_lo", BETA_CLIP_LO)
+        clip_hi = p_up_map.get("clip_hi", BETA_CLIP_HI)
         cal_p = nb["beta_batch"](data.p_ups, beta_a, beta_b, beta_c,
                                  clip_lo, clip_hi)
     else:
@@ -2533,8 +2554,12 @@ def _step_emos(
         median_nu = float(np.median(data.nu_hat)) if len(data.nu_hat) > 0 else 30.0
         use_student_t = median_nu < 25.0
 
-        # v7.4: Skip Stage 3 for sub-regimes (< 80 points) — diminishing returns
-        _skip_s3 = (regime_name != REGIME_ALL and data.n_eval < 80)
+        # Stage 3 is a PIT-aware joint optimizer.  It earns its keep on the
+        # pooled ALL partition, but sparse sub-regime fits are noisy and costly.
+        _skip_s3 = (
+            regime_name != REGIME_ALL
+            and data.n_eval < EMOS_SUBREGIME_STAGE3_MIN_POINTS
+        )
 
         if use_student_t:
             emos_params = _fit_emos_student_t(
@@ -2768,7 +2793,11 @@ def _step_cv_guard(
         cv_reverted_emos = False
 
         # v7.0: Adaptive fold count
-        if data.n_eval < 30:
+        if regime_name != REGIME_ALL and data.n_eval < CV_GUARD_SUBREGIME_MIN_POINTS:
+            # Sparse partitions already shrink toward identity and skip Stage 3
+            # EMOS polish.  Cross-validating them adds noisy revert decisions.
+            N_FOLDS = 0
+        elif data.n_eval < 30:
             # Too few points — skip CV, trust the fitting
             N_FOLDS = 0
         elif data.n_eval < 100:

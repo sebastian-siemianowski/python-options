@@ -22,6 +22,28 @@ if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
 
+def _global_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the current global tune payload, tolerating legacy flat caches."""
+    g = data.get("global")
+    return g if isinstance(g, dict) else data
+
+
+def _model_weights(g: Dict[str, Any]) -> Dict[str, float]:
+    """Return BMA weights from either the legacy or current cache key."""
+    weights = g.get("model_weights")
+    if not isinstance(weights, dict) or not weights:
+        weights = g.get("model_posterior")
+    return weights if isinstance(weights, dict) else {}
+
+
+def _models_block(data: Dict[str, Any], g: Dict[str, Any]) -> Dict[str, Any]:
+    """Return fitted model diagnostics from the current or legacy cache shape."""
+    models = g.get("models")
+    if not isinstance(models, dict) or not models:
+        models = data.get("models")
+    return models if isinstance(models, dict) else {}
+
+
 def get_pit_summary() -> Dict[str, Any]:
     """
     Get PIT calibration summary for all tuned assets.
@@ -40,9 +62,10 @@ def get_pit_summary() -> Dict[str, Any]:
         except (json.JSONDecodeError, IOError):
             continue
 
-        g = data.get("global", {})
+        g = _global_payload(data)
         meta = data.get("meta", {})
-        models = data.get("models", {})
+        models = _models_block(data, g)
+        bma_weights = _model_weights(g)
 
         # Extract per-model metrics
         model_metrics = []
@@ -58,7 +81,7 @@ def get_pit_summary() -> Dict[str, Any]:
                 "pit_ks_pvalue": metrics.get("pit_ks_pvalue"),
                 "ad_pvalue": metrics.get("ad_pvalue"),
                 "histogram_mad": metrics.get("histogram_mad"),
-                "weight": metrics.get("weight", 0),
+                "weight": bma_weights.get(model_name, metrics.get("weight", 0)),
                 "nu": metrics.get("nu"),
                 "phi": metrics.get("phi"),
             })
@@ -66,8 +89,6 @@ def get_pit_summary() -> Dict[str, Any]:
         # Sort by weight descending
         model_metrics.sort(key=lambda m: m.get("weight") or 0, reverse=True)
 
-        # Get BMA weights
-        bma_weights = g.get("model_weights", {})
         best_model = g.get("best_model", "unknown")
 
         asset_entry = {
@@ -153,9 +174,9 @@ def get_model_comparison() -> Dict[str, Any]:
             continue
 
         total_assets += 1
-        g = data.get("global", {})
+        g = _global_payload(data)
         best_model = g.get("best_model", "unknown")
-        bma_weights = g.get("model_weights", {})
+        bma_weights = _model_weights(g)
 
         for model_name, weight in bma_weights.items():
             if model_name not in model_stats:
@@ -255,9 +276,9 @@ def get_cross_asset_summary() -> Dict[str, Any]:
         except (json.JSONDecodeError, IOError):
             continue
 
-        g = data.get("global", {})
-        models_block = data.get("models", {})
-        bma_weights = g.get("model_weights", {})
+        g = _global_payload(data)
+        models_block = _models_block(data, g)
+        bma_weights = _model_weights(g)
 
         model_scores: Dict[str, Dict[str, Any]] = {}
         for model_name, model_data in models_block.items():

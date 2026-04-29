@@ -23,6 +23,29 @@ _INDEX_ALIAS_MAP = {
     "_VIX": "^VIX",
 }
 
+_YAHOO_ALIAS_MAP = {
+    "ACP": "ACP.WA",
+    "AM": "AM.PA",
+    "AIR": "AIR.PA",
+    "BAYN": "BAYN.DE",
+    "BMW3": "BMW3.DE",
+    "FACC": "FACC.VI",
+    "HAG": "HAG.DE",
+    "HO": "HO.PA",
+    "KOG": "KOG.OL",
+    "MAGD": "MAGD.L",
+    "MDA": "MDA.TO",
+    "R3NK": "R3NK.DE",
+    "RHM": "RHM.DE",
+    "SAF": "SAF.PA",
+    "SNT": "SNT.WA",
+    "TKA": "TKA.DE",
+    "THEON": "THEON.AS",
+    "VOW3": "VOW3.DE",
+    "XAGUSD": "XAGUSD=X",
+    "XAUUSD": "XAUUSD=X",
+}
+
 
 def normalize_symbol(symbol: object) -> str:
     """Normalize Yahoo symbols and cache-safe variants for classification."""
@@ -32,6 +55,7 @@ def normalize_symbol(symbol: object) -> str:
     if not sym:
         return ""
     sym = _INDEX_ALIAS_MAP.get(sym, sym)
+    sym = _YAHOO_ALIAS_MAP.get(sym, sym)
     if sym.endswith("_X") and len(sym) >= 8:
         sym = f"{sym[:-2]}=X"
     elif sym.endswith("_F") and len(sym) >= 5:
@@ -114,7 +138,7 @@ HIGH_VOL_EQUITY_SYMBOLS = frozenset({
 SMALL_CAP_SYMBOLS = frozenset({
     "UPST", "AFRM", "IONQ", "SNAP", "DKNG", "PLTR", "SOFI", "RIVN",
     "LCID", "RIOT", "MARA", "NET", "RBLX", "HOOD", "COIN", "CRWD",
-    "DDOG", "ZS", "SNOW", "MDB", "HUBS", "IOT", "GLBE", "GRND",
+    "DDOG", "ZS", "SNOW", "MDB", "HUBS", "IOT", "GLBE", "GRND", "DUOL",
     "CELH", "CRSP", "BEAM", "ASTS", "AVAV",
     "KTOS", "FTAI", "MRCY", "NU", "IOT", "FCX", "HBM", "MP", "UUUU",
     "DNN", "UEC", "GEV", "LEU", "NXE", "WOLF", "AEHR", "AOSL",

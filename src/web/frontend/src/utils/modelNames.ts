@@ -44,7 +44,7 @@ export function formatModelName(raw: string | undefined | null): string {
   const nuMatch = raw.match(/phi_student_t_(?:(unified_improved|unified|improved)_)?nu_(mle|\d+)/);
   if (nuMatch) {
     const variant = nuMatch[1] || '';
-    const nu = nuMatch[2];
+    const nu = nuMatch[2] === 'mle' ? 'MLE' : nuMatch[2];
     let name = `Student-t ν=${nu}`;
     if (variant === 'unified_improved') name = `Student-t Uni Improved ν=${nu}`;
     else if (variant === 'unified') name = `Student-t Uni ν=${nu}`;
@@ -60,6 +60,13 @@ export function formatModelName(raw: string | undefined | null): string {
     if (raw.includes('_momentum'))   name += ' +Mom';
 
     return name;
+  }
+
+  const rvqMatch = raw.match(/rv_q_(phi_gaussian|student_t_nu_(mle|\d+))/);
+  if (rvqMatch) {
+    if (rvqMatch[1] === 'phi_gaussian') return 'RV-Q AR(1) Gaussian';
+    const nu = rvqMatch[2] === 'mle' ? 'MLE' : rvqMatch[2];
+    return `RV-Q Student-t ν=${nu}`;
   }
 
   // ── Fallback: clean up underscores ────────────────────────────
@@ -97,12 +104,20 @@ export function formatModelNameShort(raw: string | undefined | null): string {
   if (nuMatch) {
     const variant = nuMatch[1] || '';
     const tag = variant === 'unified_improved' ? 'UI' : variant === 'unified' ? 'U' : variant === 'improved' ? 'I' : '';
-    let s = `T${tag}(${nuMatch[2]})`;
+    const nu = nuMatch[2] === 'mle' ? 'MLE' : nuMatch[2];
+    let s = `T${tag}(${nu})`;
     if (raw.includes('_momentum')) s += '+M';
     if (raw.includes('_vov'))     s += 'V';
     if (raw.includes('_two_piece')) s += '2P';
     if (raw.includes('_mixture')) s += 'x';
     return s;
+  }
+
+  const rvqMatch = raw.match(/rv_q_(phi_gaussian|student_t_nu_(mle|\d+))/);
+  if (rvqMatch) {
+    if (rvqMatch[1] === 'phi_gaussian') return 'RVQ-φG';
+    const nu = rvqMatch[2] === 'mle' ? 'MLE' : rvqMatch[2];
+    return `RVQ-T(${nu})`;
   }
 
   // Fallback: abbreviate intelligently instead of truncating

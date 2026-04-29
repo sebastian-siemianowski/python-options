@@ -1715,10 +1715,16 @@ class PhiStudentTDriftModel:
         returns = np.asarray(returns).flatten()
         vol = np.asarray(vol).flatten()
 
-        # Robust clipping
-        ret_p005 = np.percentile(returns, 0.5)
-        ret_p995 = np.percentile(returns, 99.5)
-        returns_r = np.clip(returns, ret_p005, ret_p995)
+        # Keep the optimizer causal.  The old full-sample winsorisation used
+        # future extrema to alter early observations; Student-t tails already
+        # supply the robust scoring we need.
+        returns_r = returns.astype(np.float64, copy=True)
+        returns_r[~np.isfinite(returns_r)] = 0.0
+        vol = vol.astype(np.float64, copy=True)
+        finite_vol = vol[np.isfinite(vol) & (vol > 0.0)]
+        vol_fill = float(np.median(finite_vol)) if finite_vol.size else max(float(np.std(returns_r)), 1e-4)
+        vol = np.where(np.isfinite(vol) & (vol > 0.0), vol, vol_fill)
+        vol = np.maximum(vol, max(vol_fill * 1e-4, 1e-10))
 
         # Scale-aware q_min
         vol_var_med = float(np.median(vol ** 2))
@@ -1828,16 +1834,24 @@ class PhiStudentTDriftModel:
                         nu_val=nu_val,
                         gamma_vov=gamma_vov if _has_vov_opt else 0.0,
                         vov_rolling=_vov_full,
+                        online_scale_adapt=_use_osa_opt,
                     )
                 else:
                     phi_clip_sq = phi_clip * phi_clip
                     _nu_p1 = nu_val + 1.0
+                    c_adj = 1.0
+                    chi2_tgt = (nu_val / (nu_val - 2.0)) if nu_val > 2.0 else 1.0
+                    chi2_lam = 0.98
+                    chi2_1m = 1.0 - chi2_lam
+                    chi2_cap = chi2_tgt * 50.0
+                    ewm_z2 = chi2_tgt
+                    osa_strength = min(1.0, (chi2_tgt - 1.0) / 0.5) if nu_val > 2.0 else 1.0
                     for t in range(vs, ve):
                         mu_p = phi_clip * mu_p
                         P_p = phi_clip_sq * P_p + q
-                        R_t = c * _vol_sq[t]
+                        R_t = (c * c_adj if _use_osa_opt else c) * _vol_sq[t]
                         if _has_vov_opt:
-                            R_t *= (1.0 + gamma_vov * vov_rolling[t])
+                            R_t *= max(0.05, min(20.0, 1.0 + gamma_vov * vov_rolling[t]))
                         S = P_p + R_t
                         if S < 1e-12:
                             S = 1e-12
@@ -1848,14 +1862,33 @@ class PhiStudentTDriftModel:
                             ll_t = log_norm_const - _mlog(scale) + neg_exp * _mlog(1.0 + z * z * inv_nu)
                             if _misfinite(ll_t):
                                 total_ll += ll_t
-                        # Robust Kalman gain (Meinhold & Singpurwalla 1989)
-                        K = P_p / S
+                        # Precision-weighted Joseph covariance update.
                         z_sq_cv = (inn * inn) / S
-                        w_cv = _nu_p1 / (nu_val + z_sq_cv)
-                        mu_p = mu_p + K * w_cv * inn
-                        P_p = (1.0 - w_cv * K) * P_p
+                        w_cv = float(np.clip(_nu_p1 / (nu_val + z_sq_cv), 0.05, 20.0))
+                        R_eff = max(R_t / max(w_cv, 1e-8), 1e-20)
+                        S_eff = max(P_p + R_eff, 1e-20)
+                        K = P_p / S_eff
+                        mu_p = mu_p + K * inn
+                        P_p = (1.0 - K) * (1.0 - K) * P_p + K * K * R_eff
                         if P_p < 1e-12:
                             P_p = 1e-12
+                        if _use_osa_opt and scale > 1e-12:
+                            z2w = min(z * z, chi2_cap)
+                            ewm_z2 = chi2_lam * ewm_z2 + chi2_1m * z2w
+                            ratio = float(np.clip(ewm_z2 / max(chi2_tgt, 1e-12), 0.3, 3.0))
+                            dev = ratio - 1.0 if ratio >= 1.0 else 1.0 - ratio
+                            if ratio >= 1.0:
+                                dz_lo, dz_rng = 0.25, 0.25
+                            else:
+                                dz_lo, dz_rng = 0.05, 0.10
+                            if dev < dz_lo:
+                                c_adj = 1.0
+                            elif dev >= dz_lo + dz_rng:
+                                c_adj = 1.0 + osa_strength * (_msqrt(ratio) - 1.0)
+                            else:
+                                s_frac = (dev - dz_lo) / dz_rng
+                                c_adj_raw = 1.0 + s_frac * (_msqrt(ratio) - 1.0)
+                                c_adj = 1.0 + osa_strength * (c_adj_raw - 1.0)
 
             # Bayesian regularization on log10(q)
             prior_pen = prior_lambda * (log_q - prior_log_q_mean) ** 2
@@ -3201,14 +3234,17 @@ class PhiStudentTDriftModel:
             S_pred_arr[t] = S
 
             innovation = returns[t] - mu_pred
-            K = P_pred / S
 
             if robust_wt:
                 z_sq = (innovation * innovation) / S
-                w_t = (nu_val + 1.0) / (nu_val + z_sq)
-                mu = mu_pred + K * w_t * innovation
-                P = (1.0 - w_t * K) * P_pred
+                w_t = float(np.clip((nu_val + 1.0) / (nu_val + z_sq), 0.05, 20.0))
+                R_eff = max(R_t / max(w_t, 1e-8), 1e-20)
+                S_eff = max(P_pred + R_eff, 1e-20)
+                K = P_pred / S_eff
+                mu = mu_pred + K * innovation
+                P = (1.0 - K) * (1.0 - K) * P_pred + K * K * R_eff
             else:
+                K = P_pred / S
                 mu = mu_pred + K * innovation
                 P = (1.0 - K) * P_pred
 
@@ -3468,7 +3504,23 @@ class PhiStudentTDriftModel:
         # calibration_params: the REAL output — persisted and used at inference
         cal_params = {}
 
-        z = (returns[:n] - mu_pred[:n]) / np.maximum(scale[:n], 1e-10)
+        returns = returns[:n].copy()
+        mu_pred = mu_pred[:n].copy()
+        scale = scale[:n].copy()
+        pit = pit[:n].copy()
+
+        returns[~np.isfinite(returns)] = 0.0
+        mu_pred[~np.isfinite(mu_pred)] = 0.0
+        finite_scale = scale[np.isfinite(scale) & (scale > 0)]
+        scale_fill = float(np.median(finite_scale)) if finite_scale.size else 1.0
+        scale = np.where(np.isfinite(scale) & (scale > 0), scale, scale_fill)
+        scale = np.maximum(scale, max(scale_fill * 1e-6, 1e-10))
+        pit = np.clip(np.where(np.isfinite(pit), pit, 0.5), 0.001, 0.999)
+
+        z = np.clip((returns - mu_pred) / np.maximum(scale, 1e-10), -1e6, 1e6)
+        pit_base = pit.copy()
+        _ks_base, p_base = _fast_ks_uniform(pit_base)
+        ad_base = cls._compute_ad_statistic(pit_base)
 
         # ── Stage A: TWSC (Tail-Weighted Scale Correction) ───────────
         # Computes per-observation scale inflation factors via EWMA tracking
@@ -3491,23 +3543,37 @@ class PhiStudentTDriftModel:
                 pass
 
         if scale_inflate is not None and len(scale_inflate) > 0:
-            # Recompute PIT with inflated scale
-            z_twsc = z / np.maximum(scale_inflate, 1.0)
-            pit = _fast_t_cdf(z_twsc, nu)
-            pit = np.clip(pit, 0.001, 0.999)
-            diag['twsc_applied'] = True
+            scale_inflate = np.asarray(scale_inflate, dtype=np.float64).ravel()
+            if len(scale_inflate) >= n:
+                scale_inflate = np.clip(
+                    np.where(np.isfinite(scale_inflate[:n]), scale_inflate[:n], 1.0),
+                    1.0,
+                    2.5,
+                )
+                z_twsc = z / scale_inflate
+                pit_twsc = np.clip(_fast_t_cdf(z_twsc, nu), 0.001, 0.999)
+                _ks_twsc, p_twsc = _fast_ks_uniform(pit_twsc)
+                ad_twsc = cls._compute_ad_statistic(pit_twsc)
+                if (p_twsc >= p_base * 0.95) or (ad_twsc <= ad_base * 1.02):
+                    pit = pit_twsc
+                    diag['twsc_applied'] = True
 
-            # Extract REAL calibration parameter: steady-state scale factor
-            # Use geometric mean of final 30% (after EWMA has converged)
-            tail_start = max(1, int(n * 0.7))
-            tail_factors = scale_inflate[tail_start:]
-            tail_factors = tail_factors[tail_factors > 0]
-            if len(tail_factors) > 0:
-                # Geometric mean: exp(mean(log(x)))
-                twsc_geo_mean = float(np.exp(np.mean(np.log(tail_factors))))
-                cal_params['twsc_scale_factor'] = twsc_geo_mean
-                cal_params['twsc_last_ewma'] = float(scale_inflate[-1])
-            z_for_gpd = z_twsc
+                    # Extract REAL calibration parameter: steady-state scale factor
+                    # Use geometric mean of final 30% (after EWMA has converged)
+                    tail_start = max(1, int(n * 0.7))
+                    tail_factors = scale_inflate[tail_start:]
+                    tail_factors = tail_factors[tail_factors > 0]
+                    if len(tail_factors) > 0:
+                        # Geometric mean: exp(mean(log(x)))
+                        twsc_geo_mean = float(np.exp(np.mean(np.log(tail_factors))))
+                        cal_params['twsc_scale_factor'] = float(np.clip(twsc_geo_mean, 1.0, 2.5))
+                        cal_params['twsc_last_ewma'] = float(scale_inflate[-1])
+                    z_for_gpd = z_twsc
+                    p_base, ad_base = p_twsc, ad_twsc
+                else:
+                    z_for_gpd = z
+            else:
+                z_for_gpd = z
         else:
             z_for_gpd = z
 
@@ -3525,17 +3591,20 @@ class PhiStudentTDriftModel:
 
                 abs_z = np.abs(z_for_gpd)
 
-                # Fit GPD on left tail (negative z → large |z|)
-                left_mask = z_for_gpd < 0
-                left_losses = abs_z[left_mask]
-                gpd_left = fit_gpd_pot(left_losses, threshold_percentile=0.90)
+                # Fit GPD on left/right tails only when both sides have enough
+                # observations; otherwise tail shape is dominated by optimizer
+                # noise and should not influence stored signal parameters.
+                left_losses = abs_z[z_for_gpd < 0]
+                right_losses = abs_z[z_for_gpd > 0]
 
-                # Fit GPD on right tail
-                right_mask = z_for_gpd > 0
-                right_losses = abs_z[right_mask]
-                gpd_right = fit_gpd_pot(right_losses, threshold_percentile=0.90)
+                if len(left_losses) >= 25 and len(right_losses) >= 25:
+                    gpd_left = fit_gpd_pot(left_losses, threshold_percentile=0.90, method='pwm')
+                    gpd_right = fit_gpd_pot(right_losses, threshold_percentile=0.90, method='pwm')
+                else:
+                    gpd_left = None
+                    gpd_right = None
 
-                if gpd_left.fit_success and gpd_right.fit_success:
+                if gpd_left is not None and gpd_right is not None and gpd_left.fit_success and gpd_right.fit_success:
                     # Compute tail probabilities from the model CDF
                     u_left = float(gpd_left.threshold)
                     u_right = float(gpd_right.threshold)
@@ -3545,7 +3614,7 @@ class PhiStudentTDriftModel:
                     if p_left_val > 0.001 and p_right_val > 0.001 and u_left > 0.5 and u_right > 0.5:
                         try:
                             from models.numba_wrappers import run_ad_sptg_student_t
-                            pit = run_ad_sptg_student_t(
+                            pit_sptg = run_ad_sptg_student_t(
                                 z_for_gpd, nu,
                                 gpd_left.xi, gpd_left.sigma, u_left,
                                 gpd_right.xi, gpd_right.sigma, u_right,
@@ -3553,39 +3622,44 @@ class PhiStudentTDriftModel:
                             )
                         except (ImportError, Exception):
                             from models.numba_kernels import ad_sptg_cdf_student_t_array
-                            pit = ad_sptg_cdf_student_t_array(
+                            pit_sptg = ad_sptg_cdf_student_t_array(
                                 np.ascontiguousarray(z_for_gpd, dtype=np.float64), nu,
                                 gpd_left.xi, gpd_left.sigma, u_left,
                                 gpd_right.xi, gpd_right.sigma, u_right,
                                 p_left_val, p_right_val,
                             )
-                        pit = np.clip(pit, 0.001, 0.999)
-                        diag['sptg_applied'] = True
-                        diag['sptg_xi_left'] = float(gpd_left.xi)
-                        diag['sptg_xi_right'] = float(gpd_right.xi)
+                        pit_sptg = np.clip(np.asarray(pit_sptg, dtype=np.float64), 0.001, 0.999)
+                        _ks_sptg, p_sptg = _fast_ks_uniform(pit_sptg)
+                        ad_sptg = cls._compute_ad_statistic(pit_sptg)
+                        if (p_sptg >= p_base * 0.95) or (ad_sptg <= ad_base):
+                            pit = pit_sptg
+                            diag['sptg_applied'] = True
+                            diag['sptg_xi_left'] = float(gpd_left.xi)
+                            diag['sptg_xi_right'] = float(gpd_right.xi)
 
-                        # Store GPD params for REAL tail risk in signals.py
-                        cal_params['gpd_left_xi'] = float(gpd_left.xi)
-                        cal_params['gpd_left_sigma'] = float(gpd_left.sigma)
-                        cal_params['gpd_left_threshold'] = u_left
-                        cal_params['gpd_right_xi'] = float(gpd_right.xi)
-                        cal_params['gpd_right_sigma'] = float(gpd_right.sigma)
-                        cal_params['gpd_right_threshold'] = u_right
+                            # Store GPD params for REAL tail risk in signals.py
+                            cal_params['gpd_left_xi'] = float(gpd_left.xi)
+                            cal_params['gpd_left_sigma'] = float(gpd_left.sigma)
+                            cal_params['gpd_left_threshold'] = u_left
+                            cal_params['gpd_right_xi'] = float(gpd_right.xi)
+                            cal_params['gpd_right_sigma'] = float(gpd_right.sigma)
+                            cal_params['gpd_right_threshold'] = u_right
 
-                        # Compute effective ν adjustment from GPD ξ
-                        # Student-t tail index: ξ = 1/ν, so ν_effective = 1/ξ
-                        # Use the HEAVIER tail (max ξ) for conservative estimation
-                        xi_max = max(abs(gpd_left.xi), abs(gpd_right.xi))
-                        if xi_max > 0.02:  # Only adjust if tails are meaningfully heavy
-                            nu_from_gpd = 1.0 / xi_max
-                            # Blend: take the more conservative (lower) ν
-                            # but don't go below 2.5 (variance must exist)
-                            nu_effective = max(2.5, min(nu, nu_from_gpd))
-                            cal_params['nu_effective'] = float(nu_effective)
-                            cal_params['nu_adjustment_ratio'] = float(nu_effective / nu)
-                        else:
-                            cal_params['nu_effective'] = float(nu)
-                            cal_params['nu_adjustment_ratio'] = 1.0
+                            # Compute effective ν adjustment from GPD ξ
+                            # Student-t tail index: ξ = 1/ν, so ν_effective = 1/ξ
+                            # Use the HEAVIER tail (max ξ) for conservative estimation
+                            xi_max = max(abs(gpd_left.xi), abs(gpd_right.xi))
+                            if xi_max > 0.02:  # Only adjust if tails are meaningfully heavy
+                                nu_from_gpd = 1.0 / xi_max
+                                # Blend: take the more conservative (lower) ν
+                                # but don't go below 2.5 (variance must exist)
+                                nu_effective = max(2.5, min(nu, nu_from_gpd))
+                                cal_params['nu_effective'] = float(nu_effective)
+                                cal_params['nu_adjustment_ratio'] = float(nu_effective / nu)
+                            else:
+                                cal_params['nu_effective'] = float(nu)
+                                cal_params['nu_adjustment_ratio'] = 1.0
+                            p_base, ad_base = p_sptg, ad_sptg
             except Exception:
                 pass  # SPTG gracefully degrades
 
@@ -3602,25 +3676,17 @@ class PhiStudentTDriftModel:
                 recal = IsotonicRecalibrator()
                 result = recal.fit(pit)
                 if result.fit_success and not result.is_identity:
-                    pit_iso = recal.transform(pit)
-                    try:
-                        from calibration.pit_calibration import anderson_darling_uniform
-                        _, ad_before = anderson_darling_uniform(pit)
-                        _, ad_after = anderson_darling_uniform(pit_iso)
-                        if ad_after >= ad_before * 0.95:
-                            pit = pit_iso
-                            diag['isotonic_applied'] = True
-                            diag['isotonic_ks_improvement'] = float(
-                                result.calibrated_ks_pvalue - result.raw_ks_pvalue
-                                if result.calibrated_ks_pvalue is not None else 0.0
-                            )
-                            # Store isotonic knots for REAL probability calibration
-                            # in signals.py's p(up) computation
-                            cal_params['isotonic_x_knots'] = result.x_knots.tolist()
-                            cal_params['isotonic_y_knots'] = result.y_knots.tolist()
-                    except Exception:
+                    pit_iso = np.clip(recal.transform(pit), 0.001, 0.999)
+                    _ks_before, p_before = _fast_ks_uniform(pit)
+                    _ks_after, p_after = _fast_ks_uniform(pit_iso)
+                    ad_before = cls._compute_ad_statistic(pit)
+                    ad_after = cls._compute_ad_statistic(pit_iso)
+                    if (p_after >= p_before) or (ad_after <= ad_before):
                         pit = pit_iso
                         diag['isotonic_applied'] = True
+                        diag['isotonic_ks_improvement'] = float(p_after - p_before)
+                        # Store isotonic knots for REAL probability calibration
+                        # in signals.py's p(up) computation
                         cal_params['isotonic_x_knots'] = result.x_knots.tolist()
                         cal_params['isotonic_y_knots'] = result.y_knots.tolist()
             except Exception:

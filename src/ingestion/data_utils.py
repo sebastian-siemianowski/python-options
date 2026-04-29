@@ -137,6 +137,8 @@ YAHOO_TICKER_OVERRIDES = {
     "THEON": "THEON.AS",
     "THEON-AS": "THEON.AS",
     "EXA": "EXA.PA",
+    "AM": "AM.PA",
+    "ACP": "ACP.WA",
 }
 
 # Precious metal FX tickers mapped to liquid COMEX futures because Yahoo spot tickers are unreliable
@@ -166,6 +168,10 @@ PUNCTUATION_OVERRIDES = {
     "HEIAAS": "HEIA.AS",
     "SAFPA": "SAF.PA",
     "AIR-PA": "AIR.PA",
+    "AM-PA": "AM.PA",
+    "AMPA": "AM.PA",
+    "ACP-WA": "ACP.WA",
+    "ACPWA": "ACP.WA",
     "BA-L": "BA.L",
     "005930-KS": "005930.KS",
     "FACCVI": "FACC.VI",
@@ -185,6 +191,8 @@ COUNTRY_SUFFIX_COMPLETIONS = {
     "KOZ1.DE": "KOG.OL",
     "HEIA": "HEIA.AS",
     "SAF": "SAF.PA",
+    "AM": "AM.PA",
+    "ACP": "ACP.WA",
     "SGLP": "SGLP.L",
     "MAGD": "MAGD.L",
 }
@@ -777,6 +785,7 @@ COMPANY_NAMES: Dict[str, str] = {
     "SBUX": "Starbucks Corporation",
     "TGT": "Target Corporation",
     "TSLA": "Tesla, Inc.",
+    "DUOL": "Duolingo, Inc.",
     "GRND": "Grindr Inc.",
     
     # Industrials
@@ -1907,6 +1916,7 @@ DEFAULT_ASSET_UNIVERSE = [
     "SBUX",   # Starbucks
     "TGT",    # Target Corporation
     "TSLA",   # Tesla, Inc.
+    "DUOL",   # Duolingo, Inc.
 
     # Industrials
     "CAT",    # Caterpillar Inc.
@@ -1929,7 +1939,7 @@ DEFAULT_ASSET_UNIVERSE = [
     "ATRO",   # Astronics Corporation
     "AVAV",   # AeroVironment, Inc.
     "AXON",   # Axon Enterprise, Inc.
-    "AZ"     # A2Z Cust2Mate Solutions Corp
+    "AZ",    # A2Z Cust2Mate Solutions Corp
     "BA",     # Boeing Co
     "BAH",    # Booz Allen Hamilton Holding Corp
     "BETA",   # Beta Technologies Inc
