@@ -189,6 +189,32 @@ class TestMaxUCapping(unittest.TestCase):
 class TestBlendedSignalIntegrity(unittest.TestCase):
     """Integration tests: blended u_t behaves correctly end-to-end."""
 
+    def test_mr_signal_keeps_signed_direction_in_exogenous_input(self):
+        """MR signal is already signed toward equilibrium and must not be inverted."""
+        log_prices = np.array([0.0, 0.02, 0.04])
+        equilibrium = np.zeros_like(log_prices)
+        vol = np.full_like(log_prices, 0.01)
+        mr_signal = compute_mr_signal(log_prices, equilibrium, vol, kappa=0.1)
+
+        config = MomentumConfig(
+            enable=False,
+            enable_mean_reversion=True,
+            mr_adjustment_scale=1.0,
+            max_u_scale_by_q=False,
+        )
+        model = MomentumAugmentedDriftModel(config)
+        model._momentum_signal = np.zeros_like(mr_signal)
+        model._mr_signal = mr_signal
+        model._alpha_t = np.zeros_like(mr_signal)
+        model._beta_t = np.ones_like(mr_signal)
+        model._regime_labels = None
+        model._q = 1e-6
+
+        u_t = model._compute_exogenous_input()
+        self.assertLess(mr_signal[-1], 0.0)
+        self.assertLess(u_t[-1], 0.0)
+        np.testing.assert_allclose(u_t, mr_signal, atol=1e-12)
+
     def test_trend_produces_positive_ut(self):
         """Strong uptrend should produce net-positive u_t."""
         n = 200

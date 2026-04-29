@@ -30,6 +30,7 @@ from ingestion.data_utils import _download_prices  # noqa: E402
 from calibration.realized_volatility import compute_hybrid_volatility_har  # noqa: E402
 from models.phi_student_t import PhiStudentTDriftModel  # noqa: E402
 from models.phi_student_t_improved import PhiStudentTDriftModel as ImprovedPhiStudentTDriftModel  # noqa: E402
+from models.phi_student_t_improved import _fast_t_p_up  # noqa: E402
 from tuning.benchmark_retune_50 import BENCHMARK_50  # noqa: E402
 
 
@@ -131,7 +132,7 @@ def _oos_quality(
     scale = np.sqrt(np.maximum(variance * scale_factor, 1e-20))
     z = (actual - pred) / scale
     ll = student_t_dist.logpdf(z, df=nu) - np.log(scale)
-    p_up = 1.0 - student_t_dist.cdf((0.0 - pred) / scale, df=nu)
+    p_up = _fast_t_p_up(pred, variance, nu)
     pit = np.clip(student_t_dist.cdf(z, df=nu), 1e-8, 1.0 - 1e-8)
     pred_dirs = np.sign(p_up - 0.5)
     actual_dirs = np.sign(actual)
@@ -158,6 +159,8 @@ def _oos_quality(
 def _worker(args: tuple[str, float, bool, str]) -> Dict[str, Any]:
     symbol, nu, disable_train_state, model = args
     cv_env_key = "PHI_STUDENT_T_IMPROVED_DISABLE_CV_TEST_KERNEL" if model == "improved" else None
+    filter_env_key = "PHI_STUDENT_T_IMPROVED_DISABLE_FILTER_KERNEL" if model == "improved" else None
+    p_up_env_key = "PHI_STUDENT_T_IMPROVED_DISABLE_P_UP_KERNEL" if model == "improved" else None
     state_only_env_key = (
         "PHI_STUDENT_T_IMPROVED_DISABLE_STATE_ONLY_KERNEL"
         if model == "improved" else "PHI_STUDENT_T_DISABLE_STATE_ONLY_KERNEL"
@@ -165,13 +168,21 @@ def _worker(args: tuple[str, float, bool, str]) -> Dict[str, Any]:
     if disable_train_state:
         if cv_env_key is not None:
             os.environ[cv_env_key] = "1"
+        if filter_env_key is not None:
+            os.environ[filter_env_key] = "1"
         if state_only_env_key is not None:
             os.environ[state_only_env_key] = "1"
+        if p_up_env_key is not None:
+            os.environ[p_up_env_key] = "1"
     else:
         if cv_env_key is not None:
             os.environ.pop(cv_env_key, None)
+        if filter_env_key is not None:
+            os.environ.pop(filter_env_key, None)
         if state_only_env_key is not None:
             os.environ.pop(state_only_env_key, None)
+        if p_up_env_key is not None:
+            os.environ.pop(p_up_env_key, None)
     returns, vol = _prepare_asset(symbol)
     model_cls = ImprovedPhiStudentTDriftModel if model == "improved" else PhiStudentTDriftModel
     split = max(80, min(int(len(returns) * 0.70), len(returns) - 30))

@@ -60,12 +60,14 @@ try:
         gaussian_score_fold_kernel,
         student_t_cdf_array_kernel,
         student_t_pdf_array_kernel,
+        student_t_p_up_array_kernel,
         crps_student_t_kernel,
         crps_student_t_numerical_kernel,
         pit_ks_unified_kernel,
         garch_variance_kernel,
         phi_gaussian_filter_with_predictive_kernel,
         phi_student_t_augmented_filter_kernel,
+        phi_student_t_improved_filter_kernel,
         # AD tail-correction kernels (March 2026)
         ad_twsc_kernel,
         ad_sptg_cdf_student_t_array,
@@ -1960,6 +1962,7 @@ def run_phi_student_t_improved_train_state_only(
     online_scale_adapt: bool = True,
     p_min: float = 1e-12,
     p_max_default: float = 1.0,
+    chi2_lam: float = 0.975,
 ) -> Tuple[float, float]:
     """Run terminal-state improved Student-t training fold without LL scoring."""
     if not _NUMBA_AVAILABLE:
@@ -1983,6 +1986,7 @@ def run_phi_student_t_improved_train_state_only(
         1 if online_scale_adapt else 0,
         float(p_min),
         float(p_max_default),
+        float(chi2_lam),
     )
     return float(mu), float(P)
 
@@ -2008,14 +2012,27 @@ def run_phi_student_t_improved_cv_test_fold(
     p_floor: float = 1e-12,
     p_cap: float = 1.0,
     z2_cap: float = 50.0,
-) -> Tuple[float, int, int, float]:
+    chi2_lam: float = 0.975,
+) -> Tuple[float, int, int, float, int, float, float, int, float, int, float]:
     """Run improved Student-t validation-fold scoring without Python loops."""
     if not _NUMBA_AVAILABLE:
         raise ImportError("Numba kernels not available")
     use_vov = 1 if (gamma_vov > 1e-12 and vov_rolling is not None) else 0
     if vov_rolling is None:
         vov_rolling = np.empty(1, dtype=np.float64)
-    ll_fold, obs_count, z2_count, z2_sum, sign_count, sign_brier_sum = phi_student_t_improved_cv_test_fold_kernel(
+    (
+        ll_fold,
+        obs_count,
+        z2_count,
+        z2_sum,
+        pit_count,
+        pit_sum,
+        pit2_sum,
+        crps_count,
+        crps_sum,
+        sign_count,
+        sign_brier_sum,
+    ) = phi_student_t_improved_cv_test_fold_kernel(
         returns,
         vol_sq,
         float(q),
@@ -2037,12 +2054,18 @@ def run_phi_student_t_improved_cv_test_fold(
         float(p_floor),
         float(p_cap),
         float(z2_cap),
+        float(chi2_lam),
     )
     return (
         float(ll_fold),
         int(obs_count),
         int(z2_count),
         float(z2_sum),
+        int(pit_count),
+        float(pit_sum),
+        float(pit2_sum),
+        int(crps_count),
+        float(crps_sum),
         int(sign_count),
         float(sign_brier_sum),
     )
@@ -2163,6 +2186,21 @@ def run_student_t_pdf_array(
         raise ImportError("Numba kernels not available")
     return student_t_pdf_array_kernel(
         np.ascontiguousarray(z_arr.ravel(), dtype=np.float64),
+        float(nu),
+    )
+
+
+def run_student_t_p_up_array(
+    mu_pred_arr: np.ndarray,
+    variance_arr: np.ndarray,
+    nu: float,
+) -> np.ndarray:
+    """Numba-accelerated Student-t directional probability P(r > 0)."""
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+    return student_t_p_up_array_kernel(
+        np.ascontiguousarray(mu_pred_arr.ravel(), dtype=np.float64),
+        np.ascontiguousarray(variance_arr.ravel(), dtype=np.float64),
         float(nu),
     )
 
@@ -2367,6 +2405,109 @@ def run_phi_student_t_enhanced_filter(
         exogenous_input, has_exo, robust_wt,
         online_scale_adapt, float(gamma_vov), vov_rolling, has_vov,
         float(P0),
+    )
+
+
+def run_phi_student_t_improved_filter(
+    returns: np.ndarray,
+    vol: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu: float,
+    exogenous_input: np.ndarray = None,
+    robust_wt: bool = False,
+    online_scale_adapt: bool = False,
+    gamma_vov: float = 0.0,
+    vov_rolling: np.ndarray = None,
+    p_min: float = 1e-10,
+    p_max: float = 1.0,
+    chi2_lam: float = 0.975,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+    """
+    Exact-policy Numba path for phi_student_t_improved._filter_phi_core.
+
+    Python handles all data hygiene once; the kernel owns only the mathematical
+    recurrence.  This keeps parity tight while moving the hot loop out of
+    Python.
+    """
+    if not _NUMBA_AVAILABLE:
+        raise ImportError("Numba kernels not available")
+
+    returns = np.asarray(returns, dtype=np.float64).ravel()
+    vol = np.asarray(vol, dtype=np.float64).ravel()
+    n = min(len(returns), len(vol))
+    if n <= 0:
+        empty = np.empty(0, dtype=np.float64)
+        return empty, empty, empty, empty, 0.0
+
+    returns = returns[:n].copy()
+    vol = vol[:n].copy()
+    returns[~np.isfinite(returns)] = 0.0
+
+    finite_vol = vol[np.isfinite(vol) & (vol > 0.0)]
+    vol_fill = float(np.median(finite_vol)) if finite_vol.size else max(float(np.std(returns)), 1e-4)
+    vol_floor = max(vol_fill * 1e-4, 1e-10)
+    vol = np.where(np.isfinite(vol) & (vol > 0.0), vol, vol_fill)
+    vol = np.maximum(vol, vol_floor)
+    vol_sq = np.ascontiguousarray(vol * vol, dtype=np.float64)
+
+    has_exo = exogenous_input is not None
+    if has_exo:
+        exo = np.asarray(exogenous_input, dtype=np.float64).ravel()
+        if len(exo) < n:
+            exo = np.pad(exo, (0, n - len(exo)), constant_values=0.0)
+        exo = np.where(np.isfinite(exo[:n]), exo[:n], 0.0)
+        exo = np.ascontiguousarray(exo, dtype=np.float64)
+    else:
+        exo = np.empty(n, dtype=np.float64)
+
+    has_vov = gamma_vov > 1e-12 and vov_rolling is not None
+    if has_vov:
+        vov = np.asarray(vov_rolling, dtype=np.float64).ravel()
+        if len(vov) < n:
+            pad_val = float(vov[-1]) if len(vov) else 0.0
+            vov = np.pad(vov, (0, n - len(vov)), constant_values=pad_val)
+        vov = np.where(np.isfinite(vov[:n]), vov[:n], 0.0)
+        vov = np.ascontiguousarray(vov, dtype=np.float64)
+        gamma_vov = float(np.clip(gamma_vov, 0.0, 10.0))
+    else:
+        vov = np.empty(n, dtype=np.float64)
+        gamma_vov = 0.0
+
+    q_val = float(q) if np.isfinite(q) else 1e-8
+    c_val = float(c) if np.isfinite(c) else 1.0
+    q_val = max(q_val, 1e-14)
+    c_val = max(c_val, 1e-12)
+    phi_val = float(np.clip(phi if np.isfinite(phi) else 0.0, -0.999, 0.999))
+    nu_val = float(np.clip(nu if np.isfinite(nu) else 8.0, 2.1, 30.0))
+    log_g1, log_g2 = precompute_gamma_values(nu_val)
+    log_norm_const = float(log_g2 - log_g1 - 0.5 * np.log(nu_val * np.pi))
+
+    vol_var_med = max(float(np.median(vol_sq)), 1e-12)
+    p_floor = max(float(p_min), 1e-12)
+    p_cap = max(float(p_max), 100.0 * vol_var_med, 1000.0 * q_val, p_floor * 10.0)
+    p_init = min(max(vol_var_med, 10.0 * q_val, p_floor), p_cap)
+
+    return phi_student_t_improved_filter_kernel(
+        np.ascontiguousarray(returns, dtype=np.float64),
+        vol_sq,
+        q_val,
+        c_val,
+        phi_val,
+        nu_val,
+        log_norm_const,
+        exo,
+        bool(has_exo),
+        bool(robust_wt),
+        bool(online_scale_adapt),
+        float(gamma_vov),
+        vov,
+        bool(has_vov),
+        p_floor,
+        p_cap,
+        float(p_init),
+        float(chi2_lam),
     )
 
 

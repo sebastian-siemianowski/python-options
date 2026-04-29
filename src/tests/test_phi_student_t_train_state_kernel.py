@@ -187,6 +187,11 @@ class PhiStudentTTrainStateKernelTest(unittest.TestCase):
             n_fast,
             z2_count_fast,
             z2_fast,
+            pit_count_fast,
+            pit_sum_fast,
+            pit2_sum_fast,
+            crps_count_fast,
+            crps_sum_fast,
             sign_count_fast,
             sign_brier_fast,
         ) = run_phi_student_t_improved_cv_test_fold(
@@ -223,7 +228,11 @@ class PhiStudentTTrainStateKernelTest(unittest.TestCase):
         z2_count_ref = 0
         sign_brier_ref = 0.0
         sign_count_ref = 0
+        pit_count_ref = 0
+        pit_sum_ref = 0.0
+        pit2_sum_ref = 0.0
         phi_sq = phi * phi
+        chi2_lam = ImprovedPhiStudentTDriftModel._online_scale_lambda(nu)
         for t in range(135, 190):
             mu_pred = phi * mu_p
             P_pred = max(phi_sq * P_p + q, 1e-12)
@@ -234,6 +243,11 @@ class PhiStudentTTrainStateKernelTest(unittest.TestCase):
             inn = returns[t] - mu_pred
             z = inn / scale
             ll_ref += log_norm - np.log(scale) + neg_exp * np.log1p((z * z) * inv_nu)
+            p_obs = float(student_t_dist.cdf(z, df=nu))
+            p_obs = float(np.clip(p_obs, 1e-10, 1.0 - 1e-10))
+            pit_sum_ref += p_obs
+            pit2_sum_ref += p_obs * p_obs
+            pit_count_ref += 1
             p_up = 1.0 - float(student_t_dist.cdf((0.0 - mu_pred) / scale, df=nu))
             y_up = 1.0 if returns[t] > 0.0 else 0.0
             sign_brier_ref += (p_up - y_up) ** 2
@@ -242,6 +256,7 @@ class PhiStudentTTrainStateKernelTest(unittest.TestCase):
             z2_ref += min(z_sq_s, 50.0)
             z2_count_ref += 1
             w_t = float(np.clip((nu + 1.0) / (nu + z_sq_s), 0.05, 20.0))
+            w_t = float(np.clip(1.0 + 0.95 * (w_t - 1.0), 0.08, 8.0))
             R_eff = R_t / max(w_t, 1e-8)
             S_eff = max(P_pred + R_eff, 1e-20)
             K = P_pred / S_eff
@@ -249,7 +264,7 @@ class PhiStudentTTrainStateKernelTest(unittest.TestCase):
             P_p = (1.0 - K) * (1.0 - K) * P_pred + K * K * R_eff
             P_p = max(1e-12, min(P_p, 1.0))
             z2w = min(z * z, chi2_tgt * 50.0)
-            ewm_z2 = 0.985 * ewm_z2 + 0.015 * z2w
+            ewm_z2 = chi2_lam * ewm_z2 + (1.0 - chi2_lam) * z2w
             ratio = float(np.clip(ewm_z2 / chi2_tgt, 0.35, 2.85))
             dev = ratio - 1.0 if ratio >= 1.0 else 1.0 - ratio
             if dev < 0.04:
@@ -262,6 +277,11 @@ class PhiStudentTTrainStateKernelTest(unittest.TestCase):
         self.assertEqual(n_fast, 55)
         self.assertEqual(z2_count_fast, z2_count_ref)
         self.assertAlmostEqual(z2_fast, z2_ref, places=11)
+        self.assertEqual(pit_count_fast, pit_count_ref)
+        self.assertAlmostEqual(pit_sum_fast, pit_sum_ref, places=11)
+        self.assertAlmostEqual(pit2_sum_fast, pit2_sum_ref, places=11)
+        self.assertEqual(crps_count_fast, pit_count_ref)
+        self.assertTrue(np.isfinite(crps_sum_fast))
         self.assertEqual(sign_count_fast, sign_count_ref)
         self.assertAlmostEqual(sign_brier_fast, sign_brier_ref, places=11)
 

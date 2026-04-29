@@ -857,6 +857,1689 @@ Use this ledger to keep the recursion honest.
 | 049 | Final model-count and frontend audit | Pending |
 | 050 | Final 50-stock full retune plus calibration release gate | Pending |
 
+## Next Fifty Stories - Cycles 051-100
+
+This second story bank is deliberately more aggressive.  It is not a promise to
+add 50 features.  It is a promise to run 50 scientific recursions that delete,
+rewrite, benchmark, and either keep or remove the result.
+
+The next phase works one model family at a time.  A story may touch shared
+Numba or calibration code only when that is the cleanest way to improve the
+current model.  Failed kernels, wrappers, objective terms, and branches must be
+removed in the same cycle.
+
+### Next-Fifty Acceptance Addendum
+
+For cycles 051-100, a story needs at least one of these improvements:
+
+- Better OOS proper score: log score, CRPS, PIT, AD, Berkowitz, or Brier.
+- Better signal outcome after pass-2 calibration: PF, Sharpe, hit rate, or drawdown proxy.
+- Equal quality with materially lower wall time or lower method/kernel surface area.
+- Cleaner architecture that deletes dead model paths and is verified by unchanged metrics.
+
+If a cycle changes profitability-facing behavior, the cached calibration gate is
+not enough; it must also run the full 50-stock retune plus calibration gate or a
+documented staged equivalent.
+
+## Next Fifty Work Ledger
+
+| Cycle | Planned Focus | Status |
+| ---: | --- | --- |
+| 051 | `phi_student_t_improved` pipeline extraction and dead-branch deletion | Accepted - base stage extracted; zero-activation Hansen branch retired; 50-stock retune 45.52s tune -> 44.41s, BIC mean -13459.32 -> -13471.26, warnings 0 -> 0; PIT min still passing at 0.055 |
+| 052 | `phi_student_t_improved` Numba filter-core rewrite from first principles | Accepted - exact-policy kernel added with parity test; warm 50-stock retune 44.41s -> 40.44s, failures 0, warnings 0, PIT unchanged |
+| 053 | `phi_student_t_improved` OOS objective with CRPS, sign Brier, and PIT variance | Accepted - CV scorer now returns CRPS/PIT moments; focused benchmark improved Brier, PIT, hit, PF, Sharpe; full calibration gate quality-neutral and faster than cycle 047 |
+| 054 | `phi_student_t_improved` robust influence function redesign | Accepted narrow - shared influence helper added; 0.85 shrink rejected, 0.95 shrink kept; focused PF/Sharpe improved, full calibrated PF/Sharpe unchanged, warnings 0 |
+| 055 | `phi_student_t_improved` Hansen/CST tail augmentation deletion or promotion | Accepted narrow - Hansen remains retired; CST Cartesian grid pruned to activated pairs; full calibration quality unchanged, warnings 0 |
+| 056 | `phi_student_t_improved` vectorized CDF/PDF and p-up kernel consolidation | Accepted - shared p-up kernel added; shape policy keeps SciPy for large vectors; scalar/small p-up 2.8x-10.6x faster; full gate warnings 0 |
+| 057 | `phi_student_t_improved` volatility-memory lambda learned by walk-forward evidence | Accepted - OSA lambda centralized and swept; 0.975 promoted; PIT min 0.055 -> 0.256, BIC mean improved, calibrated PF/Sharpe unchanged |
+| 058 | `phi_student_t_improved` state-input momentum/MR orthogonality rewrite | Accepted - MR sign fixed, legacy post-filter momentum confidence hack deleted; BIC mean improved, full gate warnings 0 |
+| 059 | `phi_student_t_improved` continuous-ν profile replacement with local interpolation | Rejected - local bounds and center-reuse attempts did not beat cycle 058 gate; no code retained |
+| 060 | `phi_student_t_improved` method-size and public API reduction | Accepted - unused compatibility filter wrapper deleted; tests pass; full gate warnings 0 with quality-neutral calibrated PF/Sharpe |
+| 061 | `phi_student_t` shared calibration transport rewrite | Pending |
+| 062 | `phi_student_t` production Numba filter-core parity | Pending |
+| 063 | `phi_student_t` tail graft architecture cleanup | Pending |
+| 064 | `phi_student_t` isotonic/probability transport deletion audit | Pending |
+| 065 | `phi_student_t` proper scoring objective ablation | Pending |
+| 066 | `phi_student_t` volatility correction orthogonalization | Pending |
+| 067 | `phi_student_t` ν-grid topology pruning with posterior-mass proof | Pending |
+| 068 | `phi_student_t` q/c/phi parameterization refactor | Pending |
+| 069 | `phi_student_t` LFO-CV fold kernel rewrite | Pending |
+| 070 | `phi_student_t` canonical/improved shared base extraction | Pending |
+| 071 | `phi_student_t_unified_improved` Stage 5 decomposition | Pending |
+| 072 | `phi_student_t_unified_improved` structural-array Numba rewrite | Pending |
+| 073 | `phi_student_t_unified_improved` jump layer deletion or hard promotion | Pending |
+| 074 | `phi_student_t_unified_improved` Stage 6 coordinate-search calibration rewrite | Pending |
+| 075 | `phi_student_t_unified_improved` PIT/CRPS/entropy composite selection score | Pending |
+| 076 | `phi_student_t_unified_improved` conditional skew GAS simplification | Pending |
+| 077 | `phi_student_t_unified_improved` rough volatility layer audit | Pending |
+| 078 | `phi_student_t_unified_improved` GARCH/PIT path Numba kernel rewrite | Pending |
+| 079 | `phi_student_t_unified_improved` fallback-path deletion pass | Pending |
+| 080 | `phi_student_t_unified_improved` method-size budget enforcement | Pending |
+| 081 | `phi_student_t_unified` Stage 5 canonical parity audit | Pending |
+| 082 | `phi_student_t_unified` filter-and-calibrate reuse from optimize diagnostics | Pending |
+| 083 | `phi_student_t_unified` config/dataclass surface shrink | Pending |
+| 084 | `phi_student_t_unified` weak asymmetry and jump branch deletion audit | Pending |
+| 085 | `phi_student_t_unified` Markov/stress-q simplification | Pending |
+| 086 | `kalman_phi_gaussian_unified` exact Kalman kernel rewrite | Pending |
+| 087 | `kalman_gaussian_unified` closed-form CRPS gradient objective | Pending |
+| 088 | Gaussian unified GAS-Q and momentum branch audit | Pending |
+| 089 | Gaussian unified sign-probability objective | Pending |
+| 090 | Gaussian unified calibration path consolidation | Pending |
+| 091 | Numba kernel architecture split by mathematical responsibility | Pending |
+| 092 | Numba wrapper deletion and typed boundary pass | Pending |
+| 093 | EMOS Student-t optimizer rewrite in Numba | Pending |
+| 094 | Beta calibration optimizer rewrite and focal-loss audit | Pending |
+| 095 | Threshold optimization expected-utility rewrite with calibration guard | Pending |
+| 096 | BMA posterior scoring rewrite with calibration entropy | Pending |
+| 097 | Registry and model parameter transport hardening | Pending |
+| 098 | Stress/crisis benchmark slices added to validation gate | Pending |
+| 099 | Frontend/backend dynamic model diagnostics matrix | Pending |
+| 100 | Final full retune/calibration/signal-generation release gate | Pending |
+
+## Detailed Stories 051-100
+
+### Story 051 - Improved Student-t Pipeline Extraction
+
+Target:
+
+- `src/models/phi_student_t_improved.py`
+- `PhiStudentTDriftModel.tune_and_calibrate`
+- `optimize_params_fixed_nu`
+
+Requirement to challenge:
+
+The improved class is still too large.  Accuracy work is risky while the
+pipeline is hidden in one method.
+
+Delete/refactor:
+
+- Delete dead branches that have zero activation in recent 50-stock benchmark caches.
+- Split `tune_and_calibrate` into explicit pure stages: fit, predictive path,
+  calibration transport, tail augment, diagnostics, packaging.
+- Preserve the public return dictionary exactly unless a benchmark proves a field is dead.
+
+Candidate improved method:
+
+- Use a stage record with only arrays and scalar parameters.
+- Move all non-hot dictionary packaging out of loops.
+- Keep one source for PIT scale policy.
+
+Acceptance:
+
+- Method length is materially reduced.
+- 50-stock retune metrics match or improve cycle 047.
+- No frontend/backend model field disappears unless documented.
+
+Cycle 051 result:
+
+- Accepted as an architecture/speed cycle.
+- Added `_BasePipelineStage` and `_run_base_pipeline_stage()` so stages 1-3
+  are a pure fit/filter/score record instead of hidden local state.
+- Retired the Hansen skew-t branch after the cycle 047 full-gate cache showed
+  zero activations; kept `hansen_*` fields as stable compatibility tombstones.
+- Gate: `src/data/benchmarks/cycle_051_improved_pipeline_hansen_delete_metrics.json`.
+  Tune time improved from 45.52s to 44.41s, BIC mean improved from -13459.32
+  to -13471.26, failures and warnings stayed at zero. PIT mean moved from
+  0.750 to 0.744 and PIT min from 0.362 to 0.055, still above the 0.05 warning
+  floor, so the cycle is accepted but marked as a narrow quality-preserving
+  deletion rather than a calibration improvement.
+
+### Story 052 - Improved Student-t Numba Filter-Core Rewrite
+
+Target:
+
+- `PhiStudentTDriftModel._filter_phi_core`
+- `src/models/numba_kernels.py`
+- `src/models/numba_wrappers.py`
+
+Requirement to challenge:
+
+The improved model still pays Python-loop cost and uses scalar `np.clip` calls
+inside a hot path.  A previous local clip edit failed because it changed model
+selection, so the rewrite must be reference-first, not cosmetic.
+
+Delete/refactor:
+
+- Delete ad hoc Python hot-loop micro-edits.
+- Write a new Numba kernel from the mathematical recurrence:
+  prediction, Student-t scale, robust precision, Joseph covariance, optional
+  VoV, optional online scale.
+- Keep the Python core as reference until parity and benchmarks pass.
+
+Candidate improved method:
+
+- Return `mu`, `P`, `mu_pred`, `S_pred`, and `ll` from one contiguous kernel.
+- Use branch clamps only where a Python reference test proves bit-level policy.
+- Add a wrapper that normalizes arrays once.
+
+Acceptance:
+
+- Python reference parity on deterministic fixtures.
+- Focused improved Student-t benchmark faster or equal.
+- Full retune has no PIT/warning regression.
+
+Cycle 052 result:
+
+- Accepted as a speed/architecture cycle.
+- Added `phi_student_t_improved_filter_kernel()` plus
+  `run_phi_student_t_improved_filter()` so the improved model's exact Python
+  recurrence has its own Numba path instead of borrowing a nearly-compatible
+  kernel with different initialization and OSA constants.
+- Added `src/tests/test_story_052_improved_filter_kernel.py`; deterministic
+  parity passes against the Python reference for robust weighting, VoV, online
+  scale adaptation, and exogenous input.
+- Focused 50-stock A/B: 33.34s -> 5.39s after enabling the compiled path, with
+  slightly better OOS log score, Brier, and PIT. The older A/B also toggles
+  state/CV kernels, so this is supporting evidence rather than the release gate.
+- Full 50-stock retune repeat gate:
+  `src/data/benchmarks/cycle_052_improved_filter_kernel_repeat_retune_metrics.json`.
+  Warm-cache tune time improved from cycle 051's 44.41s to 40.44s. Failures and
+  warnings stayed at zero; PIT mean and min were unchanged at 0.744 and 0.055.
+  First cold run paid Numba compile cost, so Numba prewarming remains explicit
+  future work instead of being hidden.
+
+### Story 053 - Improved Student-t Proper OOS Objective
+
+Target:
+
+- `optimize_params_fixed_nu`
+- `phi_student_t_improved_cv_test_fold_kernel`
+
+Requirement to challenge:
+
+The objective still leans too heavily on log likelihood.  Trading quality needs
+truthful direction probability and calibrated uncertainty.
+
+Delete/refactor:
+
+- Remove objective penalties not backed by an ablation.
+- Combine validation metrics inside the Numba fold scorer rather than Python post-processing.
+
+Candidate improved method:
+
+- Objective components:
+  - OOS log score.
+  - CRPS normalized by realized scale.
+  - sign-probability Brier for `P(r > 0)`.
+  - PIT variance penalty toward `1/12`.
+- Use lexicographic guard: no CRPS/PIT damage for sign-score gains.
+
+Acceptance:
+
+- Focused 50-stock improved-model benchmark improves Brier or hit rate.
+- Full gate improves PF/Sharpe or is quality-neutral with faster tuning.
+
+Cycle 053 result:
+
+- Accepted as an objective-quality cycle.
+- Extended `phi_student_t_improved_cv_test_fold_kernel()` to return CRPS
+  sufficient statistics and PIT first/second moments in the same validation
+  pass.
+- Promoted the ablated default weights:
+  `PHI_STUDENT_T_IMPROVED_CV_CRPS_WEIGHT=0.02`,
+  `PHI_STUDENT_T_IMPROVED_CV_PIT_VAR_WEIGHT=0.015`, and
+  `PHI_STUDENT_T_IMPROVED_SIGN_BRIER_WEIGHT=0.008`.
+- Focused real-data sweep:
+  `src/data/benchmarks/cycle_053_weight_sweep_crps002_sign008_metrics.json`.
+  Versus cycle 052 focused after-run, OOS log score, Brier, PIT, variance
+  ratio, profit factor, Sharpe, and trade hit rate all improved.
+- Full calibration gate:
+  `src/data/benchmarks/cycle_053_improved_oos_objective_full_cal_metrics.json`.
+  Failures and warnings stayed at zero; pass-2 calibrated PF and Sharpe stayed
+  quality-neutral at 1.974 and 2.853; tune time was 41.70s versus cycle 047's
+  45.52s.
+
+### Story 054 - Improved Student-t Robust Influence Redesign
+
+Target:
+
+- robust Student-t gain in improved filter.
+- train-state and CV kernels.
+
+Requirement to challenge:
+
+Single-observation robust weights may be too reactive in clustered stress and
+too slow to recover after outliers.
+
+Delete/refactor:
+
+- Remove duplicated robust-weight clipping code.
+- Replace isolated residual weight policy with one shared influence function.
+
+Candidate improved method:
+
+- Compare:
+  - current Student-t precision weight.
+  - bounded Hampel-like influence in standardized residual space.
+  - causal EWM stress memory that changes gain slowly.
+- Keep only the version that improves stress PIT and signal metrics.
+
+Acceptance:
+
+- Stress-period PIT or PIT minimum improves.
+- Hyvarinen does not indicate variance collapse.
+- No calibrated PF/Sharpe regression.
+
+Cycle 054 result:
+
+- Accepted narrowly after one rejected attempt.
+- Added a shared improved Student-t precision influence helper in both Python
+  and Numba paths, replacing repeated robust-weight clipping in the filter,
+  train-state, and CV kernels.
+- Rejected 0.85 shrink toward unit precision:
+  `src/data/benchmarks/cycle_054_influence_shrink_metrics.json`; it improved
+  hit rate but worsened Brier, log score, PIT, PF, and Sharpe.
+- Kept 0.95 shrink:
+  `src/data/benchmarks/cycle_054_influence_shrink_095_metrics.json`; focused
+  PF improved to 1.044, Sharpe to 0.138, Brier to 0.251108, and hit rate to
+  0.5061 versus the accepted cycle 053 focused baseline.
+- Full calibrated gate:
+  `src/data/benchmarks/cycle_054_influence_shrink_095_full_cal_repeat_metrics.json`.
+  Failures and warnings stayed at zero; PIT min moved slightly up to 0.055160;
+  calibrated PF and Sharpe stayed quality-neutral at 1.974 and 2.853.
+
+### Story 055 - Improved Student-t Tail Augmentation Deletion Or Promotion
+
+Target:
+
+- Hansen skew-t branch.
+- contaminated Student-t branch.
+- SPTG tail transport in `phi_student_t_improved.py`.
+
+Requirement to challenge:
+
+Tail augmentations are useful only if they change selected parameters or
+downstream signal risk.  Otherwise they are expensive decoration.
+
+Delete/refactor:
+
+- Measure branch activation, selected posterior mass, CRPS deltas, and signal impact.
+- Delete branches that do not survive 50-stock evidence.
+- If a branch survives, promote it into a clear model field with one inference path.
+
+Candidate improved method:
+
+- Tail candidates are accepted only by OOS CRPS plus PIT/AD no-harm gate.
+- Tail parameter packaging must be consumed by signal generation or removed.
+
+Acceptance:
+
+- Less code and faster tuning, or better tail/stress calibration.
+- No unused tail diagnostics remain.
+
+Cycle 055 result:
+
+- Accepted as a topology-reduction cycle, not a speed cycle.
+- Audited the cycle 054 full calibration cache:
+  Hansen activations were still zero, CST activated 343 times, TWSC 1094
+  times, SPTG 569 times, and isotonic 1282 times across retained parameters.
+- Kept Hansen as an explicit retired compatibility tombstone.
+- Replaced the CST Cartesian grid with the empirically used candidate pairs:
+  `(6, 0.02)`, `(3, 0.10)`, `(3, 0.02)`, `(3, 0.05)`, and `(4, 0.10)`.
+- Gate:
+  `src/data/benchmarks/cycle_055_cst_pair_prune_full_cal_metrics.json`.
+  Failures and warnings stayed at zero; calibrated PF and Sharpe stayed
+  quality-neutral versus cycle 054. The full-cal wall time was noisy and slower,
+  so the cycle is accepted only for deleting low-evidence search topology while
+  preserving full-system quality.
+
+### Story 056 - Improved Student-t CDF/PDF And P-Up Kernel Consolidation
+
+Target:
+
+- `_fast_t_cdf`
+- `_fast_t_pdf`
+- p-up calculations in improved Student-t.
+- `run_student_t_cdf_array`
+
+Requirement to challenge:
+
+CDF/PDF calls are spread across wrappers and Python helpers.  Directional
+probability is too important to be fragmented.
+
+Delete/refactor:
+
+- Delete duplicate scalar p-up code.
+- Use one vectorized path for arrays and one scalar path for signal generation.
+
+Candidate improved method:
+
+- Create a Numba p-up kernel:
+  `p_up = 1 - T_cdf((0 - mu_pred) / scale, nu)`.
+- Expose a wrapper that handles contiguous arrays and fallback.
+
+Acceptance:
+
+- Reference parity to SciPy within tolerance.
+- Faster calibration or signal generation.
+- Brier/hit metrics unchanged or better.
+
+Cycle 056 result:
+
+- Accepted after correcting one rejected assumption.
+- Added `student_t_p_up_array_kernel()` plus `run_student_t_p_up_array()` and
+  `_fast_t_p_up()` so directional probability uses one explicit Student-t
+  policy instead of repeated scalar CDF snippets.
+- Added `src/tests/test_story_056_student_t_p_up_kernel.py`; parity against
+  SciPy passed at `rtol=1e-9` across `nu` values 3, 4, 8, and 20.
+- Initial microbenchmark showed the pure Numba route was slower for very large
+  arrays, so `_fast_t_p_up()` now uses Numba only for arrays up to 256 elements
+  and keeps SciPy's vectorized path for large batches.
+- Final shape probe:
+  scalar p-up was 10.6x faster, 100-element p-up was 2.8x faster, and 1k/10k
+  arrays were neutral because they used the SciPy batch path.
+- Focused 50-stock real-data benchmark:
+  `src/data/benchmarks/cycle_056_p_up_kernel_metrics.json`.
+  OOS Brier, hit rate, PIT, PF, and Sharpe stayed unchanged from cycle 054/055
+  focused metrics.
+- Full retune plus calibration gate:
+  `src/data/benchmarks/cycle_056_p_up_kernel_threshold_full_cal_metrics.json`.
+  All 50 assets completed, failures stayed at zero, calibration warnings stayed
+  at zero, PIT min stayed at 0.055160, calibrated PF stayed 1.974, and calibrated
+  Sharpe stayed 2.853. Wall time was noisy and not claimed as a full-system
+  speed win.
+
+### Story 057 - Improved Student-t Volatility-Memory Lambda Learning
+
+Target:
+
+- prediction-bias memory.
+- online scale adaptation lambda.
+- VoV lambda.
+
+Requirement to challenge:
+
+Hardcoded memory constants (`0.97`, `0.98`, etc.) encode assumptions about
+market half-life that should be tested per model and asset class.
+
+Delete/refactor:
+
+- Remove constants that duplicate the same memory role.
+- Keep one causal residual memory mechanism where possible.
+
+Candidate improved method:
+
+- Walk-forward select among a tiny lambda grid using CRPS plus PIT penalty.
+- Use asset-class prior only as shrinkage, not a hard override.
+
+Acceptance:
+
+- Better CRPS/PIT on focused benchmark.
+- No material runtime regression unless profitability improves.
+
+Cycle 057 result:
+
+- Accepted as a volatility-memory calibration cycle.
+- Deleted three hardcoded improved-model OSA memory constants by routing the
+  filter, train-state kernel, and CV fold kernel through one
+  `_online_scale_lambda()` policy.
+- Added `online_scale_lambda` diagnostics to fixed-nu optimization.
+- Swept 50-stock real-data focused benchmarks:
+  - `src/data/benchmarks/cycle_057_osa_lambda_0975_metrics.json`
+  - `src/data/benchmarks/cycle_057_osa_lambda_0980_metrics.json`
+  - `src/data/benchmarks/cycle_057_osa_lambda_0985_metrics.json`
+  - `src/data/benchmarks/cycle_057_osa_lambda_0992_metrics.json`
+- Promoted `0.975`: it produced the best focused PF/Sharpe among the tested
+  lambdas and improved focused PIT versus the prior default; `0.980` improved
+  Brier but hurt PF/Sharpe, while `0.992` hurt profitability more.
+- Full retune plus calibration gate:
+  `src/data/benchmarks/cycle_057_osa_lambda_0975_full_cal_metrics.json`.
+  All 50 assets completed; failures and warnings stayed zero; BIC mean improved
+  to -13471.56; PIT mean improved to 0.762 and PIT min improved to 0.256.
+  Calibrated PF and Sharpe remained quality-neutral at 1.974 and 2.853.
+
+### Story 058 - Improved Student-t Momentum/MR Orthogonality Rewrite
+
+Target:
+
+- momentum wrapper injection into improved Student-t.
+- state equation exogenous input.
+
+Requirement to challenge:
+
+Momentum and mean reversion may be double-counted by state drift, external
+signal fields, and pass-2 threshold calibration.
+
+Delete/refactor:
+
+- Remove any post-filter momentum hacks.
+- Keep only state-equation input if it earns OOS score.
+
+Candidate improved method:
+
+- Treat momentum/MR as a control input `u_t` with shrinkage by `sqrt(q)`.
+- Optimize input coefficient by OOS CRPS and sign Brier.
+- Enforce orthogonality: input changes mean, not variance authority.
+
+Acceptance:
+
+- Improved sign Brier/hit rate without PIT damage.
+- Signal PF/Sharpe improves or remains stable with faster/smaller code.
+
+Cycle 058 result:
+
+- Accepted as a mathematical correctness and deletion cycle.
+- Fixed the state-equation input sign: `compute_mr_signal()` already returns a
+  signed return impulse toward equilibrium, so `_compute_exogenous_input()` now
+  combines `momentum + mean_reversion` instead of subtracting and accidentally
+  inverting MR.
+- Deleted the unreachable legacy post-return momentum block and removed the
+  active fallback post-filter momentum/P adjustment path. Momentum/MR now acts
+  only through the state equation, preserving orthogonality between direction
+  input and variance authority.
+- Added a regression test proving MR is not inverted in exogenous input:
+  `src/tests/test_momentum_state_eq.py`.
+- Tests:
+  `.venv/bin/python -m unittest src.tests.test_momentum_state_eq -v`.
+- Full retune plus calibration gate:
+  `src/data/benchmarks/cycle_058_momentum_mr_orthogonality_full_cal_metrics.json`.
+  All 50 assets completed; failures and warnings stayed zero; BIC mean improved
+  to -13472.25; PIT mean/min stayed at the improved cycle 057 levels; calibrated
+  PF and Sharpe stayed quality-neutral at 1.974 and 2.853. Tune time was 41.58s
+  in this run.
+
+### Story 059 - Improved Student-t Continuous-Nu Replacement
+
+Target:
+
+- improved `phi_student_t_improved_nu_mle`.
+- profile likelihood code in `model_fitting.py`.
+
+Requirement to challenge:
+
+Continuous bounded scalar optimization can spend many filters finding a nu
+value that is effectively a discrete-grid interpolation.
+
+Delete/refactor:
+
+- Share profile code between canonical and improved Student-t.
+- Delete curvature diagnostics unless consumed by BMA.
+
+Candidate improved method:
+
+- Fit a local quadratic in `log(nu)` using the best grid point and neighbors.
+- Fall back to bounded scalar search only when curvature is ambiguous and the
+model has meaningful posterior mass.
+
+Acceptance:
+
+- MLE model quality equal or better.
+- Runtime improves on full retune.
+- If quality regresses, revert and keep scalar search.
+
+Cycle 059 result:
+
+- Rejected; no code retained.
+- Attempt 1 constrained continuous-ν optimization to local bounds around the
+  winning discrete ν and reduced scalar optimizer iterations. It preserved PIT
+  but worsened BIC and did not produce a reliable speed win:
+  `src/data/benchmarks/cycle_059_local_nu_profile_full_cal_metrics.json`.
+- Attempt 2 kept the global bounded search but reused `minimize_scalar.fun` for
+  the center likelihood instead of re-filtering at the same ν. Continuous-ν
+  tests passed, but the 50-stock gate still did not beat cycle 058 on BIC or
+  wall time:
+  `src/data/benchmarks/cycle_059_nu_mle_center_reuse_full_cal_metrics.json`.
+- Both attempts were reverted. The original scalar-search path remains in place
+  until a later cycle can improve it without sacrificing model quality.
+
+### Story 060 - Improved Student-t Public API Reduction
+
+Target:
+
+- public/static/class methods in `phi_student_t_improved.py`.
+
+Requirement to challenge:
+
+Too many methods make it unclear which path production actually uses.
+
+Delete/refactor:
+
+- Use `rg` to classify methods as production, test-only, or dead.
+- Delete dead helpers.
+- Move test-only reference helpers into tests if appropriate.
+
+Candidate improved method:
+
+- Keep a small public surface:
+  `filter`, `filter_phi_with_predictive`, `optimize_params_fixed_nu`,
+  `tune_and_calibrate`, and serialization helpers.
+
+Acceptance:
+
+- Reduced method count.
+- Tests updated to reference the intended surface.
+- Full benchmark unchanged or better.
+
+Cycle 060 result:
+
+- Accepted as a deletion/surface-area cycle.
+- Deleted unused `PhiStudentTDriftModel._filter_phi_python_optimized()` from
+  `src/models/phi_student_t_improved.py`; `rg` found no production, tuning,
+  signal, or test call sites for the improved-model wrapper.
+- Kept `_filter_phi_core()`, `filter_phi()`, `filter_phi_augmented()`, and
+  `filter_phi_with_predictive()` as the intended filter surface.
+- Tests:
+  `.venv/bin/python -m unittest src.tests.test_story_052_improved_filter_kernel src.tests.test_phi_student_t_train_state_kernel -v`.
+- Full retune plus calibration gate:
+  `src/data/benchmarks/cycle_060_improved_api_deletion_full_cal_metrics.json`.
+  All 50 assets completed; failures and warnings stayed zero; PIT mean/min
+  stayed at 0.762/0.256; calibrated PF and Sharpe stayed quality-neutral at
+  1.974 and 2.853; BIC mean stayed strong at -13472.16.
+
+### Story 061 - Canonical Student-t Shared Calibration Transport
+
+Target:
+
+- `phi_student_t.py`
+- AD correction pipeline.
+- isotonic and SPTG branches.
+
+Requirement to challenge:
+
+Canonical and improved Student-t should not each carry subtly different
+calibration transport logic unless a benchmark proves the difference.
+
+Delete/refactor:
+
+- Extract shared calibration transport primitives.
+- Delete duplicated acceptance gates.
+
+Candidate improved method:
+
+- One helper returns corrected PIT plus persisted calibration params.
+- Model-specific code only supplies residuals, scale, and nu.
+
+Acceptance:
+
+- Canonical benchmark remains improved from cycles 034-037.
+- Improved model does not regress.
+- Less duplicated code.
+
+### Story 062 - Canonical Student-t Production Numba Filter Core
+
+Target:
+
+- canonical `_filter_phi_core`.
+- `phi_student_t_train_state_only_kernel`.
+- predictive path wrappers.
+
+Requirement to challenge:
+
+Canonical Student-t is still a major competitor and should not remain slower
+because the improved model received kernel attention first.
+
+Delete/refactor:
+
+- Remove separate training and predictive recurrences if a unified kernel can
+serve both.
+- Keep pure Python only as reference fallback.
+
+Candidate improved method:
+
+- First-principles canonical Numba kernel with no improved-only features.
+- Outputs terminal state for CV and full predictive arrays for diagnostics.
+
+Acceptance:
+
+- Python parity tests.
+- Faster canonical focused benchmark.
+- Full BMA weights still make sense.
+
+### Story 063 - Canonical Student-t Tail Graft Architecture Cleanup
+
+Target:
+
+- canonical SPTG and TWSC branches.
+
+Requirement to challenge:
+
+After cycle 037, SPTG uses PWM.  The surrounding branch still may carry
+historical code intended for MLE tail fitting.
+
+Delete/refactor:
+
+- Delete leftover MLE-tail assumptions from comments, diagnostics, and fields.
+- Remove GPD parameters from cache if signal generation does not consume them.
+
+Candidate improved method:
+
+- Tail graft is either:
+  - pure PIT transport for diagnostics, or
+  - real tail-risk parameter for signal MC.
+- It cannot be both vaguely.
+
+Acceptance:
+
+- Same or better PIT/profit metrics.
+- Clearer tune cache fields.
+
+### Story 064 - Canonical Student-t Isotonic Transport Audit
+
+Target:
+
+- canonical isotonic PIT recalibration.
+- `calibration/isotonic_recalibration.py`.
+
+Requirement to challenge:
+
+Isotonic transport may improve PIT diagnostics while weakening distributional
+sharpness or signal threshold semantics.
+
+Delete/refactor:
+
+- Delete isotonic application where Beta/probit calibration already handles the same bias.
+- Keep only if it improves OOS PIT or Brier with no CRPS harm.
+
+Candidate improved method:
+
+- Use monotone transport on held-out PIT only.
+- Store knots only when accepted by OOS guard.
+
+Acceptance:
+
+- Better PIT/AD or Brier.
+- No signal PF/Sharpe regression.
+
+### Story 065 - Canonical Student-t Proper Scoring Objective Ablation
+
+Target:
+
+- canonical CV objective.
+- canonical CV fold Numba kernel.
+
+Requirement to challenge:
+
+Canonical Student-t may be too simple, but adding improved-model terms can also
+overfit.  The test must be surgical.
+
+Delete/refactor:
+
+- Add one candidate term at a time and delete failed terms.
+- No broad objective soup.
+
+Candidate improved method:
+
+- Compare:
+  - log score only.
+  - log score plus CRPS.
+  - log score plus sign Brier.
+  - log score plus PIT variance.
+
+Acceptance:
+
+- Keep only a term that improves focused OOS quality and full signal metrics.
+
+### Story 066 - Student-t Volatility Correction Orthogonalization
+
+Target:
+
+- canonical and improved Student-t volatility corrections.
+- VoV, chi-square EWM, PIT variance stretching, HAR input.
+
+Requirement to challenge:
+
+Stacked volatility fixes can compensate for one another and make parameters
+unidentifiable.
+
+Delete/refactor:
+
+- Build a table of which correction changes observation scale, process noise,
+  PIT transport, or MC signal scale.
+- Delete one layer where two layers do the same job.
+
+Candidate improved method:
+
+- Orthogonal roles:
+  - HAR/GK estimates ex ante realized vol.
+  - q adapts latent drift uncertainty.
+  - one residual-scale correction handles forecast variance miss.
+  - PIT transport handles probability miscalibration.
+
+Acceptance:
+
+- Fewer scale layers.
+- PIT and CRPS improve or remain stable.
+- Better parameter interpretability.
+
+### Story 067 - Student-t Nu-Grid Topology Pruning
+
+Target:
+
+- `STUDENT_T_NU_GRID`.
+- model registry names.
+- BMA posterior mass by nu.
+
+Requirement to challenge:
+
+Every discrete nu model has a process cost.  Nu points with persistent near-zero
+posterior mass should justify their existence.
+
+Delete/refactor:
+
+- Analyze posterior mass, winners, CRPS, PIT contribution by nu over cached gates.
+- Remove or make opt-in any nu point that never contributes.
+
+Candidate improved method:
+
+- Use a smaller topology only if it preserves side-by-side canonical/improved competition.
+- Keep MLE nu only if it earns posterior or improves metrics.
+
+Acceptance:
+
+- Fewer models per asset only if story explicitly deletes model variants.
+- Runtime improves and signal metrics do not regress.
+
+### Story 068 - Student-t q/c/phi Reparameterization
+
+Target:
+
+- `optimize_params_fixed_nu`.
+- Numba CV kernels.
+
+Requirement to challenge:
+
+Directly optimizing q, c, and phi with separate bounds can create poor geometry
+for L-BFGS-B and redundant starts.
+
+Delete/refactor:
+
+- Remove optimizer starts that exist only to escape bad parameter scaling.
+
+Candidate improved method:
+
+- Reparameterize:
+  - `log_q`.
+  - `log_c`.
+  - `atanh(phi_scaled)` or logistic bounded phi.
+- Add priors in transformed coordinates.
+
+Acceptance:
+
+- Fewer optimizer iterations or better convergence.
+- Equal or better OOS scores.
+
+### Story 069 - Student-t LFO-CV Fold Kernel Rewrite
+
+Target:
+
+- LFO-CV scoring in canonical and improved Student-t.
+- `tuning/diagnostics.py`.
+
+Requirement to challenge:
+
+Leave-future-out scoring should measure true OOS forecasting, but Python
+fold orchestration may duplicate filters.
+
+Delete/refactor:
+
+- Delete repeated train/filter cycles that can be carried forward causally.
+
+Candidate improved method:
+
+- Numba kernel walks time once:
+  - warm-up train segment.
+  - score each future observation before update.
+  - update state causally.
+
+Acceptance:
+
+- Parity with existing LFO score.
+- Speed improvement.
+- No leakage.
+
+### Story 070 - Canonical/Improved Shared Student-t Base
+
+Target:
+
+- `phi_student_t.py`
+- `phi_student_t_improved.py`.
+
+Requirement to challenge:
+
+The improved model should differ mathematically, not by accidental copied
+plumbing.
+
+Delete/refactor:
+
+- Extract shared numerical helpers.
+- Keep separate classes only for real model differences.
+
+Candidate improved method:
+
+- Shared module for:
+  - Student-t predictive scale.
+  - p-up.
+  - PIT transport acceptance.
+  - calibration params packaging.
+
+Acceptance:
+
+- Less duplicate code.
+- Both model families still fit side by side with distinct names.
+
+### Story 071 - Unified Improved Stage 5 Decomposition
+
+Target:
+
+- `phi_student_t_unified_improved.py`
+- Stage 5 methods and nested searches.
+
+Requirement to challenge:
+
+Stage 5 is too broad: nu, GARCH, rough volatility, skew, shrinkage, and entropy
+are mixed in a large procedure.
+
+Delete/refactor:
+
+- Split Stage 5 into individually benchmarkable pure helpers.
+- Delete sub-searches whose accepted parameter is identity on most assets.
+
+Candidate improved method:
+
+- Stage helpers:
+  - nu candidate scoring.
+  - GARCH memory scoring.
+  - skew scoring.
+  - CRPS shrink scoring.
+  - entropy relaxation.
+
+Acceptance:
+
+- Method-size reduction.
+- Same or better unified improved selection metrics.
+
+### Story 072 - Unified Improved Structural-Array Kernel Rewrite
+
+Target:
+
+- `filter_phi_unified`.
+- precomputed structural arrays.
+- Numba kernels/wrappers.
+
+Requirement to challenge:
+
+Unified model speed depends on building and reusing structural arrays cleanly.
+
+Delete/refactor:
+
+- Delete per-candidate recomputation of arrays that depend only on returns/vol.
+- Remove thread-based code paths not used by process-level tuning.
+
+Candidate improved method:
+
+- New Numba kernel consumes:
+  - precomputed VoV.
+  - stress probabilities.
+  - asymmetry degrees of freedom.
+  - GARCH variance path when fixed.
+
+Acceptance:
+
+- Focused unified improved benchmark faster.
+- Python reference parity.
+
+### Story 073 - Unified Improved Jump Layer Deletion Or Promotion
+
+Target:
+
+- jump intensity, jump variance, jump sensitivity, jump mean.
+
+Requirement to challenge:
+
+Jump parameters add complexity only if they improve OOS tail calibration.
+
+Delete/refactor:
+
+- Audit activation, posterior contribution, and CRPS/PIT deltas.
+- Delete jump layer if it is mostly inactive.
+- If active, promote it into a clear scoring and inference path.
+
+Candidate improved method:
+
+- Jump layer competes as a conditional sub-model with explicit BIC penalty.
+- No hidden parameter inflation.
+
+Acceptance:
+
+- Better crisis/tail benchmark or code deletion with unchanged metrics.
+
+### Story 074 - Unified Improved Stage 6 Coordinate Calibration
+
+Target:
+
+- `_stage_6_calibration_pipeline`.
+
+Requirement to challenge:
+
+Stage 6 grid/nested search may be too expensive and entangled.
+
+Delete/refactor:
+
+- Delete grid dimensions with flat objective response.
+- Replace nested grid with coordinate search using monotone no-harm gates.
+
+Candidate improved method:
+
+- Optimize in order:
+  - GARCH blend.
+  - nu PIT.
+  - probit beta correction.
+  - AR whitening lambda.
+  - nu CRPS.
+- Stop early when marginal score improvement is below threshold.
+
+Acceptance:
+
+- Faster Stage 6.
+- Same or better PIT/CRPS.
+
+### Story 075 - Unified Improved Composite Selection Score
+
+Target:
+
+- unified candidate scoring in Stage 5/6.
+
+Requirement to challenge:
+
+CRPS alone can prefer sharp but miscalibrated distributions.  PIT alone can
+prefer dull distributions.
+
+Delete/refactor:
+
+- Remove candidate score variants that measure the same thing.
+
+Candidate improved method:
+
+- Composite score:
+  - normalized CRPS.
+  - PIT KS/AD.
+  - forecast entropy consistency.
+  - sign Brier.
+  - BIC penalty.
+
+Acceptance:
+
+- Better full-gate PIT and profitability.
+- No increase in warnings.
+
+### Story 076 - Unified Improved Conditional Skew Simplification
+
+Target:
+
+- skew score sensitivity.
+- skew persistence.
+- asymmetry degrees of freedom.
+
+Requirement to challenge:
+
+Skew dynamics may be overparameterized relative to data.
+
+Delete/refactor:
+
+- Delete one skew mechanism if two coexist.
+- Keep either static asymmetry or GAS skew, not both, unless each earns its role.
+
+Candidate improved method:
+
+- Compare static skew, GAS skew, and no skew by OOS CRPS/PIT tail balance.
+
+Acceptance:
+
+- Better left/right tail calibration.
+- Simpler parameter surface.
+
+### Story 077 - Unified Improved Rough Volatility Audit
+
+Target:
+
+- rough Hurst estimation and rough volatility memory.
+
+Requirement to challenge:
+
+Rough volatility can be a sophisticated label for an unstable fit.
+
+Delete/refactor:
+
+- Delete rough layer if Hurst estimate is noisy or has no OOS effect.
+
+Candidate improved method:
+
+- Use rough layer only when validation shows:
+  - volatility clustering prediction improves.
+  - CRPS improves.
+  - PIT does not degrade.
+
+Acceptance:
+
+- Faster unified fit or better stress calibration.
+
+### Story 078 - Unified Improved GARCH/PIT Numba Path
+
+Target:
+
+- `_pit_garch_path`.
+- `_compute_crps_output`.
+
+Requirement to challenge:
+
+GARCH/PIT correction is array-heavy and should be kernelized if kept.
+
+Delete/refactor:
+
+- Delete duplicated GARCH loops in Python.
+- Keep one Numba path and one simple Python reference.
+
+Candidate improved method:
+
+- New kernel outputs PIT values, sigma, mu effective, and variance diagnostics.
+
+Acceptance:
+
+- Reference parity.
+- Focused Stage 6 speedup.
+
+### Story 079 - Unified Improved Fallback Deletion
+
+Target:
+
+- fallback branches in unified improved methods.
+
+Requirement to challenge:
+
+Fallbacks silently hide failed assumptions and keep dead code alive.
+
+Delete/refactor:
+
+- Instrument fallback counts in benchmark.
+- Delete fallback paths that never execute.
+- Convert meaningful fallback to explicit degraded model output.
+
+Candidate improved method:
+
+- Fail loudly inside tests; degrade explicitly in production only when metrics
+  prove safe.
+
+Acceptance:
+
+- Reduced code.
+- No new tuning failures.
+
+### Story 080 - Unified Improved Method-Size Budget
+
+Target:
+
+- methods over 200 lines in `phi_student_t_unified_improved.py`.
+
+Requirement to challenge:
+
+Very large methods block mathematical iteration.
+
+Delete/refactor:
+
+- Enforce method-size budgets for Stage 5/6 and filter methods.
+- Delete historical comments that no longer describe production behavior.
+
+Candidate improved method:
+
+- Helpers named after the equation they implement.
+- Hot loops remain object-free.
+
+Acceptance:
+
+- Method-size reduction.
+- Full benchmark unchanged or improved.
+
+### Story 081 - Unified Canonical Stage 5 Parity Audit
+
+Target:
+
+- `phi_student_t_unified.py`.
+
+Requirement to challenge:
+
+Canonical unified may lag improved unified due to old implementation, not due
+to a meaningful model difference.
+
+Delete/refactor:
+
+- Port only validated Stage 5 simplifications from improved unified.
+- Delete canonical-only duplicate code that is strictly older.
+
+Candidate improved method:
+
+- Shared Stage 5 scorer if math is identical.
+- Separate config only for canonical model assumptions.
+
+Acceptance:
+
+- Canonical unified improves or remains simpler.
+
+### Story 082 - Unified Canonical Reuse Optimize Diagnostics
+
+Target:
+
+- canonical `optimize_params_unified`.
+- `filter_and_calibrate`.
+
+Requirement to challenge:
+
+Optimization may compute test diagnostics and then recompute them for packaging.
+
+Delete/refactor:
+
+- Reuse optimize-time PIT/CRPS/sigma arrays.
+- Delete duplicate filter-and-calibrate call when diagnostics are present.
+
+Candidate improved method:
+
+- Diagnostics payload with validated arrays and shape checks.
+
+Acceptance:
+
+- Faster unified canonical fit.
+- Same metrics.
+
+### Story 083 - Unified Canonical Config Surface Shrink
+
+Target:
+
+- `UnifiedStudentTConfig`.
+
+Requirement to challenge:
+
+Config may contain parameters that are identity for most assets.
+
+Delete/refactor:
+
+- Split required parameters from optional activated layers.
+- Delete unused config fields or move to optional nested dict.
+
+Candidate improved method:
+
+- Smaller dataclass and explicit activated-layer metadata.
+
+Acceptance:
+
+- Serialization remains compatible.
+- Model sampling still gets all required fields.
+
+### Story 084 - Unified Canonical Weak Layer Deletion
+
+Target:
+
+- asymmetry, jump, rough, and GARCH layers in canonical unified.
+
+Requirement to challenge:
+
+Canonical unified should not carry every improved-layer hypothesis.
+
+Delete/refactor:
+
+- Delete weak layers from canonical if they do not improve OOS score.
+
+Candidate improved method:
+
+- Canonical unified becomes a lean benchmark:
+  AR(1) Student-t plus minimal adaptive variance.
+
+Acceptance:
+
+- Faster canonical unified with no full-gate regression.
+
+### Story 085 - Unified Canonical Stress-Q Simplification
+
+Target:
+
+- Markov-switching q and stress probability logic.
+
+Requirement to challenge:
+
+Stress-q logic may duplicate GAS-Q/RV-Q and volatility conditioning.
+
+Delete/refactor:
+
+- Compare stress-q, GAS-Q, RV-Q, and static q in BMA contribution.
+- Delete one redundant q-adaptation path.
+
+Candidate improved method:
+
+- One proactive q adaptation mechanism per model family.
+
+Acceptance:
+
+- Better or equal PIT in regime transitions.
+- Faster retune.
+
+### Story 086 - Phi Gaussian Exact Kernel Rewrite
+
+Target:
+
+- `kalman_phi_gaussian_unified`.
+- Gaussian Numba kernels.
+
+Requirement to challenge:
+
+Phi Gaussian should be a fast, exact baseline.  It should not be slower than
+Student-t plumbing.
+
+Delete/refactor:
+
+- Delete Python fallback from production path once kernel parity is tested.
+- Remove repeated train-state reconstruction.
+
+Candidate improved method:
+
+- Exact linear-Gaussian Kalman kernel:
+  - predictive path.
+  - log likelihood.
+  - OSA fold score.
+  - p-up.
+
+Acceptance:
+
+- Gaussian focused benchmark faster.
+- Full gate no model-count or quality regression.
+
+### Story 087 - Gaussian Closed-Form CRPS Gradient Objective
+
+Target:
+
+- Gaussian unified optimizer.
+
+Requirement to challenge:
+
+Gaussian CRPS is closed form and differentiable; finite-difference optimizer
+calls are wasteful.
+
+Delete/refactor:
+
+- Remove numerical-gradient path where analytic gradient is stable.
+
+Candidate improved method:
+
+- Derive CRPS gradients for `mu = a + b*x` and `sigma = c + d*sigma_pred`.
+- Use gradient-based optimization with shape checks.
+
+Acceptance:
+
+- Faster Gaussian calibration.
+- Equal or better CRPS.
+
+### Story 088 - Gaussian GAS-Q And Momentum Branch Audit
+
+Target:
+
+- Gaussian unified momentum and GAS-Q.
+
+Requirement to challenge:
+
+Momentum/GAS-Q can be useful, but if they rarely activate they should not
+burden every asset.
+
+Delete/refactor:
+
+- Audit activation, posterior mass, and score deltas.
+- Delete or gate branches that do not earn their cost.
+
+Candidate improved method:
+
+- Lazy branch fitting only when cheap diagnostics indicate likely benefit.
+
+Acceptance:
+
+- Retune faster with same or better metrics.
+
+### Story 089 - Gaussian Sign-Probability Objective
+
+Target:
+
+- Gaussian objective and CV fold scorer.
+
+Requirement to challenge:
+
+Gaussian models may be sharp and calibrated but weak on directional probability.
+
+Delete/refactor:
+
+- Add sign Brier only as an ablation.
+- Delete if it does not improve signal metrics.
+
+Candidate improved method:
+
+- `P(r > 0) = 1 - Phi((0 - mu_pred) / sigma_pred)`.
+- Score with Brier on validation fold.
+
+Acceptance:
+
+- Hit rate or PF/Sharpe improves without PIT damage.
+
+### Story 090 - Gaussian Calibration Path Consolidation
+
+Target:
+
+- Gaussian `filter_and_calibrate`.
+- signal calibration EMOS reuse.
+
+Requirement to challenge:
+
+Gaussian calibration may duplicate Student-t calibration logic with Gaussian
+special cases scattered around.
+
+Delete/refactor:
+
+- Shared EMOS/PIT helpers where distribution differences are explicit.
+
+Candidate improved method:
+
+- Distribution interface:
+  - CDF.
+  - CRPS.
+  - log score.
+  - p-up.
+
+Acceptance:
+
+- Less duplicate code.
+- Equal or better frontend/backend diagnostics.
+
+### Story 091 - Numba Kernel Architecture Split
+
+Target:
+
+- `numba_kernels.py`.
+
+Requirement to challenge:
+
+One large kernel file makes dead-code deletion and kernel replacement unsafe.
+
+Delete/refactor:
+
+- Split by responsibility if local import patterns allow:
+  - Kalman filters.
+  - Student-t distribution.
+  - calibration optimizers.
+  - diagnostics.
+- Delete dead kernels found by `rg`.
+
+Candidate improved method:
+
+- Keep stable public imports in `numba_wrappers.py`.
+- Internal modules can be smaller and testable.
+
+Acceptance:
+
+- No import regression.
+- Tests pass.
+- Dead kernel count reduced.
+
+### Story 092 - Numba Wrapper Deletion And Typed Boundaries
+
+Target:
+
+- `numba_wrappers.py`.
+
+Requirement to challenge:
+
+Wrappers should not merely rename kernels.  They should enforce boundary
+contracts.
+
+Delete/refactor:
+
+- Delete wrappers that only pass through arguments.
+- Keep wrappers that do:
+  - dtype/contiguity normalization.
+  - fallback.
+  - tuple/dict normalization.
+
+Candidate improved method:
+
+- Wrapper names mirror production use.
+- Kernel names mirror math.
+
+Acceptance:
+
+- Fewer wrappers.
+- No call-site ambiguity.
+
+### Story 093 - EMOS Student-t Optimizer Rewrite
+
+Target:
+
+- `_fit_emos_student_t`.
+- EMOS Numba optimizer kernels.
+
+Requirement to challenge:
+
+Student-t EMOS still uses several optimizer stages that may duplicate the same
+calibration effect.
+
+Delete/refactor:
+
+- Profile Stage 1, Stage 2, Stage 3 contributions by metric.
+- Delete stages that do not improve final CRPS/PF/Sharpe.
+
+Candidate improved method:
+
+- Numba coordinate optimizer:
+  - mean scale.
+  - variance scale.
+  - nu.
+  - optional PIT penalty.
+- Warm-start from closed-form moments.
+
+Acceptance:
+
+- Faster cached calibration.
+- Equal or better CRPS and profitability.
+
+### Story 094 - Beta Calibration Optimizer Rewrite
+
+Target:
+
+- `_fit_beta_calibration`.
+- `beta_cal_opt`.
+
+Requirement to challenge:
+
+Focal Beta calibration is powerful but may overfit tails or duplicate threshold
+optimization.
+
+Delete/refactor:
+
+- Ablate focal gamma, regularization, and three-parameter Beta vs symmetric Beta.
+- Delete unused optimizer path.
+
+Candidate improved method:
+
+- Compare:
+  - identity.
+  - symmetric Beta.
+  - full Beta.
+  - temperature scaling.
+- Use OOS Brier and ECE plus signal hit rate.
+
+Acceptance:
+
+- Better Brier/hit/PF or simpler calibration with unchanged metrics.
+
+### Story 095 - Threshold Expected-Utility Rewrite
+
+Target:
+
+- `_optimize_label_thresholds`.
+
+Requirement to challenge:
+
+Current threshold score mixes hit rate, inverse Brier, and label accuracy.  It
+may not reflect asymmetric trading utility.
+
+Delete/refactor:
+
+- Delete threshold terms that do not affect final labels.
+- Keep calibration guard so thresholds do not overfit PnL.
+
+Candidate improved method:
+
+- Expected utility score:
+  - calibrated probability edge.
+  - expected return sign.
+  - uncertainty penalty.
+  - minimum action count.
+- Validate with PF/Sharpe but do not optimize direct realized PnL alone.
+
+Acceptance:
+
+- Better calibrated PF/Sharpe and hit rate on full gate.
+
+### Story 096 - BMA Posterior Calibration Entropy
+
+Target:
+
+- BMA score computation.
+- model posterior packaging.
+
+Requirement to challenge:
+
+BMA posterior can collapse too strongly on tiny score differences, reducing
+model uncertainty.
+
+Delete/refactor:
+
+- Delete arbitrary posterior smoothing if not justified.
+- Replace with entropy regularization tied to score uncertainty.
+
+Candidate improved method:
+
+- Posterior temperature from:
+  - sample size.
+  - score spread.
+  - PIT reliability.
+  - stress stability.
+
+Acceptance:
+
+- Better PIT/stability with no profitability regression.
+
+### Story 097 - Registry And Parameter Transport Hardening
+
+Target:
+
+- `model_registry.py`.
+- tuning cache fields.
+- signal generation extraction.
+
+Requirement to challenge:
+
+Model names and parameter extraction should never drift again.
+
+Delete/refactor:
+
+- Delete any model-name parsing outside the registry when registry helpers can do it.
+- Add tests for every active model family.
+
+Candidate improved method:
+
+- Registry owns:
+  - display family.
+  - sampling extraction.
+  - required parameter fields.
+  - frontend label metadata if useful.
+
+Acceptance:
+
+- No silent model drops.
+- Frontend/backend sees all 25 active models.
+
+### Story 098 - Stress And Crisis Benchmark Slices
+
+Target:
+
+- benchmark scripts.
+- calibration diagnostics.
+
+Requirement to challenge:
+
+Average 50-stock metrics can hide crisis fragility.
+
+Delete/refactor:
+
+- Delete acceptance claims based only on average PIT/PF when tail behavior changes.
+
+Candidate improved method:
+
+- Add benchmark slices:
+  - 2020 crash.
+  - 2022 inflation/rates stress.
+  - 2024-2026 high-vol tech/AI period.
+  - asset-specific max-vol windows.
+
+Acceptance:
+
+- Tail-related model changes pass stress metrics.
+
+### Story 099 - Dynamic Model Diagnostics Matrix
+
+Target:
+
+- backend diagnostics services.
+- frontend model comparison UI.
+
+Requirement to challenge:
+
+The UI should reveal model competition quality, not just top winners.
+
+Delete/refactor:
+
+- Delete static assumptions about model families.
+
+Candidate improved method:
+
+- Backend exposes matrix:
+  - model name.
+  - family.
+  - posterior mass.
+  - PIT.
+  - BIC.
+  - CRPS if available.
+  - winner counts.
+- Frontend renders unknown model families gracefully.
+
+Acceptance:
+
+- Improved/unimproved side-by-side visible after retune.
+
+### Story 100 - Final Full System Release Gate
+
+Target:
+
+- `make retune`.
+- tuning, calibration, signal generation, frontend diagnostics.
+
+Requirement to challenge:
+
+No story matters unless the full system is better.
+
+Delete/refactor:
+
+- Remove rejected code, dead flags, unused benchmark helpers, and stale comments.
+
+Candidate improved method:
+
+- Run:
+  - targeted unit tests.
+  - frontend build.
+  - full 50-stock retune plus calibration.
+  - signal generation smoke.
+  - model visibility smoke.
+
+Acceptance:
+
+- 50/50 assets.
+- 0 failures.
+- 0 calibration warnings.
+- improved and canonical models compete side by side.
+- final PF/Sharpe/hit/PIT equal or better than cycle 047.
+
 ## Definition of Done
 
 The phase is done only when:

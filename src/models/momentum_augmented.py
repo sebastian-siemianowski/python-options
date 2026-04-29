@@ -81,7 +81,8 @@ class MomentumConfig:
     
     ELITE UPGRADE (February 2026):
     State-equation integration: μ_t = φμ_{t-1} + u_t + w_t
-    Where u_t = α_t × MOM_t - β_t × MR_t (exogenous input)
+    Where u_t = α_t × MOM_t + β_t × MR_t (exogenous input)
+    and MR_t is already signed toward equilibrium.
     
     IDENTIFIABILITY NOTE (Expert #3):
     When MR enabled, φ is shrunk toward 1.0 to prevent φ/κ collinearity.
@@ -723,8 +724,8 @@ class MomentumAugmentedDriftModel:
         Precompute all augmentation signals (momentum + MR).
         
         STATE-EQUATION INTEGRATION (Elite Upgrade - February 2026):
-        Computes exogenous input u_t = α_t × MOM_t - β_t × MR_t
-        for injection into state equation.
+        Computes exogenous input u_t = α_t × MOM_t + β_t × MR_t for injection
+        into the state equation. MR_t is already signed toward equilibrium.
         
         EXPERT VALIDATED:
         - CRPS feedback disabled by default (Expert #5)
@@ -800,7 +801,7 @@ class MomentumAugmentedDriftModel:
         """
         Compute exogenous input u_t for state-equation injection.
         
-        u_t = α_t × MOM_t × scale - β_t × MR_t × scale
+        u_t = α_t × MOM_t × scale + β_t × MR_t × scale
         
         ELITE (Expert #8): max_u scales with √q for vol-consistency.
         
@@ -838,7 +839,7 @@ class MomentumAugmentedDriftModel:
                     beta = beta * mr_ratio / 0.5  # Rescale by regime ratio
                 mr_contrib = beta * self._mr_signal[t] * mr_scale
             
-            u_t[t] = mom_contrib - mr_contrib
+            u_t[t] = mom_contrib + mr_contrib
         
         # ELITE: Dynamic max_u scaling (Expert #8)
         if self.config.max_u_scale_by_q and self._q is not None:
@@ -924,14 +925,6 @@ class MomentumAugmentedDriftModel:
             else:
                 raise ValueError(f"Unknown base_model: {base_model}")
             
-            # Apply post-filter adjustment (legacy path)
-            if self.config.enable and self._momentum_signal is not None:
-                mu_filtered, P_filtered = self._apply_momentum_augmentation(mu_filtered, P_filtered)
-                # Recompute log-likelihood with adjusted estimates
-                ll = self._compute_adjusted_log_likelihood(
-                    returns, mu_filtered, vol, P_filtered, c, nu, base_model
-                )
-        
         # Store diagnostics
         self._diagnostics = {
             'momentum_enabled': self.config.enable,
@@ -969,188 +962,6 @@ class MomentumAugmentedDriftModel:
             self._diagnostics['max_u_dynamic'] = float(max_u_used)
         
         return mu_filtered, P_filtered, ll
-        
-        # Apply momentum augmentation if enabled
-        if self.config.enable and self._momentum_signal is not None:
-            mu_filtered, P_filtered = self._apply_momentum_augmentation(
-                mu_filtered, P_filtered
-            )
-            
-            # Recompute log-likelihood with momentum-adjusted uncertainty
-            # The forecast variance is c * vol^2 + P, where P is now adjusted
-            ll = self._compute_adjusted_log_likelihood(
-                returns, mu_filtered, vol, P_filtered, c, nu, base_model
-            )
-        
-        # Store diagnostics
-        self._diagnostics = {
-            'momentum_enabled': self.config.enable,
-            'base_model': base_model,
-            'q': q,
-            'c': c,
-            'phi': phi,
-            'nu': nu,
-        }
-        
-        if self.config.enable and self._momentum_signal is not None:
-            self._diagnostics.update({
-                'momentum_mean': float(np.mean(self._momentum_signal)),
-                'momentum_std': float(np.std(self._momentum_signal)),
-                'momentum_last': float(self._momentum_signal[-1]) if len(self._momentum_signal) > 0 else 0.0,
-            })
-        
-        return mu_filtered, P_filtered, ll
-    
-    def _compute_adjusted_log_likelihood(
-        self,
-        returns: np.ndarray,
-        mu_filtered: np.ndarray,
-        vol: np.ndarray,
-        P_filtered: np.ndarray,
-        c: float,
-        nu: Optional[float],
-        base_model: str,
-    ) -> float:
-        """
-        Recompute log-likelihood with momentum-adjusted uncertainty.
-        
-        Performance optimizations (February 2026):
-        - Pre-compute constants outside loop
-        - Vectorize where possible
-        - Avoid redundant gammaln calls
-        
-        Args:
-            returns: Array of returns
-            mu_filtered: Filtered drift estimates (momentum-adjusted)
-            vol: Array of EWMA volatility
-            P_filtered: Filtered uncertainty (momentum-adjusted)
-            c: Observation noise scale
-            nu: Degrees of freedom (only for Student-t)
-            base_model: Model type
-            
-        Returns:
-            Adjusted log-likelihood
-        """
-        from scipy.special import gammaln
-        
-        n = len(returns)
-        
-        # Convert to contiguous arrays
-        returns = np.ascontiguousarray(returns.flatten(), dtype=np.float64)
-        vol = np.ascontiguousarray(vol.flatten(), dtype=np.float64)
-        mu_filtered = np.ascontiguousarray(mu_filtered.flatten(), dtype=np.float64)
-        P_filtered = np.ascontiguousarray(P_filtered.flatten(), dtype=np.float64)
-        
-        # Pre-compute R array
-        R = c * (vol * vol)
-        
-        # Compute forecast variance array
-        forecast_var = R + P_filtered
-        forecast_var = np.maximum(forecast_var, 1e-12)
-        
-        # Compute innovations
-        innovations = returns - mu_filtered
-        
-        if base_model in ('gaussian', 'phi_gaussian'):
-            # Vectorized Gaussian log-likelihood
-            log_2pi = np.log(2 * np.pi)
-            ll_array = -0.5 * (log_2pi + np.log(forecast_var) + (innovations * innovations) / forecast_var)
-            ll_array = np.where(np.isfinite(ll_array), ll_array, 0.0)
-            return float(np.sum(ll_array))
-        else:
-            # Student-t log-likelihood
-            if nu is None:
-                nu = 8.0  # Default
-            
-            # Pre-compute constants (avoid gammaln in loop)
-            log_norm_const = gammaln((nu + 1.0) / 2.0) - gammaln(nu / 2.0) - 0.5 * np.log(nu * np.pi)
-            neg_half_nu_plus_1 = -((nu + 1.0) / 2.0)
-            inv_nu = 1.0 / nu;
-            
-            # Vectorized Student-t log-likelihood
-            scale = np.sqrt(forecast_var)
-            z = innovations / scale
-            log_scale = np.log(scale)
-            log_kernel = neg_half_nu_plus_1 * np.log(1.0 + (z * z) * inv_nu)
-            ll_array = log_norm_const - log_scale + log_kernel
-            ll_array = np.where(np.isfinite(ll_array), ll_array, 0.0)
-            return float(np.sum(ll_array))
-    
-    def _apply_momentum_augmentation(
-        self,
-        mu_filtered: np.ndarray,
-        P_filtered: np.ndarray,
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Apply momentum augmentation to filtered drift estimates.
-        
-        LOGIC:
-        1. Sign confirmation: When sign(μ) aligns with sign(momentum),
-           allow higher persistence (reduce uncertainty).
-        2. Sign conflict: When signs conflict, increase uncertainty.
-        3. Magnitude: Momentum adjusts persistence, not raw drift magnitude.
-        
-        This treats momentum as "permission to believe drift" rather than
-        "source of drift" — matching how sophisticated funds use momentum.
-        
-        Args:
-            mu_filtered: Filtered drift estimates from base model
-            P_filtered: Filtered uncertainty from base model
-            
-        Returns:
-            Tuple of (adjusted_mu, adjusted_P)
-        """
-        if self._momentum_signal is None:
-            return mu_filtered, P_filtered
-        
-        n = len(mu_filtered)
-        momentum = self._momentum_signal
-        
-        if len(momentum) != n:
-            # Mismatched lengths - skip adjustment
-            return mu_filtered, P_filtered
-        
-        # Initialize adjusted arrays
-        mu_adj = mu_filtered.copy()
-        P_adj = P_filtered.copy()
-        
-        # Configuration
-        scale = self.config.adjustment_scale
-        sign_weight = self.config.sign_confirmation_weight
-        
-        for t in range(n):
-            mu_t = mu_filtered[t]
-            P_t = P_filtered[t]
-            mom_t = momentum[t]
-            
-            # Compute sign alignment
-            if abs(mu_t) < 1e-10 or abs(mom_t) < 1e-10:
-                # Near-zero values: no adjustment
-                alignment = 0.0
-            else:
-                # +1 if signs agree, -1 if signs disagree
-                sign_mu = np.sign(mu_t)
-                sign_mom = np.sign(mom_t)
-                alignment = sign_mu * sign_mom  # +1 or -1
-            
-            # Momentum strength (0 to 1)
-            mom_strength = min(abs(mom_t) / 2.0, 1.0)  # Normalized to [0, 1]
-            
-            # Adjustment factor based on alignment and strength
-            # When aligned: reduce uncertainty (more confident)
-            # When conflicting: increase uncertainty (less confident)
-            if alignment > 0:
-                # Signs agree: allow persistence
-                # Reduce P by up to scale * sign_weight * mom_strength
-                P_reduction = scale * sign_weight * mom_strength * P_t
-                P_adj[t] = max(P_t - P_reduction, P_t * 0.5)  # Never reduce by more than 50%
-            elif alignment < 0:
-                # Signs disagree: dampen confidence
-                # Increase P by up to scale * sign_weight * mom_strength
-                P_increase = scale * sign_weight * mom_strength * P_t
-                P_adj[t] = P_t + P_increase
-        
-        return mu_adj, P_adj
     
     def get_momentum_features(self) -> Optional[Dict[str, np.ndarray]]:
         """Return computed momentum features (for diagnostics)."""

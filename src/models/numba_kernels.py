@@ -1407,6 +1407,36 @@ def student_t_cdf_array_kernel(z_arr: np.ndarray, nu: float) -> np.ndarray:
     return out
 
 
+@njit(cache=True, fastmath=False)
+def student_t_p_up_array_kernel(mu_pred_arr: np.ndarray, variance_arr: np.ndarray, nu: float) -> np.ndarray:
+    """
+    Vectorized Student-t directional probability.
+
+    Computes P(r > 0) from predictive mean and variance using the same
+    Student-t variance-to-scale convention as the φ-Student-t filters:
+        scale = sqrt(variance * (nu - 2) / nu)
+        p_up = 1 - T_nu((0 - mu_pred) / scale)
+    """
+    n = len(mu_pred_arr)
+    out = np.empty(n, dtype=np.float64)
+    scale_factor = (nu - 2.0) / nu if nu > 2.0 else 1.0
+    for i in range(n):
+        variance = variance_arr[i]
+        if not np.isfinite(mu_pred_arr[i]) or not np.isfinite(variance) or variance <= 0.0:
+            out[i] = 0.5
+            continue
+        scale = np.sqrt(variance * scale_factor)
+        if scale < 1e-10:
+            scale = 1e-10
+        p_down = _student_t_cdf_scalar((0.0 - mu_pred_arr[i]) / scale, nu)
+        if p_down < 0.0:
+            p_down = 0.0
+        elif p_down > 1.0:
+            p_down = 1.0
+        out[i] = 1.0 - p_down
+    return out
+
+
 # =============================================================================
 # STUDENT-T QUANTILE FUNCTION (PPF) -- Story 1.3
 # =============================================================================
@@ -2537,6 +2567,181 @@ def phi_student_t_enhanced_filter_kernel(
                 else:
                     s_frac = (dev - dz_lo) / dz_rng
                     c_adj = 1.0 + s_frac * (np.sqrt(ratio) - 1.0)
+
+    return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, log_likelihood
+
+
+@njit(cache=True, fastmath=False)
+def _improved_student_t_precision_weight(z_sq_s: float, nu: float) -> float:
+    """Shared bounded influence for improved Student-t robust updates."""
+    w_t = (nu + 1.0) / (nu + z_sq_s)
+    if w_t < 0.05:
+        w_t = 0.05
+    elif w_t > 20.0:
+        w_t = 20.0
+    w_t = 1.0 + 0.95 * (w_t - 1.0)
+    if w_t < 0.08:
+        w_t = 0.08
+    elif w_t > 8.0:
+        w_t = 8.0
+    return w_t
+
+
+@njit(cache=True, fastmath=False)
+def phi_student_t_improved_filter_kernel(
+    returns: np.ndarray,
+    vol_sq: np.ndarray,
+    q: float,
+    c: float,
+    phi: float,
+    nu: float,
+    log_norm_const: float,
+    exogenous_input: np.ndarray,
+    has_exogenous: bool,
+    robust_wt: bool,
+    online_scale_adapt: bool,
+    gamma_vov: float,
+    vov_rolling: np.ndarray,
+    has_vov: bool,
+    p_floor: float,
+    p_cap: float,
+    p_init: float,
+    chi2_lam: float,
+) -> tuple:
+    """
+    Improved φ-Student-t predictive filter.
+
+    This kernel mirrors PhiStudentTDriftModel._filter_phi_core after Python
+    input normalization.  It keeps the improved model's Joseph covariance,
+    predictive Student-t likelihood, VoV clamp, and chi² EWM OSA policy in one
+    contiguous pass.
+    """
+    n = len(returns)
+    mu_filtered = np.empty(n, dtype=np.float64)
+    P_filtered = np.empty(n, dtype=np.float64)
+    mu_pred_arr = np.empty(n, dtype=np.float64)
+    S_pred_arr = np.empty(n, dtype=np.float64)
+
+    q_val = q if q > 1e-14 else 1e-14
+    c_val = c if c > 1e-12 else 1e-12
+    phi_val = phi
+    if phi_val < -0.999:
+        phi_val = -0.999
+    elif phi_val > 0.999:
+        phi_val = 0.999
+    phi_sq = phi_val * phi_val
+
+    neg_exp = -0.5 * (nu + 1.0)
+    inv_nu = 1.0 / nu
+    scale_factor = (nu - 2.0) / nu if nu > 2.0 else 1.0
+
+    chi2_tgt = (nu / (nu - 2.0)) if nu > 2.0 else 1.0
+    if chi2_lam < 0.90:
+        chi2_lam = 0.90
+    elif chi2_lam > 0.9975:
+        chi2_lam = 0.9975
+    chi2_1m = 1.0 - chi2_lam
+    chi2_cap = chi2_tgt * 50.0
+    ewm_z2 = chi2_tgt
+    c_adj = 1.0
+    osa_strength = 1.0
+    if nu > 2.0:
+        osa_strength = (chi2_tgt - 1.0) / 0.5
+        if osa_strength > 1.0:
+            osa_strength = 1.0
+        elif osa_strength < 0.0:
+            osa_strength = 0.0
+
+    mu = 0.0
+    P = p_init
+    if P > p_cap:
+        P = p_cap
+    if P < p_floor:
+        P = p_floor
+    log_likelihood = 0.0
+
+    for t in range(n):
+        u_t = exogenous_input[t] if has_exogenous else 0.0
+        mu_pred = phi_val * mu + u_t
+        P_pred = phi_sq * P + q_val
+        if P_pred < p_floor:
+            P_pred = p_floor
+
+        c_eff = c_val * c_adj if online_scale_adapt else c_val
+        R_t = c_eff * vol_sq[t]
+        if R_t < 1e-20:
+            R_t = 1e-20
+        if has_vov:
+            vov_mult = 1.0 + gamma_vov * vov_rolling[t]
+            if vov_mult < 0.05:
+                vov_mult = 0.05
+            elif vov_mult > 20.0:
+                vov_mult = 20.0
+            R_t *= vov_mult
+            if R_t < 1e-20:
+                R_t = 1e-20
+
+        S = P_pred + R_t
+        if S < 1e-20:
+            S = 1e-20
+        mu_pred_arr[t] = mu_pred
+        S_pred_arr[t] = S
+
+        innovation = returns[t] - mu_pred
+        forecast_scale = np.sqrt(S * scale_factor)
+        if forecast_scale < 1e-10:
+            forecast_scale = 1e-10
+        z = innovation / forecast_scale
+        ll_t = log_norm_const - np.log(forecast_scale) + neg_exp * np.log1p((z * z) * inv_nu)
+        if np.isfinite(ll_t):
+            log_likelihood += ll_t
+
+        if robust_wt:
+            z_sq_s = (innovation * innovation) / S
+            w_t = _improved_student_t_precision_weight(z_sq_s, nu)
+            R_eff = R_t / w_t
+            if R_eff < 1e-20:
+                R_eff = 1e-20
+            S_eff = P_pred + R_eff
+            if S_eff < 1e-20:
+                S_eff = 1e-20
+            K = P_pred / S_eff
+            mu = mu_pred + K * innovation
+            one_minus_k = 1.0 - K
+            P = one_minus_k * one_minus_k * P_pred + K * K * R_eff
+        else:
+            K = P_pred / S
+            mu = mu_pred + K * innovation
+            one_minus_k = 1.0 - K
+            P = one_minus_k * one_minus_k * P_pred + K * K * R_t
+
+        if P < p_floor:
+            P = p_floor
+        elif P > p_cap:
+            P = p_cap
+        mu_filtered[t] = mu
+        P_filtered[t] = P
+
+        if online_scale_adapt:
+            z2w = z * z
+            if z2w > chi2_cap:
+                z2w = chi2_cap
+            ewm_z2 = chi2_lam * ewm_z2 + chi2_1m * z2w
+            ratio = ewm_z2 / chi2_tgt
+            if ratio < 0.35:
+                ratio = 0.35
+            elif ratio > 2.85:
+                ratio = 2.85
+            dev = ratio - 1.0 if ratio >= 1.0 else 1.0 - ratio
+            if dev < 0.04:
+                c_adj = 1.0
+            else:
+                c_adj_raw = np.sqrt(ratio)
+                c_adj = 1.0 + osa_strength * (c_adj_raw - 1.0)
+                if c_adj < 0.4:
+                    c_adj = 0.4
+                elif c_adj > 2.5:
+                    c_adj = 2.5
 
     return mu_filtered, P_filtered, mu_pred_arr, S_pred_arr, log_likelihood
 
@@ -6535,6 +6740,7 @@ def phi_student_t_improved_train_state_only_kernel(
     online_scale_adapt: int,
     p_min: float,
     p_max_default: float,
+    chi2_lam: float,
 ) -> tuple:
     """
     Terminal-state filter for optimizer CV folds.
@@ -6574,7 +6780,10 @@ def phi_student_t_improved_train_state_only_kernel(
 
     phi_sq = phi * phi
     chi2_tgt = nu / (nu - 2.0) if nu > 2.0 else 1.0
-    chi2_lam = 0.985
+    if chi2_lam < 0.90:
+        chi2_lam = 0.90
+    elif chi2_lam > 0.9975:
+        chi2_lam = 0.9975
     chi2_1m = 1.0 - chi2_lam
     chi2_cap = chi2_tgt * 50.0
     ewm_z2 = chi2_tgt
@@ -6620,11 +6829,7 @@ def phi_student_t_improved_train_state_only_kernel(
             S = 1e-20
         innovation = returns[t] - mu_pred
         z_sq_s = (innovation * innovation) / S
-        w_t = nu_p1 / (nu + z_sq_s)
-        if w_t < 0.05:
-            w_t = 0.05
-        elif w_t > 20.0:
-            w_t = 20.0
+        w_t = _improved_student_t_precision_weight(z_sq_s, nu)
         R_eff = R_t / w_t
         S_eff = P_pred + R_eff
         if S_eff < 1e-20:
@@ -6688,6 +6893,7 @@ def phi_student_t_improved_cv_test_fold_kernel(
     p_floor: float,
     p_cap: float,
     z2_cap: float,
+    chi2_lam: float,
 ) -> tuple:
     """
     Validation-fold scorer for phi_student_t_improved.
@@ -6703,13 +6909,26 @@ def phi_student_t_improved_cv_test_fold_kernel(
     obs_count = 0
     z2_count = 0
     z2_sum = 0.0
+    pit_count = 0
+    pit_sum = 0.0
+    pit2_sum = 0.0
+    crps_count = 0
+    crps_sum = 0.0
     sign_brier_sum = 0.0
     sign_count = 0
 
     phi_sq = phi * phi
     nu_p1 = nu + 1.0
+    crps_const = 0.0
+    if nu > 1.0:
+        lgB1 = _lanczos_gammaln(0.5) + _lanczos_gammaln(nu - 0.5) - _lanczos_gammaln(nu)
+        lgB2 = _lanczos_gammaln(0.5) + _lanczos_gammaln(0.5 * nu) - _lanczos_gammaln(0.5 * (nu + 1.0))
+        crps_const = 2.0 * np.sqrt(nu) * np.exp(lgB1 - 2.0 * lgB2) / (nu - 1.0)
     chi2_tgt = nu / (nu - 2.0) if nu > 2.0 else 1.0
-    chi2_lam = 0.985
+    if chi2_lam < 0.90:
+        chi2_lam = 0.90
+    elif chi2_lam > 0.9975:
+        chi2_lam = 0.9975
     chi2_1m = 1.0 - chi2_lam
     chi2_cap = chi2_tgt * 50.0
     ewm_z2 = chi2_tgt
@@ -6756,6 +6975,27 @@ def phi_student_t_improved_cv_test_fold_kernel(
         if np.isfinite(ll_t):
             total_ll += ll_t
             obs_count += 1
+            p_obs = _student_t_cdf_scalar(z, nu)
+            if p_obs < 1e-10:
+                p_obs = 1e-10
+            elif p_obs > 1.0 - 1e-10:
+                p_obs = 1.0 - 1e-10
+            pit_sum += p_obs
+            pit2_sum += p_obs * p_obs
+            pit_count += 1
+
+            pdf_z = np.exp(log_norm_const + neg_exp * np.log1p((z * z) * inv_nu))
+            crps_i = scale * (
+                z * (2.0 * p_obs - 1.0)
+                + 2.0 * pdf_z * (nu + z * z) / max(nu - 1.0, 1e-12)
+                - crps_const
+            )
+            if np.isfinite(crps_i):
+                if crps_i < 0.0:
+                    crps_i = -crps_i
+                crps_sum += crps_i
+                crps_count += 1
+
             p_down = _student_t_cdf_scalar((0.0 - mu_pred) / scale, nu)
             if p_down < 0.0:
                 p_down = 0.0
@@ -6775,11 +7015,7 @@ def phi_student_t_improved_cv_test_fold_kernel(
                 z2_sum += z2_cap
             z2_count += 1
 
-        w_t = nu_p1 / (nu + z_sq_s)
-        if w_t < 0.05:
-            w_t = 0.05
-        elif w_t > 20.0:
-            w_t = 20.0
+        w_t = _improved_student_t_precision_weight(z_sq_s, nu)
         R_eff = R_t / w_t
         if R_eff < 1e-20:
             R_eff = 1e-20
@@ -6815,7 +7051,19 @@ def phi_student_t_improved_cv_test_fold_kernel(
                 elif c_adj > 2.5:
                     c_adj = 2.5
 
-    return total_ll, obs_count, z2_count, z2_sum, sign_count, sign_brier_sum
+    return (
+        total_ll,
+        obs_count,
+        z2_count,
+        z2_sum,
+        pit_count,
+        pit_sum,
+        pit2_sum,
+        crps_count,
+        crps_sum,
+        sign_count,
+        sign_brier_sum,
+    )
 
 @njit(cache=True, fastmath=True)
 def phi_gaussian_cv_test_fold_kernel(
