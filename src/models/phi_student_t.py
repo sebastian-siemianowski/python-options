@@ -31,6 +31,31 @@ from scipy.stats import norm
 from scipy.stats import t as student_t
 
 try:
+    from .student_t_common import (
+        ad_correction_pipeline_student_t,
+        clip_nu as common_clip_nu,
+        compute_berkowitz_full as common_compute_berkowitz_full,
+        compute_berkowitz_pvalue as common_compute_berkowitz_pvalue,
+        compute_ad_statistic,
+        compute_cvm_statistic,
+        pit_simple_path as common_pit_simple_path,
+        variance_to_scale,
+        variance_to_scale_vec,
+    )
+except ImportError:
+    from models.student_t_common import (
+        ad_correction_pipeline_student_t,
+        clip_nu as common_clip_nu,
+        compute_berkowitz_full as common_compute_berkowitz_full,
+        compute_berkowitz_pvalue as common_compute_berkowitz_pvalue,
+        compute_ad_statistic,
+        compute_cvm_statistic,
+        pit_simple_path as common_pit_simple_path,
+        variance_to_scale,
+        variance_to_scale_vec,
+    )
+
+try:
     from .asset_classification import (
         CRYPTO_SYMBOLS as _SHARED_CRYPTO_SYMBOLS,
         HIGH_VOL_EQUITY_SYMBOLS as _SHARED_HIGH_VOL_EQUITY_SYMBOLS,
@@ -1570,28 +1595,17 @@ class PhiStudentTDriftModel:
 
     @staticmethod
     def _clip_nu(nu: float, nu_min: float, nu_max: float) -> float:
-        return float(np.clip(float(nu), nu_min, nu_max))
+        return common_clip_nu(nu, nu_min, nu_max)
 
     @staticmethod
     def _variance_to_scale(variance: float, nu: float) -> float:
-        """Convert predictive variance to Student-t scale: scale = √(Var × (ν-2)/ν) for ν > 2."""
-        if variance <= 1e-20:
-            return 1e-10
-        if nu > 2:
-            return np.sqrt(variance * (nu - 2) / nu)
-        else:
-            # For ν ≤ 2, variance is infinite; use variance as proxy for scale²
-            return np.sqrt(variance)
+        """Convert predictive variance to Student-t scale."""
+        return variance_to_scale(variance, nu)
 
     @staticmethod
     def _variance_to_scale_vec(variance: np.ndarray, nu: float) -> np.ndarray:
         """Vectorized version of _variance_to_scale for array inputs."""
-        variance_safe = np.maximum(variance, 1e-20)
-        if nu > 2:
-            scale = np.sqrt(variance_safe * (nu - 2) / nu)
-        else:
-            scale = np.sqrt(variance_safe)
-        return np.where(scale < 1e-10, 1e-10, scale)
+        return variance_to_scale_vec(variance, nu)
 
     @staticmethod
     def compute_effective_nu(
@@ -3032,61 +3046,20 @@ class PhiStudentTDriftModel:
     @staticmethod
     def _pit_simple_path(returns_test, mu_pred_test, S_calibrated, nu, t_df_asym):
         """PIT via basic Student-t CDF (non-GARCH path). Returns (pit, sigma, mu_eff)."""
-        sigma = np.sqrt(S_calibrated * (nu - 2) / nu) if nu > 2 else np.sqrt(S_calibrated)
-        sigma = np.maximum(sigma, 1e-10)
-        innovations = returns_test - mu_pred_test
-        z = innovations / sigma
-        if abs(t_df_asym) > 0.05:
-            pit_values = np.zeros(len(z))
-            _nu_l, _nu_r = max(2.5, nu - t_df_asym), max(2.5, nu + t_df_asym)
-            m = z < 0
-            pit_values[m] = _fast_t_cdf(z[m], _nu_l)
-            pit_values[~m] = _fast_t_cdf(z[~m], _nu_r)
-        else:
-            pit_values = _fast_t_cdf(z, nu)
-        return np.clip(pit_values, 0.001, 0.999), sigma, mu_pred_test
+        return common_pit_simple_path(
+            returns_test, mu_pred_test, S_calibrated, nu, t_df_asym,
+            cdf_fn=_fast_t_cdf,
+        )
 
     @staticmethod
     def _compute_berkowitz_pvalue(pit_values):
         """Berkowitz (2001) p-value only. Wrapper around _compute_berkowitz_full."""
-        return PhiStudentTDriftModel._compute_berkowitz_full(pit_values)[0]
+        return common_compute_berkowitz_pvalue(pit_values)
 
     @staticmethod
     def _compute_berkowitz_full(pit_values):
-        """
-        Berkowitz (2001) LR test: H0 Phi^-1(PIT)~N(0,1) iid vs H1 AR(1). Chi2(3).
-
-        Returns (p_value, lr_statistic, n_pit):
-            p_value:      1 - Chi2_cdf(LR, df=3). Higher = better calibrated.
-            lr_statistic: Raw LR = 2*(ll_alt - ll_null). Per-obs penalty = LR/T.
-            n_pit:        Number of valid PIT observations used in the test.
-        """
-        try:
-            from scipy.special import ndtri
-            z = ndtri(np.clip(pit_values, 0.0001, 0.9999))
-            z = z[np.isfinite(z)]
-            n_z = len(z)
-            if n_z <= 20:
-                return (float('nan'), 0.0, n_z)
-            mu_hat = float(np.mean(z))
-            var_hat = float(np.var(z, ddof=0))
-            z_c = z - mu_hat
-            denom = np.sum(z_c[:-1] ** 2)
-            rho_hat = float(np.clip(np.sum(z_c[1:] * z_c[:-1]) / denom, -0.99, 0.99)) if denom > 1e-12 else 0.0
-            ll_null = -0.5 * n_z * np.log(2 * np.pi) - 0.5 * np.sum(z ** 2)
-            sigma_sq_cond = max(var_hat * (1 - rho_hat ** 2) if abs(rho_hat) < 0.99 else var_hat * 0.01, 1e-6)
-            # Vectorized AR(1) log-likelihood (replaces per-element Python loop)
-            resid = z[1:] - (mu_hat + rho_hat * (z[:-1] - mu_hat))
-            ll_alt = (-0.5 * np.log(2 * np.pi * var_hat)
-                      - 0.5 * (z[0] - mu_hat) ** 2 / var_hat
-                      - 0.5 * (n_z - 1) * np.log(2 * np.pi * sigma_sq_cond)
-                      - 0.5 * np.sum(resid ** 2) / sigma_sq_cond)
-            lr_stat = float(max(2 * (ll_alt - ll_null), 0))
-            from scipy.special import chdtrc as _chdtrc_berk
-            p_value = float(_chdtrc_berk(3, lr_stat))
-            return (p_value, lr_stat, n_z)
-        except Exception:
-            return (float('nan'), 0.0, 0)
+        """Berkowitz (2001) LR test. Returns (p_value, lr_statistic, n_pit)."""
+        return common_compute_berkowitz_full(pit_values)
 
     @classmethod
     def filter_phi(cls, returns: np.ndarray, vol: np.ndarray, q: float, c: float, phi: float, nu: float) -> Tuple[np.ndarray, np.ndarray, float]:
@@ -3451,249 +3424,21 @@ class PhiStudentTDriftModel:
         pit_raw: np.ndarray,
         min_obs: int = 250,
     ) -> tuple:
-        """
-        Apply three-stage calibration correction pipeline.
-
-        Returns BOTH corrected PIT values (for AD test measurement) AND
-        calibration parameters (for real model improvement in signals.py).
-
-        The calibration parameters are the key output — they encode systematic
-        biases in the model's predictive distribution that, when corrected,
-        improve forecasting accuracy and trading profitability.
-
-        Parameters
-        ----------
-        returns : np.ndarray
-            Observed returns (test split)
-        mu_pred : np.ndarray
-            Kalman filter predicted means (test split)
-        scale : np.ndarray
-            Predictive scale (after chi² EWM correction)
-        nu : float
-            Degrees of freedom
-        pit_raw : np.ndarray
-            Raw PIT values (after chi² EWM + PIT-var stretching)
-        min_obs : int
-            Minimum observations for SPTG (GPD needs tail data)
-
-        Returns
-        -------
-        (pit_corrected, diagnostics) : tuple
-            pit_corrected: np.ndarray of corrected PIT values
-            diagnostics: dict with correction metadata AND calibration_params
-                         for persistence to tune cache and use in signals.py
-        """
-        returns = np.asarray(returns, dtype=np.float64).ravel()
-        mu_pred = np.asarray(mu_pred, dtype=np.float64).ravel()
-        scale = np.asarray(scale, dtype=np.float64).ravel()
-        pit = np.array(pit_raw, dtype=np.float64).ravel()
-        n = min(len(returns), len(mu_pred), len(scale), len(pit))
-        if n < 50:
-            return pit, {'twsc_applied': False, 'sptg_applied': False,
-                         'isotonic_applied': False, 'calibration_params': {}}
-
-        diag = {
-            'twsc_applied': False,
-            'sptg_applied': False,
-            'sptg_xi_left': float('nan'),
-            'sptg_xi_right': float('nan'),
-            'isotonic_applied': False,
-            'isotonic_ks_improvement': 0.0,
-        }
-
-        # calibration_params: the REAL output — persisted and used at inference
-        cal_params = {}
-
-        returns = returns[:n].copy()
-        mu_pred = mu_pred[:n].copy()
-        scale = scale[:n].copy()
-        pit = pit[:n].copy()
-
-        returns[~np.isfinite(returns)] = 0.0
-        mu_pred[~np.isfinite(mu_pred)] = 0.0
-        finite_scale = scale[np.isfinite(scale) & (scale > 0)]
-        scale_fill = float(np.median(finite_scale)) if finite_scale.size else 1.0
-        scale = np.where(np.isfinite(scale) & (scale > 0), scale, scale_fill)
-        scale = np.maximum(scale, max(scale_fill * 1e-6, 1e-10))
-        pit = np.clip(np.where(np.isfinite(pit), pit, 0.5), 0.001, 0.999)
-
-        z = np.clip((returns - mu_pred) / np.maximum(scale, 1e-10), -1e6, 1e6)
-        pit_base = pit.copy()
-        _ks_base, p_base = _fast_ks_uniform(pit_base)
-        ad_base = cls._compute_ad_statistic(pit_base)
-
-        # ── Stage A: TWSC (Tail-Weighted Scale Correction) ───────────
-        # Computes per-observation scale inflation factors via EWMA tracking
-        # of tail exceedance frequency. The GEOMETRIC MEAN of the final 30%
-        # of factors captures the model's systematic scale bias.
-        #
-        # In signals.py: P_filtered *= twsc_scale_factor² (variance correction)
-        # ─────────────────────────────────────────────────────────────
-        scale_inflate = None
-        try:
-            from models.numba_wrappers import run_ad_twsc
-            scale_inflate = run_ad_twsc(z, ewma_lambda=0.97, alpha_quantile=0.05,
-                                        kappa=0.5, max_inflate=2.0, deadzone=0.15)
-        except (ImportError, Exception):
-            try:
-                from models.numba_kernels import ad_twsc_kernel
-                z_cont = np.ascontiguousarray(z, dtype=np.float64)
-                scale_inflate = ad_twsc_kernel(z_cont, 0.97, 0.05, 0.5, 2.0, 0.15)
-            except Exception:
-                pass
-
-        if scale_inflate is not None and len(scale_inflate) > 0:
-            scale_inflate = np.asarray(scale_inflate, dtype=np.float64).ravel()
-            if len(scale_inflate) >= n:
-                scale_inflate = np.clip(
-                    np.where(np.isfinite(scale_inflate[:n]), scale_inflate[:n], 1.0),
-                    1.0,
-                    2.5,
-                )
-                z_twsc = z / scale_inflate
-                pit_twsc = np.clip(_fast_t_cdf(z_twsc, nu), 0.001, 0.999)
-                _ks_twsc, p_twsc = _fast_ks_uniform(pit_twsc)
-                ad_twsc = cls._compute_ad_statistic(pit_twsc)
-                if (p_twsc >= p_base * 0.95) or (ad_twsc <= ad_base * 1.02):
-                    pit = pit_twsc
-                    diag['twsc_applied'] = True
-
-                    # Extract REAL calibration parameter: steady-state scale factor
-                    # Use geometric mean of final 30% (after EWMA has converged)
-                    tail_start = max(1, int(n * 0.7))
-                    tail_factors = scale_inflate[tail_start:]
-                    tail_factors = tail_factors[tail_factors > 0]
-                    if len(tail_factors) > 0:
-                        # Geometric mean: exp(mean(log(x)))
-                        twsc_geo_mean = float(np.exp(np.mean(np.log(tail_factors))))
-                        cal_params['twsc_scale_factor'] = float(np.clip(twsc_geo_mean, 1.0, 2.5))
-                        cal_params['twsc_last_ewma'] = float(scale_inflate[-1])
-                    z_for_gpd = z_twsc
-                    p_base, ad_base = p_twsc, ad_twsc
-                else:
-                    z_for_gpd = z
-            else:
-                z_for_gpd = z
-        else:
-            z_for_gpd = z
-
-        # ── Stage B: SPTG (Semi-Parametric EVT Tail Grafting) ────────
-        # Fits GPD to both tails of standardized residuals. The GPD shape
-        # parameter ξ reveals the TRUE tail heaviness (vs model's assumed ν).
-        #
-        # In signals.py: if ξ_gpd > 1/ν (tails heavier than model assumes),
-        # reduce effective ν for MC → heavier-tailed simulation → more
-        # conservative risk assessment. Also used for tail risk scoring.
-        # ─────────────────────────────────────────────────────────────
-        if n >= min_obs:
-            try:
-                from calibration.evt_tail import fit_gpd_pot
-
-                abs_z = np.abs(z_for_gpd)
-
-                # Fit GPD on left/right tails only when both sides have enough
-                # observations; otherwise tail shape is dominated by optimizer
-                # noise and should not influence stored signal parameters.
-                left_losses = abs_z[z_for_gpd < 0]
-                right_losses = abs_z[z_for_gpd > 0]
-
-                if len(left_losses) >= 25 and len(right_losses) >= 25:
-                    gpd_left = fit_gpd_pot(left_losses, threshold_percentile=0.90, method='pwm')
-                    gpd_right = fit_gpd_pot(right_losses, threshold_percentile=0.90, method='pwm')
-                else:
-                    gpd_left = None
-                    gpd_right = None
-
-                if gpd_left is not None and gpd_right is not None and gpd_left.fit_success and gpd_right.fit_success:
-                    # Compute tail probabilities from the model CDF
-                    u_left = float(gpd_left.threshold)
-                    u_right = float(gpd_right.threshold)
-                    p_left_val = float(_fast_t_cdf(np.array([-u_left]), nu)[0])
-                    p_right_val = float(1.0 - _fast_t_cdf(np.array([u_right]), nu)[0])
-
-                    if p_left_val > 0.001 and p_right_val > 0.001 and u_left > 0.5 and u_right > 0.5:
-                        try:
-                            from models.numba_wrappers import run_ad_sptg_student_t
-                            pit_sptg = run_ad_sptg_student_t(
-                                z_for_gpd, nu,
-                                gpd_left.xi, gpd_left.sigma, u_left,
-                                gpd_right.xi, gpd_right.sigma, u_right,
-                                p_left_val, p_right_val,
-                            )
-                        except (ImportError, Exception):
-                            from models.numba_kernels import ad_sptg_cdf_student_t_array
-                            pit_sptg = ad_sptg_cdf_student_t_array(
-                                np.ascontiguousarray(z_for_gpd, dtype=np.float64), nu,
-                                gpd_left.xi, gpd_left.sigma, u_left,
-                                gpd_right.xi, gpd_right.sigma, u_right,
-                                p_left_val, p_right_val,
-                            )
-                        pit_sptg = np.clip(np.asarray(pit_sptg, dtype=np.float64), 0.001, 0.999)
-                        _ks_sptg, p_sptg = _fast_ks_uniform(pit_sptg)
-                        ad_sptg = cls._compute_ad_statistic(pit_sptg)
-                        if (p_sptg >= p_base * 0.95) or (ad_sptg <= ad_base):
-                            pit = pit_sptg
-                            diag['sptg_applied'] = True
-                            diag['sptg_xi_left'] = float(gpd_left.xi)
-                            diag['sptg_xi_right'] = float(gpd_right.xi)
-
-                            # Store GPD params for REAL tail risk in signals.py
-                            cal_params['gpd_left_xi'] = float(gpd_left.xi)
-                            cal_params['gpd_left_sigma'] = float(gpd_left.sigma)
-                            cal_params['gpd_left_threshold'] = u_left
-                            cal_params['gpd_right_xi'] = float(gpd_right.xi)
-                            cal_params['gpd_right_sigma'] = float(gpd_right.sigma)
-                            cal_params['gpd_right_threshold'] = u_right
-
-                            # Compute effective ν adjustment from GPD ξ
-                            # Student-t tail index: ξ = 1/ν, so ν_effective = 1/ξ
-                            # Use the HEAVIER tail (max ξ) for conservative estimation
-                            xi_max = max(abs(gpd_left.xi), abs(gpd_right.xi))
-                            if xi_max > 0.02:  # Only adjust if tails are meaningfully heavy
-                                nu_from_gpd = 1.0 / xi_max
-                                # Blend: take the more conservative (lower) ν
-                                # but don't go below 2.5 (variance must exist)
-                                nu_effective = max(2.5, min(nu, nu_from_gpd))
-                                cal_params['nu_effective'] = float(nu_effective)
-                                cal_params['nu_adjustment_ratio'] = float(nu_effective / nu)
-                            else:
-                                cal_params['nu_effective'] = float(nu)
-                                cal_params['nu_adjustment_ratio'] = 1.0
-                            p_base, ad_base = p_sptg, ad_sptg
-            except Exception:
-                pass  # SPTG gracefully degrades
-
-        # ── Stage C: Isotonic recalibration ──────────────────────────
-        # Fits a monotone transport map g: [0,1] → [0,1] that corrects
-        # systematic probability biases. The knots are stored and applied
-        # in signals.py to calibrate directional probability p(up).
-        #
-        # Impact: calibrated p(up) → optimal Kelly/EU sizing
-        # ─────────────────────────────────────────────────────────────
-        if n >= 100:
-            try:
-                from calibration.isotonic_recalibration import IsotonicRecalibrator
-                recal = IsotonicRecalibrator()
-                result = recal.fit(pit)
-                if result.fit_success and not result.is_identity:
-                    pit_iso = np.clip(recal.transform(pit), 0.001, 0.999)
-                    _ks_before, p_before = _fast_ks_uniform(pit)
-                    _ks_after, p_after = _fast_ks_uniform(pit_iso)
-                    ad_before = cls._compute_ad_statistic(pit)
-                    ad_after = cls._compute_ad_statistic(pit_iso)
-                    if (p_after >= p_before) or (ad_after <= ad_before):
-                        pit = pit_iso
-                        diag['isotonic_applied'] = True
-                        diag['isotonic_ks_improvement'] = float(p_after - p_before)
-                        # Store isotonic knots for REAL probability calibration
-                        # in signals.py's p(up) computation
-                        cal_params['isotonic_x_knots'] = result.x_knots.tolist()
-                        cal_params['isotonic_y_knots'] = result.y_knots.tolist()
-            except Exception:
-                pass  # Isotonic gracefully degrades
-
-        diag['calibration_params'] = cal_params
-        return np.clip(pit, 0.001, 0.999), diag
+        """Apply the shared Student-t calibration transport pipeline."""
+        return ad_correction_pipeline_student_t(
+            returns,
+            mu_pred,
+            scale,
+            nu,
+            pit_raw,
+            min_obs=min_obs,
+            cdf_fn=_fast_t_cdf,
+            ks_fn=_fast_ks_uniform,
+            ad_fn=compute_ad_statistic,
+            nu_min=cls.nu_min_default,
+            nu_max=60.0,
+            gpd_method="pwm",
+        )
 
 
 # ─── Backward compatibility shim ───

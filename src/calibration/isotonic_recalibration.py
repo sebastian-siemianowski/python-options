@@ -379,7 +379,7 @@ class IsotonicRecalibrator:
                 if x_knots[-1] < self.config.pit_max:
                     x_knots = np.concatenate([x_knots, [self.config.pit_max]])
                     y_knots = np.concatenate([y_knots, [self.config.pit_max]])
-            
+
         except Exception as e:
             # Fitting failed - return identity map with warning
             self.result = TransportMapResult.identity_map(

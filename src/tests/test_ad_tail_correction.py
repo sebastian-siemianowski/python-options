@@ -398,7 +398,7 @@ class TestCalibrationParamsOutput(unittest.TestCase):
         self.assertIsInstance(cal, dict)
 
     def test_twsc_scale_factor_stored(self):
-        """TWSC should store a scale_factor in calibration_params."""
+        """TWSC stores a scale_factor only when the TWSC stage is accepted."""
         from models.phi_student_t import PhiStudentTDriftModel, _fast_t_cdf
 
         rng = np.random.default_rng(42)
@@ -414,13 +414,15 @@ class TestCalibrationParamsOutput(unittest.TestCase):
             returns, mu_pred, scale, 12.0, pit_raw
         )
         cal = diag['calibration_params']
-        self.assertIn('twsc_scale_factor', cal)
-        # For misspecified model with too-light tails, scale_factor > 1
-        self.assertGreater(cal['twsc_scale_factor'], 0.5)
-        self.assertLess(cal['twsc_scale_factor'], 5.0)
+        if diag.get('twsc_applied'):
+            self.assertIn('twsc_scale_factor', cal)
+            self.assertGreater(cal['twsc_scale_factor'], 0.5)
+            self.assertLess(cal['twsc_scale_factor'], 5.0)
+        else:
+            self.assertNotIn('twsc_scale_factor', cal)
 
     def test_gpd_params_stored(self):
-        """GPD tail parameters should be stored for tail risk estimation."""
+        """SPTG stores actionable tail params, not raw GPD fit internals."""
         from models.phi_student_t import PhiStudentTDriftModel, _fast_t_cdf
 
         rng = np.random.default_rng(7777)
@@ -437,16 +439,14 @@ class TestCalibrationParamsOutput(unittest.TestCase):
         cal = diag['calibration_params']
 
         if diag.get('sptg_applied'):
-            # GPD params should be stored when SPTG succeeds
-            self.assertIn('gpd_left_xi', cal)
-            self.assertIn('gpd_right_xi', cal)
-            self.assertIn('gpd_left_threshold', cal)
-            self.assertIn('gpd_right_threshold', cal)
             self.assertIn('nu_effective', cal)
             self.assertIn('nu_adjustment_ratio', cal)
-            # ξ should be positive for Student-t data
-            self.assertGreater(cal['gpd_left_xi'], -1.0)
-            self.assertGreater(cal['gpd_right_xi'], -1.0)
+            self.assertNotIn('gpd_left_xi', cal)
+            self.assertNotIn('gpd_right_xi', cal)
+            self.assertNotIn('gpd_left_threshold', cal)
+            self.assertNotIn('gpd_right_threshold', cal)
+            self.assertIn('sptg_xi_left', diag)
+            self.assertIn('sptg_xi_right', diag)
 
     def test_isotonic_knots_stored(self):
         """Isotonic transport map knots should be stored when applicable."""

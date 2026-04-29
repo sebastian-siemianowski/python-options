@@ -32,7 +32,7 @@ if str(SRC_DIR) not in sys.path:
 os.environ.setdefault("TUNING_QUIET", "1")
 os.environ.setdefault("OFFLINE_MODE", "1")
 
-from decision.signals_calibration import run_signals_calibration  # noqa: E402
+from decision.signals_calibration import apply_p_up_map, run_signals_calibration  # noqa: E402
 from tuning.tune_modules.asset_tuning import _tune_worker  # noqa: E402
 from tuning.tune_modules.cli import _extract_previous_posteriors  # noqa: E402
 from tuning.tune_modules.process_noise import sort_assets_by_complexity  # noqa: E402
@@ -50,6 +50,12 @@ BENCHMARK_50 = [
     "AMZN", "TSLA", "HD", "NKE", "SBUX", "PG", "KO", "PEP", "COST",
     "META", "NFLX", "DIS", "SNAP",
 ]
+
+STRESS_WINDOWS = {
+    "covid_crash_2020": ("2020-02-15", "2020-04-30"),
+    "rates_inflation_2022": ("2022-01-01", "2022-12-31"),
+    "ai_high_vol_2024_2026": ("2024-01-01", None),
+}
 
 
 def _physical_cpu_default() -> int:
@@ -220,6 +226,166 @@ def _summarize_signal_calibration(cache: Dict[str, Dict[str, Any]], assets: List
     }
 
 
+def _safe_symbol(symbol: str) -> str:
+    return symbol.replace("/", "_").replace("=", "_").replace(":", "_").upper()
+
+
+def _load_price_dates(symbol: str) -> List[str]:
+    safe = _safe_symbol(symbol)
+    for path in (SRC_DIR / "data" / "prices" / f"{safe}.csv",
+                 SRC_DIR / "data" / "prices" / f"{safe}_1d.csv"):
+        if not path.exists():
+            continue
+        dates: List[str] = []
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            next(f, None)
+            for line in f:
+                if line:
+                    dates.append(line.split(",", 1)[0])
+        return dates
+    return []
+
+
+def _load_calibration_records(symbol: str) -> Dict[str, List[Dict[str, Any]]]:
+    path = SRC_DIR / "data" / "calibration_records" / f"{_safe_symbol(symbol)}_records.json"
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        horizons = data.get("horizons", {})
+        return horizons if isinstance(horizons, dict) else {}
+    except Exception:
+        return {}
+
+
+def _new_slice_bucket() -> Dict[str, Any]:
+    return {
+        "n_records": 0,
+        "assets": set(),
+        "brier_raw_sum": 0.0,
+        "brier_cal_sum": 0.0,
+        "hit_raw_sum": 0.0,
+        "hit_cal_sum": 0.0,
+        "abs_actual_sum": 0.0,
+        "vol_regime_sum": 0.0,
+    }
+
+
+def _add_slice_record(
+    bucket: Dict[str, Any],
+    symbol: str,
+    raw_p: float,
+    cal_p: float,
+    actual_up: float,
+    actual: float,
+    vol_regime: float,
+) -> None:
+    bucket["n_records"] += 1
+    bucket["assets"].add(symbol)
+    bucket["brier_raw_sum"] += (raw_p - actual_up) ** 2
+    bucket["brier_cal_sum"] += (cal_p - actual_up) ** 2
+    bucket["hit_raw_sum"] += 1.0 if ((raw_p >= 0.5) == (actual_up >= 0.5)) else 0.0
+    bucket["hit_cal_sum"] += 1.0 if ((cal_p >= 0.5) == (actual_up >= 0.5)) else 0.0
+    bucket["abs_actual_sum"] += abs(actual)
+    bucket["vol_regime_sum"] += vol_regime
+
+
+def _finalize_slice_bucket(bucket: Dict[str, Any]) -> Dict[str, Any]:
+    n = int(bucket["n_records"])
+    if n <= 0:
+        return {
+            "n_records": 0,
+            "n_assets": 0,
+            "brier_raw_mean": None,
+            "brier_calibrated_mean": None,
+            "brier_improvement_mean": None,
+            "hit_raw_mean": None,
+            "hit_calibrated_mean": None,
+            "mean_abs_actual": None,
+            "mean_vol_regime": None,
+        }
+    brier_raw = bucket["brier_raw_sum"] / n
+    brier_cal = bucket["brier_cal_sum"] / n
+    return {
+        "n_records": n,
+        "n_assets": len(bucket["assets"]),
+        "brier_raw_mean": brier_raw,
+        "brier_calibrated_mean": brier_cal,
+        "brier_improvement_mean": brier_raw - brier_cal,
+        "hit_raw_mean": bucket["hit_raw_sum"] / n,
+        "hit_calibrated_mean": bucket["hit_cal_sum"] / n,
+        "mean_abs_actual": bucket["abs_actual_sum"] / n,
+        "mean_vol_regime": bucket["vol_regime_sum"] / n,
+    }
+
+
+def _summarize_stress_slices(cache: Dict[str, Dict[str, Any]], assets: List[str]) -> Dict[str, Any]:
+    buckets = {name: _new_slice_bucket() for name in STRESS_WINDOWS}
+    buckets["asset_max_vol_decile"] = _new_slice_bucket()
+    buckets["asset_realized_tail_decile"] = _new_slice_bucket()
+
+    for sym in assets:
+        dates = _load_price_dates(sym)
+        records_by_horizon = _load_calibration_records(sym)
+        cal_horizons = cache.get(sym, {}).get("signals_calibration", {}).get("horizons", {})
+        if not dates or not records_by_horizon or not isinstance(cal_horizons, dict):
+            continue
+
+        symbol_records: List[Tuple[Dict[str, Any], float, float]] = []
+        for h_key, records in records_by_horizon.items():
+            if not isinstance(records, list):
+                continue
+            p_map = cal_horizons.get(str(h_key), {}).get("p_up_map", {})
+            for rec in records:
+                try:
+                    raw_p = float(rec.get("p_up"))
+                    actual_up = float(rec.get("actual_up"))
+                    actual = float(rec.get("actual"))
+                    vol_regime = float(rec.get("vol_regime", 0.0))
+                    idx = int(rec.get("eval_idx"))
+                except (TypeError, ValueError):
+                    continue
+                if idx < 0 or idx >= len(dates):
+                    continue
+                cal_p = float(apply_p_up_map(raw_p, p_map)) if p_map else raw_p
+                date = dates[idx]
+                symbol_records.append((rec, raw_p, cal_p))
+
+                for name, (start, end) in STRESS_WINDOWS.items():
+                    if date >= start and (end is None or date <= end):
+                        _add_slice_record(
+                            buckets[name], sym, raw_p, cal_p,
+                            actual_up, actual, vol_regime,
+                        )
+
+        vols = [float(rec.get("vol_regime", 0.0)) for rec, _, _ in symbol_records]
+        if not vols:
+            continue
+        vol_threshold = sorted(vols)[max(0, int(0.9 * (len(vols) - 1)))]
+        for rec, raw_p, cal_p in symbol_records:
+            vol_regime = float(rec.get("vol_regime", 0.0))
+            if vol_regime < vol_threshold:
+                continue
+            _add_slice_record(
+                buckets["asset_max_vol_decile"], sym, raw_p, cal_p,
+                float(rec.get("actual_up")), float(rec.get("actual")), vol_regime,
+            )
+
+        abs_actuals = [abs(float(rec.get("actual", 0.0))) for rec, _, _ in symbol_records]
+        tail_threshold = sorted(abs_actuals)[max(0, int(0.9 * (len(abs_actuals) - 1)))]
+        for rec, raw_p, cal_p in symbol_records:
+            actual = float(rec.get("actual", 0.0))
+            if abs(actual) < tail_threshold:
+                continue
+            _add_slice_record(
+                buckets["asset_realized_tail_decile"], sym, raw_p, cal_p,
+                float(rec.get("actual_up")), actual, float(rec.get("vol_regime", 0.0)),
+            )
+
+    return {name: _finalize_slice_bucket(bucket) for name, bucket in buckets.items()}
+
+
 def _summarize_durations_by_model(
     cache: Dict[str, Dict[str, Any]],
     durations: Dict[str, float],
@@ -333,6 +499,7 @@ def main() -> None:
         "duration_by_best_model": _summarize_durations_by_model(cache, durations),
         "cache_summary": _summarize_cache(cache, assets),
         "signals_calibration_summary": _summarize_signal_calibration(cache, assets),
+        "stress_slice_summary": _summarize_stress_slices(cache, assets),
     }
 
     with open(args.metrics_json, "w", encoding="utf-8") as f:

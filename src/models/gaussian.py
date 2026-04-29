@@ -956,11 +956,10 @@ class GaussianDriftModel:
             h_garch_full = cls._compute_garch_variance_gaussian(innovations, config)
             h_garch = h_garch_full[n_train:]
 
-            pit_values, sigma, mu_effective, S_calibrated = cls._gaussian_pit_garch_path(
+            pit_values, sigma, mu_effective, _ = cls._gaussian_pit_garch_path(
                 returns, mu_pred, S_pred, h_garch_full, config, n_train, n_test)
         else:
-            S_calibrated = S_pred_test * variance_inflation
-            sigma = np.sqrt(np.maximum(S_calibrated, 1e-20))
+            sigma = np.sqrt(np.maximum(S_pred_test * variance_inflation, 1e-20))
             sigma = np.maximum(sigma, 1e-10)
             z = (returns_test - mu_pred_test) / sigma
             pit_values = np.clip(_ndtr(z), 0.001, 0.999)
@@ -1168,13 +1167,6 @@ class GaussianDriftModel:
                         diag['sptg_applied'] = True
                         diag['sptg_xi_left'] = float(gpd_left.xi)
                         diag['sptg_xi_right'] = float(gpd_right.xi)
-                        # Store GPD params for real tail risk in signals.py
-                        cal_params['gpd_left_xi'] = float(gpd_left.xi)
-                        cal_params['gpd_left_sigma'] = float(gpd_left.sigma)
-                        cal_params['gpd_left_threshold'] = u_left
-                        cal_params['gpd_right_xi'] = float(gpd_right.xi)
-                        cal_params['gpd_right_sigma'] = float(gpd_right.sigma)
-                        cal_params['gpd_right_threshold'] = u_right
             except Exception:
                 pass
 

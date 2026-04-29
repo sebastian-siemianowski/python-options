@@ -180,6 +180,258 @@ def pit_simple_path(
     return np.clip(pit_values, 0.001, 0.999), sigma, mu_pred_test
 
 
+def ks_uniform_approx(pit_values: np.ndarray) -> tuple[float, float]:
+    """Fast Kolmogorov-Smirnov approximation against Uniform(0,1)."""
+    pit_values = np.asarray(pit_values, dtype=np.float64).ravel()
+    pit_values = pit_values[np.isfinite(pit_values)]
+    n = len(pit_values)
+    if n < 2:
+        return 1.0, 0.0
+    sorted_pit = np.sort(np.clip(pit_values, 0.0, 1.0))
+    ecdf = np.arange(1, n + 1, dtype=np.float64) / float(n)
+    d_plus = float(np.max(ecdf - sorted_pit))
+    d_minus = float(np.max(sorted_pit - np.arange(0, n, dtype=np.float64) / float(n)))
+    d_stat = max(d_plus, d_minus)
+    sqrt_n = math.sqrt(float(n))
+    lam = (sqrt_n + 0.12 + 0.11 / sqrt_n) * d_stat
+    if lam < 0.001:
+        return d_stat, 1.0
+    if lam > 3.0:
+        return d_stat, 0.0
+    lam2 = lam * lam
+    p_value = 2.0 * (
+        math.exp(-2.0 * lam2)
+        - math.exp(-8.0 * lam2)
+        + math.exp(-18.0 * lam2)
+        - math.exp(-32.0 * lam2)
+    )
+    return d_stat, float(np.clip(p_value, 0.0, 1.0))
+
+
+def ad_correction_pipeline_student_t(
+    returns: np.ndarray,
+    mu_pred: np.ndarray,
+    scale: np.ndarray,
+    nu: float,
+    pit_raw: np.ndarray,
+    *,
+    min_obs: int = 250,
+    cdf_fn=None,
+    ks_fn=None,
+    ad_fn=None,
+    nu_min: float = 2.1,
+    nu_max: float = 60.0,
+    gpd_method: str = "pwm",
+) -> tuple[np.ndarray, dict]:
+    """Shared AD/TWSC/SPTG/isotonic transport for Student-t PIT calibration."""
+    returns = np.asarray(returns, dtype=np.float64).ravel()
+    mu_pred = np.asarray(mu_pred, dtype=np.float64).ravel()
+    scale = np.asarray(scale, dtype=np.float64).ravel()
+    pit = np.asarray(pit_raw, dtype=np.float64).ravel()
+    n = min(len(returns), len(mu_pred), len(scale), len(pit))
+    empty_diag = {
+        "twsc_applied": False,
+        "sptg_applied": False,
+        "isotonic_applied": False,
+        "calibration_params": {},
+        "n_obs": int(max(n, 0)),
+    }
+    if n <= 0:
+        return np.empty(0, dtype=np.float64), empty_diag
+
+    returns = returns[:n].copy()
+    mu_pred = mu_pred[:n].copy()
+    scale = scale[:n].copy()
+    pit = pit[:n].copy()
+
+    returns[~np.isfinite(returns)] = 0.0
+    mu_pred[~np.isfinite(mu_pred)] = 0.0
+    finite_scale = scale[np.isfinite(scale) & (scale > 0.0)]
+    scale_fill = float(np.median(finite_scale)) if finite_scale.size else 1.0
+    scale = np.where(np.isfinite(scale) & (scale > 0.0), scale, scale_fill)
+    scale = np.maximum(scale, max(scale_fill * 1e-6, 1e-10))
+    pit = np.clip(np.where(np.isfinite(pit), pit, 0.5), 0.001, 0.999)
+
+    if n < 50:
+        return pit, empty_diag
+
+    if cdf_fn is None:
+        from scipy.stats import t as student_t
+
+        def cdf_fn(values, df):
+            return student_t.cdf(values, df=float(df))
+
+    ks_fn = ks_fn or ks_uniform_approx
+    ad_fn = ad_fn or compute_ad_statistic
+    nu = clip_nu(nu, nu_min, nu_max)
+    diag = {
+        "twsc_applied": False,
+        "sptg_applied": False,
+        "sptg_xi_left": float("nan"),
+        "sptg_xi_right": float("nan"),
+        "isotonic_applied": False,
+        "isotonic_ks_improvement": 0.0,
+        "n_obs": int(n),
+    }
+    cal_params: dict[str, float | list[float]] = {}
+
+    z = np.clip((returns - mu_pred) / np.maximum(scale, 1e-10), -1e6, 1e6)
+    pit_base = pit.copy()
+    _ks_base, p_base = ks_fn(pit_base)
+    ad_base = ad_fn(pit_base)
+    z_for_gpd = z
+
+    scale_inflate = None
+    try:
+        from models.numba_wrappers import run_ad_twsc
+
+        scale_inflate = run_ad_twsc(
+            z,
+            ewma_lambda=0.97,
+            alpha_quantile=0.05,
+            kappa=0.5,
+            max_inflate=2.0,
+            deadzone=0.15,
+        )
+    except (ImportError, Exception):
+        try:
+            from models.numba_kernels import ad_twsc_kernel
+
+            scale_inflate = ad_twsc_kernel(
+                np.ascontiguousarray(z, dtype=np.float64),
+                0.97,
+                0.05,
+                0.5,
+                2.0,
+                0.15,
+            )
+        except Exception:
+            scale_inflate = None
+
+    if scale_inflate is not None:
+        scale_inflate = np.asarray(scale_inflate, dtype=np.float64).ravel()
+        if len(scale_inflate) >= n:
+            scale_inflate = np.clip(
+                np.where(np.isfinite(scale_inflate[:n]), scale_inflate[:n], 1.0),
+                1.0,
+                2.5,
+            )
+            z_twsc = z / scale_inflate
+            pit_twsc = np.clip(cdf_fn(z_twsc, nu), 0.001, 0.999)
+            _ks_twsc, p_twsc = ks_fn(pit_twsc)
+            ad_twsc = ad_fn(pit_twsc)
+            if (p_twsc >= p_base * 0.95) or (ad_twsc <= ad_base * 1.02):
+                pit = pit_twsc
+                diag["twsc_applied"] = True
+                tail_start = max(1, int(n * 0.7))
+                tail_factors = scale_inflate[tail_start:]
+                tail_factors = tail_factors[tail_factors > 0.0]
+                if len(tail_factors) > 0:
+                    twsc_geo_mean = float(np.exp(np.mean(np.log(tail_factors))))
+                    cal_params["twsc_scale_factor"] = float(np.clip(twsc_geo_mean, 1.0, 2.5))
+                    cal_params["twsc_last_ewma"] = float(scale_inflate[-1])
+                z_for_gpd = z_twsc
+                p_base, ad_base = p_twsc, ad_twsc
+
+    if n >= min_obs:
+        try:
+            from calibration.evt_tail import fit_gpd_pot
+
+            z_for_gpd = np.asarray(z_for_gpd, dtype=np.float64)
+            abs_z = np.abs(z_for_gpd)
+            left_losses = abs_z[z_for_gpd < 0.0]
+            right_losses = abs_z[z_for_gpd > 0.0]
+
+            if len(left_losses) >= 25 and len(right_losses) >= 25:
+                gpd_left = fit_gpd_pot(left_losses, threshold_percentile=0.90, method=gpd_method)
+                gpd_right = fit_gpd_pot(right_losses, threshold_percentile=0.90, method=gpd_method)
+            else:
+                gpd_left = None
+                gpd_right = None
+
+            if gpd_left is not None and gpd_right is not None and gpd_left.fit_success and gpd_right.fit_success:
+                u_left = float(gpd_left.threshold)
+                u_right = float(gpd_right.threshold)
+                p_left_val = float(cdf_fn(np.array([-u_left], dtype=np.float64), nu)[0])
+                p_right_val = float(1.0 - cdf_fn(np.array([u_right], dtype=np.float64), nu)[0])
+
+                if p_left_val > 0.001 and p_right_val > 0.001 and u_left > 0.5 and u_right > 0.5:
+                    try:
+                        from models.numba_wrappers import run_ad_sptg_student_t
+
+                        pit_sptg = run_ad_sptg_student_t(
+                            z_for_gpd,
+                            nu,
+                            gpd_left.xi,
+                            gpd_left.sigma,
+                            u_left,
+                            gpd_right.xi,
+                            gpd_right.sigma,
+                            u_right,
+                            p_left_val,
+                            p_right_val,
+                        )
+                    except (ImportError, Exception):
+                        from models.numba_kernels import ad_sptg_cdf_student_t_array
+
+                        pit_sptg = ad_sptg_cdf_student_t_array(
+                            np.ascontiguousarray(z_for_gpd, dtype=np.float64),
+                            nu,
+                            gpd_left.xi,
+                            gpd_left.sigma,
+                            u_left,
+                            gpd_right.xi,
+                            gpd_right.sigma,
+                            u_right,
+                            p_left_val,
+                            p_right_val,
+                        )
+                    pit_sptg = np.clip(np.asarray(pit_sptg, dtype=np.float64), 0.001, 0.999)
+                    _ks_sptg, p_sptg = ks_fn(pit_sptg)
+                    ad_sptg = ad_fn(pit_sptg)
+                    if (p_sptg >= p_base * 0.95) or (ad_sptg <= ad_base):
+                        pit = pit_sptg
+                        diag["sptg_applied"] = True
+                        diag["sptg_xi_left"] = float(gpd_left.xi)
+                        diag["sptg_xi_right"] = float(gpd_right.xi)
+                        xi_max = max(abs(float(gpd_left.xi)), abs(float(gpd_right.xi)))
+                        if xi_max > 0.02:
+                            nu_from_gpd = 1.0 / xi_max
+                            nu_effective = max(2.5, min(nu, nu_from_gpd))
+                            cal_params["nu_effective"] = float(nu_effective)
+                            cal_params["nu_adjustment_ratio"] = float(nu_effective / nu)
+                        else:
+                            cal_params["nu_effective"] = float(nu)
+                            cal_params["nu_adjustment_ratio"] = 1.0
+                        p_base, ad_base = p_sptg, ad_sptg
+        except Exception:
+            pass
+
+    if n >= 100:
+        try:
+            from calibration.isotonic_recalibration import IsotonicRecalibrator
+
+            recal = IsotonicRecalibrator()
+            result = recal.fit(pit)
+            if result.fit_success and not result.is_identity:
+                pit_iso = np.clip(recal.transform(pit), 0.001, 0.999)
+                _ks_before, p_before = ks_fn(pit)
+                _ks_after, p_after = ks_fn(pit_iso)
+                ad_before = ad_fn(pit)
+                ad_after = ad_fn(pit_iso)
+                if (p_after >= p_before) or (ad_after <= ad_before):
+                    pit = pit_iso
+                    diag["isotonic_applied"] = True
+                    diag["isotonic_ks_improvement"] = float(p_after - p_before)
+                    cal_params["isotonic_x_knots"] = result.x_knots.tolist()
+                    cal_params["isotonic_y_knots"] = result.y_knots.tolist()
+        except Exception:
+            pass
+
+    diag["calibration_params"] = cal_params
+    return np.clip(pit, 0.001, 0.999), diag
+
+
 def compute_berkowitz_full(pit_values: np.ndarray) -> tuple[float, float, int]:
     """
     Berkowitz LR test: H0 Phi^-1(PIT)~N(0,1) iid vs H1 AR(1). Chi2(3).

@@ -511,15 +511,22 @@ def tune_asset_with_bma(
             _bma_posterior = bma_result.get("global", {}).get("model_posterior", {})
             _agg_cal = {}
             _total_w = 0.0
+            _numeric_cal_keys = {
+                "twsc_scale_factor",
+                "twsc_last_ewma",
+                "nu_effective",
+                "nu_adjustment_ratio",
+            }
+            _list_cal_keys = {"isotonic_x_knots", "isotonic_y_knots"}
             for _m_name, _m_data in _bma_models.items():
                 _m_cal = _m_data.get("calibration_params", {})
                 _m_w = _bma_posterior.get(_m_name, 0.0)
                 if _m_cal and _m_w > 0:
                     _total_w += _m_w
                     for _k, _v in _m_cal.items():
-                        if isinstance(_v, (int, float)):
+                        if _k in _numeric_cal_keys and isinstance(_v, (int, float)):
                             _agg_cal[_k] = _agg_cal.get(_k, 0.0) + _m_w * _v
-                        elif isinstance(_v, list) and _k not in _agg_cal:
+                        elif _k in _list_cal_keys and isinstance(_v, list) and _k not in _agg_cal:
                             # For isotonic knots, take from highest-weight model
                             _agg_cal[_k] = _v
             # Normalize weighted averages

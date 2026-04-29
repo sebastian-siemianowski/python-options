@@ -1456,8 +1456,8 @@ def fit_all_models_for_regime(
         except Exception:
             _gu_momentum_signal = None
 
-    for phi_mode, model_prefix in [(False, "kalman_gaussian_unified"),
-                                    (True, "kalman_phi_gaussian_unified")]:
+    for phi_mode in (False, True):
+        model_prefix = make_gaussian_unified_name(phi_mode)
         try:
             g_config, g_diag = GaussianDriftModel.optimize_params_unified(
                 returns, vol, phi_mode=phi_mode, train_frac=0.7,

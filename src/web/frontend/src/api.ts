@@ -666,17 +666,57 @@ export interface DiagCalibrationFailures {
 
 export interface DiagModelStats {
   name: string;
+  family: string;
   win_count: number;
   total_weight: number;
   appearances: number;
   avg_weight: number;
   win_rate: number;
+  appearance_rate: number;
   max_weight: number;
   min_weight: number;
+  avg_bic: number | null;
+  avg_crps: number | null;
+  avg_hyvarinen: number | null;
+  avg_pit_p: number | null;
+  avg_ad_p: number | null;
+  avg_histogram_mad: number | null;
+  top_symbols: string[];
+}
+
+export interface DiagModelFamilyStats {
+  family: string;
+  model_count: number;
+  appearances: number;
+  win_count: number;
+  avg_weight: number;
+}
+
+export interface DiagModelComparisonCell {
+  family: string;
+  winner: boolean;
+  weight: number;
+  bic: number | null;
+  crps: number | null;
+  hyvarinen: number | null;
+  pit_ks_pvalue: number | null;
+  ad_pvalue: number | null;
+  histogram_mad: number | null;
+}
+
+export interface DiagModelComparisonRow {
+  symbol: string;
+  best_model: string;
+  regime: string | null;
+  ad_pass: boolean | null;
+  models: Record<string, DiagModelComparisonCell>;
 }
 
 export interface DiagModelComparison {
   models: Record<string, DiagModelStats>;
+  model_names: string[];
+  families: DiagModelFamilyStats[];
+  matrix_rows: DiagModelComparisonRow[];
   total_assets: number;
   computed_at: string;
 }
@@ -694,6 +734,7 @@ export interface DiagRegimeDistribution {
 }
 
 export interface DiagCrossAssetModelScore {
+  family: string;
   crps: number | null;
   pit_ks_p: number | null;
   ad_p: number | null;
@@ -713,7 +754,7 @@ export interface DiagCrossAssetRow {
 export interface DiagCrossAssetSummary {
   rows: DiagCrossAssetRow[];
   models: string[];
-  model_averages: Record<string, { avg_crps: number | null; avg_pit_p: number | null; avg_bic: number | null; count: number }>;
+  model_averages: Record<string, { family: string; avg_crps: number | null; avg_pit_p: number | null; avg_bic: number | null; avg_weight: number; count: number }>;
   total: number;
   computed_at: string;
 }

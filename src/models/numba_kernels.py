@@ -2325,10 +2325,6 @@ def phi_student_t_augmented_filter_kernel(
     neg_exp = -((nu + 1.0) / 2.0)
     inv_nu = 1.0 / nu
 
-    R = np.empty(n)
-    for t in range(n):
-        R[t] = c * (vol[t] * vol[t])
-
     mu_filtered = np.empty(n)
     P_filtered = np.empty(n)
     mu_pred_arr = np.empty(n)
@@ -2358,7 +2354,8 @@ def phi_student_t_augmented_filter_kernel(
         u_t = exogenous_input[t] if has_exogenous and t < len(exogenous_input) else 0.0
         mu_pred = phi * mu + u_t
         P_pred = phi_sq * P + q
-        S = P_pred + R[t]
+        R_t = c * (vol[t] * vol[t])
+        S = P_pred + R_t
         if S < 1e-12:
             S = 1e-12
 
@@ -2374,7 +2371,7 @@ def phi_student_t_augmented_filter_kernel(
                 w_t = 0.05
             elif w_t > 20.0:
                 w_t = 20.0
-            R_eff = R[t] / w_t
+            R_eff = R_t / w_t
             if R_eff < 1e-20:
                 R_eff = 1e-20
             S_eff = P_pred + R_eff
@@ -2448,11 +2445,6 @@ def phi_student_t_enhanced_filter_kernel(
     neg_exp = -((nu + 1.0) / 2.0)
     inv_nu = 1.0 / nu
 
-    # Pre-compute vol²
-    vol_sq = np.empty(n)
-    for t in range(n):
-        vol_sq[t] = vol[t] * vol[t]
-
     mu_filtered = np.empty(n)
     P_filtered = np.empty(n)
     mu_pred_arr = np.empty(n)
@@ -2493,7 +2485,7 @@ def phi_student_t_enhanced_filter_kernel(
 
         # Observation noise R_t with optional VoV and online scale adapt
         c_eff = c * c_adj if online_scale_adapt else c
-        R_t = c_eff * vol_sq[t]
+        R_t = c_eff * (vol[t] * vol[t])
         if has_vov:
             R_t = R_t * (1.0 + gamma_vov * vov_rolling[t])
 
@@ -3053,58 +3045,6 @@ def momentum_phi_student_t_filter_kernel(
 # Unlike GAS-Q (reactive), MS-q shifts BEFORE errors materialize.
 # Includes FUSED LFO-CV computation for 40% performance gain.
 # =============================================================================
-
-@njit(cache=True, fastmath=False)
-def compute_ms_process_noise_kernel(
-    vol: np.ndarray,
-    q_calm: float,
-    q_stress: float,
-    sensitivity: float,
-    threshold: float,
-) -> tuple:
-    """
-    Numba-accelerated MS-q process noise computation.
-    
-    Returns:
-        q_t: Time-varying process noise array
-        p_stress: Probability of stress regime array
-    """
-    n = len(vol)
-    q_t = np.empty(n, dtype=np.float64)
-    p_stress = np.empty(n, dtype=np.float64)
-    
-    # Compute expanding baseline (no future leakage)
-    vol_sum = 0.0
-    
-    for t in range(n):
-        vol_sum += vol[t]
-        vol_baseline = vol_sum / (t + 1)
-        if vol_baseline < 1e-10:
-            vol_baseline = 1e-10
-        
-        # Vol relative to baseline
-        vol_rel = vol[t] / vol_baseline
-        
-        # Sigmoid for stress probability
-        z = sensitivity * (vol_rel - threshold)
-        if z > 20.0:
-            p_s = 1.0
-        elif z < -20.0:
-            p_s = 0.0
-        else:
-            p_s = 1.0 / (1.0 + np.exp(-z))
-        
-        # Clip to [0.01, 0.99]
-        if p_s < 0.01:
-            p_s = 0.01
-        elif p_s > 0.99:
-            p_s = 0.99
-        
-        p_stress[t] = p_s
-        q_t[t] = (1.0 - p_s) * q_calm + p_s * q_stress
-    
-    return q_t, p_stress
-
 
 @njit(cache=True, fastmath=False)
 def ms_q_student_t_filter_kernel(
@@ -3703,11 +3643,6 @@ def unified_phi_student_t_filter_extended_kernel(
     jump_enabled = jump_var > 1e-12 and jump_intensity > 1e-6
     has_risk_drift = abs(risk_prem) > 1e-10 or abs(mu_drift) > 1e-12
 
-    # Pre-compute R_base array for risk premium
-    R_base_arr = np.empty(n, dtype=np.float64)
-    for t in range(n):
-        R_base_arr[t] = c * vol[t] * vol[t]
-
     # Pre-compute log-norm const for diffusion likelihood
     log_norm_const = _lanczos_gammaln((nu_base + 1.0) / 2.0) - _lanczos_gammaln(nu_base / 2.0) - 0.5 * np.log(nu_base * np.pi)
     neg_exp = -((nu_base + 1.0) / 2.0)
@@ -3766,16 +3701,18 @@ def unified_phi_student_t_filter_extended_kernel(
         # === PREDICTION STEP ===
         u_t = momentum[t]
         q_t_val = q_t[t]
+        vol_t = vol[t]
+        R_base_t = c * vol_t * vol_t
 
         if has_risk_drift:
-            mu_pred = phi * mu + u_t + risk_prem * R_base_arr[t] + mu_drift
+            mu_pred = phi * mu + u_t + risk_prem * R_base_t + mu_drift
         else:
             mu_pred = phi * mu + u_t
         P_pred = phi_sq * P + q_t_val
 
         # VoV-adjusted observation noise with redundancy damping
         vov_effective = gamma_vov * (1.0 - vov_damping * p_stress[t])
-        R = R_base_arr[t] * (1.0 + vov_effective * vov_rolling[t])
+        R = R_base_t * (1.0 + vov_effective * vov_rolling[t])
 
         # S_diffusion: pure diffusion predictive variance
         S_diffusion = P_pred + R

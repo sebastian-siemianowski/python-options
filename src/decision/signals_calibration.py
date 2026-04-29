@@ -223,9 +223,8 @@ SELL_THR_GRID = [0.36, 0.38, 0.40, 0.42, 0.44, 0.46, 0.48]
 MIN_THR_SEPARATION = 0.10
 
 # Label optimization weights
-LABEL_HIT_WEIGHT = 0.4
-LABEL_BRIER_WEIGHT = 0.3
-LABEL_ACC_WEIGHT = 0.3
+LABEL_HIT_WEIGHT = 4.0 / 7.0
+LABEL_ACC_WEIGHT = 3.0 / 7.0
 
 # All verify horizons (superset — we only calibrate a subset)
 ALL_HORIZONS = [1, 3, 7, 21, 63, 126, 252]
@@ -579,7 +578,7 @@ def _fit_beta_calibration(
                 w.astype(np.float64),
                 FOCAL_GAMMA,
                 0.01,   # reg_strength
-                100,     # max_iter
+                200,     # max_iter
             )
         except Exception:
             a_fit, b_fit, c_fit = 1.0, 1.0, 0.0
@@ -852,7 +851,6 @@ def _fit_emos_student_t(
     else:
         w = weights / weights.sum() * len(y)
 
-    avg_actual_abs = float(np.mean(np.abs(y)))
     # Prior ν from BMA: regularize toward median of nu_hat
     nu_prior = float(np.median(nu_hat)) if len(nu_hat) > 0 else 30.0
     nu_prior = max(3.0, min(50.0, nu_prior))
@@ -870,6 +868,18 @@ def _fit_emos_student_t(
     med_pred = float(np.median(np.abs(mu_pred))) if len(mu_pred) > 0 else 1e-8
     med_actual = float(np.median(np.abs(y))) if len(y) > 0 else 1e-8
     b_init = min(15.0, max(0.5, med_actual / max(med_pred, 1e-8)))
+    sign_valid = (mu_pred != 0.0) & (y != 0.0)
+    sign_weight = float(np.sum(w[sign_valid])) if np.any(sign_valid) else 0.0
+    if sign_weight > 0.0:
+        signs_match = np.sign(mu_pred[sign_valid]) == np.sign(y[sign_valid])
+        sign_hit = float(np.sum(w[sign_valid] * signs_match) / sign_weight)
+    else:
+        sign_hit = 0.5
+    # EMOS is a distributional calibration layer.  Weak mean forecasts should
+    # be allowed to shrink almost to zero; a directional slope floor is earned
+    # only when walk-forward signs show a measurable edge.
+    has_sign_edge = sign_weight >= max(20.0, 0.5 * len(y)) and sign_hit >= 0.535
+    b_floor = 0.1 if has_sign_edge else 0.02
 
     if nb is not None and "emos_stage1_opt" in nb:
         # v7.4: Fully Numba-native Stage 1 — no scipy overhead
@@ -878,7 +888,7 @@ def _fit_emos_student_t(
                 mu_pred, sig_pred, y, w,
                 EMOS_SIGMA_FLOOR, nu_prior,
                 0.0, b_init,     # a_init, b_init
-                0.1, 15.0,       # b_lo, b_hi
+                b_floor, 15.0,   # b_lo, b_hi
                 100,             # max_iter
             )
         except Exception:
@@ -924,7 +934,7 @@ def _fit_emos_student_t(
                 x0=[0.0, b_init],
                 method="L-BFGS-B",
                 jac=_use_grad,
-                bounds=[(-10.0, 10.0), (0.1, 15.0)],
+                bounds=[(-10.0, 10.0), (b_floor, 15.0)],
             )
             a_fit, b_fit = result1.x
         except Exception:
@@ -1030,7 +1040,7 @@ def _fit_emos_student_t(
             )
 
         # Tight bounds around two-stage solution (±exploration range)
-        b_lo = max(0.1, b_fit * 0.5)
+        b_lo = max(b_floor, b_fit * 0.5)
         b_hi = min(15.0, b_fit * 2.0)
         d_lo = max(0.01, d_fit * 0.5)
         d_hi = min(10.0, d_fit * 2.0)
@@ -1070,7 +1080,7 @@ def _fit_emos_student_t(
                 EMOS_SIGMA_FLOOR, nu_prior, reg_weight * 0.5,
             )
 
-        b_lo = max(0.1, b_fit * 0.5)
+        b_lo = max(b_floor, b_fit * 0.5)
         b_hi = min(15.0, b_fit * 2.0)
         d_lo = max(0.01, d_fit * 0.5)
         d_hi = min(10.0, d_fit * 2.0)
@@ -1433,7 +1443,9 @@ def _optimize_label_thresholds(
     """
     Grid search for optimal buy/sell thresholds maximizing composite metric.
 
-    Optimizes: hit_rate (0.4) + inv_brier (0.3) + label_accuracy (0.3)
+    Optimizes the two threshold-dependent terms from the legacy objective:
+    hit rate and label accuracy.  The old inverse-Brier term was constant
+    across threshold pairs, so deleting it preserves the selected thresholds.
 
     v6.0: Accepts optional p_up_map so Brier is computed on calibrated
     probabilities instead of raw p_ups.
@@ -1479,7 +1491,6 @@ def _optimize_label_thresholds(
                 sell_grid,
                 MIN_THR_SEPARATION,
                 LABEL_HIT_WEIGHT,
-                LABEL_BRIER_WEIGHT,
                 LABEL_ACC_WEIGHT,
             )
             if np.isfinite(best_score):
@@ -1550,8 +1561,8 @@ def _eval_threshold_pair(
 ) -> float:
     """Evaluate a buy/sell threshold pair. Returns composite score.
 
-    v6.0: Brier computed on CALIBRATED p_ups (via p_up_map) instead of raw.
-    The raw Brier was measuring model miscalibration, not threshold quality.
+    v7.5: Deletes the old inverse-Brier component.  Brier was constant across
+    threshold pairs, so it did not actually optimize thresholds.
     """
     n = len(p_ups)
     if n < 5:
@@ -1574,25 +1585,7 @@ def _eval_threshold_pair(
 
     hit_rate = float(np.mean(pred_dirs[valid_mask] == actual_dirs[valid_mask]))
 
-    # v6.0: Brier on calibrated p_ups (not raw)
-    if p_up_map is not None:
-        nb = _nb()
-        if (nb is not None and "beta_batch" in nb
-                and p_up_map.get("type") == "beta"):
-            cal_p = nb["beta_batch"](
-                p_ups,
-                p_up_map.get("a", 1.0), p_up_map.get("b", 1.0),
-                p_up_map.get("c", 0.0),
-                p_up_map.get("clip_lo", 0.01), p_up_map.get("clip_hi", 0.99),
-            )
-        else:
-            cal_p = np.array([apply_p_up_map(p, p_up_map) for p in p_ups])
-    else:
-        cal_p = p_ups
-    brier = float(np.mean((cal_p - actual_ups) ** 2))
-    inv_brier = max(0.0, 1.0 - brier / 0.25)
-
-    # Label accuracy: BUY signals that went up + SELL signals that went down
+    # Label accuracy: BUY signals that went up + SELL signals that went down.
     buy_mask = labels == 1
     sell_mask = labels == -1
     correct = 0
@@ -1605,10 +1598,8 @@ def _eval_threshold_pair(
         total_labels += int(sell_mask.sum())
     label_acc = correct / max(total_labels, 1)
 
-    # Composite
     return (
         LABEL_HIT_WEIGHT * hit_rate
-        + LABEL_BRIER_WEIGHT * inv_brier
         + LABEL_ACC_WEIGHT * label_acc
     )
 

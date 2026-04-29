@@ -10,12 +10,41 @@ if SRC_DIR not in sys.path:
 
 from models.model_registry import (
     extract_model_params_for_sampling,
+    get_model_spec,
     make_gaussian_unified_name,
+    make_rv_q_phi_gaussian_name,
+    make_rv_q_student_t_name,
+    make_student_t_improved_mle_name,
+    make_student_t_improved_name,
+    make_student_t_mle_name,
+    make_student_t_name,
+    make_unified_student_t_name,
     make_unified_student_t_improved_name,
 )
 
 
 class ModelRegistryParameterTransportTest(unittest.TestCase):
+    def test_active_retune_model_names_are_registered(self):
+        expected = {
+            make_gaussian_unified_name(False),
+            make_gaussian_unified_name(True),
+            make_student_t_mle_name(),
+            make_student_t_improved_mle_name(),
+            make_rv_q_phi_gaussian_name(),
+        }
+        for nu in (3, 4, 8, 20):
+            expected.update({
+                make_student_t_name(nu),
+                make_student_t_improved_name(nu),
+                make_unified_student_t_name(nu),
+                make_unified_student_t_improved_name(nu),
+                make_rv_q_student_t_name(nu),
+            })
+
+        self.assertEqual(len(expected), 25)
+        missing = sorted(name for name in expected if get_model_spec(name) is None)
+        self.assertEqual(missing, [])
+
     def test_unified_improved_sampling_extraction_keeps_calibration_fields(self):
         params = {
             "q": np.float64(2e-6),

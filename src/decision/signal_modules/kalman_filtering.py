@@ -1028,9 +1028,8 @@ def _kalman_filter_drift(
         # twsc_scale_applied: Whether scale correction was applied to P_filtered
         # twsc_scale_factor: The scale factor used (>1 = model was too tight)
         # calibration_params: Full dict of correction params for downstream use:
-        #   - gpd_left_xi, gpd_right_xi: GPD tail shape params (→ ν adjustment)
-        #   - isotonic_x_knots, isotonic_y_knots: Transport map (→ p_up calibration)
         #   - nu_effective: GPD-implied effective ν (→ MC tail heaviness)
+        #   - isotonic_x_knots, isotonic_y_knots: Transport map (→ p_up calibration)
         # =========================================================================
         "twsc_scale_applied": _twsc_applied,
         "twsc_scale_factor": float(_twsc_factor),

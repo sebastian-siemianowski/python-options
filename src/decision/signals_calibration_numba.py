@@ -823,13 +823,13 @@ def grid_search_thresholds_nb(
     sell_grid: np.ndarray,
     min_separation: float,
     hit_weight: float,
-    brier_weight: float,
     acc_weight: float,
 ) -> tuple:
     """
     Grid search for optimal buy/sell thresholds.
 
-    Optimizes: hit_weight * hit_rate + brier_weight * inv_brier + acc_weight * label_acc
+    Optimizes the threshold-dependent legacy terms: hit rate and label
+    accuracy.  The old inverse-Brier term was constant across threshold pairs.
 
     Parameters
     ----------
@@ -849,8 +849,6 @@ def grid_search_thresholds_nb(
         Minimum buy_thr - sell_thr
     hit_weight : float
         Weight for hit rate component
-    brier_weight : float
-        Weight for inverse Brier component
     acc_weight : float
         Weight for label accuracy component
 
@@ -878,7 +876,7 @@ def grid_search_thresholds_nb(
             score = _eval_threshold_pair_nb(
                 p_ups, actual_ups, exp_rets, actual_rets,
                 buy_thr, sell_thr,
-                hit_weight, brier_weight, acc_weight,
+                hit_weight, acc_weight,
             )
 
             if score > best_score:
@@ -898,7 +896,6 @@ def _eval_threshold_pair_nb(
     buy_thr: float,
     sell_thr: float,
     hit_weight: float,
-    brier_weight: float,
     acc_weight: float,
 ) -> float:
     """Evaluate a single (buy_thr, sell_thr) pair. Returns composite score."""
@@ -923,16 +920,6 @@ def _eval_threshold_pair_nb(
 
     hit_rate = float(hit_correct) / float(hit_total)
 
-    # --- Brier score ---
-    brier_sum = 0.0
-    for i in range(n):
-        d = p_ups[i] - actual_ups[i]
-        brier_sum += d * d
-    brier = brier_sum / n
-    inv_brier = 1.0 - brier / 0.25
-    if inv_brier < 0.0:
-        inv_brier = 0.0
-
     # --- Label accuracy ---
     label_correct = 0
     label_total = 0
@@ -951,7 +938,10 @@ def _eval_threshold_pair_nb(
     else:
         label_acc = float(label_correct) / float(label_total)
 
-    return hit_weight * hit_rate + brier_weight * inv_brier + acc_weight * label_acc
+    return (
+        hit_weight * hit_rate
+        + acc_weight * label_acc
+    )
 
 
 # =============================================================================

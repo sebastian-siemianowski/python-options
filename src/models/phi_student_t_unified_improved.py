@@ -4450,15 +4450,12 @@ class UnifiedPhiStudentTModel:
         Separates discrete jump events from continuous diffusion:
           1. Detect jumps: |z_t| > threshold
           2. Estimate jump_intensity, jump_variance, jump_mean
-          3. Optimize jump_sensitivity via 1D MLE
-          4. BIC test: only enable if 2·ΔLL > 4·ln(n)
+          3. BIC test: only enable if 2*DeltaLL > 4*ln(n)
 
         Returns:
             dict with keys: jump_intensity, jump_variance,
             jump_sensitivity, jump_mean
         """
-        from scipy.optimize import minimize
-
         defaults = {'jump_intensity': 0.0, 'jump_variance': 0.0,
                     'jump_sensitivity': 1.0, 'jump_mean': 0.0}
 
@@ -4495,43 +4492,11 @@ class UnifiedPhiStudentTModel:
             jump_variance = float(np.clip(var_jump - var_diffusion, 1e-8, 0.1))
             jump_mean = float(np.clip(np.mean(innovations[jump_mask]), -0.05, 0.05))
 
-            # Optimize jump_sensitivity
-            def neg_ll_jump_sens(sens_arr):
-                sens_val = sens_arr[0]
-                cfg = UnifiedStudentTConfig(
-                    q=q_opt, c=c_opt, phi=phi_opt, nu_base=nu_opt,
-                    alpha_asym=alpha_opt, k_asym=k_asym, gamma_vov=gamma_opt,
-                    ms_sensitivity=sens_opt, ms_ewm_lambda=0.0,
-                    q_stress_ratio=q_stress_ratio, vov_damping=vov_damping,
-                    variance_inflation=beta_opt, mu_drift=mu_drift_opt,
-                    risk_premium_sensitivity=risk_premium_opt,
-                    skew_score_sensitivity=skew_kappa_opt,
-                    skew_persistence=skew_persistence_fixed,
-                    jump_intensity=jump_intensity,
-                    jump_variance=jump_variance,
-                    jump_sensitivity=sens_val,
-                    jump_mean=jump_mean,
-                )
-                try:
-                    _, _, _, _, ll = cls.filter_phi_unified(returns_train, vol_train, cfg)
-                except Exception:
-                    return 1e10
-                if not np.isfinite(ll):
-                    return 1e10
-                reg = 0.5 * (sens_val - 1.0) ** 2
-                return -ll / n_train + reg
-
+            # The dynamic jump-probability sensitivity had zero activation on
+            # the 50-stock gate and is not identifiable unless the jump layer
+            # first clears the BIC gate. Keep the neutral value and let BIC
+            # decide whether the simpler jump mixture earns its existence.
             jump_sensitivity = 1.0
-            try:
-                result = minimize(
-                    neg_ll_jump_sens, [1.0],
-                    bounds=[(0.0, 5.0)], method='L-BFGS-B',
-                    options={'maxiter': 50}
-                )
-                if result.x is not None and np.isfinite(result.x[0]):
-                    jump_sensitivity = float(result.x[0])
-            except Exception:
-                pass
 
             # BIC verification
             cfg_no = UnifiedStudentTConfig(
@@ -4560,10 +4525,8 @@ class UnifiedPhiStudentTModel:
             _, _, _, _, ll_no = cls.filter_phi_unified(returns_train, vol_train, cfg_no)
             _, _, _, _, ll_yes = cls.filter_phi_unified(returns_train, vol_train, cfg_yes)
 
-            # Adaptive BIC penalty: relax for extreme-kurtosis assets
-            # where contaminated-t finds ε≥0.15 crisis contamination.
-            # Standard: 4·ln(n) for 4 jump params. Relaxed: 2·ln(n)
-            # when empirical excess kurtosis > 6 (ν<4 regime).
+            # Adaptive BIC penalty: relax for extreme-kurtosis assets where
+            # contaminated-t finds large crisis contamination.
             _ek_jump = float(np.mean(z_innov ** 4) / max(np.mean(z_innov ** 2) ** 2, 1e-20))
             _bic_mult = 2.0 if _ek_jump > 6.0 else 4.0
             bic_penalty = _bic_mult * np.log(n_train)

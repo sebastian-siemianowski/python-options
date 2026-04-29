@@ -18,6 +18,38 @@ No story is accepted because it sounds sophisticated. A story is accepted only
 when benchmark evidence shows equal-or-better accuracy and profitability with
 equal-or-better speed, or when a deliberate tradeoff is explicitly recorded.
 
+## Ledger Status
+
+Last updated: 2026-04-29.
+
+Cycle ledger 051-100 is complete. The most recent accepted cycles are:
+
+- Cycle 099: `cycle_099_dynamic_model_diagnostics`
+  - Dynamic backend/frontend model diagnostics.
+  - Improved and canonical models visible side by side.
+  - Benchmark artifact:
+    `src/data/benchmarks/cycle_099_dynamic_model_diagnostics_full_metrics.json`.
+- Cycle 100: `cycle_100_final_release_gate`
+  - Final full-system gate for tuning, calibration, diagnostics, frontend build,
+    and signal-generation smoke.
+  - Benchmark artifact:
+    `src/data/benchmarks/cycle_100_final_release_gate_full_metrics.json`.
+
+Final cycle-100 gate:
+
+- 50/50 assets.
+- 0 failures.
+- 0 calibration warnings.
+- 25.0 models per asset.
+- PIT mean/min: `0.7618466601969215 / 0.25568959090050664`.
+- Signal PF/Sharpe/hit:
+  `1.973747995 / 2.85343172 / 0.580366105`.
+- Model visibility smoke: 498 tuned assets, 25 active diagnostics models,
+  9 improved variants visible.
+
+Detailed cycle results are recorded under `Cycle 099 result` and
+`Cycle 100 result` near the end of this file.
+
 ## Current Model Surface
 
 Primary files:
@@ -818,44 +850,44 @@ Use this ledger to keep the recursion honest.
 | 010 | Improved Student-t prediction-bias memory tuning | Done |
 | 011 | Canonical Student-t train/test kernel rewrite | Done |
 | 012 | Canonical Student-t robust gain audit | Done |
-| 013 | Canonical Student-t volatility correction audit | Pending |
-| 014 | Canonical Student-t MLE profile audit | Pending |
-| 015 | Canonical Student-t method-size reduction | Pending |
+| 013 | Canonical Student-t volatility correction audit | Superseded by executed cycle log |
+| 014 | Canonical Student-t MLE profile audit | Superseded by executed cycle log |
+| 015 | Canonical Student-t method-size reduction | Superseded by executed cycle log |
 | 016 | Unified improved Stage 5 search pruning | Done |
-| 017 | Unified improved Stage 5 scoring rewrite | Pending |
-| 018 | Unified improved Stage 6 helper extraction | Pending |
-| 019 | Unified improved GARCH/CRPS branch pruning | Pending |
-| 020 | Unified improved filter path kernel parity | Pending |
-| 021 | Unified canonical Stage 5 simplification | Pending |
-| 022 | Unified canonical Stage 6 calibration audit | Pending |
-| 023 | Unified canonical filter path cleanup | Pending |
-| 024 | Unified canonical MLE/grid consistency audit | Pending |
-| 025 | Unified canonical dead branch deletion | Pending |
-| 026 | Gaussian Stage 1 objective audit | Pending |
+| 017 | Unified improved Stage 5 scoring rewrite | Superseded by executed cycle log |
+| 018 | Unified improved Stage 6 helper extraction | Superseded by executed cycle log |
+| 019 | Unified improved GARCH/CRPS branch pruning | Superseded by executed cycle log |
+| 020 | Unified improved filter path kernel parity | Superseded by executed cycle log |
+| 021 | Unified canonical Stage 5 simplification | Superseded by executed cycle log |
+| 022 | Unified canonical Stage 6 calibration audit | Superseded by executed cycle log |
+| 023 | Unified canonical filter path cleanup | Superseded by executed cycle log |
+| 024 | Unified canonical MLE/grid consistency audit | Superseded by executed cycle log |
+| 025 | Unified canonical dead branch deletion | Superseded by executed cycle log |
+| 026 | Gaussian Stage 1 objective audit | Superseded by executed cycle log |
 | 027 | Signal calibration cache-hit import/data deletion | Done |
 | 028 | Signal calibration EMOS sub-regime polish gate | Done |
 | 029 | Signal calibration EMOS solver cap test | Rejected |
 | 030 | Full gate after signal calibration deletions | Done |
 | 031 | RV-Q deletion test | Rejected |
 | 032 | Improved filter scalar clip hot-loop test | Rejected |
-| 033 | Registry/feature-pipeline model-name dedupe | Pending |
-| 034 | Signal calibration pass-2 boundary audit | Pending |
-| 035 | Signal probability calibration scoring | Pending |
+| 033 | Registry/feature-pipeline model-name dedupe | Accepted |
+| 034 | Signal calibration pass-2 boundary audit | Accepted |
+| 035 | Signal probability calibration scoring | Accepted |
 | 036 | Ticker and asset classification consolidation | Done |
-| 037 | Frontend model visibility dynamic labels | Pending |
-| 038 | Backend diagnostics model matrix audit | Pending |
-| 039 | Numba kernel naming/grouping pass | Pending |
-| 040 | Numba wrapper deletion pass | Pending |
-| 041 | Calibration helper consolidation | Pending |
-| 042 | PIT/AD/Berkowitz shared scoring pass | Pending |
-| 043 | Real-data benchmark panel standardization | Pending |
-| 044 | Profitability validation harness cleanup | Pending |
-| 045 | Full retune repeated-run noise analysis | Pending |
-| 046 | Per-asset slow-case investigation | Pending |
-| 047 | Stress-period calibration benchmark | Pending |
-| 048 | Crisis/tail validation benchmark | Pending |
-| 049 | Final model-count and frontend audit | Pending |
-| 050 | Final 50-stock full retune plus calibration release gate | Pending |
+| 037 | Frontend model visibility dynamic labels | Accepted |
+| 038 | Backend diagnostics model matrix audit | Rejected |
+| 039 | Numba kernel naming/grouping pass | Rejected |
+| 040 | Numba wrapper deletion pass | Rejected |
+| 041 | Calibration helper consolidation | Accepted |
+| 042 | PIT/AD/Berkowitz shared scoring pass | Accepted |
+| 043 | Real-data benchmark panel standardization | Rejected |
+| 044 | Profitability validation harness cleanup | Rejected |
+| 045 | Full retune repeated-run noise analysis | Accepted |
+| 046 | Per-asset slow-case investigation | Accepted |
+| 047 | Stress-period calibration benchmark | Passed |
+| 048 | Crisis/tail validation benchmark | Rejected |
+| 049 | Final model-count and frontend audit | Rejected |
+| 050 | Final 50-stock full retune plus calibration release gate | Passed |
 
 ## Next Fifty Stories - Cycles 051-100
 
@@ -895,46 +927,46 @@ documented staged equivalent.
 | 058 | `phi_student_t_improved` state-input momentum/MR orthogonality rewrite | Accepted - MR sign fixed, legacy post-filter momentum confidence hack deleted; BIC mean improved, full gate warnings 0 |
 | 059 | `phi_student_t_improved` continuous-ν profile replacement with local interpolation | Rejected - local bounds and center-reuse attempts did not beat cycle 058 gate; no code retained |
 | 060 | `phi_student_t_improved` method-size and public API reduction | Accepted - unused compatibility filter wrapper deleted; tests pass; full gate warnings 0 with quality-neutral calibrated PF/Sharpe |
-| 061 | `phi_student_t` shared calibration transport rewrite | Pending |
-| 062 | `phi_student_t` production Numba filter-core parity | Pending |
-| 063 | `phi_student_t` tail graft architecture cleanup | Pending |
-| 064 | `phi_student_t` isotonic/probability transport deletion audit | Pending |
-| 065 | `phi_student_t` proper scoring objective ablation | Pending |
-| 066 | `phi_student_t` volatility correction orthogonalization | Pending |
-| 067 | `phi_student_t` ν-grid topology pruning with posterior-mass proof | Pending |
-| 068 | `phi_student_t` q/c/phi parameterization refactor | Pending |
-| 069 | `phi_student_t` LFO-CV fold kernel rewrite | Pending |
-| 070 | `phi_student_t` canonical/improved shared base extraction | Pending |
-| 071 | `phi_student_t_unified_improved` Stage 5 decomposition | Pending |
-| 072 | `phi_student_t_unified_improved` structural-array Numba rewrite | Pending |
-| 073 | `phi_student_t_unified_improved` jump layer deletion or hard promotion | Pending |
-| 074 | `phi_student_t_unified_improved` Stage 6 coordinate-search calibration rewrite | Pending |
-| 075 | `phi_student_t_unified_improved` PIT/CRPS/entropy composite selection score | Pending |
-| 076 | `phi_student_t_unified_improved` conditional skew GAS simplification | Pending |
-| 077 | `phi_student_t_unified_improved` rough volatility layer audit | Pending |
-| 078 | `phi_student_t_unified_improved` GARCH/PIT path Numba kernel rewrite | Pending |
-| 079 | `phi_student_t_unified_improved` fallback-path deletion pass | Pending |
-| 080 | `phi_student_t_unified_improved` method-size budget enforcement | Pending |
-| 081 | `phi_student_t_unified` Stage 5 canonical parity audit | Pending |
-| 082 | `phi_student_t_unified` filter-and-calibrate reuse from optimize diagnostics | Pending |
-| 083 | `phi_student_t_unified` config/dataclass surface shrink | Pending |
-| 084 | `phi_student_t_unified` weak asymmetry and jump branch deletion audit | Pending |
-| 085 | `phi_student_t_unified` Markov/stress-q simplification | Pending |
-| 086 | `kalman_phi_gaussian_unified` exact Kalman kernel rewrite | Pending |
-| 087 | `kalman_gaussian_unified` closed-form CRPS gradient objective | Pending |
-| 088 | Gaussian unified GAS-Q and momentum branch audit | Pending |
-| 089 | Gaussian unified sign-probability objective | Pending |
-| 090 | Gaussian unified calibration path consolidation | Pending |
-| 091 | Numba kernel architecture split by mathematical responsibility | Pending |
-| 092 | Numba wrapper deletion and typed boundary pass | Pending |
-| 093 | EMOS Student-t optimizer rewrite in Numba | Pending |
-| 094 | Beta calibration optimizer rewrite and focal-loss audit | Pending |
-| 095 | Threshold optimization expected-utility rewrite with calibration guard | Pending |
-| 096 | BMA posterior scoring rewrite with calibration entropy | Pending |
-| 097 | Registry and model parameter transport hardening | Pending |
-| 098 | Stress/crisis benchmark slices added to validation gate | Pending |
-| 099 | Frontend/backend dynamic model diagnostics matrix | Pending |
-| 100 | Final full retune/calibration/signal-generation release gate | Pending |
+| 061 | `phi_student_t` shared calibration transport rewrite | Accepted - AD/TWSC/SPTG/isotonic transport centralized; 422 duplicated lines deleted; full gate quality-neutral and faster |
+| 062 | `phi_student_t` production Numba filter-core parity | Accepted - fused CV call rejected; inline observation-noise Numba core kept; repeat full gate faster and quality-neutral |
+| 063 | `phi_student_t` tail graft architecture cleanup | Accepted - raw GPD cache fields deleted from Student-t/Gaussian calibration params; only actionable tail params promoted |
+| 064 | `phi_student_t` isotonic/probability transport deletion audit | Rejected - 128-knot cap hurt PIT; persisted-map-only audit was neutral/slower; no isotonic code retained |
+| 065 | `phi_student_t` proper scoring objective ablation | Rejected - sign-Brier CV term gave no full signal lift and worsened BIC/runtime; no code retained |
+| 066 | `phi_student_t` volatility correction orthogonalization | Rejected - ν≤8-only OSA improved PIT min but hurt PIT mean/runtime with no signal lift; no code retained |
+| 067 | `phi_student_t` ν-grid topology pruning with posterior-mass proof | Rejected - ν=3 had zero wins but deleting it caused one calibration warning and PIT min 0.2557 -> 0.0278; no code retained |
+| 068 | `phi_student_t` q/c/phi parameterization refactor | Rejected - tanh-phi coordinate improved focused Brier/profit and full BIC/runtime, but reliably lowered PIT mean; no code retained |
+| 069 | `phi_student_t` LFO-CV fold kernel rewrite | Rejected - score-only LFO kernel preserved quality but made full retune much slower on repeat; no code retained |
+| 070 | `phi_student_t` canonical/improved shared base extraction | Accepted - canonical now shares ν/scale/PIT/Berkowitz helpers with improved; full warm gate quality-neutral and faster |
+| 071 | `phi_student_t_unified_improved` Stage 5 decomposition | Accepted - deleted the unidentifiable jump-sensitivity optimizer; 200 unified-improved fits had zero jump activations, full repeat gate stayed quality-neutral and total runtime improved 46.03s -> 42.84s |
+| 072 | `phi_student_t_unified_improved` structural-array Numba rewrite | Accepted - extended unified Numba kernel no longer allocates per-call `R_base_arr`; focused metrics unchanged and warm full gate improved 42.84s -> 42.52s with zero warnings |
+| 073 | `phi_student_t_unified_improved` jump layer deletion or hard promotion | Rejected - deleting Stage 5d preserved quality but slowed the full warm gate 42.52s -> 44.17s; code restored except the accepted cycle-071 sensitivity simplification |
+| 074 | `phi_student_t_unified_improved` Stage 6 coordinate-search calibration rewrite | Rejected - pruning low-ν Stage 6 PIT candidates preserved metrics but focused warm fit time regressed 0.151s -> 0.176s; code restored |
+| 075 | `phi_student_t_unified_improved` PIT/CRPS/entropy composite selection score | Rejected - AD-aware Stage 5 score slightly lifted focused Sharpe but worsened CRPS, PIT mean, PIT pass rate, and fit time; code reverted |
+| 076 | `phi_student_t_unified_improved` conditional skew GAS simplification | Rejected - GAS deletion and robust moment asymmetry rewrite failed the full 50-stock gate; code reverted |
+| 077 | `phi_student_t_unified_improved` rough volatility layer audit | Rejected - disabling rough Hurst was focused-neutral but worsened full-gate BIC/runtime; code reverted |
+| 078 | `phi_student_t_unified_improved` GARCH/PIT path cleanup | Rejected - CRPS location-bias vectorization was quality-neutral but did not improve full-gate runtime; code reverted |
+| 079 | `phi_student_t_unified_improved` fallback-path deletion pass | Rejected - deleting the GARCH PIT escape hatch preserved calibration but worsened full-gate runtime/BIC; code reverted |
+| 080 | `phi_student_t_unified_improved` method-size budget enforcement | Rejected - GARCH PIT Numba rewrite and extraction-only refactor reduced method size but worsened full-gate runtime/BIC; code reverted |
+| 081 | `phi_student_t_unified` Stage 5 canonical parity audit | Rejected - deleting canonical jump-sensitivity optimizer was calibration-neutral but failed the repeat runtime/BIC gate; code reverted |
+| 082 | `phi_student_t_unified` filter-and-calibrate reuse from optimize diagnostics | Rejected - calibrated-score reuse improved PIT but worsened BIC/runtime with no signal lift; code reverted |
+| 083 | `phi_student_t_unified` config/dataclass surface shrink | Rejected - removing disabled GARCH-Kalman/q-vol fields from the active fit boundary preserved PIT/signals but worsened full-gate runtime 42.52s -> 70.18s and BIC -13471.99 -> -13471.80; code reverted |
+| 084 | `phi_student_t_unified` weak asymmetry and jump branch deletion audit | Rejected - canonical skew optimizer deletion improved BIC slightly but regressed full-gate runtime 42.52s -> 58.38s with unchanged signal profitability; code reverted |
+| 085 | `phi_student_t_unified` Markov/stress-q simplification | Rejected - replacing MS-q sensitivity optimization with the profile prior preserved PIT/signals but worsened BIC/runtime; code reverted |
+| 086 | `kalman_phi_gaussian_unified` exact Kalman kernel rewrite | Rejected - fused φ-Gaussian CV kernel passed parity but repeat full gate was slower and BIC-worse; code reverted |
+| 087 | `kalman_gaussian_unified` closed-form CRPS gradient objective | Rejected - analytic Gaussian CRPS shrinkage matched dense-grid math but worsened full-gate BIC/runtime with no signal lift; code reverted |
+| 088 | Gaussian unified GAS-Q and momentum branch audit | Rejected - Gaussian GAS-Q fit deletion preserved PIT/signals but worsened BIC/runtime; code reverted |
+| 089 | Gaussian unified sign-probability objective | Rejected at requirement gate - adding sign-Brier would widen the Gaussian CV kernel contract and duplicate downstream calibrated signal scoring; no code retained |
+| 090 | Gaussian unified calibration path consolidation | Accepted narrow - deleted unused Gaussian calibrated-variance transport; full repeat gate 50/50, zero warnings, PIT/signals unchanged, BIC improved, runtime not credited |
+| 091 | Numba kernel architecture split by mathematical responsibility | Accepted narrow - dead unreferenced `compute_ms_process_noise_kernel` deleted; imports/tests pass and full gate stays 50/50 with zero warnings |
+| 092 | Numba wrapper deletion and typed boundary pass | Rejected at audit gate - no unreferenced `run_*` wrappers found, so no safe deletion was available |
+| 093 | EMOS Student-t optimizer rewrite in Numba | Accepted |
+| 094 | Beta calibration optimizer rewrite and focal-loss audit | Accepted |
+| 095 | Threshold optimization expected-utility rewrite with calibration guard | Accepted |
+| 096 | BMA posterior scoring rewrite with calibration entropy | Rejected at audit gate |
+| 097 | Registry and model parameter transport hardening | Accepted |
+| 098 | Stress/crisis benchmark slices added to validation gate | Accepted |
+| 099 | Frontend/backend dynamic model diagnostics matrix | Accepted |
+| 100 | Final full retune/calibration/signal-generation release gate | Accepted |
 
 ## Detailed Stories 051-100
 
@@ -1455,6 +1487,30 @@ Acceptance:
 - Improved model does not regress.
 - Less duplicated code.
 
+Cycle 061 result:
+
+- Added `ad_correction_pipeline_student_t()` and `ks_uniform_approx()` to
+  `src/models/student_t_common.py`.
+- Replaced the canonical and improved Student-t AD correction methods with thin
+  adapters that pass model-specific CDF/KS/statistic hooks into the shared
+  transport.
+- Net code shape: `phi_student_t.py` and `phi_student_t_improved.py` deleted 422
+  duplicated lines; shared common code added once.
+- Tests:
+  `.venv/bin/python -m py_compile src/models/student_t_common.py src/models/phi_student_t.py src/models/phi_student_t_improved.py`
+  and
+  `.venv/bin/python -m pytest src/tests/test_phi_student_t_train_state_kernel.py src/tests/test_story_056_student_t_p_up_kernel.py -q`.
+- Full retune plus calibration gate:
+  `src/data/benchmarks/cycle_061_shared_ad_transport_full_cal_metrics.json`.
+  All 50 assets completed with zero failures and zero calibration warnings.
+  PIT mean/min stayed unchanged at 0.762/0.256. Calibrated PF, Sharpe, hit
+  rate, Brier improvement, and CRPS improvement stayed unchanged at 1.974,
+  2.853, 0.580, 0.0279, and 4.328. Runtime improved versus cycle 060:
+  total seconds 52.06 -> 48.40, tune seconds 46.97 -> 44.18, mean asset
+  seconds 9.00 -> 8.32. BIC mean moved slightly from -13472.16 to -13471.73,
+  accepted as a small neutral scorer jitter/tradeoff because distributional and
+  signal metrics were unchanged while the duplicated transport was deleted.
+
 ### Story 062 - Canonical Student-t Production Numba Filter Core
 
 Target:
@@ -1485,6 +1541,34 @@ Acceptance:
 - Faster canonical focused benchmark.
 - Full BMA weights still make sense.
 
+Cycle 062 result:
+
+- Rejected hypothesis: a fused `train_then_cv` Numba wrapper was quality-neutral
+  but slower in sequential A/B (`3.57s` enabled versus `3.14s` disabled on the
+  focused canonical nu=8 benchmark). The fused kernel, wrapper, env knob, and
+  test hook were deleted rather than retained.
+- Accepted change: removed temporary observation-noise arrays inside
+  `phi_student_t_augmented_filter_kernel()` and
+  `phi_student_t_enhanced_filter_kernel()`. Both kernels now compute
+  `R_t = c_eff * vol[t] * vol[t]` directly in the recurrence, deleting one
+  allocation and one pre-pass without changing the filter equations.
+- Tests:
+  `.venv/bin/python -m py_compile src/models/numba_kernels.py src/models/numba_wrappers.py src/models/phi_student_t.py src/tests/test_phi_student_t_train_state_kernel.py`
+  and
+  `.venv/bin/python -m pytest src/tests/test_phi_student_t_train_state_kernel.py -q`.
+- Focused canonical nu=8 benchmark:
+  `src/data/benchmarks/cycle_062_canonical_inline_r_metrics.json`.
+  Quality remained identical; runtime was `3.22s` versus the cycle-062 starting
+  focused baseline of `3.34s`.
+- Full retune plus calibration gate:
+  `src/data/benchmarks/cycle_062_canonical_inline_r_full_repeat_metrics.json`.
+  The first full run was discarded as Numba cache warmup after changing a
+  kernel. The repeat completed all 50 assets with zero failures/warnings,
+  unchanged PIT mean/min at 0.762/0.256, unchanged calibrated PF/Sharpe/hit
+  rate at 1.974/2.853/0.580, unchanged Brier/CRPS improvement at 0.0279/4.328,
+  and faster runtime versus cycle 061: total seconds `48.40 -> 45.09`, tune
+  seconds `44.18 -> 40.87`, mean asset seconds `8.32 -> 7.69`.
+
 ### Story 063 - Canonical Student-t Tail Graft Architecture Cleanup
 
 Target:
@@ -1513,6 +1597,35 @@ Acceptance:
 - Same or better PIT/profit metrics.
 - Clearer tune cache fields.
 
+Cycle 063 result:
+
+- Verified downstream consumption: signal MC consumes `nu_effective`; signal
+  generation consumes isotonic knots; Kalman filtering consumes
+  `twsc_scale_factor`. Raw per-side GPD `xi/sigma/threshold` fields were not
+  consumed by signal generation.
+- Deleted raw GPD fields from Student-t shared calibration params and Gaussian
+  calibration params. SPTG still records `sptg_xi_left/right` in diagnostics
+  for auditability, but persisted calibration params now contain only actionable
+  fields.
+- Whitelisted global calibration promotion in
+  `src/tuning/tune_modules/asset_tuning.py` to
+  `twsc_scale_factor`, `twsc_last_ewma`, `nu_effective`,
+  `nu_adjustment_ratio`, `isotonic_x_knots`, and `isotonic_y_knots`.
+- Validation after benchmark: AAPL cache had no `gpd_*` keys at global or
+  per-model level; actionable global keys remained.
+- Tests:
+  `.venv/bin/python -m py_compile src/models/gaussian.py src/models/student_t_common.py src/tuning/tune_modules/asset_tuning.py src/decision/signal_modules/kalman_filtering.py`
+  and
+  `.venv/bin/python -m pytest src/tests/test_phi_student_t_train_state_kernel.py src/tests/test_story_056_student_t_p_up_kernel.py -q`.
+- Full retune plus calibration gate:
+  `src/data/benchmarks/cycle_063_actionable_tail_cache_full_metrics.json`.
+  All 50 assets completed with zero failures/warnings. PIT mean/min stayed
+  0.762/0.256. Calibrated PF/Sharpe/hit rate stayed 1.974/2.853/0.580, and
+  Brier/CRPS improvement stayed 0.0279/4.328. Runtime was quality-neutral but
+  not a speed win versus cycle 062 (`48.06s` total versus `45.09s`); accepted
+  as a deliberate topology reduction because no predictive fields were removed
+  and unconsumed cache state was deleted.
+
 ### Story 064 - Canonical Student-t Isotonic Transport Audit
 
 Target:
@@ -1539,6 +1652,20 @@ Acceptance:
 
 - Better PIT/AD or Brier.
 - No signal PF/Sharpe regression.
+
+Cycle 064 result:
+
+- Rejected hypothesis A: cap persisted isotonic maps to 128 segments and make
+  tuning evaluate the same compressed knot map used by signals.
+  `src/data/benchmarks/cycle_064_isotonic_knot_cap_full_metrics.json` kept
+  signal PF/Sharpe unchanged, but PIT mean dropped from 0.762 to 0.700.
+- Rejected hypothesis B: keep full knots but make tuning evaluate the persisted
+  knot map instead of sklearn's internal isotonic predictor.
+  `src/data/benchmarks/cycle_064_isotonic_persisted_map_full_metrics.json` was
+  quality-neutral but did not improve PIT/Brier and was slower.
+- Both isotonic code changes were deleted. The only retained test edits are from
+  cycle 063's accepted calibration-params contract: raw GPD internals are not
+  expected in persisted calibration params.
 
 ### Story 065 - Canonical Student-t Proper Scoring Objective Ablation
 
@@ -1568,6 +1695,21 @@ Candidate improved method:
 Acceptance:
 
 - Keep only a term that improves focused OOS quality and full signal metrics.
+
+Cycle 065 result:
+
+- Tested a canonical Student-t CV sign-Brier penalty using a new Numba
+  validation scorer. Focused canonical nu=8 improved strategy Sharpe
+  `0.105 -> 0.109` and profit factor `0.1338 -> 0.1341`, but Brier/log score
+  were microscopically worse.
+- Full gate warm repeat:
+  `src/data/benchmarks/cycle_065_canonical_sign_brier_full_repeat_metrics.json`.
+  PIT mean improved only `0.761847 -> 0.761892`, but calibrated PF/Sharpe,
+  Brier improvement, CRPS improvement, and hit rate were unchanged. BIC mean
+  worsened versus cycle 063 and the scorer adds Student-t CDF work in the CV
+  loop.
+- Rejected and deleted the score-fold kernel, wrapper, optimizer penalty, env
+  knob, and parity-test hook. No cycle-065 code retained.
 
 ### Story 066 - Student-t Volatility Correction Orthogonalization
 
@@ -1601,6 +1743,19 @@ Acceptance:
 - PIT and CRPS improve or remain stable.
 - Better parameter interpretability.
 
+Cycle 066 result:
+
+- Tested a canonical-only OSA orthogonalization: keep online scale adaptation
+  for heavy-tail ν≤8 and disable it for near-Gaussian ν=20, where VoV/TWSC/PIT
+  transport already handle scale calibration.
+- Focused ν=20 improved Brier/log/PIT and moved variance ratio closer to one,
+  but the strategy proxy was unstable; ν=8 remained unchanged.
+- Full gate:
+  `src/data/benchmarks/cycle_066_canonical_heavytail_osa_full_metrics.json`.
+  PIT minimum improved `0.256 -> 0.400`, but PIT mean fell `0.762 -> 0.751`,
+  runtime worsened, and signal PF/Sharpe/Brier/CRPS were unchanged.
+- Rejected and reverted. No cycle-066 code retained.
+
 ### Story 067 - Student-t Nu-Grid Topology Pruning
 
 Target:
@@ -1628,6 +1783,26 @@ Acceptance:
 
 - Fewer models per asset only if story explicitly deletes model variants.
 - Runtime improves and signal metrics do not regress.
+
+Cycle 067 result:
+
+- Ran a fresh current-state baseline because the previous cache came from a
+  rejected OSA experiment:
+  `src/data/benchmarks/cycle_067_current_baseline_full_metrics.json`.
+  Baseline completed 50/50 assets with zero failures/warnings, 25 models per
+  asset, PIT mean/min `0.7618/0.2557`, calibrated PF/Sharpe/hit
+  `1.974/2.853/0.580`, and total runtime `49.35s`.
+- Posterior audit on the clean cache showed ν=3 had zero best-model wins and
+  low average mass: canonical `0.0051`, improved `0.00003`, unified and
+  unified-improved about `0.0023`.
+- Tested explicit deletion of ν=3 from the active Student-t grid while keeping
+  canonical, improved, unified, and unified-improved families side by side on
+  ν=4/8/20 plus MLE:
+  `src/data/benchmarks/cycle_067_nu3_prune_full_metrics.json`.
+- Rejected. Runtime improved (`49.35s -> 45.47s`) and model count dropped
+  (`25 -> 22`), but the calibration gate failed: warnings `0 -> 1`, PIT mean
+  `0.7618 -> 0.7324`, and PIT min `0.2557 -> 0.0278`. The code experiment was
+  reverted; ν=3 remains as a rare but necessary tail-safety anchor.
 
 ### Story 068 - Student-t q/c/phi Reparameterization
 
@@ -1658,6 +1833,29 @@ Acceptance:
 - Fewer optimizer iterations or better convergence.
 - Equal or better OOS scores.
 
+Cycle 068 result:
+
+- Baseline focused canonical ν=8 gate:
+  `src/data/benchmarks/cycle_068_canonical_phi_raw_baseline.json`.
+  Runtime `3.121s`, OOS Brier `0.249965`, log score `2.748346`, PIT p-value
+  mean `0.23419`, profit factor `0.13378`, strategy Sharpe `0.10497`.
+- Tested a smooth tanh coordinate for `phi`, leaving `log_q`, `log_c`, bounds,
+  and filter equations unchanged:
+  `src/data/benchmarks/cycle_068_canonical_phi_tanh_metrics.json`.
+  Focused metrics improved slightly: runtime `3.094s`, Brier `0.249962`, log
+  score `2.748366`, profit factor `0.13408`, Sharpe `0.10948`; PIT p-value
+  dipped slightly to `0.23371`.
+- Full gates:
+  `src/data/benchmarks/cycle_068_canonical_phi_tanh_full_metrics.json` and
+  `src/data/benchmarks/cycle_068_canonical_phi_tanh_full_repeat_metrics.json`.
+  Runtime and BIC improved versus the fresh cycle-067 baseline
+  (`49.35s -> 44.68s`, BIC `-13471.95 -> -13473.99`), failures/warnings
+  stayed zero, and calibrated PF/Sharpe/hit stayed unchanged.  However PIT mean
+  reliably fell `0.7618 -> 0.7524` with no profitability lift at the full
+  system level.
+- Rejected and reverted.  A coordinate transform that buys speed but costs
+  distributional calibration does not satisfy this cycle's requirement.
+
 ### Story 069 - Student-t LFO-CV Fold Kernel Rewrite
 
 Target:
@@ -1686,6 +1884,24 @@ Acceptance:
 - Parity with existing LFO score.
 - Speed improvement.
 - No leakage.
+
+Cycle 069 result:
+
+- The existing Student-t LFO path already had a fused Numba filter with LFO
+  accumulation.  The narrower hypothesis was to delete output-array allocation
+  for diagnostics callers that only consume the scalar LFO score.
+- Added a score-only Student-t LFO kernel and wrapper, plus a parity test
+  against the existing array-returning fused kernel.  Unit tests passed:
+  `.venv/bin/python -m pytest src/tests/test_lfo_cv_numba.py -q`.
+- Full gates:
+  `src/data/benchmarks/cycle_069_student_t_lfo_score_only_full_metrics.json`
+  and
+  `src/data/benchmarks/cycle_069_student_t_lfo_score_only_full_repeat_metrics.json`.
+  PIT mean/min, calibrated PF/Sharpe/hit, and warnings were unchanged, but
+  runtime regressed badly even on repeat (`49.35s baseline -> 74.61s repeat`).
+- Rejected and deleted the score-only kernel, wrapper, diagnostics route, and
+  parity-test hook.  The original fused LFO kernel remains the better real
+  workload implementation.
 
 ### Story 070 - Canonical/Improved Shared Student-t Base
 
@@ -1716,6 +1932,27 @@ Acceptance:
 
 - Less duplicate code.
 - Both model families still fit side by side with distinct names.
+
+Cycle 070 result:
+
+- Moved canonical Student-t onto shared helpers already used by the improved
+  model for ν clipping, variance-to-scale conversion, simple PIT path, and
+  Berkowitz LR diagnostics.  The model equations and public names remain
+  unchanged; this deletes utility-code drift between canonical and improved.
+- Tests:
+  `.venv/bin/python -m py_compile src/models/phi_student_t.py src/models/student_t_common.py`
+  and
+  `.venv/bin/python -m pytest src/tests/test_phi_student_t_train_state_kernel.py src/tests/test_ad_tail_correction.py -q`.
+- Focused canonical ν=8 metrics were unchanged:
+  `src/data/benchmarks/cycle_070_canonical_shared_helpers_focused_repeat.json`.
+- Full gate:
+  `src/data/benchmarks/cycle_070_canonical_shared_helpers_full_repeat_metrics.json`.
+  The first full run paid compile noise from the previous rejected kernel edit,
+  so the warm repeat is the release comparison.  It completed 50/50 assets with
+  zero failures/warnings, 25 models per asset, unchanged PIT mean/min
+  `0.7618/0.2557`, unchanged calibrated PF/Sharpe/hit
+  `1.974/2.853/0.580`, slightly better BIC (`-13471.95 -> -13472.34`), and
+  faster total runtime (`49.35s -> 46.03s`).
 
 ### Story 071 - Unified Improved Stage 5 Decomposition
 
@@ -1748,6 +1985,29 @@ Acceptance:
 - Method-size reduction.
 - Same or better unified improved selection metrics.
 
+Cycle 071 result:
+
+- Deleted the nested L-BFGS-B `jump_sensitivity` optimizer from Stage 5d and
+  kept the neutral sensitivity value until the jump mixture itself passes the
+  BIC gate.  This follows the deletion rule: the cache audit showed 200
+  unified-improved fitted rows across the 50-stock gate, zero jump activations,
+  no best-model wins, and a small average posterior mass for the whole
+  unified-improved family.
+- Tests:
+  `.venv/bin/python -m py_compile src/models/phi_student_t_unified_improved.py`
+  and
+  `.venv/bin/python -m pytest src/tests/test_unified_stage5_precompute.py src/tests/test_unified_config_serialization.py -q`.
+- Focused unified-improved gate:
+  `src/data/benchmarks/cycle_071_unified_improved_jump_sens_delete_focused.json`
+  completed 50/50 assets with zero failures, PIT pass rate `0.98`, mean CRPS
+  `0.01135`, and mean fit time `0.268s`.
+- Full gate:
+  `src/data/benchmarks/cycle_071_unified_improved_jump_sens_delete_full_repeat2_metrics.json`
+  completed 50/50 assets with zero failures/warnings, 25 models per asset,
+  unchanged PIT mean/min `0.7618/0.2557`, unchanged calibrated
+  PF/Sharpe/hit `1.974/2.853/0.580`, and faster total runtime
+  (`46.03s -> 42.84s`) versus the cycle-070 warm gate.
+
 ### Story 072 - Unified Improved Structural-Array Kernel Rewrite
 
 Target:
@@ -1778,6 +2038,28 @@ Acceptance:
 - Focused unified improved benchmark faster.
 - Python reference parity.
 
+Cycle 072 result:
+
+- Deleted the per-call `R_base_arr` allocation/fill loop inside
+  `unified_phi_student_t_filter_extended_kernel`. The kernel now computes the
+  same `c * vol_t * vol_t` scalar at the point of use, which removes one full
+  array allocation and one full preparatory pass per extended-filter call.
+- Tests:
+  `.venv/bin/python -m py_compile src/models/numba_kernels.py src/models/numba_wrappers.py src/models/phi_student_t_unified_improved.py`
+  and
+  `.venv/bin/python -m pytest src/tests/test_unified_stage5_precompute.py src/tests/test_unified_config_serialization.py -q`.
+- Focused unified-improved warm gate:
+  `src/data/benchmarks/cycle_072_unified_extended_inline_rbase_focused_repeat.json`
+  preserved mean CRPS `0.01135`, PIT pass rate `0.98`, direction hit rate
+  `0.503`, and strategy Sharpe `0.219`, while mean fit time improved versus
+  the cycle-071 focused run (`0.268s -> 0.151s`).
+- Full gate:
+  `src/data/benchmarks/cycle_072_unified_extended_inline_rbase_full_repeat_metrics.json`
+  completed 50/50 assets with zero failures/warnings, unchanged PIT mean/min
+  `0.7618/0.2557`, unchanged calibrated PF/Sharpe/hit
+  `1.974/2.853/0.580`, and slightly faster warm total runtime
+  (`42.84s -> 42.52s`) versus cycle 071.
+
 ### Story 073 - Unified Improved Jump Layer Deletion Or Promotion
 
 Target:
@@ -1802,6 +2084,28 @@ Candidate improved method:
 Acceptance:
 
 - Better crisis/tail benchmark or code deletion with unchanged metrics.
+
+Cycle 073 result:
+
+- Tested full Stage 5d tuning deletion after the cycle-071/072 cache audit
+  showed 200 unified-improved fitted rows with zero jump activation and zero
+  wins. The public config/filter jump fields were left compatible during the
+  experiment.
+- Tests passed:
+  `.venv/bin/python -m py_compile src/models/phi_student_t_unified_improved.py`
+  and
+  `.venv/bin/python -m pytest src/tests/test_unified_stage5_precompute.py src/tests/test_unified_config_serialization.py -q`.
+- Focused gate:
+  `src/data/benchmarks/cycle_073_unified_jump_stage_delete_focused.json`
+  preserved CRPS/PIT/profit proxy but did not improve speed versus cycle 072.
+- Full gates:
+  `src/data/benchmarks/cycle_073_unified_jump_stage_delete_full_metrics.json`
+  and
+  `src/data/benchmarks/cycle_073_unified_jump_stage_delete_full_repeat_metrics.json`
+  both completed 50/50 assets with zero warnings and unchanged PIT/signal
+  metrics, but the warm repeat was slower than cycle 072
+  (`42.52s -> 44.17s`). The Stage 5d deletion was reverted; only the accepted
+  cycle-071 simplification of `jump_sensitivity=1.0` remains.
 
 ### Story 074 - Unified Improved Stage 6 Coordinate Calibration
 
@@ -1833,6 +2137,26 @@ Acceptance:
 - Faster Stage 6.
 - Same or better PIT/CRPS.
 
+Cycle 074 result:
+
+- Audited Stage 6 PIT ν choices in the cycle-072 cache. Across 200
+  unified-improved rows, calibration selected ν values `>= 6`; low-ν values
+  were plausible deletion candidates for this calibration-only grid.
+- Tested pruning the Stage 6 PIT grid to `[5, 6, 7, 8, 10, 12, 15, 20]` with
+  ν=4 restored only for extreme kurtosis. This did not touch the model
+  competition grid.
+- Tests passed:
+  `.venv/bin/python -m py_compile src/models/phi_student_t_unified_improved.py`
+  and
+  `.venv/bin/python -m pytest src/tests/test_unified_stage5_precompute.py src/tests/test_unified_config_serialization.py -q`.
+- Focused gates:
+  `src/data/benchmarks/cycle_074_unified_stage6_pit_nu_grid_prune_focused.json`
+  and
+  `src/data/benchmarks/cycle_074_unified_stage6_pit_nu_grid_prune_focused_repeat.json`
+  preserved CRPS/PIT/hit/profit proxy but were slower than cycle 072
+  (`0.151s -> 0.176s` mean fit time on the warm repeat). The grid prune was
+  reverted.
+
 ### Story 075 - Unified Improved Composite Selection Score
 
 Target:
@@ -1862,6 +2186,24 @@ Acceptance:
 - Better full-gate PIT and profitability.
 - No increase in warnings.
 
+Cycle 075 result:
+
+- Tested an AD-aware Stage 5 score that allowed the candidate selector to use
+  the stronger of KS and Anderson-Darling tail calibration signals when scoring
+  candidate ν paths.
+- Tests passed:
+  `.venv/bin/python -m py_compile src/models/phi_student_t_unified_improved.py`
+  and
+  `.venv/bin/python -m pytest src/tests/test_unified_stage5_precompute.py src/tests/test_unified_config_serialization.py -q`.
+- Focused gate:
+  `src/data/benchmarks/cycle_075_unified_stage5_ad_quality_score_focused.json`
+  worsened mean CRPS (`0.0113487 -> 0.0113672`), mean PIT p-value
+  (`0.53894 -> 0.53689`), PIT pass rate (`0.98 -> 0.96`), and mean fit time
+  (`0.1509s -> 0.1572s`).  Mean strategy Sharpe improved slightly
+  (`0.2193 -> 0.2237`), but SNAP selected ν=2.5 and failed PIT badly.
+- Rejected and reverted. A profitability proxy is not accepted when the
+  distributional calibration gate gets worse.
+
 ### Story 076 - Unified Improved Conditional Skew Simplification
 
 Target:
@@ -1888,6 +2230,24 @@ Acceptance:
 - Better left/right tail calibration.
 - Simpler parameter surface.
 
+Cycle 076 result:
+
+- Audited cycle-072 cache: across 50 files and 2,400 unified-improved config
+  rows, `skew_score_sensitivity` was nonzero `0` times, while static
+  `alpha_asym` was active in 2,370 rows.
+- Attempt A deleted the GAS skew optimizer and kept static asymmetry. Focused
+  quality/profit metrics were unchanged, but the full gate was not better:
+  total runtime regressed (`42.52s -> 68.25s`), BIC mean softened
+  (`-13471.99 -> -13471.88`), and no signal-calibration metric improved.
+- Attempt B rewrote static asymmetry from L-BFGS into a causal robust
+  tail-imbalance estimator. Focused strategy Sharpe improved
+  (`0.2193 -> 0.2229`), but CRPS/PIT slipped slightly; the full gate confirmed
+  the trade was poor with PIT mean down (`0.76185 -> 0.75698`), PIT min down
+  (`0.25569 -> 0.24877`), BIC mean worse (`-13471.99 -> -13471.14`), and total
+  runtime worse (`42.52s -> 73.68s`).
+- Rejected and reverted. Static/GAS skew optimization remains until a better
+  asymmetry replacement improves both calibration and system runtime.
+
 ### Story 077 - Unified Improved Rough Volatility Audit
 
 Target:
@@ -1913,6 +2273,21 @@ Acceptance:
 
 - Faster unified fit or better stress calibration.
 
+Cycle 077 result:
+
+- Audited the cycle-072 cache. `rough_hurst` was nonzero in 370/2,400
+  unified-improved config rows, always tiny (`max < 0.024`); `sigma_eta` was
+  never active.
+- Tested disabling Stage 5e Hurst estimation so tuning leaves rough-vol
+  blending off. Targeted tests passed and the focused 50-stock gate was exactly
+  quality/profit neutral (`CRPS`, PIT, pass rate, return, and Sharpe unchanged).
+- Full retune/calibration gate did not pass the accepted baseline: PIT and
+  signal calibration stayed flat, but BIC mean worsened
+  (`-13471.99 -> -13471.34`) and total runtime regressed
+  (`42.52s -> 48.42s`).
+- Rejected and reverted. The rough layer looks small, but deletion did not earn
+  the system-level scoring gate.
+
 ### Story 078 - Unified Improved GARCH/PIT Numba Path
 
 Target:
@@ -1937,6 +2312,20 @@ Acceptance:
 
 - Reference parity.
 - Focused Stage 6 speedup.
+
+Cycle 078 result:
+
+- Audited the GARCH/CRPS path. `loc_bias_var_coeff` and
+  `loc_bias_drift_coeff` were active in 1,368/2,400 unified-improved rows, so
+  the CRPS location-bias branch was a real target.
+- Tested replacing the scalar CRPS location-bias loop with a vector expression.
+  Targeted tests passed and focused 50-stock quality/profit metrics were
+  exactly unchanged.
+- Full gate did not earn acceptance: signal calibration stayed flat, but total
+  runtime was worse than the accepted cycle-072 baseline
+  (`42.52s -> 63.73s`) and there was no accuracy or profitability gain.
+- Rejected and reverted. A GARCH/PIT rewrite needs a real fused kernel with
+  reference parity, not a neutral cleanup.
 
 ### Story 079 - Unified Improved Fallback Deletion
 
@@ -1964,6 +2353,21 @@ Acceptance:
 - Reduced code.
 - No new tuning failures.
 
+Cycle 079 result:
+
+- Tested deleting the catastrophic GARCH PIT escape hatch in
+  `filter_and_calibrate`.
+- Targeted tests passed. The full 50-stock gate completed with 50/50 assets,
+  zero failures, and zero warnings.
+- Calibration/profitability were unchanged: PIT mean/min stayed
+  `0.7618466602 / 0.2556895909`, and the aggregate signal metrics stayed at
+  profit factor `1.973747995`, Sharpe `2.85343172`, hit rate `0.580366105`.
+- The deletion did not earn its place: total runtime regressed
+  `42.52s -> 62.99s`, tune runtime regressed `38.60s -> 57.39s`, and BIC
+  softened from `-13471.9869` to `-13471.3740`.
+- Rejected and reverted. A fallback can only disappear when it improves speed,
+  scoring, or failure transparency under the real 50-stock gate.
+
 ### Story 080 - Unified Improved Method-Size Budget
 
 Target:
@@ -1988,6 +2392,23 @@ Acceptance:
 
 - Method-size reduction.
 - Full benchmark unchanged or improved.
+
+Cycle 080 result:
+
+- Attempt A rewrote the GARCH PIT EWM standardization, chi-square correction,
+  and PIT-variance correction into fresh exact Numba kernels and wrappers, then
+  extracted `_pit_garch_path` into equation-level helpers.
+- Targeted tests passed, and the method shrank from about 497 lines to 82.
+  The full gate failed acceptance: PIT/profitability stayed unchanged, but the
+  warm repeat still regressed total runtime `42.52s -> 62.09s`, tune runtime
+  `38.60s -> 56.85s`, and BIC `-13471.9869 -> -13471.7619`.
+- Attempt B removed the new Numba route and tested the extraction-only version
+  with the original Python recursions plus `scipy.special.ndtr` for the final
+  normal transform. It also passed targeted tests and kept the 82-line method,
+  but the full gate still regressed total runtime to `55.06s`, tune runtime to
+  `50.98s`, and BIC to `-13471.7060`.
+- Rejected and reverted. Method size alone is not enough; the calibration hot
+  path must improve speed or scoring under the full 50-stock gate.
 
 ### Story 081 - Unified Canonical Stage 5 Parity Audit
 
@@ -2014,6 +2435,26 @@ Acceptance:
 
 - Canonical unified improves or remains simpler.
 
+Cycle 081 result:
+
+- Audited the accepted 50-stock cache and found zero non-neutral
+  `jump_sensitivity` rows and zero non-zero `jump_intensity` rows for canonical
+  unified models.
+- Tested deleting the canonical Stage 5d `jump_sensitivity` optimizer while
+  keeping the Merton jump BIC gate. Targeted compile and benchmark-harness tests
+  passed.
+- Full gate attempt 1:
+  `cycle_081_canonical_jump_sensitivity_delete_full_metrics.json` completed
+  50/50 assets with zero warnings, unchanged PIT and signal metrics, BIC
+  `-13471.9881` versus accepted `-13471.9869`, but runtime regressed
+  `42.52s -> 43.90s`.
+- Full gate repeat:
+  `cycle_081_canonical_jump_sensitivity_delete_repeat_full_metrics.json`
+  again had unchanged PIT/signals, but runtime regressed further to `45.38s`
+  and BIC softened to `-13471.8529`.
+- Rejected and reverted. The canonical simplification is plausible but did not
+  clear the repeat gate.
+
 ### Story 082 - Unified Canonical Reuse Optimize Diagnostics
 
 Target:
@@ -2039,6 +2480,21 @@ Acceptance:
 - Faster unified canonical fit.
 - Same metrics.
 
+Cycle 082 result:
+
+- Tested reusing optimize-time calibrated `test_mu_effective`,
+  `test_crps`, and `test_hyvarinen` for canonical and improved unified scoring
+  instead of recomputing score inputs against raw `mu_pred`.
+- Targeted compile and benchmark-harness tests passed.
+- Full gate `cycle_082_unified_cached_calibrated_scores_full_metrics.json`
+  completed 50/50 assets with zero warnings. PIT improved from
+  `0.7618466602 / 0.2556895909` to `0.7630935169 / 0.2697278101`.
+- The trade was not acceptable: BIC softened materially
+  `-13471.9869 -> -13470.2972`, total runtime regressed
+  `42.52s -> 50.12s`, and signal profitability was unchanged.
+- Rejected and reverted. Calibrated score reuse needs an explicit model-weight
+  acceptance rule, not a silent scoring-coordinate change.
+
 ### Story 083 - Unified Canonical Config Surface Shrink
 
 Target:
@@ -2063,6 +2519,22 @@ Acceptance:
 - Serialization remains compatible.
 - Model sampling still gets all required fields.
 
+Cycle 083 result:
+
+- Tested deleting the disabled `garch_kalman_weight` and `q_vol_coupling`
+  locals from the canonical unified fit path while keeping cache-readable
+  dataclass fields for backward compatibility.
+- Targeted compile and benchmark-harness tests passed.
+- Full gate `cycle_083_canonical_disabled_config_surface_full_metrics.json`
+  completed 50/50 assets with zero calibration warnings and unchanged
+  calibrated signal metrics.
+- Rejected: total runtime regressed `42.52s -> 70.18s`, tune runtime
+  regressed `38.60s -> 61.02s`, and BIC softened
+  `-13471.9869 -> -13471.7958` with no PIT/profitability lift.
+- Code reverted. The disabled fields are ugly, but the current construction
+  shape is performance-stable and should not be disturbed without a stronger
+  serialization rewrite.
+
 ### Story 084 - Unified Canonical Weak Layer Deletion
 
 Target:
@@ -2085,6 +2557,24 @@ Candidate improved method:
 Acceptance:
 
 - Faster canonical unified with no full-gate regression.
+
+Cycle 084 result:
+
+- Audited `cycle_072_unified_extended_inline_rbase_full_repeat_cache` across
+  all 50 assets and 200 canonical unified fits. `skew_score_sensitivity`,
+  `jump_intensity`, `jump_variance`, `jump_mean`, `rho_leverage`, and
+  `regime_switch_prob` were zero throughout; GARCH, rough Hurst, loc-bias, and
+  mean reversion were active and left untouched.
+- Tested deleting the canonical `_stage_4_2_skew_dynamics` optimizer and
+  hard-setting `skew_kappa_opt=0.0`, `skew_persistence_fixed=0.97`.
+- Targeted compile and benchmark-harness tests passed.
+- Full gate `cycle_084_canonical_skew_optimizer_delete_full_metrics.json`
+  completed 50/50 assets with zero warnings. BIC improved slightly
+  `-13471.9869 -> -13472.0176`, PIT and calibrated signal profitability were
+  unchanged.
+- Rejected: total runtime regressed `42.52s -> 58.38s` and tune runtime
+  regressed `38.60s -> 53.81s`. The change did not deliver speed or
+  profitability, so the optimizer was restored.
 
 ### Story 085 - Unified Canonical Stress-Q Simplification
 
@@ -2109,6 +2599,21 @@ Acceptance:
 
 - Better or equal PIT in regime transitions.
 - Faster retune.
+
+Cycle 085 result:
+
+- Audited canonical unified stress-q fields in the accepted cycle 072 cache.
+  `ms_sensitivity`, `q_stress_ratio`, and `gamma_vov` were active across all
+  canonical unified fits; stress-q is not dead code.
+- Tested simplifying `_stage_3_ms_sensitivity` to return the asset-profile
+  sensitivity prior directly, deleting the L-BFGS-B likelihood loop.
+- Targeted compile and benchmark-harness tests passed.
+- Full gate `cycle_085_canonical_msq_profile_prior_full_metrics.json`
+  completed 50/50 assets with zero warnings and unchanged calibrated signal
+  profitability.
+- Rejected: BIC regressed `-13471.9869 -> -13471.1633`, total runtime
+  regressed `42.52s -> 76.50s`, and tune runtime regressed
+  `38.60s -> 63.85s`. The optimizer was restored.
 
 ### Story 086 - Phi Gaussian Exact Kernel Rewrite
 
@@ -2140,6 +2645,24 @@ Acceptance:
 - Gaussian focused benchmark faster.
 - Full gate no model-count or quality regression.
 
+Cycle 086 result:
+
+- Implemented a fused Numba `phi_gaussian_cv_fused_fold_kernel` that combined
+  the training-prefix state recovery and validation-fold scoring in one kernel,
+  avoiding wrapper overhead and discarded training log-likelihood work.
+- Added a parity test against the existing split
+  `run_phi_gaussian_train_state` + `run_phi_gaussian_cv_test_fold` path.
+- Targeted compile, train-state kernel tests, and benchmark-harness tests
+  passed.
+- Full gate first run `cycle_086_phi_gaussian_fused_cv_kernel_full_metrics.json`
+  was compilation-polluted (`63.35s` total), so a repeat gate was run.
+- Repeat full gate `cycle_086_phi_gaussian_fused_cv_kernel_repeat_full_metrics.json`
+  completed 50/50 assets with zero warnings and unchanged calibrated signal
+  profitability, but still regressed total runtime `42.52s -> 44.28s`, tune
+  runtime `38.60s -> 40.02s`, and BIC `-13471.9869 -> -13471.3899`.
+- Rejected and reverted. Exact local parity did not translate into global BMA
+  improvement.
+
 ### Story 087 - Gaussian Closed-Form CRPS Gradient Objective
 
 Target:
@@ -2165,6 +2688,20 @@ Acceptance:
 - Faster Gaussian calibration.
 - Equal or better CRPS.
 
+Cycle 087 result:
+
+- Derived and implemented the Gaussian CRPS scale first-order condition:
+  `mean(sigma * (2 * phi(error / (s * sigma)) - 1 / sqrt(pi))) = 0`.
+- Replaced the Stage 4 sigma-shrinkage grid with a bisection solve and added
+  a dense-grid parity test for the analytic optimum.
+- Targeted compile, CRPS scaling tests, and benchmark-harness tests passed.
+- Full gate `cycle_087_gaussian_crps_analytic_shrink_full_metrics.json`
+  completed 50/50 assets with zero warnings and unchanged calibrated signal
+  profitability.
+- Rejected: BIC regressed `-13471.9869 -> -13471.2461`, total runtime
+  regressed `42.52s -> 63.31s`, and tune runtime regressed
+  `38.60s -> 59.11s`. Code and test reverted.
+
 ### Story 088 - Gaussian GAS-Q And Momentum Branch Audit
 
 Target:
@@ -2189,6 +2726,23 @@ Acceptance:
 
 - Retune faster with same or better metrics.
 
+Cycle 088 result:
+
+- Audited Gaussian unified activation in the accepted cycle 072 cache.
+  Momentum was active for only 3/50 `kalman_phi_gaussian_unified` fits, but
+  those had nontrivial posterior weight on `AFRM`, `GE`, and `NFLX`, so
+  momentum was preserved.
+- GAS-Q activated only on negligible-weight Gaussian fits with near-zero
+  coefficients (`gas_q_alpha` around `1e-6` or smaller), so the candidate
+  removed the GAS-Q fitting pass and hard-set GAS-Q params to zero.
+- Targeted compile and benchmark-harness tests passed.
+- Full gate `cycle_088_gaussian_gasq_fit_delete_full_metrics.json` completed
+  50/50 assets with zero warnings and unchanged calibrated signal
+  profitability.
+- Rejected: BIC regressed `-13471.9869 -> -13471.9366`, total runtime
+  regressed `42.52s -> 74.78s`, and tune runtime regressed
+  `38.60s -> 64.95s`. Code reverted.
+
 ### Story 089 - Gaussian Sign-Probability Objective
 
 Target:
@@ -2212,6 +2766,19 @@ Candidate improved method:
 Acceptance:
 
 - Hit rate or PF/Sharpe improves without PIT damage.
+
+Cycle 089 result:
+
+- Requirement challenged before implementation. Gaussian Stage 1 currently
+  scores validation likelihood through compact Numba fold kernels that do not
+  expose `P(r > 0)`. Adding sign-Brier would require a new kernel return
+  contract or an extra Python validation pass inside the optimizer.
+- This would optimize a proxy already measured downstream by calibrated signal
+  hit rate, PF, and Sharpe. Prior system ablations with sign-Brier objectives
+  on Student-t also failed to improve full signal metrics.
+- Rejected at requirement gate under the company algorithm: do not add a
+  slower optimizer dimension unless the downstream decision layer lacks that
+  signal. No code was changed.
 
 ### Story 090 - Gaussian Calibration Path Consolidation
 
@@ -2241,6 +2808,21 @@ Acceptance:
 
 - Less duplicate code.
 - Equal or better frontend/backend diagnostics.
+
+Cycle 090 result:
+
+- Deleted dead `S_calibrated` transport in Gaussian `filter_and_calibrate`.
+  The GARCH branch now discards the fourth return explicitly and the simple
+  branch computes `sigma` directly from `S_pred_test * variance_inflation`.
+- Targeted compile and benchmark-harness tests passed.
+- Full gate `cycle_090_gaussian_unused_variance_transport_delete_full_metrics.json`
+  and repeat gate
+  `cycle_090_gaussian_unused_variance_transport_delete_repeat_full_metrics.json`
+  completed 50/50 assets with zero warnings.
+- PIT and calibrated signal PF/Sharpe/hit were unchanged. BIC improved on both
+  runs (`-13471.9869 -> -13472.5038`, repeat `-13472.2627`).
+- Accepted narrowly as topology cleanup. Runtime was slower than the cycle 072
+  accepted baseline, so no speed win is claimed.
 
 ### Story 091 - Numba Kernel Architecture Split
 
@@ -2272,6 +2854,21 @@ Acceptance:
 - Tests pass.
 - Dead kernel count reduced.
 
+Cycle 091 result:
+
+- Audited `src/models/numba_kernels.py` definitions against all Python
+  references under `src/`. Exactly one dead kernel was found:
+  `compute_ms_process_noise_kernel`.
+- Deleted that unused threshold-style MS-q kernel. The active MS-q path uses
+  the smooth/EWM implementation instead.
+- Targeted compile, architecture import tests, and benchmark-harness tests
+  passed. `rg` confirmed no remaining references.
+- Full gate `cycle_091_dead_msq_kernel_delete_full_metrics.json` and repeat
+  `cycle_091_dead_msq_kernel_delete_repeat_full_metrics.json` completed 50/50
+  assets with zero warnings and unchanged calibrated signal metrics.
+- Accepted narrowly for dead-code reduction. Runtime/BIC movement is not
+  credited as causal because the deleted kernel had no runtime references.
+
 ### Story 092 - Numba Wrapper Deletion And Typed Boundaries
 
 Target:
@@ -2300,6 +2897,15 @@ Acceptance:
 
 - Fewer wrappers.
 - No call-site ambiguity.
+
+Cycle 092 result:
+
+- Audited every `run_*` function in `src/models/numba_wrappers.py` against
+  all Python references under `src/`.
+- No unreferenced wrapper functions were found. Existing wrappers either have
+  call sites or provide typed/contiguous boundaries for Numba kernels.
+- Rejected at audit gate. No code changed; deleting wrappers without evidence
+  would make the public kernel boundary less clear rather than simpler.
 
 ### Story 093 - EMOS Student-t Optimizer Rewrite
 
@@ -2332,6 +2938,35 @@ Acceptance:
 - Faster cached calibration.
 - Equal or better CRPS and profitability.
 
+Cycle 093 result:
+
+- Accepted `cycle_093_emos_mean_floor_relax`.
+- Challenged the inherited EMOS mean-slope floor. The old `b >= 0.1`
+  bound forced even weak/noisy mean forecasts to retain directional size.
+- Deleted the unused `avg_actual_abs` transport in `_fit_emos_student_t`.
+- Replaced the constant lower bound with an earned floor:
+  - use `b >= 0.1` only when weighted walk-forward sign hit rate is at least
+    53.5% with adequate support.
+  - otherwise allow `b >= 0.02`, letting EMOS nearly erase weak mean forecasts
+    while preserving sign orientation.
+- Calibration-only check on the prior 50-stock cache:
+  - CRPS improvement: `4.32817289 -> 4.33209981`.
+  - PIT-cal mean: `0.32717799 -> 0.327296`.
+  - PF/Sharpe/hit unchanged.
+- Full 50-stock real-data gate with 11 process workers:
+  - artifact: `src/data/benchmarks/cycle_093_emos_mean_floor_relax_full_metrics.json`.
+  - 50/50 assets, 0 failures, 0 calibration warnings.
+  - models per asset mean: `25.0`.
+  - BIC mean: `-13471.994554560848`.
+  - tuning/calibration/total seconds: `43.9173 / 4.3341 / 48.2514`.
+  - calibrated CRPS improvement: `4.33209981`.
+  - calibrated PIT mean: `0.327296`.
+  - calibrated PF/Sharpe/hit: unchanged at
+    `1.973747995 / 2.85343172 / 0.580366105`.
+- Accepted as a distributional accuracy improvement, not a runtime
+  improvement; the first attempted stronger `b >= 0.25` sign-edge floor was
+  rejected because it worsened CRPS/PIT without profitability lift.
+
 ### Story 094 - Beta Calibration Optimizer Rewrite
 
 Target:
@@ -2362,6 +2997,34 @@ Acceptance:
 
 - Better Brier/hit/PF or simpler calibration with unchanged metrics.
 
+Cycle 094 result:
+
+- Accepted `cycle_094_beta_native_convergence`.
+- Challenged fixed Beta optimizer convergence rather than changing the
+  already-validated focal objective.
+- Increased the Numba-native Beta calibration optimizer cap from `100` to
+  `200` iterations.
+- Rejected alternatives:
+  - focal gamma `1.0`: Brier improved but hit/PF/Sharpe degraded.
+  - focal gamma `3.0`: Brier, hit, PF, and Sharpe degraded.
+  - exact focal-gradient/SciPy-equivalent path: Brier and PF improved, but hit
+    rate and Sharpe slipped, so it failed the holistic gate.
+- Calibration-only check on the cycle 093 cache:
+  - Brier improvement: `0.027894985 -> 0.02790282`.
+  - CRPS/PIT/PF/Sharpe/hit unchanged from cycle 093.
+- Full 50-stock real-data gate with 11 process workers:
+  - artifact: `src/data/benchmarks/cycle_094_beta_native_convergence_full_metrics.json`.
+  - 50/50 assets, 0 failures, 0 calibration warnings.
+  - models per asset mean: `25.0`.
+  - BIC mean: `-13471.552258628559`.
+  - tuning/calibration/total seconds: `43.9498 / 4.7107 / 48.6605`.
+  - calibrated Brier improvement: `0.02790282`.
+  - calibrated CRPS/PIT mean: `4.33209981 / 0.327296`.
+  - calibrated PF/Sharpe/hit unchanged:
+    `1.973747995 / 2.85343172 / 0.580366105`.
+- Accepted as a small probability-calibration accuracy improvement with no
+  trading metric regression.
+
 ### Story 095 - Threshold Expected-Utility Rewrite
 
 Target:
@@ -2391,6 +3054,35 @@ Acceptance:
 
 - Better calibrated PF/Sharpe and hit rate on full gate.
 
+Cycle 095 result:
+
+- Accepted `cycle_095_threshold_dead_brier_delete`.
+- Challenged the threshold objective. The inverse-Brier term was constant
+  across all threshold pairs because it was computed over all calibrated
+  probabilities, not over threshold-selected actions.
+- Rejected an expected-utility threshold rewrite because it reduced mean
+  optimized threshold label accuracy on the 50-stock calibration cache
+  (`0.7084323 -> 0.7060308`) without improving the benchmark summary.
+- Deleted the dead inverse-Brier threshold term and renormalized the remaining
+  hit-rate/label-accuracy weights from `0.4/0.3` to the equivalent `4/7` and
+  `3/7`, preserving the selected thresholds.
+- Calibration-only check on the cycle 094 cache:
+  - threshold label accuracy raw/optimized unchanged:
+    `0.4616001 / 0.7084323`.
+  - signal Brier/CRPS/PIT/PF/Sharpe/hit unchanged.
+- Full 50-stock real-data gate with 11 process workers:
+  - artifact: `src/data/benchmarks/cycle_095_threshold_dead_brier_delete_full_metrics.json`.
+  - 50/50 assets, 0 failures, 0 calibration warnings.
+  - models per asset mean: `25.0`.
+  - BIC mean: `-13471.598774574326`.
+  - tuning/calibration/total seconds: `39.5497 / 4.1067 / 43.6563`.
+  - calibrated Brier/CRPS/PIT mean unchanged:
+    `0.02790282 / 4.33209981 / 0.327296`.
+  - calibrated PF/Sharpe/hit unchanged:
+    `1.973747995 / 2.85343172 / 0.580366105`.
+- Accepted as a topology deletion with behavior preserved and faster full-gate
+  wall time in this run.
+
 ### Story 096 - BMA Posterior Calibration Entropy
 
 Target:
@@ -2419,6 +3111,25 @@ Candidate improved method:
 Acceptance:
 
 - Better PIT/stability with no profitability regression.
+
+Cycle 096 result:
+
+- Rejected at audit gate; no code changed for this story.
+- Audited the active posterior path:
+  - tuning uses `entropy_regularized_weights(..., lambda_entropy=0.05)`.
+  - signal fallback uses `DEFAULT_POSTERIOR_TEMPERATURE = 0.05`.
+  - `src/tests/test_model_improvements.py` already enforces the tuning/signals
+    temperature match and posterior sharpness.
+- Audited the cycle 095 50-stock cache posterior concentration:
+  - mean top-5 posterior masses: `0.5191 / 0.3056 / 0.1005 / 0.0359 / 0.0164`.
+  - models per asset mean remains `25.0`.
+  - improved and canonical models both retain meaningful competition mass.
+- The posterior is neither near-uniform nor collapsed to a single model, so
+  changing entropy temperature or floor would be an unjustified model-selection
+  perturbation.
+- Requirement rewrite: defer posterior-temperature changes until a stress-slice
+  benchmark shows posterior instability. The current cycle produced evidence
+  for no safe positive change.
 
 ### Story 097 - Registry And Parameter Transport Hardening
 
@@ -2450,6 +3161,36 @@ Acceptance:
 - No silent model drops.
 - Frontend/backend sees all 25 active models.
 
+Cycle 097 result:
+
+- Accepted `cycle_097_registry_gaussian_unified_names`.
+- Deleted remaining manual unified-Gaussian model-name literals in
+  `src/tuning/tune_modules/model_fitting.py`.
+- Added `make_gaussian_unified_name()` to the tuning config import/fallback path,
+  so unified Gaussian names now follow the same registry contract as canonical
+  and improved Student-t names.
+- Added `test_active_retune_model_names_are_registered` to
+  `src/tests/test_model_registry_parameter_transport.py`.
+  The test asserts the active 25-model retune set is registered:
+  - 2 unified Gaussian models.
+  - 4 canonical Student-t fixed-nu models plus MLE.
+  - 4 improved Student-t fixed-nu models plus MLE.
+  - 4 canonical unified Student-t models.
+  - 4 improved unified Student-t models.
+  - 1 RV-Q phi-Gaussian plus 4 RV-Q Student-t models.
+- Tests:
+  - `python -m unittest src.tests.test_model_registry_parameter_transport -v`.
+  - `python -m pytest src/tests/test_architecture_imports.py -q`.
+- Full 50-stock real-data gate with 11 process workers:
+  - artifact: `src/data/benchmarks/cycle_097_registry_gaussian_unified_names_full_metrics.json`.
+  - 50/50 assets, 0 failures, 0 calibration warnings.
+  - models per asset mean: `25.0`.
+  - BIC mean: `-13471.783386107236`.
+  - tuning/calibration/total seconds: `52.9155 / 6.0306 / 58.9461`.
+  - signal Brier/CRPS/PIT/PF/Sharpe/hit unchanged from cycle 095.
+- Accepted as registry/transport hardening with behavior preserved; no runtime
+  win claimed because this run was noisy/slower.
+
 ### Story 098 - Stress And Crisis Benchmark Slices
 
 Target:
@@ -2476,6 +3217,43 @@ Candidate improved method:
 Acceptance:
 
 - Tail-related model changes pass stress metrics.
+
+Cycle 098 result:
+
+- Accepted `cycle_098_stress_slice_metrics`.
+- Added `stress_slice_summary` to `src/tuning/benchmark_retune_50.py`.
+- The benchmark now summarizes calibration behavior on:
+  - fixed windows: `covid_crash_2020`, `rates_inflation_2022`,
+    `ai_high_vol_2024_2026`.
+  - per-asset `asset_max_vol_decile`.
+  - per-asset `asset_realized_tail_decile`.
+- Uses existing calibration records and price-date cache; no extra model
+  fitting pass is introduced.
+- Smoke check:
+  - `asset_max_vol_decile`: 50 assets, 3339 records.
+  - `asset_realized_tail_decile`: 50 assets, 3250 records.
+  - fixed 2020/2022 windows report zero records because current calibration
+    record caches do not span those dates; the benchmark reports this
+    explicitly rather than fabricating coverage.
+- Tests:
+  - `python -m py_compile src/tuning/benchmark_retune_50.py`.
+  - `python -m unittest src.tests.test_benchmark_harness -v`.
+  - `python -m pytest src/tests/test_architecture_imports.py -q`.
+- Full 50-stock real-data gate with 11 process workers:
+  - artifact: `src/data/benchmarks/cycle_098_stress_slice_metrics_full_metrics.json`.
+  - 50/50 assets, 0 failures, 0 calibration warnings.
+  - models per asset mean: `25.0`.
+  - BIC mean: `-13471.931997710504`.
+  - tuning/calibration/total seconds: `53.7207 / 3.6720 / 57.3927`.
+  - signal Brier/CRPS/PIT/PF/Sharpe/hit unchanged from cycle 095.
+- Notable stress diagnostics:
+  - `ai_high_vol_2024_2026`: Brier improvement `0.0282512`, calibrated hit
+    `0.579185`, 31900 records.
+  - `asset_max_vol_decile`: Brier improvement `0.0294007`, calibrated hit
+    `0.593890`, 3339 records.
+  - `asset_realized_tail_decile`: Brier improvement `0.0370159`, calibrated hit
+    `0.678462`, 3250 records.
+- Accepted as benchmark coverage improvement; model math unchanged.
 
 ### Story 099 - Dynamic Model Diagnostics Matrix
 
@@ -2508,6 +3286,42 @@ Acceptance:
 
 - Improved/unimproved side-by-side visible after retune.
 
+Cycle 099 result:
+
+- Accepted `cycle_099_dynamic_model_diagnostics`.
+- Rebuilt diagnostics model comparison around the actual tune cache instead of
+  a thin winner-only aggregate.
+- Backend now exposes, per model:
+  - dynamic family.
+  - wins and posterior mass.
+  - BIC, CRPS, Hyvarinen, PIT, AD, and histogram MAD averages.
+  - top-weighted symbols.
+  - compact asset/model cells for frontend inspection.
+- Cross-asset diagnostics now union `models` and `model_posterior`, so a model
+  with posterior mass cannot disappear from the matrix when metrics are sparse.
+- Frontend model comparison now renders all returned models dynamically and
+  shows model family, average CRPS/PIT/BIC, posterior mass, and top assets.
+- Visibility smoke against the real tune cache:
+  - diagnostics payload reports `498` tuned assets.
+  - active model count shown by diagnostics: `25`.
+  - improved variants present in the payload, including
+    `phi_student_t_improved_*` and `phi_student_t_unified_improved_*`.
+  - first matrix row contains 25 model cells and 9 improved variants.
+- Tests:
+  - `python -m py_compile src/web/backend/services/diagnostics_service.py`.
+  - `npm run build` in `src/web/frontend`.
+- Full 50-stock real-data gate with 11 process workers:
+  - artifact: `src/data/benchmarks/cycle_099_dynamic_model_diagnostics_full_metrics.json`.
+  - 50/50 assets, 0 failures, 0 calibration warnings.
+  - models per asset mean: `25.0`.
+  - BIC mean: `-13471.486528668203`.
+  - tuning/calibration/total seconds: `40.4541 / 3.6274 / 44.0815`.
+  - PIT mean/min: `0.7618466601969215 / 0.25568959090050664`.
+  - signal PF/Sharpe/hit unchanged at
+    `1.973747995 / 2.85343172 / 0.580366105`.
+- Accepted as observability/frontend correctness improvement; model math
+  unchanged.
+
 ### Story 100 - Final Full System Release Gate
 
 Target:
@@ -2539,6 +3353,49 @@ Acceptance:
 - 0 calibration warnings.
 - improved and canonical models compete side by side.
 - final PF/Sharpe/hit/PIT equal or better than cycle 047.
+
+Cycle 100 result:
+
+- Accepted `cycle_100_final_release_gate`.
+- No further model mutation in this story; this was the full-system gate for
+  tuning, calibration, diagnostics, frontend build, and signal-generation smoke.
+- Targeted tests:
+  - `python -m unittest src.tests.test_benchmark_harness -v` passed.
+  - `python -m unittest src.tests.test_model_registry_parameter_transport -v`
+    passed.
+  - `python -m pytest src/tests/test_architecture_imports.py -q` passed.
+  - `npm run build` in `src/web/frontend` passed; existing CSS/chunk-size
+    warnings remain.
+- Model visibility smoke:
+  - diagnostics payload reports `498` tuned assets.
+  - active diagnostics model count: `25`.
+  - improved model variants visible: `9`.
+  - examples include `phi_student_t_improved_nu_8`,
+    `phi_student_t_improved_nu_20`,
+    `phi_student_t_improved_nu_mle`,
+    and `phi_student_t_unified_improved_nu_4`.
+- Full 50-stock real-data gate with 11 process workers:
+  - artifact: `src/data/benchmarks/cycle_100_final_release_gate_full_metrics.json`.
+  - 50/50 assets, 0 failures, 0 calibration warnings.
+  - models per asset mean: `25.0`.
+  - BIC mean: `-13471.718382997637`.
+  - PIT mean/min: `0.7618466601969215 / 0.25568959090050664`.
+  - tuning/calibration/total seconds: `41.6443 / 4.2856 / 45.9299`.
+  - best-model winners include both canonical and improved Student-t variants:
+    `phi_student_t_improved_nu_20`, `phi_student_t_improved_nu_8`,
+    `phi_student_t_improved_nu_mle`,
+    `phi_student_t_nu_20`, `phi_student_t_nu_4`,
+    `phi_student_t_nu_8`, and `phi_student_t_nu_mle`.
+  - signal Brier/CRPS/PIT/PF/Sharpe/hit:
+    `0.02790282 / 4.33209981 / 0.327296 / 1.973747995 / 2.85343172 / 0.580366105`.
+- Signal-generation smoke:
+  - `make verify-signals-quick ARGS="--workers 11"` completed.
+  - 8/8 assets processed, 0 failed/skipped.
+  - 90-day quick-window 7D hit-rate mean was weak at `41.9%`; this is recorded
+    as a residual signal-quality risk, not hidden as a release success.
+- Release gate accepted because the full retune/calibration benchmark is clean,
+  improved and canonical models compete side by side, and diagnostics/frontend
+  now expose the actual model competition.
 
 ## Definition of Done
 

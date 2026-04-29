@@ -622,6 +622,7 @@ try:
         make_student_t_improved_mle_name,
         make_unified_student_t_name,
         make_unified_student_t_improved_name,
+        make_gaussian_unified_name,
         is_student_t_family_model,
         # Grids
         STUDENT_T_NU_GRID,
@@ -660,6 +661,9 @@ except ImportError as e:
 
     def make_unified_student_t_improved_name(nu: int) -> str:
         return f"phi_student_t_unified_improved_nu_{nu}"
+
+    def make_gaussian_unified_name(phi_mode: bool = False) -> str:
+        return "kalman_phi_gaussian_unified" if phi_mode else "kalman_gaussian_unified"
 
     def is_student_t_family_model(name: str) -> bool:
         return (

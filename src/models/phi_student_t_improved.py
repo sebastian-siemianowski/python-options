@@ -32,6 +32,7 @@ from scipy.stats import t as student_t
 
 try:
     from .student_t_common import (
+        ad_correction_pipeline_student_t,
         asset_phi_profile,
         compute_berkowitz_full as common_compute_berkowitz_full,
         compute_berkowitz_pvalue as common_compute_berkowitz_pvalue,
@@ -46,6 +47,7 @@ try:
     )
 except ImportError:
     from models.student_t_common import (
+        ad_correction_pipeline_student_t,
         asset_phi_profile,
         compute_berkowitz_full as common_compute_berkowitz_full,
         compute_berkowitz_pvalue as common_compute_berkowitz_pvalue,
@@ -3750,185 +3752,21 @@ class PhiStudentTDriftModel:
         pit_raw: np.ndarray,
         min_obs: int = 250,
     ) -> tuple:
-        """
-        Apply calibration correction pipeline and persist usable calibration params.
-
-        Corrections are accepted only when they improve a distributional metric
-        or preserve calibration while providing a coherent scale/tail parameter.
-        """
-        returns = np.asarray(returns, dtype=np.float64).ravel()
-        mu_pred = np.asarray(mu_pred, dtype=np.float64).ravel()
-        scale = np.asarray(scale, dtype=np.float64).ravel()
-        pit = np.asarray(pit_raw, dtype=np.float64).ravel()
-        n = min(len(returns), len(mu_pred), len(scale), len(pit))
-        if n <= 0:
-            return np.empty(0, dtype=np.float64), {
-                'twsc_applied': False, 'sptg_applied': False,
-                'isotonic_applied': False, 'calibration_params': {}, 'n_obs': 0,
-            }
-
-        returns = returns[:n].copy()
-        mu_pred = mu_pred[:n].copy()
-        scale = scale[:n].copy()
-        pit = pit[:n].copy()
-
-        returns[~np.isfinite(returns)] = 0.0
-        mu_pred[~np.isfinite(mu_pred)] = 0.0
-        finite_scale = scale[np.isfinite(scale) & (scale > 0)]
-        scale_fill = float(np.median(finite_scale)) if finite_scale.size else 1.0
-        scale = np.where(np.isfinite(scale) & (scale > 0), scale, scale_fill)
-        scale = np.maximum(scale, max(scale_fill * 1e-6, 1e-10))
-        pit = np.clip(np.where(np.isfinite(pit), pit, 0.5), 0.001, 0.999)
-
-        if n < 50:
-            return pit, {'twsc_applied': False, 'sptg_applied': False,
-                         'isotonic_applied': False, 'calibration_params': {}, 'n_obs': int(n)}
-
-        nu = cls._clip_nu(nu, cls.nu_min_default, 60.0)
-        diag = {
-            'twsc_applied': False,
-            'sptg_applied': False,
-            'sptg_xi_left': float('nan'),
-            'sptg_xi_right': float('nan'),
-            'isotonic_applied': False,
-            'isotonic_ks_improvement': 0.0,
-            'n_obs': int(n),
-        }
-        cal_params = {}
-
-        z = np.clip((returns - mu_pred) / np.maximum(scale, 1e-10), -1e6, 1e6)
-        pit_base = pit.copy()
-        ks_base, p_base = _fast_ks_uniform(pit_base)
-        ad_base = compute_ad_statistic(pit_base)
-
-        # Stage A: Tail-weighted scale correction.
-        scale_inflate = None
-        try:
-            from models.numba_wrappers import run_ad_twsc
-            scale_inflate = run_ad_twsc(z, ewma_lambda=0.97, alpha_quantile=0.05,
-                                        kappa=0.5, max_inflate=2.0, deadzone=0.15)
-        except (ImportError, Exception):
-            try:
-                from models.numba_kernels import ad_twsc_kernel
-                z_cont = np.ascontiguousarray(z, dtype=np.float64)
-                scale_inflate = ad_twsc_kernel(z_cont, 0.97, 0.05, 0.5, 2.0, 0.15)
-            except Exception:
-                scale_inflate = None
-
-        if scale_inflate is not None:
-            scale_inflate = np.asarray(scale_inflate, dtype=np.float64).ravel()
-            if len(scale_inflate) >= n:
-                scale_inflate = np.clip(np.where(np.isfinite(scale_inflate[:n]), scale_inflate[:n], 1.0), 1.0, 2.5)
-                z_twsc = z / scale_inflate
-                pit_twsc = np.clip(_fast_t_cdf(z_twsc, nu), 0.001, 0.999)
-                ks_twsc, p_twsc = _fast_ks_uniform(pit_twsc)
-                ad_twsc = compute_ad_statistic(pit_twsc)
-                if (p_twsc >= p_base * 0.95) or (ad_twsc <= ad_base * 1.02):
-                    pit = pit_twsc
-                    diag['twsc_applied'] = True
-                    tail_start = max(1, int(n * 0.7))
-                    tail_factors = scale_inflate[tail_start:]
-                    tail_factors = tail_factors[tail_factors > 0]
-                    if len(tail_factors) > 0:
-                        twsc_geo_mean = float(np.exp(np.mean(np.log(tail_factors))))
-                        cal_params['twsc_scale_factor'] = float(np.clip(twsc_geo_mean, 1.0, 2.5))
-                        cal_params['twsc_last_ewma'] = float(scale_inflate[-1])
-                    z_for_gpd = z_twsc
-                    ks_base, p_base, ad_base = ks_twsc, p_twsc, ad_twsc
-                else:
-                    z_for_gpd = z
-            else:
-                z_for_gpd = z
-        else:
-            z_for_gpd = z
-
-        # Stage B: Semi-parametric EVT tail grafting.
-        if n >= min_obs:
-            try:
-                from calibration.evt_tail import fit_gpd_pot
-                z_for_gpd = np.asarray(z_for_gpd, dtype=np.float64)
-                abs_z = np.abs(z_for_gpd)
-                left_losses = abs_z[z_for_gpd < 0]
-                right_losses = abs_z[z_for_gpd > 0]
-
-                if len(left_losses) >= 25 and len(right_losses) >= 25:
-                    gpd_left = fit_gpd_pot(left_losses, threshold_percentile=0.90)
-                    gpd_right = fit_gpd_pot(right_losses, threshold_percentile=0.90)
-
-                    if gpd_left.fit_success and gpd_right.fit_success:
-                        u_left = float(gpd_left.threshold)
-                        u_right = float(gpd_right.threshold)
-                        p_left_val = float(_fast_t_cdf(np.array([-u_left]), nu)[0])
-                        p_right_val = float(1.0 - _fast_t_cdf(np.array([u_right]), nu)[0])
-
-                        if p_left_val > 0.001 and p_right_val > 0.001 and u_left > 0.5 and u_right > 0.5:
-                            try:
-                                from models.numba_wrappers import run_ad_sptg_student_t
-                                pit_sptg = run_ad_sptg_student_t(
-                                    z_for_gpd, nu,
-                                    gpd_left.xi, gpd_left.sigma, u_left,
-                                    gpd_right.xi, gpd_right.sigma, u_right,
-                                    p_left_val, p_right_val,
-                                )
-                            except (ImportError, Exception):
-                                from models.numba_kernels import ad_sptg_cdf_student_t_array
-                                pit_sptg = ad_sptg_cdf_student_t_array(
-                                    np.ascontiguousarray(z_for_gpd, dtype=np.float64), nu,
-                                    gpd_left.xi, gpd_left.sigma, u_left,
-                                    gpd_right.xi, gpd_right.sigma, u_right,
-                                    p_left_val, p_right_val,
-                                )
-                            pit_sptg = np.clip(np.asarray(pit_sptg, dtype=np.float64), 0.001, 0.999)
-                            ks_sptg, p_sptg = _fast_ks_uniform(pit_sptg)
-                            ad_sptg = compute_ad_statistic(pit_sptg)
-                            if (p_sptg >= p_base * 0.95) or (ad_sptg <= ad_base):
-                                pit = pit_sptg
-                                diag['sptg_applied'] = True
-                                diag['sptg_xi_left'] = float(gpd_left.xi)
-                                diag['sptg_xi_right'] = float(gpd_right.xi)
-                                cal_params['gpd_left_xi'] = float(gpd_left.xi)
-                                cal_params['gpd_left_sigma'] = float(gpd_left.sigma)
-                                cal_params['gpd_left_threshold'] = u_left
-                                cal_params['gpd_right_xi'] = float(gpd_right.xi)
-                                cal_params['gpd_right_sigma'] = float(gpd_right.sigma)
-                                cal_params['gpd_right_threshold'] = u_right
-                                xi_max = max(abs(float(gpd_left.xi)), abs(float(gpd_right.xi)))
-                                if xi_max > 0.02:
-                                    nu_from_gpd = 1.0 / xi_max
-                                    nu_effective = max(2.5, min(nu, nu_from_gpd))
-                                    cal_params['nu_effective'] = float(nu_effective)
-                                    cal_params['nu_adjustment_ratio'] = float(nu_effective / nu)
-                                else:
-                                    cal_params['nu_effective'] = float(nu)
-                                    cal_params['nu_adjustment_ratio'] = 1.0
-                                ks_base, p_base, ad_base = ks_sptg, p_sptg, ad_sptg
-            except Exception:
-                pass
-
-        # Stage C: monotone isotonic PIT recalibration.  This is only a
-        # calibration-map output; it does not pretend to improve CRPS directly.
-        if n >= 100:
-            try:
-                from calibration.isotonic_recalibration import IsotonicRecalibrator
-                recal = IsotonicRecalibrator()
-                result = recal.fit(pit)
-                if result.fit_success and not result.is_identity:
-                    pit_iso = np.clip(recal.transform(pit), 0.001, 0.999)
-                    ks_before, p_before = _fast_ks_uniform(pit)
-                    ks_after, p_after = _fast_ks_uniform(pit_iso)
-                    ad_before = compute_ad_statistic(pit)
-                    ad_after = compute_ad_statistic(pit_iso)
-                    if (p_after >= p_before) or (ad_after <= ad_before):
-                        pit = pit_iso
-                        diag['isotonic_applied'] = True
-                        diag['isotonic_ks_improvement'] = float(p_after - p_before)
-                        cal_params['isotonic_x_knots'] = result.x_knots.tolist()
-                        cal_params['isotonic_y_knots'] = result.y_knots.tolist()
-            except Exception:
-                pass
-
-        diag['calibration_params'] = cal_params
-        return np.clip(pit, 0.001, 0.999), diag
+        """Apply the shared Student-t calibration transport pipeline."""
+        return ad_correction_pipeline_student_t(
+            returns,
+            mu_pred,
+            scale,
+            nu,
+            pit_raw,
+            min_obs=min_obs,
+            cdf_fn=_fast_t_cdf,
+            ks_fn=_fast_ks_uniform,
+            ad_fn=compute_ad_statistic,
+            nu_min=cls.nu_min_default,
+            nu_max=60.0,
+            gpd_method="pwm",
+        )
 
 
 # ─── Backward compatibility shim ───

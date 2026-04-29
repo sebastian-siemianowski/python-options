@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useState, useMemo } from 'react';
 import { api } from '../api';
-import type { DiagAsset, DiagModelStats, DiagCrossAssetSummary } from '../api';
+import type { DiagAsset, DiagCrossAssetSummary, DiagModelComparison } from '../api';
 import PageHeader from '../components/PageHeader';
 import StatCard from '../components/StatCard';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -305,8 +305,14 @@ function ModelMetricsTable({ models, bmaWeights }: { models: DiagAsset['models']
 
 /* ── Model Comparison Tab ─────────────────────────────────────────── */
 
-function ModelsTab({ data }: { data: { models: Record<string, DiagModelStats>; total_assets: number } }) {
-  const models = useMemo(() => Object.values(data.models).sort((a, b) => b.win_count - a.win_count), [data.models]);
+function ModelsTab({ data }: { data: DiagModelComparison }) {
+  const models = useMemo(() => {
+    const names = data.model_names?.length ? data.model_names : Object.keys(data.models);
+    return names
+      .map(name => data.models[name])
+      .filter(Boolean)
+      .sort((a, b) => b.win_count - a.win_count || b.avg_weight - a.avg_weight);
+  }, [data.model_names, data.models]);
 
   const chartData = models.slice(0, 15).map(m => ({
     name: formatModelNameShort(m.name),
@@ -320,8 +326,29 @@ function ModelsTab({ data }: { data: { models: Record<string, DiagModelStats>; t
     avgWeight: +(m.avg_weight * 100).toFixed(1),
   }));
 
+  const familyData = data.families?.slice(0, 8) ?? [];
+
   return (
     <div className="space-y-6">
+      {familyData.length > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {familyData.map(f => (
+            <div key={f.family} className="glass-card" style={{ padding: '16px' }}>
+              <div className="text-[11px] uppercase" style={{ color: 'var(--text-muted)', letterSpacing: 0 }}>{f.family}</div>
+              <div className="mt-2 flex items-end justify-between gap-3">
+                <span className="text-2xl font-semibold" style={{ color: 'var(--text-luminous)' }}>{f.model_count}</span>
+                <span className="text-xs" style={{ color: f.win_count > 0 ? 'var(--accent-emerald)' : 'var(--text-secondary)' }}>
+                  {f.win_count} wins
+                </span>
+              </div>
+              <div className="mt-2 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+                Avg Wt {(f.avg_weight * 100).toFixed(1)}%
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Charts */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="glass-card hover-lift" style={{ padding: '24px' }}>
@@ -361,12 +388,17 @@ function ModelsTab({ data }: { data: { models: Record<string, DiagModelStats>; t
             <thead className="premium-thead">
               <tr>
                 <th className="text-left">Model</th>
+                <th className="text-left">Family</th>
                 <th className="text-right">Wins</th>
                 <th className="text-right">Win Rate</th>
                 <th className="text-right">Appearances</th>
                 <th className="text-right">Avg Weight</th>
+                <th className="text-right">Avg CRPS</th>
+                <th className="text-right">Avg PIT p</th>
+                <th className="text-right">Avg BIC</th>
                 <th className="text-right">Max Wt</th>
                 <th className="text-right">Min Wt</th>
+                <th className="text-left">Top Assets</th>
               </tr>
             </thead>
             <tbody>
@@ -375,6 +407,7 @@ function ModelsTab({ data }: { data: { models: Record<string, DiagModelStats>; t
                 return (
                   <tr key={m.name} className="premium-row">
                     <td className="font-medium" style={{ color: 'var(--text-luminous)' }}>{formatModelNameShort(m.name)}</td>
+                    <td className="whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>{m.family}</td>
                     <td className={`text-right ${isTopWins ? 'best-in-column' : ''}`} style={!isTopWins ? { color: 'var(--text-secondary)' } : undefined}>{m.win_count}</td>
                     <td className="text-right">
                       <span style={{ color: m.win_rate > 0.1 ? 'var(--accent-emerald)' : 'var(--text-secondary)' }}>
@@ -390,8 +423,18 @@ function ModelsTab({ data }: { data: { models: Record<string, DiagModelStats>; t
                         <span className="text-[10px]" style={{ color: 'var(--text-secondary)', minWidth: 36, textAlign: 'right' }}>{(m.avg_weight * 100).toFixed(1)}%</span>
                       </div>
                     </td>
+                    <td className="text-right" style={{ color: m.avg_crps != null && m.avg_crps < 0.02 ? 'var(--accent-emerald)' : 'var(--text-secondary)' }}>
+                      {m.avg_crps != null ? m.avg_crps.toFixed(5) : '--'}
+                    </td>
+                    <td className="text-right" style={{ color: m.avg_pit_p != null && m.avg_pit_p >= 0.05 ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}>
+                      {m.avg_pit_p != null ? m.avg_pit_p.toFixed(4) : '--'}
+                    </td>
+                    <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{m.avg_bic != null ? m.avg_bic.toFixed(0) : '--'}</td>
                     <td className="text-right" style={{ color: 'var(--text-secondary)' }}>{(m.max_weight * 100).toFixed(1)}%</td>
                     <td className="text-right" style={{ color: 'var(--text-muted)' }}>{(m.min_weight * 100).toFixed(1)}%</td>
+                    <td className="text-left whitespace-nowrap" style={{ color: 'var(--text-secondary)' }}>
+                      {m.top_symbols?.slice(0, 5).join(', ') || '--'}
+                    </td>
                   </tr>
                 );
               })}
