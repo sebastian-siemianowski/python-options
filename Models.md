@@ -20,7 +20,7 @@ equal-or-better speed, or when a deliberate tradeoff is explicitly recorded.
 
 ## Ledger Status
 
-Last updated: 2026-04-29.
+Last updated: 2026-04-30.
 
 Cycle ledger 051-100 is complete. The most recent accepted cycles are:
 
@@ -49,6 +49,16 @@ Final cycle-100 gate:
 
 Detailed cycle results are recorded under `Cycle 099 result` and
 `Cycle 100 result` near the end of this file.
+
+New planned phase:
+
+- Cycles 101-150 have been added under `Indicator-Integrated Model Phase`.
+- The phase integrates Heikin-Ashi, ATR/SuperTrend, KAMA, ADX/DMI, Ichimoku,
+  Donchian, Bollinger/Keltner squeeze, RSI/StochRSI, MACD/PPO/TRIX,
+  volume-flow, VWAP, Hurst/fractal, wavelet, and cross-sectional relative
+  strength logic directly into model variants.
+- These cycles are marked `Planned` until benchmarked; they are not accepted
+  until they pass the same real-data gates.
 
 ## Current Model Surface
 
@@ -3396,6 +3406,1198 @@ Cycle 100 result:
 - Release gate accepted because the full retune/calibration benchmark is clean,
   improved and canonical models compete side by side, and diagnostics/frontend
   now expose the actual model competition.
+
+## Indicator-Integrated Model Phase - Cycles 101-150
+
+This third story bank tests whether high-quality technical indicators can
+improve the distributional models when they are integrated into model dynamics,
+not bolted onto signal generation as separate trading rules.
+
+The requirement to challenge:
+
+- Indicators are not alpha by default.
+- Indicators are lossy transforms of price, volume, and volatility.
+- A transform earns a place only if it improves proper scores, calibration,
+  or post-calibration signal outcomes on real data.
+
+Preferred indicator families for this phase:
+
+- Heikin-Ashi: candle-state smoothing, wick/body imbalance, and trend fatigue.
+- ATR/SuperTrend/Chandelier: volatility-aware trend and stop geometry.
+- KAMA/Efficiency Ratio: trend quality versus noise.
+- ADX/DMI: directional strength without requiring direction to be profitable.
+- Ichimoku: multi-horizon equilibrium, cloud distance, and trend structure.
+- Donchian/Turtle breakouts: range expansion and structural highs/lows.
+- Bollinger/Keltner squeeze: volatility compression and expansion timing.
+- RSI/StochRSI/Williams %R: bounded exhaustion and failed reversal context.
+- MACD/PPO/TRIX: multi-scale momentum acceleration.
+- OBV/MFI/CMF/volume z-score: participation and flow confirmation.
+- Anchored VWAP/VWAP bands: price dislocation from volume-weighted equilibrium.
+- Hurst/fractal dimension/wavelet energy: persistence versus mean reversion.
+- Cross-sectional relative strength and breadth: asset context, not isolation.
+
+Model integration rules:
+
+1. Every indicator must be causal: no centered windows, no future high/low
+   leakage, no hindsight anchors.
+2. Indicators enter through model internals:
+   - state-equation drift input `u_t`.
+   - process-noise scaling `q_t`.
+   - observation variance scaling `R_t`.
+   - Student-t tail thickness `nu_t`.
+   - skew/asymmetry conditioning.
+   - regime-fit likelihood penalties.
+   - calibration covariates for EMOS/Beta only after model ablation.
+3. Every accepted indicator path must have a no-indicator control model and an
+   indicator-integrated model competing side by side in BMA.
+4. Any indicator-derived model variant must pass ablation against the same base
+   model with the indicator input removed.
+5. Feature count must be controlled by BIC/LFO/proper-score penalties.
+6. A rejected indicator path is deleted in the same cycle.
+7. Heikin-Ashi and other smoothed transforms must never replace raw OHLCV;
+   they may only add state context.
+8. The final signal still comes from distributional geometry and calibration,
+   not a hard-coded indicator vote.
+9. Frontend/backend diagnostics must show base versus indicator-integrated
+   model variants side by side.
+
+### Indicator Phase Acceptance Addendum
+
+For cycles 101-150, a story is accepted only if it achieves at least one of:
+
+- Better full-gate calibrated PF, Sharpe, hit rate, Brier, or CRPS.
+- Better stress/tail-slice calibration without worsening full-gate results.
+- Equal signal quality with materially faster tuning/calibration.
+- Equal quality with fewer indicator/model methods or fewer duplicate feature
+  paths.
+- A cleaner benchmark or diagnostic that prevents false indicator promotion.
+
+Every accepted indicator feature must record:
+
+- lookback and lag policy.
+- missing-data policy.
+- outlier/winsor policy.
+- whether it affects mean, variance, tail thickness, asymmetry, q, regime fit,
+  or calibration.
+- ablation result versus the same model without the feature.
+
+## Indicator Work Ledger - Cycles 101-150
+
+| Cycle | Planned Focus | Status |
+| ---: | --- | --- |
+| 101 | Model-integrated indicator state contract and causal OHLCV registry | Accepted |
+| 102 | Heikin-Ashi kernel wired as model state input candidate | Accepted |
+| 103 | Heikin-Ashi Student-t drift-input variant versus base Student-t | Accepted |
+| 104 | Heikin-Ashi Student-t tail/variance conditioner variant | Rejected |
+| 105 | Heikin-Ashi unified Student-t q/asymmetry conditioner variant | Rejected |
+| 106 | ATR kernel shared by Gaussian and Student-t variance models | Accepted |
+| 107 | SuperTrend regime-likelihood variant in unified Student-t | Rejected |
+| 108 | Chandelier/ATR distance as predictive variance model input | Planned |
+| 109 | KAMA Efficiency Ratio as process-noise `q_t` model variant | Planned |
+| 110 | KAMA equilibrium as state-equation MR input variant | Planned |
+| 111 | ADX/DMI kernel wired into model-state feature bundle | Planned |
+| 112 | ADX-gated Student-t tail thickness and q variant | Planned |
+| 113 | Ichimoku cloud features as regime-likelihood model inputs | Planned |
+| 114 | Ichimoku equilibrium as OU/state-input model variant | Planned |
+| 115 | Donchian channel state integrated into breakout variance model | Planned |
+| 116 | Turtle breakout quality as unified Student-t score conditioner | Planned |
+| 117 | Bollinger/Keltner squeeze as variance-transition model input | Planned |
+| 118 | Bollinger percentile as observation-noise mismatch model input | Planned |
+| 119 | RSI/StochRSI exhaustion as bounded tail/asymmetry model input | Planned |
+| 120 | Williams %R failed-breakout Student-t reversal-state variant | Planned |
+| 121 | MACD/PPO/TRIX acceleration as drift-state input variant | Planned |
+| 122 | Orthogonal momentum basis inside state-equation model inputs | Planned |
+| 123 | OBV/MFI/CMF flow as confidence and variance model input | Planned |
+| 124 | Volume z-score and dollar-volume liquidity variance variant | Planned |
+| 125 | Anchored/rolling VWAP equilibrium model variant | Planned |
+| 126 | VWAP band distance as model variance/confidence conditioner | Planned |
+| 127 | Hurst/fractal persistence as q and regime-fit model input | Planned |
+| 128 | Wavelet energy as impulse/rough-volatility model input | Planned |
+| 129 | Cross-sectional relative strength as market-conditioned drift input | Planned |
+| 130 | Sector/beta-aware normalization inside model feature transport | Planned |
+| 131 | Indicator-integrated BIC/LFO model-selection layer | Planned |
+| 132 | Canonical Student-t indicator-integrated model family | Planned |
+| 133 | Improved Student-t indicator-integrated model family | Planned |
+| 134 | Unified improved Student-t indicator-integrated model family | Planned |
+| 135 | Gaussian indicator-integrated control model family | Planned |
+| 136 | Indicator interaction deletion pass inside model variants | Planned |
+| 137 | Indicator-integrated PIT/AD/Berkowitz model audit | Planned |
+| 138 | Model-residual-aware EMOS calibration with indicator covariates | Planned |
+| 139 | Model-residual-aware Beta calibration and threshold stability | Planned |
+| 140 | Indicator-integrated stress/tail benchmark slices | Planned |
+| 141 | Heikin-Ashi model variant versus raw-candle model variant benchmark | Planned |
+| 142 | Trend-indicator model family repeated-run noise analysis | Planned |
+| 143 | Mean-reversion indicator model family repeated-run noise analysis | Planned |
+| 144 | Volume/flow indicator model family repeated-run noise analysis | Planned |
+| 145 | Model feature-latency and missing-data robustness audit | Planned |
+| 146 | Numba/vectorized indicator model-input speed pass | Planned |
+| 147 | Frontend/backend base-versus-indicator model diagnostics | Planned |
+| 148 | Full 50-stock indicator-integrated model competition gate | Planned |
+| 149 | Signal-generation smoke for indicator-integrated winning models | Planned |
+| 150 | Final indicator-integrated model release gate | Planned |
+
+## Detailed Stories 101-150
+
+### Story 101 - Indicator Model-State Contract And Registry
+
+Target:
+
+- `src/decision/signal_modules/feature_pipeline.py`.
+- new or existing indicator feature modules.
+- benchmark feature snapshots.
+- `src/models/model_registry.py`.
+
+Indicator logic:
+
+- Define a small registry for causal indicator transforms and their model-use
+  channel.
+- Each feature declares required columns, lookback, lag, output names, and
+  whether it may feed mean, variance, tail, asymmetry, q, regime likelihood, or
+  calibration.
+- Model specs declare whether they are base, indicator-integrated, or control
+  variants.
+
+Acceptance:
+
+- No indicator feature can enter a model without registry metadata.
+- No indicator-integrated model can be tuned unless its no-indicator control is
+  tuned in the same run.
+- Feature generation is deterministic across tuning and signal generation.
+- Missing OHLCV fields fail closed or produce documented null features.
+
+Cycle 101 result:
+
+- Accepted `cycle_101_indicator_contract`.
+- Added `src/models/indicator_state.py` as the model-state indicator contract:
+  - registered causal specs for Heikin-Ashi, ATR/SuperTrend, KAMA, ADX/DMI,
+    Ichimoku, Donchian, Bollinger/Keltner, oscillators, MACD/PPO/TRIX,
+    volume flow, VWAP, persistence/wavelet, and relative strength.
+  - every spec declares required OHLCV columns, lookback, lag, output names,
+    and allowed model-use channels.
+  - indicator model inputs must be lagged by at least one bar.
+- Extended `ModelSpec` with indicator-integrated metadata:
+  - `model_variant`.
+  - `base_model_name`.
+  - `indicator_features`.
+  - `indicator_channels`.
+- Added registry helpers for future side-by-side model variants:
+  - `make_indicator_integrated_model_name`.
+  - `create_indicator_integrated_spec`.
+  - `assert_indicator_models_have_controls`.
+- Added `src/tests/test_indicator_model_contract.py`.
+- Tests:
+  - `python -m py_compile src/models/indicator_state.py src/models/model_registry.py src/tests/test_indicator_model_contract.py`.
+  - `python -m unittest src.tests.test_indicator_model_contract -v`.
+  - `python -m unittest src.tests.test_model_registry_parameter_transport -v`.
+  - `python -m pytest src/tests/test_architecture_imports.py -q`.
+- Full 50-stock real-data gate with 11 process workers:
+  - artifact: `src/data/benchmarks/cycle_101_indicator_contract_full_metrics.json`.
+  - 50/50 assets, 0 failures, 0 calibration warnings.
+  - models per asset mean: `25.0`.
+  - BIC mean: `-13468.920239085126`.
+  - PIT mean/min: `0.7536257850670388 / 0.33046765605579104`.
+  - tuning/calibration/total seconds: `40.2861 / 4.1120 / 44.3981`.
+  - calibrated signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+- Accepted as a model-integration contract cycle; no indicator math promoted yet.
+
+### Story 102 - Heikin-Ashi Causal Candle Kernel
+
+Target:
+
+- indicator kernels.
+- Numba tests.
+- model-input feature transport.
+
+Indicator logic:
+
+- Compute Heikin-Ashi open/high/low/close from only current and prior bars.
+- Emit body ratio, upper/lower wick ratio, HA color, HA run length, and raw
+  close minus HA close.
+
+Acceptance:
+
+- Numba and Python reference parity.
+- No centered-window leakage.
+- HA features are exposed only through model-state input bundles.
+- Feature generation speed is acceptable on the 50-stock universe.
+
+Cycle 102 result:
+
+- Accepted `cycle_102_heikin_ashi_state_kernel`.
+- Added causal Heikin-Ashi state computation to `src/models/indicator_state.py`.
+- Outputs are lagged model inputs:
+  - `ha_body_ratio`.
+  - `ha_color`.
+  - `ha_upper_wick_ratio`.
+  - `ha_lower_wick_ratio`.
+  - `ha_run_length`.
+  - `ha_close_dislocation`.
+- Added a Numba kernel and Python reference path with parity tests.
+- Added `build_heikin_ashi_bundle()` to expose HA only through the model-state
+  bundle contract from cycle 101.
+- Tests:
+  - `python -m py_compile src/models/indicator_state.py src/tests/test_indicator_model_contract.py`.
+  - `python -m unittest src.tests.test_indicator_model_contract -v`.
+  - `python -m unittest src.tests.test_model_registry_parameter_transport -v`.
+  - `python -m pytest src/tests/test_architecture_imports.py -q`.
+- Full 50-stock real-data gate with 11 process workers:
+  - artifact: `src/data/benchmarks/cycle_102_heikin_ashi_state_kernel_full_metrics.json`.
+  - 50/50 assets, 0 failures, 0 calibration warnings.
+  - models per asset mean: `25.0`.
+  - BIC mean: `-13469.106470269777`.
+  - PIT mean/min: `0.7536257850670388 / 0.33046765605579104`.
+  - tuning/calibration/total seconds: `40.6359 / 3.7240 / 44.3599`.
+  - calibrated signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+- Accepted as the first causal indicator model-input kernel; no model variant
+  promoted yet.
+
+### Story 103 - Heikin-Ashi Trend-State Mean Input
+
+Target:
+
+- `phi_student_t_improved`.
+- `phi_student_t`.
+- model registry competition path.
+
+Indicator logic:
+
+- Test HA run length and HA body strength as exogenous mean-state input.
+- Compare against existing momentum/MR input so HA must add orthogonal signal.
+
+Acceptance:
+
+- Better or equal BIC/LFO and calibrated PF/Sharpe/hit versus no-HA model.
+- No direct HA trading rule is introduced.
+
+Cycle 103 result:
+
+- Accepted `cycle_103_heikin_ashi_student_t_state`.
+- Integrated Heikin-Ashi into the Student-t state equation as a competing
+  model variant, not as a trading overlay:
+  - tuning input: `u_t = beta_ha * sigma_t * ha_drift_signal_t`.
+  - signal-generation input: current lagged HA state is recomputed from OHLC
+    and passed into Monte Carlo through the model's learned `ind_ha_drift_weight`.
+- Registered side-by-side model names such as:
+  - `phi_student_t_nu_20_ind_heikin_ashi`.
+  - `phi_student_t_improved_nu_20_ind_heikin_ashi`.
+- Added the HA drift signal collapse with bounded body, color, run-length,
+  wick-rejection, and stretch-penalty terms.
+- Added an evidence gate:
+  - admit HA only when held-out CRPS improves or PIT improves enough.
+  - reject candidates that improve sharpness by breaking calibration when the
+    no-HA control was already calibrated.
+- Real-data recursive correction:
+  - first full run admitted an NVDA HA candidate with better CRPS but damaged
+    PIT; the rule was tightened and the full gate was rerun.
+  - final admitted global HA variants on `JPM` and `SNAP`; `SNAP` selected
+    `phi_student_t_nu_20_ind_heikin_ashi` as its best global model.
+- Frontend model labels now show `+HA` for indicator-integrated variants.
+- Tests:
+  - `.venv/bin/python -m py_compile src/models/indicator_state.py src/models/model_registry.py src/tuning/tune_modules/model_fitting.py src/tuning/tune_modules/regime_bma.py src/tuning/tune_modules/asset_tuning.py src/decision/signal_modules/feature_pipeline.py src/decision/signal_modules/bma_engine.py src/decision/signal_modules/parameter_loading.py src/tests/test_indicator_model_contract.py`.
+  - `.venv/bin/python -m unittest src.tests.test_indicator_model_contract -v`.
+  - `.venv/bin/python -m unittest src.tests.test_model_registry_parameter_transport -v`.
+  - `.venv/bin/python -m pytest src/tests/test_architecture_imports.py -q`.
+- Full 50-stock real-data gate with 11 process workers:
+  - artifact: `src/data/benchmarks/cycle_103_heikin_ashi_student_t_state_full_metrics.json`.
+  - 50/50 assets, 0 failures, 0 calibration warnings.
+  - models per asset mean: `25.04`.
+  - BIC mean: `-13469.778483848171` versus cycle 102 `-13469.106470269777`.
+  - PIT mean/min: `0.7434874406719306 / 0.33046765605579104`.
+  - tuning/calibration/total seconds: `40.2123 / 5.6927 / 45.9049`.
+  - calibrated signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+- Accepted as a narrow model-internal HA mean-input cycle: BIC improved, no
+  failures/warnings, profitability metrics were preserved, and only candidates
+  that earned the extra parameter remained in the model set.
+
+### Story 104 - Heikin-Ashi Exhaustion Tail Conditioner
+
+Target:
+
+- Student-t tail thickness and variance conditioning.
+
+Indicator logic:
+
+- Use HA wick/body imbalance and close-to-HA dislocation to flag exhaustion.
+- Test whether exhaustion should widen left/right tails or only variance.
+
+Acceptance:
+
+- Stress/tail-slice PIT improves without full-gate regression.
+- Tail conditioner is deleted if it only increases confidence after exhaustion.
+
+Cycle 104 result:
+
+- Rejected `cycle_104_heikin_ashi_variance_tail`.
+- Benchmark artifact:
+  `src/data/benchmarks/cycle_104_heikin_ashi_variance_tail_full_metrics.json`.
+- Full 50-stock gate:
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.1`.
+  - BIC mean: `-13469.688265076167`, worse than cycle 103
+    `-13469.778483848171`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `48.0797 / 3.9315 / 52.0112`, slower than cycle 103 total
+    `45.9049`.
+  - Signal Brier/CRPS/PF/Sharpe/hit:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+- The variance/tail channel admitted a few local candidates, but the system paid
+  too much BIC and runtime for tiny asset-level CRPS/PIT gains.
+- Deleted the experimental variance/tail branch entirely:
+  - no registry variant remains.
+  - no tuning fitter remains.
+  - no signal-generation variance multiplier remains.
+  - no frontend `+HAσ` label remains.
+- Cleanup verification:
+  - `py_compile` passed on changed model/tuning/signal files.
+  - `src.tests.test_indicator_model_contract` passed.
+  - `src.tests.test_model_registry_parameter_transport` passed.
+  - `src/tests/test_architecture_imports.py` passed.
+
+### Story 105 - Heikin-Ashi Unified q/Asymmetry Model Variant
+
+Target:
+
+- unified Student-t q process.
+- unified Student-t asymmetry conditioning.
+- model registry competition path.
+
+Indicator logic:
+
+- HA persistence and fatigue modulate q, asymmetry, or variance inside the
+  unified model.
+- Direction remains emergent from the model posterior and geometry, not HA
+  color.
+
+Acceptance:
+
+- Indicator-integrated unified variant competes side by side with the base
+  unified model.
+- Quick and full signal smoke do not show worse hit/Brier.
+
+Cycle 105 result:
+
+- Rejected `cycle_105_heikin_ashi_unified_q_asym`.
+- Benchmark artifact:
+  `src/data/benchmarks/cycle_105_heikin_ashi_unified_q_asym_metrics.json`.
+- Full 50-stock retune gate, calibration skipped for a fast acceptance screen:
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.38`, worse than the cycle 103 baseline `25.04`.
+  - BIC mean: `-13469.555920615046`, worse than cycle 103
+    `-13469.778483848171`.
+  - PIT mean/min:
+    `0.735951821757494 / 0.33046765605579104`, worse than cycle 103
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning seconds: `41.1465`, slower than cycle 103 tune seconds `40.2123`.
+- Deleted the experimental unified q/asymmetry branch:
+  - no unified HA registry variants remain.
+  - no unified HA q/asymmetry fitter remains.
+  - no signal-generation q-stress multiplier remains.
+  - no q/asymmetry parameter transport remains.
+- Conclusion: HA earned a narrow state-mean role in cycle 103, but the unified
+  q/asymmetry channel added model-surface area without improving the gate.
+
+### Story 106 - ATR And SuperTrend Foundation
+
+Target:
+
+- true-range kernel.
+- SuperTrend reference implementation.
+
+Indicator logic:
+
+- Consolidate ATR calculation and build SuperTrend from causal ATR bands.
+- Emit band distance, trend side, trend flips, and flip age.
+
+Acceptance:
+
+- One ATR implementation shared across indicators.
+- SuperTrend parity tests cover gaps and flat bars.
+
+Cycle 106 result:
+
+- Accepted `cycle_106_atr_supertrend_foundation`.
+- Added causal ATR/SuperTrend state computation in
+  `src/models/indicator_state.py`.
+- Outputs:
+  - `atr_z`
+  - `supertrend_side`
+  - `supertrend_flip`
+  - `supertrend_flip_age`
+  - `supertrend_band_distance`
+- Added Python reference and Numba implementations with exact parity tests.
+- Test coverage:
+  - gap bars.
+  - flat bars.
+  - bundle validation.
+  - lagged causal output.
+- Benchmark artifact:
+  `src/data/benchmarks/cycle_106_atr_supertrend_foundation_metrics.json`.
+- Full 50-stock gate:
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13470.231757647438`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `41.6667 / 4.1657 / 45.8325`.
+  - Signal Brier/CRPS/PF/Sharpe/hit:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+- Accepted as a no-behavior-change foundation: the indicator math is now shared
+  and tested, while model consumption is reserved for later cycles.
+
+### Story 107 - SuperTrend As Regime-Fit Feature
+
+Target:
+
+- unified Student-t regime fit.
+- BMA model diagnostics.
+
+Indicator logic:
+
+- Use SuperTrend side/flip age to describe trend persistence.
+- It may improve regime fit but must not force long/short labels.
+
+Acceptance:
+
+- Better regime-slice calibration or equal quality with better stability.
+- No hard-coded SuperTrend entry rule survives.
+
+Cycle 107 result:
+
+- Rejected `cycle_107_supertrend_student_t_state`.
+- Benchmark artifact:
+  `src/data/benchmarks/cycle_107_supertrend_student_t_state_metrics.json`.
+- Full 50-stock gate:
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.14`, worse than cycle 106 `25.04`.
+  - BIC mean: `-13469.228880002373`, worse than cycle 106
+    `-13470.231757647438`.
+  - PIT mean/min:
+    `0.743316347953944 / 0.33046765605579104`, slightly worse than cycle 106.
+  - Tuning/calibration/total seconds:
+    `45.3575 / 4.0049 / 49.3625`, slower than cycle 106.
+  - Signal Brier/CRPS/PF/Sharpe/hit:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+- The SuperTrend variant won one local asset but worsened system evidence and
+  runtime, so it was deleted:
+  - no SuperTrend model registry variants remain.
+  - no SuperTrend tuning fitter remains.
+  - no SuperTrend signal-generation transport remains.
+  - no SuperTrend frontend label remains.
+- The accepted cycle 106 ATR/SuperTrend kernel remains available as tested
+  infrastructure for future, narrower hypotheses.
+
+### Story 108 - Chandelier Distance Variance Conditioner
+
+Target:
+
+- predictive variance and confidence.
+
+Indicator logic:
+
+- Chandelier exit distance estimates how crowded the move is relative to ATR.
+- Test as variance inflation and confidence dampener.
+
+Acceptance:
+
+- Reduces magnitude outliers or tail PIT misses.
+- Deleted if it merely suppresses profitable high-conviction signals.
+
+### Story 109 - KAMA Efficiency Ratio Process Noise
+
+Target:
+
+- q process-noise logic.
+- `student_t_common.py` shared helpers.
+
+Indicator logic:
+
+- Efficiency Ratio separates directional travel from noisy path length.
+- Higher ER can lower q in persistent trends; low ER can raise q in chop.
+
+Acceptance:
+
+- Improved BIC/PIT or speed-neutral signal lift.
+- q adjustment must be bounded and regularized.
+
+### Story 110 - KAMA Slope And Equilibrium Distance
+
+Target:
+
+- mean-reversion input.
+- momentum/MR orthogonality.
+
+Indicator logic:
+
+- Use KAMA slope and price distance from KAMA as smoother equilibrium features.
+- Compare against current OU equilibrium estimator.
+
+Acceptance:
+
+- Better range-regime calibration without trend-regime decay.
+- Remove if collinear with existing MR state.
+
+### Story 111 - ADX/DMI Directional Strength Kernel
+
+Target:
+
+- indicator kernel and tests.
+
+Indicator logic:
+
+- Compute +DI, -DI, DX, and ADX causally.
+- Treat ADX as strength, not direction; direction comes only through +DI/-DI
+  spread if ablation proves value.
+
+Acceptance:
+
+- Reference tests for trend, flat, and gap-heavy sequences.
+- No division instability or NaN propagation.
+
+### Story 112 - ADX-Gated Tail And q Ablation
+
+Target:
+
+- Student-t and unified Student-t process noise/tail parameters.
+
+Indicator logic:
+
+- Strong trend can reduce reversal variance but increase gap-tail risk.
+- Test ADX as a q and tail-thickness gate.
+
+Acceptance:
+
+- Improves stress windows or full-gate calibration.
+- Rejected if it overfits high-ADX continuation.
+
+### Story 113 - Ichimoku Cloud Regime Features
+
+Target:
+
+- feature pipeline.
+- regime classification diagnostics.
+
+Indicator logic:
+
+- Use Tenkan/Kijun distance, cloud thickness, price-cloud distance, and cloud
+  twist age.
+- Lag Senkou-style features so no forward plotting leaks into model inputs.
+
+Acceptance:
+
+- Explicit lag policy test.
+- Regime-slice calibration improves or feature is deleted.
+
+### Story 114 - Ichimoku Equilibrium For OU Input
+
+Target:
+
+- state-equation mean reversion.
+
+Indicator logic:
+
+- Kijun and cloud midpoint can serve as multi-horizon equilibrium candidates.
+- Model chooses between state-space equilibrium and Ichimoku equilibrium.
+
+Acceptance:
+
+- Better range-regime hit/Brier without weakening trend regimes.
+- Keep only if BMA selects it with nontrivial posterior mass.
+
+### Story 115 - Donchian Channel State
+
+Target:
+
+- breakout and range diagnostics.
+
+Indicator logic:
+
+- Emit position inside Donchian channel, channel width percentile, breakout age,
+  and failed breakout markers.
+
+Acceptance:
+
+- Improves range/trend classification or stress-slice behavior.
+- No lookahead high/low leakage.
+
+### Story 116 - Turtle Breakout Quality In Unified Scoring
+
+Target:
+
+- unified Student-t scoring and signal confidence.
+
+Indicator logic:
+
+- Breakout quality requires channel expansion, ATR support, and follow-through.
+- Test only as model context, not a trading override.
+
+Acceptance:
+
+- Improves directional calibration after pass-2 calibration.
+- Deleted if it increases turnover without PF/Sharpe lift.
+
+### Story 117 - Bollinger/Keltner Squeeze Feature
+
+Target:
+
+- volatility-regime and tail-risk detection.
+
+Indicator logic:
+
+- Compression occurs when Bollinger width is inside Keltner width.
+- Expansion after compression can signal variance state change.
+
+Acceptance:
+
+- Improves variance calibration around vol-release periods.
+- No degradation in calm regimes.
+
+### Story 118 - Bollinger Percentile And Vol-Mismatch Audit
+
+Target:
+
+- predictive variance diagnostics.
+
+Indicator logic:
+
+- Compare band percentile against realized-vol and model sigma.
+- Identify whether model variance lags during band expansion.
+
+Acceptance:
+
+- Either accepted as an observation-noise model input or rejected with no model
+  integration retained.
+- Any duplicate vol feature is deleted.
+
+### Story 119 - RSI/StochRSI Exhaustion With Calibration Guard
+
+Target:
+
+- bounded oscillator features.
+- probability calibration.
+
+Indicator logic:
+
+- RSI and StochRSI can mark exhaustion only when trend strength and volatility
+  context agree.
+- Use monotonic calibration guard so oversold does not automatically mean buy.
+
+Acceptance:
+
+- Better Brier/hit after calibration.
+- Deleted if it creates anti-trend false positives.
+
+### Story 120 - Williams %R Failed-Breakout Reversal
+
+Target:
+
+- range-regime reversal diagnostics.
+
+Indicator logic:
+
+- Use Williams %R with Donchian failure context to test reversal probability.
+- Keep only as range-regime feature.
+
+Acceptance:
+
+- Improves low-vol range assets without damaging trend assets.
+- If effect is asset-specific, quarantine to diagnostics.
+
+### Story 121 - MACD/PPO/TRIX Belief Momentum
+
+Target:
+
+- belief momentum and mean input.
+
+Indicator logic:
+
+- MACD/PPO/TRIX capture acceleration at different scales.
+- Orthogonalize against existing return momentum before model use.
+
+Acceptance:
+
+- Belief momentum improves hit/Brier after calibration.
+- Remove redundant momentum transforms.
+
+### Story 122 - Multi-Horizon Momentum Orthogonalization
+
+Target:
+
+- state-equation momentum input basis.
+
+Indicator logic:
+
+- Build one orthogonal momentum basis from raw returns, MACD/PPO, KAMA slope,
+  and HA persistence.
+
+Acceptance:
+
+- Fewer momentum features with equal or better results.
+- Prevents class explosion from many near-duplicates.
+
+### Story 123 - Volume Flow Model Inputs
+
+Target:
+
+- OBV, MFI, CMF, and volume-price confirmation.
+- model variance/confidence input transport.
+
+Indicator logic:
+
+- Volume confirms or rejects price moves inside model variance, confidence, and
+  tail-risk inputs; it must not create direction alone.
+
+Acceptance:
+
+- Better model-calibrated signal precision or stress calibration.
+- Robust missing-volume policy for indices, FX, and commodities.
+
+### Story 124 - Liquidity And Volume z-Score Conditioner
+
+Target:
+
+- predictive uncertainty and model confidence.
+
+Indicator logic:
+
+- Abnormal volume and dollar-volume changes can indicate event risk or fragile
+  liquidity.
+- Test as model variance inflation and confidence dampening.
+
+Acceptance:
+
+- Reduces model-driven magnitude outliers and unstable high-conviction signals.
+- No penalty for assets with structurally low volume data quality.
+
+### Story 125 - Anchored And Rolling VWAP Dislocation
+
+Target:
+
+- model equilibrium and dislocation inputs.
+
+Indicator logic:
+
+- Rolling VWAP and event/quarter anchors estimate traded equilibrium.
+- Price distance from VWAP can inform MR or trend continuation depending on
+  ADX/ER context.
+
+Acceptance:
+
+- Clear lag/anchor policy.
+- Better range/trend split or deleted.
+
+### Story 126 - VWAP Band Model Confidence Conditioner
+
+Target:
+
+- model confidence and predictive variance.
+
+Indicator logic:
+
+- VWAP band distance acts like volume-weighted z-score.
+- Extreme dislocation can widen model variance and reduce confidence authority.
+
+Acceptance:
+
+- Improves calibrated PF/drawdown proxy without suppressing all winners.
+- No effect on assets without valid volume unless explicitly supported.
+
+### Story 127 - Hurst/Fractal Persistence Model Input
+
+Target:
+
+- model regime persistence versus mean reversion.
+
+Indicator logic:
+
+- Hurst/fractal dimension estimates whether recent path is persistent, random,
+  or mean reverting.
+
+Acceptance:
+
+- Better trend/range gating.
+- Stable estimates under short samples.
+
+### Story 128 - Wavelet Energy Model Input Audit
+
+Target:
+
+- rough-volatility and impulse model inputs.
+
+Indicator logic:
+
+- Multi-scale wavelet energy can detect impulses and compression without
+  relying on one fixed lookback.
+
+Acceptance:
+
+- Wavelet input must improve stress/tail slices or be deleted as expensive noise.
+- Runtime must remain acceptable.
+
+### Story 129 - Cross-Sectional Relative Strength
+
+Target:
+
+- model drift context and market conditioning.
+
+Indicator logic:
+
+- Compare each asset to sector, index, and risk-on/risk-off basket momentum.
+- Use relative strength as model context for drift and confidence.
+
+Acceptance:
+
+- Better cross-asset dispersion handling.
+- No survival bias in benchmark universe.
+
+### Story 130 - Sector/Beta Indicator Normalization
+
+Target:
+
+- model feature normalization.
+
+Indicator logic:
+
+- Indicator thresholds differ by sector, volatility, beta, and asset class.
+- Normalize features by asset-specific rolling distributions and market beta.
+
+Acceptance:
+
+- Reduces unresolved ticker/asset-class weirdness.
+- Improves model transfer across equities, ETFs, FX, metals, and crypto.
+
+### Story 131 - Indicator-Integrated Model Selection Layer
+
+Target:
+
+- BIC/LFO model-selection layer.
+
+Indicator logic:
+
+- Candidate indicator-integrated model variants compete under penalties.
+- Selection can choose no indicator, one cluster, or a small orthogonal bundle
+  inside a model variant.
+
+Acceptance:
+
+- Model input count stays small.
+- Full-gate performance improves or remains equal with cleaner model selection.
+
+### Story 132 - Indicator-Augmented Canonical Student-t Variant
+
+Target:
+
+- canonical Student-t model family.
+
+Indicator logic:
+
+- Add a side-by-side indicator-augmented canonical variant, not replacement.
+- Start with the best-selected feature cluster from cycles 101-131.
+
+Acceptance:
+
+- Canonical and augmented canonical compete via registry.
+- No silent model drops.
+
+### Story 133 - Indicator-Augmented Improved Student-t Variant
+
+Target:
+
+- improved Student-t model family.
+
+Indicator logic:
+
+- Test indicator-selected mean/q/tail conditioning inside the improved model.
+- Preserve existing improved/unimproved competition.
+
+Acceptance:
+
+- Better full-gate calibrated signal metrics or rejection with code removed.
+
+### Story 134 - Indicator-Augmented Unified Improved Student-t Variant
+
+Target:
+
+- unified improved Student-t.
+
+Indicator logic:
+
+- Use indicators only for unified state conditioning where they improve
+  calibrated uncertainty and regime fit.
+
+Acceptance:
+
+- No class explosion.
+- Method count decreases or remains controlled despite new features.
+
+### Story 135 - Indicator-Augmented Gaussian Control
+
+Target:
+
+- Gaussian baseline.
+
+Indicator logic:
+
+- Add the same selected indicator state to Gaussian controls to separate
+  indicator value from Student-t tail value.
+
+Acceptance:
+
+- If Gaussian gets the same lift, attribute edge to feature not tails.
+- If Gaussian degrades, keep Student-t-specific integration only.
+
+### Story 136 - Indicator Interaction Deletion Pass
+
+Target:
+
+- all indicator candidates.
+
+Indicator logic:
+
+- Delete interactions that are collinear, unstable, or only improve in-sample.
+
+Acceptance:
+
+- Fewer feature paths.
+- Equal or better full-gate metrics.
+
+### Story 137 - Indicator PIT/AD/Berkowitz Audit
+
+Target:
+
+- calibration diagnostics.
+
+Indicator logic:
+
+- Measure whether indicator features improve probability integral transform,
+  tail adequacy, and residual independence.
+
+Acceptance:
+
+- Distributional diagnostics improve, not just trade metrics.
+- Any feature that improves PF but breaks calibration is quarantined.
+
+### Story 138 - Indicator-Aware EMOS Calibration
+
+Target:
+
+- `signals_calibration.py`.
+
+Indicator logic:
+
+- Test whether EMOS mean/variance correction should condition on indicator
+  regimes such as squeeze, trend strength, and volume confirmation.
+
+Acceptance:
+
+- Better Brier/CRPS/PF without sparse-regime overfitting.
+- Sparse partitions remain gated.
+
+### Story 139 - Indicator-Aware Beta Calibration And Thresholds
+
+Target:
+
+- Beta calibration and label thresholds.
+
+Indicator logic:
+
+- Probability maps may differ in high-trend, exhaustion, and squeeze-release
+  states.
+
+Acceptance:
+
+- Better calibrated hit rate and Brier.
+- Reject if threshold stability worsens across repeated runs.
+
+### Story 140 - Indicator Stress/Tail Benchmark Expansion
+
+Target:
+
+- `benchmark_retune_50.py`.
+
+Indicator logic:
+
+- Add slices for HA exhaustion, squeeze release, ADX high trend, volume shock,
+  VWAP dislocation, and Donchian breakout failure.
+
+Acceptance:
+
+- Benchmark exposes where indicators help or hurt.
+- No additional expensive model-fitting pass.
+
+### Story 141 - Heikin-Ashi Versus Raw-Candle Stress Benchmark
+
+Target:
+
+- benchmark harness.
+
+Indicator logic:
+
+- Compare HA features against raw OHLC candle features in the same stress
+  windows and asset-specific tail deciles.
+
+Acceptance:
+
+- HA must show incremental value over raw candle geometry.
+- Otherwise keep raw candle features only.
+
+### Story 142 - Trend-Following Indicator Cluster Noise Analysis
+
+Target:
+
+- SuperTrend, ADX/DMI, Donchian, MACD/PPO/TRIX.
+
+Indicator logic:
+
+- Repeat full gates to estimate whether apparent trend-feature lift is stable.
+
+Acceptance:
+
+- Promotion requires improvement beyond run-to-run noise.
+- Revert if edge vanishes on repeat.
+
+### Story 143 - Mean-Reversion Indicator Cluster Noise Analysis
+
+Target:
+
+- RSI/StochRSI, Williams %R, VWAP distance, KAMA distance, Ichimoku equilibrium.
+
+Indicator logic:
+
+- Test reversal indicators only where regime context supports reversal.
+
+Acceptance:
+
+- Better range-regime calibration and signal metrics.
+- No global reversal bias.
+
+### Story 144 - Volume/Flow Indicator Cluster Noise Analysis
+
+Target:
+
+- OBV, MFI, CMF, volume z-score, dollar volume.
+
+Indicator logic:
+
+- Test whether flow confirmation improves confidence and reduces false signals.
+
+Acceptance:
+
+- Stable improvement on equities and graceful no-op on assets without volume.
+
+### Story 145 - Feature Latency And Missing-Data Robustness
+
+Target:
+
+- all indicator features.
+
+Indicator logic:
+
+- Audit weekend/holiday gaps, foreign tickers, ETFs, FX, crypto, and metals.
+
+Acceptance:
+
+- No unresolved symbols or NaN feature explosions.
+- Frontend/backend diagnostics can report feature availability.
+
+### Story 146 - Indicator Kernel Speed Pass
+
+Target:
+
+- Numba/vectorized indicator kernels.
+
+Indicator logic:
+
+- Fuse shared rolling statistics for ATR, channels, bands, and oscillators.
+- Avoid recomputing the same rolling max/min/mean across indicators.
+
+Acceptance:
+
+- Faster feature generation with parity tests.
+- No mathematical behavior drift.
+
+### Story 147 - Indicator Diagnostics Frontend
+
+Target:
+
+- backend diagnostics.
+- frontend model comparison.
+
+Indicator logic:
+
+- Show which indicator clusters each model used, their posterior weight, and
+  whether they improved or hurt calibration.
+
+Acceptance:
+
+- User can see indicator and non-indicator models side by side.
+- Unknown indicator families render gracefully.
+
+### Story 148 - Full Indicator Model Competition Gate
+
+Target:
+
+- full retune/calibration benchmark.
+
+Indicator logic:
+
+- Run canonical, improved, unified, Gaussian, and indicator-augmented variants
+  side by side.
+
+Acceptance:
+
+- 50/50 assets.
+- 0 failures.
+- 0 calibration warnings.
+- Indicator variants win only when the benchmark proves it.
+
+### Story 149 - Signal Smoke And Weak-Asset Failure Analysis
+
+Target:
+
+- signal-generation smoke.
+- weak recent assets from cycle 100.
+
+Indicator logic:
+
+- Analyze whether indicators fix or worsen recent weak 90-day windows such as
+  NVDA/QQQ/SPY/XLP without overfitting to them.
+
+Acceptance:
+
+- Weak-asset diagnostics improve or the indicator path is rejected.
+- No hand-tuned asset-specific exceptions.
+
+### Story 150 - Final Indicator-Integrated Model Release Gate
+
+Target:
+
+- full system release gate.
+
+Indicator logic:
+
+- Keep only indicator paths that survived ablation, repeated-run noise, stress
+  slices, full 50-stock retune/calibration, frontend visibility, and signal
+  smoke.
+
+Acceptance:
+
+- Final metrics are equal or better than cycle 100.
+- All rejected indicator code is removed.
+- `Models.md` records accepted/rejected evidence for every cycle.
 
 ## Definition of Done
 

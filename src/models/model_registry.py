@@ -97,10 +97,23 @@ class ModelSpec:
     
     # Whether this is an "augmentation layer" (applied on top of base models)
     is_augmentation: bool = False
+
+    # Indicator-integrated model contract.  Base models leave these empty;
+    # future indicator variants must declare the no-indicator control and the
+    # exact registered indicator state they consume.
+    model_variant: Literal["base", "indicator_integrated", "control"] = "base"
+    base_model_name: Optional[str] = None
+    indicator_features: Tuple[str, ...] = ()
+    indicator_channels: Tuple[str, ...] = ()
     
     def validate_params(self, params: Dict[str, Any]) -> bool:
         """Check if provided params contain all required parameter names."""
         return all(p in params for p in self.param_names)
+
+    @property
+    def is_indicator_integrated(self) -> bool:
+        """True when this spec consumes registered indicator model state."""
+        return self.model_variant == "indicator_integrated"
     
     def __hash__(self) -> int:
         return hash(self.name)
@@ -316,6 +329,29 @@ def build_model_registry() -> Dict[str, ModelSpec]:
     Called once at module load time.
     """
     registry: Dict[str, ModelSpec] = {}
+
+    def _register_heikin_ashi_drift_variant(base_name: str) -> None:
+        """Register a causal HA state-equation variant beside its control."""
+        base_spec = registry[base_name]
+        variant_name = f"{base_name}_ind_heikin_ashi"
+        defaults = dict(base_spec.default_params)
+        defaults["ind_ha_drift_weight"] = 0.0
+        registry[variant_name] = ModelSpec(
+            name=variant_name,
+            family=base_spec.family,
+            support=base_spec.support,
+            n_params=base_spec.n_params + 1,
+            param_names=tuple(base_spec.param_names) + ("ind_ha_drift_weight",),
+            default_params=defaults,
+            description=f"{base_spec.description} with causal Heikin-Ashi state-equation drift input",
+            grid_values=base_spec.grid_values,
+            is_augmentation=base_spec.is_augmentation,
+            model_variant="indicator_integrated",
+            base_model_name=base_name,
+            indicator_features=("heikin_ashi_state",),
+            indicator_channels=("mean",),
+        )
+
     
     # =========================================================================
     # GAUSSIAN FAMILY
@@ -371,6 +407,7 @@ def build_model_registry() -> Dict[str, ModelSpec]:
             description=f"AR(1) Kalman with Student-t(ν={nu}) innovations",
             grid_values={"nu": [float(nu)]},
         )
+        _register_heikin_ashi_drift_variant(name)
     
     # Student-t with refined ν (adaptive refinement candidates)
     for nu in STUDENT_T_NU_REFINED_GRID:
@@ -411,6 +448,7 @@ def build_model_registry() -> Dict[str, ModelSpec]:
             description=f"Improved AR(1) Kalman with Student-t(ν={nu}) innovations",
             grid_values={"nu": [float(nu)]},
         )
+        _register_heikin_ashi_drift_variant(name)
 
     registry[make_student_t_improved_mle_name()] = ModelSpec(
         name=make_student_t_improved_mle_name(),
@@ -593,6 +631,77 @@ MODEL_REGISTRY: Dict[str, ModelSpec] = build_model_registry()
 def get_model_spec(name: str) -> Optional[ModelSpec]:
     """Get ModelSpec by name. Returns None if not found."""
     return MODEL_REGISTRY.get(name)
+
+
+def make_indicator_integrated_model_name(base_model_name: str, indicator_key: str) -> str:
+    """Generate a canonical name for a model variant that consumes indicator state."""
+    import re
+    clean_key = re.sub(r"[^a-zA-Z0-9_]+", "_", indicator_key.strip().lower()).strip("_")
+    if not clean_key:
+        raise ValueError("indicator_key must contain at least one alphanumeric character")
+    return f"{base_model_name}_ind_{clean_key}"
+
+
+def create_indicator_integrated_spec(
+    base_model_name: str,
+    indicator_key: str,
+    indicator_features: Tuple[str, ...],
+    extra_param_names: Tuple[str, ...] = (),
+) -> ModelSpec:
+    """Create a side-by-side indicator-integrated spec from a registered base model.
+
+    The returned spec is not inserted into ``MODEL_REGISTRY`` automatically.
+    Future cycles can promote a variant only after benchmarks prove it; this
+    helper keeps the naming, parameter, and indicator contracts identical.
+    """
+    base_spec = get_model_spec(base_model_name)
+    if base_spec is None:
+        raise KeyError(f"unknown base model for indicator integration: {base_model_name}")
+    if base_spec.is_indicator_integrated:
+        raise ValueError("indicator-integrated variants must be built from a no-indicator control")
+    if not indicator_features:
+        raise ValueError("indicator_features must not be empty")
+
+    from models.indicator_state import channels_for_specs
+
+    indicator_channels = channels_for_specs(indicator_features)
+    name = make_indicator_integrated_model_name(base_model_name, indicator_key)
+    param_names = tuple(base_spec.param_names) + tuple(extra_param_names)
+    default_params = dict(base_spec.default_params)
+    for param in extra_param_names:
+        default_params.setdefault(param, 0.0)
+
+    return ModelSpec(
+        name=name,
+        family=base_spec.family,
+        support=base_spec.support,
+        n_params=base_spec.n_params + len(extra_param_names),
+        param_names=param_names,
+        default_params=default_params,
+        description=f"{base_spec.description} with indicator-integrated state: {indicator_key}",
+        grid_values=base_spec.grid_values,
+        is_augmentation=base_spec.is_augmentation,
+        model_variant="indicator_integrated",
+        base_model_name=base_spec.name,
+        indicator_features=tuple(indicator_features),
+        indicator_channels=indicator_channels,
+    )
+
+
+def assert_indicator_models_have_controls(tuned_model_names: Set[str], context: str = "") -> None:
+    """Assert every tuned indicator-integrated model has its base control present."""
+    missing_controls = {}
+    for name in tuned_model_names:
+        spec = get_model_spec(name)
+        if spec is None or not spec.is_indicator_integrated:
+            continue
+        if not spec.base_model_name or spec.base_model_name not in tuned_model_names:
+            missing_controls[name] = spec.base_model_name
+    if missing_controls:
+        msg = f"INDICATOR MODEL CONTROL MISSING{f' ({context})' if context else ''}\n"
+        for model_name, base_name in sorted(missing_controls.items()):
+            msg += f"Indicator model {model_name} requires control {base_name}\n"
+        raise AssertionError(msg)
 
 
 def get_all_model_names() -> Set[str]:
@@ -781,6 +890,9 @@ def extract_model_params_for_sampling(
         "momentum_weight", "gas_q_omega", "gas_q_alpha", "gas_q_beta",
         "hansen_activated", "hansen_lambda",
         "cst_activated", "cst_nu_crisis", "cst_epsilon",
+        "indicator_integrated", "model_variant", "base_model_name",
+        "ind_ha_drift_weight", "ind_ha_crps_before", "ind_ha_crps_after",
+        "ind_ha_pit_before", "ind_ha_pit_after",
     )
     for key in passthrough_params:
         if key not in result and key in fitted_params:

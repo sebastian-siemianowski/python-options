@@ -57,6 +57,7 @@ export function formatModelName(raw: string | undefined | null): string {
     }
     if (raw.includes('_two_piece'))  name += ' 2-Piece';
     if (raw.includes('_mixture'))    name += ' Mix';
+    if (raw.includes('_ind_heikin_ashi')) name += ' +HA';
     if (raw.includes('_momentum'))   name += ' +Mom';
 
     return name;
@@ -110,6 +111,7 @@ export function formatModelNameShort(raw: string | undefined | null): string {
     if (raw.includes('_vov'))     s += 'V';
     if (raw.includes('_two_piece')) s += '2P';
     if (raw.includes('_mixture')) s += 'x';
+    if (raw.includes('_ind_heikin_ashi')) s += 'HA';
     return s;
   }
 

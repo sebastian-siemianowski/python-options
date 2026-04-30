@@ -24,6 +24,34 @@ __all__ = [
 ]
 
 
+def _subset_indicator_bundle(indicator_bundle: Any, mask: np.ndarray) -> Any:
+    """Slice precomputed causal indicator state without recomputing history."""
+    if indicator_bundle is None:
+        return None
+    mask_arr = np.asarray(mask, dtype=bool)
+    if len(mask_arr) != getattr(indicator_bundle, "n_obs", len(mask_arr)):
+        raise ValueError(
+            f"indicator bundle length {getattr(indicator_bundle, 'n_obs', None)} "
+            f"does not match mask length {len(mask_arr)}"
+        )
+    try:
+        from models.indicator_state import IndicatorStateBundle, validate_indicator_state_bundle
+        sub_bundle = IndicatorStateBundle(
+            n_obs=int(np.sum(mask_arr)),
+            features={
+                key: np.asarray(value, dtype=np.float64)[mask_arr]
+                for key, value in indicator_bundle.features.items()
+            },
+            availability=dict(indicator_bundle.availability),
+            spec_names=tuple(indicator_bundle.spec_names),
+            source_columns=tuple(indicator_bundle.source_columns),
+        )
+        validate_indicator_state_bundle(sub_bundle)
+        return sub_bundle
+    except Exception:
+        return None
+
+
 def fit_regime_model_posterior(
     returns: np.ndarray,
     vol: np.ndarray,
@@ -38,6 +66,7 @@ def fit_regime_model_posterior(
     model_selection_method: str = DEFAULT_MODEL_SELECTION_METHOD,
     bic_weight: float = DEFAULT_BIC_WEIGHT,
     prices: np.ndarray = None,  # Added for MR integration (February 2026)
+    indicator_bundle: Any = None,  # Precomputed causal indicator state
     asset: str = None,  # FIX #4: Asset symbol for c-bounds detection
     gk_c_prior_value: float = None,  # Story 2.2: GK-informed c prior
 ) -> Dict[int, Dict]:
@@ -193,6 +222,7 @@ def fit_regime_model_posterior(
         # Extract regime-specific prices for MR integration (February 2026)
         prices_regime = prices[mask] if prices is not None else None
         regime_labels_regime = regime_labels[mask] if regime_labels is not None else None
+        indicator_bundle_regime = _subset_indicator_bundle(indicator_bundle, mask)
         
         # =====================================================================
         # Step 1: Fit ALL models for this regime
@@ -202,6 +232,7 @@ def fit_regime_model_posterior(
             prior_log_q_mean=prior_log_q_mean,
             prior_lambda=prior_lambda,
             prices=prices_regime,  # MR integration (February 2026)
+            indicator_bundle=indicator_bundle_regime,
             regime_labels=regime_labels_regime,
             asset=asset,  # FIX #4: Asset-class adaptive c bounds
             gk_c_prior_value=gk_c_prior_value,  # Story 2.2
@@ -564,6 +595,7 @@ def tune_regime_model_averaging(
     model_selection_method: str = DEFAULT_MODEL_SELECTION_METHOD,
     bic_weight: float = DEFAULT_BIC_WEIGHT,
     prices: np.ndarray = None,  # Added for MR integration (February 2026)
+    indicator_bundle: Any = None,  # Precomputed causal indicator state
     asset: str = None,  # FIX #4: Asset symbol for c-bounds detection
     gk_c_prior_value: float = None,  # Story 2.2: GK-informed c prior
 ) -> Dict:
@@ -628,6 +660,7 @@ def tune_regime_model_averaging(
         prior_log_q_mean=prior_log_q_mean,
         prior_lambda=prior_lambda,
         prices=prices,  # MR integration (February 2026)
+        indicator_bundle=indicator_bundle,
         regime_labels=regime_labels,
         asset=asset,  # FIX #4: Asset-class adaptive c bounds
         gk_c_prior_value=gk_c_prior_value,  # Story 2.2
@@ -887,6 +920,7 @@ def tune_regime_model_averaging(
         model_selection_method=model_selection_method,
         bic_weight=bic_weight,
         prices=prices,  # MR integration (February 2026)
+        indicator_bundle=indicator_bundle,
         asset=asset,  # FIX #4: Asset-class adaptive c bounds
     )
     

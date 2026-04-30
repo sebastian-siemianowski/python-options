@@ -350,6 +350,34 @@ def tune_asset_with_bma(
         n_stale = int(np.sum(np.abs(returns) <= _STALE_RETURN_THRESHOLD))
         if n_stale > 0:
             _log(f"     🧹  Filtered {n_stale}/{len(returns)} stale-price rows ({100*n_stale/len(returns):.1f}%)")
+
+        # Precompute causal indicator state once on the cleaned chronological
+        # series. Regime fitting receives slices of this bundle; it must not
+        # recompute recursive indicators on non-contiguous regime subsets.
+        indicator_bundle = None
+        try:
+            from models.indicator_state import (
+                IndicatorStateBundle,
+                build_heikin_ashi_bundle,
+                validate_indicator_state_bundle,
+            )
+            _ha_full = build_heikin_ashi_bundle(
+                open_[:min_len], high[:min_len], low[:min_len], close[:min_len],
+                lag=1,
+            )
+            indicator_bundle = IndicatorStateBundle(
+                n_obs=int(np.sum(valid_mask)),
+                features={
+                    key: np.asarray(value, dtype=np.float64)[:min_len][valid_mask]
+                    for key, value in _ha_full.features.items()
+                },
+                availability=dict(_ha_full.availability),
+                spec_names=tuple(_ha_full.spec_names),
+                source_columns=tuple(_ha_full.source_columns),
+            )
+            validate_indicator_state_bundle(indicator_bundle)
+        except Exception as e:
+            _log(f"     ⚠️  Heikin-Ashi indicator state unavailable: {e}")
         returns = returns[valid_mask]
         vol = vol[valid_mask]
 
@@ -443,6 +471,7 @@ def tune_asset_with_bma(
             previous_posteriors=previous_posteriors,  # Use provided previous posteriors
             lambda_regime=lambda_regime,
             prices=prices_array,  # MR integration (February 2026)
+            indicator_bundle=indicator_bundle,
             asset=asset,  # FIX #4: Asset-class adaptive c bounds
             gk_c_prior_value=_gk_c_prior_bma,  # Story 2.2
         )

@@ -560,6 +560,20 @@ def bayesian_model_average_mc(
     for _idx, _m_name in enumerate(_valid_model_names):
         _model_n_paths[_m_name] = int(_model_counts[_idx])
 
+    _ha_signal_now = 0.0
+    try:
+        _ha_series = feats.get("ha_drift_signal", pd.Series(dtype=float))
+        if isinstance(_ha_series, pd.Series) and not _ha_series.empty:
+            _ha_signal_now = float(_ha_series.dropna().iloc[-1])
+        elif _ha_series is not None:
+            _ha_arr = np.asarray(_ha_series, dtype=np.float64).reshape(-1)
+            if _ha_arr.size:
+                _ha_signal_now = float(_ha_arr[np.isfinite(_ha_arr)][-1])
+    except Exception:
+        _ha_signal_now = 0.0
+    if not np.isfinite(_ha_signal_now):
+        _ha_signal_now = 0.0
+
     for model_name, model_weight in model_posterior.items():
         model_params = models.get(model_name, {})
 
@@ -586,6 +600,11 @@ def bayesian_model_average_mc(
         # v7.6: Extract enriched params from tuned unified models
         variance_inflation_m = float(model_params.get('variance_inflation', 1.0))
         mu_drift_m = float(model_params.get('mu_drift', 0.0))
+        ind_ha_weight_m = float(model_params.get('ind_ha_drift_weight', 0.0))
+        ind_ha_mu_drift_m = 0.0
+        if model_params.get('indicator_integrated', False) and abs(ind_ha_weight_m) > 1e-12:
+            ind_ha_mu_drift_m = float(ind_ha_weight_m * _ha_signal_now * math.sqrt(max(sigma2_step, 1e-12)))
+            mu_drift_m += ind_ha_mu_drift_m
         alpha_asym_m = float(model_params.get('alpha_asym', 0.0))
         k_asym_m = float(model_params.get('k_asym', 2.0))
         risk_premium_m = float(model_params.get('risk_premium_sensitivity', 0.0))
@@ -795,6 +814,9 @@ def bayesian_model_average_mc(
             "garch_leverage": float(garch_leverage_m),
             "variance_inflation": float(variance_inflation_m),
             "mu_drift": float(mu_drift_m),
+            "indicator_integrated": bool(model_params.get('indicator_integrated', False)),
+            "ind_ha_drift_weight": float(ind_ha_weight_m),
+            "ind_ha_mu_drift": float(ind_ha_mu_drift_m),
             "alpha_asym": float(alpha_asym_m),
             "risk_premium": float(risk_premium_m),
             # v7.7: Tier-2 per-model params
@@ -885,4 +907,3 @@ def bayesian_model_average_mc(
 
     # Return soft regime probs dict for trust authority (not legacy array)
     return r_samples, vol_samples, soft_regime_probs, metadata
-

@@ -116,6 +116,202 @@ def _cached_test_pit_summary(diagnostics: Dict[str, Any]) -> Optional[Tuple[floa
         return None
 
 
+def _heikin_ashi_signal_from_bundle(indicator_bundle: Any, n_obs: int) -> Optional[np.ndarray]:
+    """Return the precomputed HA drift signal aligned to returns, or None."""
+    if indicator_bundle is None:
+        return None
+    if getattr(indicator_bundle, "n_obs", None) != n_obs:
+        return None
+    try:
+        from models.indicator_state import compute_heikin_ashi_drift_signal
+        signal = compute_heikin_ashi_drift_signal(indicator_bundle.features)
+        signal = np.asarray(signal, dtype=np.float64).reshape(-1)
+        if len(signal) != n_obs:
+            return None
+        signal = np.nan_to_num(signal, nan=0.0, posinf=0.0, neginf=0.0)
+        if np.max(np.abs(signal)) < 1e-8:
+            return None
+        return np.ascontiguousarray(signal, dtype=np.float64)
+    except Exception:
+        return None
+
+
+def _fit_heikin_ashi_student_t_variant(
+    *,
+    base_name: str,
+    base_model: Dict[str, Any],
+    model_cls: Any,
+    returns: np.ndarray,
+    vol: np.ndarray,
+    ha_signal: np.ndarray,
+    n_obs: int,
+    n_train: int,
+    vov_rolling: Optional[np.ndarray] = None,
+) -> Optional[Tuple[str, Dict[str, Any]]]:
+    """Fit a causal HA state-equation input beside a Student-t control.
+
+    The HA candidate learns one dimensionless coefficient only.  The actual
+    input is volatility-scaled so the drift perturbation is in returns units:
+    ``u_t = beta * sigma_t * ha_signal_t``.
+    """
+    if not base_model or not base_model.get("fit_success", False):
+        return None
+    if n_obs < 80 or n_train >= n_obs - 5:
+        return None
+    try:
+        q = float(base_model.get("q"))
+        c = float(base_model.get("c"))
+        phi = float(base_model.get("phi"))
+        nu = float(base_model.get("nu"))
+    except Exception:
+        return None
+    if not all(np.isfinite(x) for x in (q, c, phi, nu)) or q <= 0 or c <= 0 or nu <= 2:
+        return None
+
+    vol_arr = np.asarray(vol, dtype=np.float64)
+    signal_arr = np.asarray(ha_signal, dtype=np.float64)
+    if len(vol_arr) != n_obs or len(signal_arr) != n_obs:
+        return None
+    x = np.ascontiguousarray(signal_arr * np.maximum(vol_arr, 1e-10), dtype=np.float64)
+    if np.nanstd(x[n_train:]) < 1e-12:
+        return None
+
+    base_crps = float(base_model.get("crps", float("inf")))
+    base_pit = float(base_model.get("pit_ks_pvalue", 0.0) or 0.0)
+    base_bic = float(base_model.get("bic", float("inf")))
+    gamma_vov = float(base_model.get("gamma_vov", 0.0) or 0.0)
+    vov_for_filter = vov_rolling if gamma_vov > 1e-12 else None
+
+    weight_candidates = [-0.24, -0.16, -0.08, -0.04, -0.02, 0.02, 0.04, 0.08, 0.16, 0.24]
+    try:
+        x_train = x[:n_train]
+        r_train = np.asarray(returns[:n_train], dtype=np.float64)
+        valid = np.isfinite(x_train) & np.isfinite(r_train) & (np.abs(x_train) > 1e-12)
+        if int(np.sum(valid)) >= 40:
+            x_v = x_train[valid]
+            r_v = r_train[valid]
+            z = r_v / np.maximum(np.asarray(vol[:n_train], dtype=np.float64)[valid], 1e-10)
+            robust_w = 1.0 / (1.0 + np.minimum(z * z, 25.0) / max(nu, 2.5))
+            denom = float(np.sum(robust_w * x_v * x_v))
+            if denom > 1e-14:
+                beta_hat = float(np.sum(robust_w * x_v * r_v) / denom)
+                beta_hat = float(np.clip(beta_hat, -0.35, 0.35))
+                for mult in (0.35, 0.60, 0.85, 1.0, 1.20, 1.50):
+                    weight_candidates.append(beta_hat * mult)
+    except Exception:
+        pass
+    weight_grid = tuple(sorted({round(float(w), 6) for w in weight_candidates if abs(w) >= 1e-5}))
+    best = None
+    for weight in weight_grid:
+        try:
+            exogenous = x * float(weight)
+            _, _, mu_pred, S_pred, ll = model_cls.filter_phi_with_predictive(
+                returns, vol_arr, q, c, phi, nu,
+                exogenous_input=exogenous,
+                robust_wt=True,
+                gamma_vov=gamma_vov,
+                vov_rolling=vov_for_filter,
+            )
+            if not np.isfinite(ll):
+                continue
+            S_test = np.maximum(S_pred[n_train:], 1e-20)
+            if nu > 2:
+                forecast_scale = np.sqrt(S_test * (nu - 2.0) / nu)
+            else:
+                forecast_scale = np.sqrt(S_test)
+            forecast_scale = np.maximum(forecast_scale, 1e-10)
+            ret_test = returns[n_train:]
+            mu_test = mu_pred[n_train:]
+            crps = compute_crps_student_t_inline(ret_test, mu_test, forecast_scale, nu)
+            if not np.isfinite(crps):
+                continue
+            n_params = int(base_model.get("n_params", 4)) + 1
+            bic = compute_bic(ll, n_params, n_obs)
+            hyvarinen = compute_hyvarinen_score_student_t(ret_test, mu_test, forecast_scale, nu)
+            pit_ext = compute_extended_pit_metrics_student_t(
+                returns, vol_arr, q, c, phi, nu,
+                mu_pred_precomputed=mu_pred,
+                S_pred_precomputed=S_pred,
+            )
+            pit_p = float(pit_ext.get("pit_ks_pvalue", 0.0))
+            score = (
+                crps
+                + 0.0005 * max(0.0, -math.log10(max(pit_p, 1e-12)) - 1.0)
+                + 1e-7 * max(0.0, bic - base_bic)
+            )
+            candidate = (score, crps, pit_p, bic, hyvarinen, ll, n_params, weight, pit_ext)
+            if best is None or candidate[0] < best[0]:
+                best = candidate
+        except Exception:
+            continue
+
+    if best is None:
+        return None
+    score, crps, pit_p, bic, hyvarinen, ll, n_params, weight, pit_ext = best
+    crps_improved = np.isfinite(base_crps) and crps <= base_crps * 0.9975
+    pit_improved = pit_p >= max(0.05, base_pit * 1.25) and crps <= base_crps * 1.0025
+    bic_not_exploded = (not np.isfinite(base_bic)) or bic <= base_bic + 2.0 * math.log(max(n_obs, 2))
+    calibration_not_broken = (
+        pit_p >= 0.05
+        or base_pit < 0.05
+        or (np.isfinite(base_crps) and crps <= base_crps * 0.99)
+    )
+    if not bic_not_exploded or not calibration_not_broken or not (crps_improved or pit_improved):
+        return None
+
+    try:
+        from models.model_registry import make_indicator_integrated_model_name
+        variant_name = make_indicator_integrated_model_name(base_name, "heikin_ashi")
+    except Exception:
+        variant_name = f"{base_name}_ind_heikin_ashi"
+
+    variant = dict(base_model)
+    variant.update({
+        "log_likelihood": float(ll),
+        "mean_log_likelihood": float(ll / max(n_obs, 1)),
+        "bic": float(bic),
+        "aic": float(compute_aic(ll, n_params)),
+        "hyvarinen_score": float(hyvarinen),
+        "crps": float(crps),
+        "n_params": int(n_params),
+        "ks_statistic": float(pit_ext.get("ks_statistic", 1.0)),
+        "pit_ks_pvalue": float(pit_p),
+        "ad_pvalue": float(pit_ext.get("ad_pvalue", base_model.get("ad_pvalue", 0.0))),
+        "berkowitz_pvalue": float(pit_ext.get("berkowitz_pvalue", base_model.get("berkowitz_pvalue", 0.0))),
+        "berkowitz_lr": float(pit_ext.get("berkowitz_lr", base_model.get("berkowitz_lr", 0.0))),
+        "pit_count": int(pit_ext.get("pit_count", base_model.get("pit_count", 0))),
+        "histogram_mad": float(pit_ext.get("histogram_mad", base_model.get("histogram_mad", 1.0))),
+        "fit_success": True,
+        "indicator_integrated": True,
+        "model_variant": "indicator_integrated",
+        "base_model_name": base_name,
+        "indicator_features": ["heikin_ashi_state"],
+        "indicator_channels": ["mean"],
+        "ind_ha_drift_weight": float(weight),
+        "ind_ha_weight_grid": [float(w) for w in weight_grid],
+        "ind_ha_crps_before": float(base_crps),
+        "ind_ha_crps_after": float(crps),
+        "ind_ha_pit_before": float(base_pit),
+        "ind_ha_pit_after": float(pit_p),
+        "ind_ha_bic_before": float(base_bic),
+        "ind_ha_bic_after": float(bic),
+        "ind_ha_score": float(score),
+    })
+    diagnostics = dict(variant.get("diagnostics", {}) or {})
+    diagnostics["heikin_ashi_state_input"] = {
+        "base_model": base_name,
+        "weight": float(weight),
+        "crps_before": float(base_crps),
+        "crps_after": float(crps),
+        "pit_before": float(base_pit),
+        "pit_after": float(pit_p),
+        "bic_before": float(base_bic),
+        "bic_after": float(bic),
+    }
+    variant["diagnostics"] = diagnostics
+    return variant_name, variant
+
+
 # =============================================================================
 # ELITE TUNING DIAGNOSTICS HELPER (v2.0 - February 2026)
 # =============================================================================
@@ -381,6 +577,7 @@ def fit_all_models_for_regime(
     prior_log_q_mean: float = -6.0,
     prior_lambda: float = 1.0,
     prices: np.ndarray = None,  # Added for MR integration (February 2026)
+    indicator_bundle: Any = None,  # Precomputed causal indicator state
     regime_labels: np.ndarray = None,  # Added for regime-adaptive blending
     asset: str = None,  # FIX #4: Asset symbol for c-bounds detection
     gk_c_prior_value: float = None,  # Story 2.2: GK-informed c prior
@@ -404,6 +601,7 @@ def fit_all_models_for_regime(
         prior_log_q_mean: Prior mean for log10(q)
         prior_lambda: Regularization strength
         prices: Price array for MR equilibrium estimation (optional)
+        indicator_bundle: Precomputed causal indicator state aligned to returns (optional)
         regime_labels: Regime labels for adaptive blending (optional)
         asset: Asset symbol for c-bounds detection (FIX #4, optional)
 
@@ -535,6 +733,7 @@ def fit_all_models_for_regime(
     # VoV precomputation — shared across all ν (data-only, O(n))
     _vov_rolling = PhiStudentTDriftModel._precompute_vov(vol)
     _gamma_vov_fixed = 0.3
+    _ha_drift_signal = _heikin_ashi_signal_from_bundle(indicator_bundle, n_obs)
 
     # Pre-create momentum wrapper for internal CRPS comparison (if available)
     _st_momentum_wrapper = None
@@ -805,6 +1004,72 @@ def fit_all_models_for_regime(
                 models[_nu_mle_name] = _mle_model
             except Exception:
                 pass
+
+    # =========================================================================
+    # Model 1d: Heikin-Ashi state-equation drift variants (Cycle 103)
+    # =========================================================================
+    # These are not trading-rule overlays.  The HA signal is a one-parameter,
+    # volatility-scaled exogenous input in the latent drift equation.  We fit it
+    # beside the best no-indicator canonical and improved Student-t controls,
+    # and only admit it to BMA when it improves held-out CRPS or calibration
+    # without an excessive BIC cost.
+    # =========================================================================
+    if _ha_drift_signal is not None:
+        _n_train_ha = int(n_obs * 0.7)
+
+        def _best_control_name(candidate_names: List[str]) -> Optional[str]:
+            successful = [
+                name for name in candidate_names
+                if models.get(name, {}).get("fit_success", False)
+            ]
+            if not successful:
+                return None
+            return min(
+                successful,
+                key=lambda name: (
+                    float(models[name].get("crps", float("inf"))),
+                    float(models[name].get("bic", float("inf"))),
+                ),
+            )
+
+        _base_control = _best_control_name([make_student_t_name(nu) for nu in STUDENT_T_NU_GRID])
+        if _base_control is not None:
+            _ha_variant = _fit_heikin_ashi_student_t_variant(
+                base_name=_base_control,
+                base_model=models[_base_control],
+                model_cls=PhiStudentTDriftModel,
+                returns=returns,
+                vol=vol,
+                ha_signal=_ha_drift_signal,
+                n_obs=n_obs,
+                n_train=_n_train_ha,
+                vov_rolling=_vov_rolling,
+            )
+            if _ha_variant is not None:
+                _ha_name, _ha_model = _ha_variant
+                models[_ha_name] = _ha_model
+
+        if _improved_student_t_available and ImprovedPhiStudentTDriftModel is not None:
+            _improved_control = _best_control_name([
+                make_student_t_improved_name(nu) for nu in STUDENT_T_NU_GRID
+            ])
+            if _improved_control is not None:
+                _ha_variant = _fit_heikin_ashi_student_t_variant(
+                    base_name=_improved_control,
+                    base_model=models[_improved_control],
+                    model_cls=ImprovedPhiStudentTDriftModel,
+                    returns=returns,
+                    vol=vol,
+                    ha_signal=_ha_drift_signal,
+                    n_obs=n_obs,
+                    n_train=_n_train_ha,
+                    vov_rolling=_vov_rolling_improved,
+                )
+                if _ha_variant is not None:
+                    _ha_name, _ha_model = _ha_variant
+                    _ha_model["model_type"] = "phi_student_t_improved"
+                    _ha_model["implementation"] = "improved"
+                    models[_ha_name] = _ha_model
 
     # =========================================================================
     # Model 2: UNIFIED Phi-Student-t (February 2026 - Elite Architecture)

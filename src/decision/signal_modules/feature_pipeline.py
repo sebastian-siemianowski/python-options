@@ -145,6 +145,34 @@ def compute_features(
         fallback_floor = np.maximum(vol.rolling(252, min_periods=63).median() * 0.10, abs_floor)
         vol = np.maximum(vol, fallback_floor)
 
+    # Causal Heikin-Ashi state input for indicator-integrated model variants.
+    # The model stores only a dimensionless weight; inference recomputes the
+    # current lagged HA state and scales it by current volatility inside MC.
+    ha_drift_signal = pd.Series(0.0, index=ret.index, name="ha_drift_signal")
+    ha_indicator_available = False
+    if ohlc_df is not None and not ohlc_df.empty:
+        try:
+            from models.indicator_state import (
+                build_heikin_ashi_bundle,
+                compute_heikin_ashi_drift_signal,
+            )
+            cols = {c.lower(): c for c in ohlc_df.columns}
+            if all(c in cols for c in ("open", "high", "low", "close")):
+                ha_bundle = build_heikin_ashi_bundle(
+                    ohlc_df[cols["open"]].to_numpy(dtype=float),
+                    ohlc_df[cols["high"]].to_numpy(dtype=float),
+                    ohlc_df[cols["low"]].to_numpy(dtype=float),
+                    ohlc_df[cols["close"]].to_numpy(dtype=float),
+                    lag=1,
+                )
+                ha_signal_arr = compute_heikin_ashi_drift_signal(ha_bundle.features)
+                ha_signal_series = pd.Series(ha_signal_arr, index=ohlc_df.index)
+                ha_drift_signal = ha_signal_series.reindex(ret.index).fillna(0.0).rename("ha_drift_signal")
+                ha_indicator_available = True
+        except Exception:
+            ha_drift_signal = pd.Series(0.0, index=ret.index, name="ha_drift_signal")
+            ha_indicator_available = False
+
     # Vol regime (relative to 1y median) — kept for diagnostics, not for shrinkage
     vol_med = vol.rolling(252).median()
     vol_regime = vol / vol_med
@@ -366,10 +394,14 @@ def compute_features(
                     short = f'{prefix}(ν={nu_val})'
                     if is_momentum:
                         short += '+Mom'  # Legacy cache compatibility
+                    if '_ind_heikin_ashi' in base_name:
+                        short += '+HA'
                     family = 'student_t'
                     desc = f'Student-t family model with ν={nu_val}'
                     if is_momentum:
                         desc += ' (legacy momentum)'
+                    if '_ind_heikin_ashi' in base_name:
+                        desc += ' with Heikin-Ashi state input'
                     return {'short': short, 'desc': desc, 'family': family}
                 except ValueError:
                     pass
@@ -940,7 +972,7 @@ def compute_features(
     # Apply drift estimation based on best model selection
     # NOTE: In BMA architecture, "best_model" is used for Kalman filter params,
     # but actual predictions use weighted mixture over all models
-    if best_model in kalman_keys:
+    if best_model in kalman_keys or is_student_t_family_model_name(best_model):
         kf_result = _kalman_filter_drift(ret, vol, q=None, asset_symbol=asset_symbol)
 
         # Extract Kalman-filtered drift estimates
@@ -1162,9 +1194,13 @@ def compute_features(
         "mom63": mom63,
         "mom126": mom126,
         "mom252": mom252,
+        "ha_drift_signal": ha_drift_signal,
         # meta (not series)
         "vol_source": vol_source,
         "garch_params": garch_params,
+        "indicator_state_available": {
+            "heikin_ashi_state": bool(ha_indicator_available),
+        },
         # HMM regime detection
         "hmm_result": hmm_result,
         # Pillar 1: Kalman filter drift estimation

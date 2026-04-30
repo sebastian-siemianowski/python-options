@@ -427,6 +427,9 @@ def _load_tuned_kalman_params(asset_symbol: str, cache_path: str = "src/data/tun
         'momentum_weight', 'gas_q_omega', 'gas_q_alpha', 'gas_q_beta',
         'hansen_activated', 'hansen_lambda',
         'cst_activated', 'cst_nu_crisis', 'cst_epsilon',
+        'indicator_integrated', 'model_variant', 'base_model_name',
+        'ind_ha_drift_weight', 'ind_ha_crps_before', 'ind_ha_crps_after',
+        'ind_ha_pit_before', 'ind_ha_pit_after',
     ):
         if isinstance(best_params, dict) and param_key in best_params:
             result[param_key] = best_params.get(param_key)
