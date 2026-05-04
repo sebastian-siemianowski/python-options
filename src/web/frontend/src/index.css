@@ -1093,12 +1093,17 @@ button:active:not(:disabled) {
    SIGNAL TABLE VISUALS (S4.5) -- Badge & bar CSS classes
    ================================================================ */
 .momentum-badge {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 48px;
   font-size: 10px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   padding: 2px 8px;
   border-radius: var(--radius-md);
+  line-height: 1;
+  white-space: nowrap;
 }
 .momentum-badge[data-sentiment="positive"] {
   color: var(--accent-emerald);
@@ -1170,6 +1175,10 @@ button:active:not(:disabled) {
    FILTER PILLS (S4.1) -- Premium filter toggles
    ================================================================ */
 .filter-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
   padding: 6px 14px;
   border-radius: 100px;
   border: 1px solid var(--glass-border);
@@ -1179,6 +1188,8 @@ button:active:not(:disabled) {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
   transition: all 200ms cubic-bezier(0.16, 1, 0.3, 1);
 }

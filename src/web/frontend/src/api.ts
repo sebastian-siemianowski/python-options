@@ -43,11 +43,11 @@ export const api = {
   chartSymbols: () => fetchApi<{ symbols: string[]; count: number }>('/api/charts/symbols'),
   chartSymbolsBySector: () => fetchApi<ChartSectorData>('/api/charts/symbols-by-sector'),
   chartOhlcv: (symbol: string, tail = 365) =>
-    fetchApi<{ symbol: string; data: OHLCVBar[]; count: number }>(`/api/charts/ohlcv/${symbol}?tail=${tail}`),
+    fetchApi<{ symbol: string; data: OHLCVBar[]; count: number }>(`/api/charts/ohlcv/${encodeURIComponent(symbol)}?tail=${tail}`),
   chartIndicators: (symbol: string, tail = 365) =>
-    fetchApi<{ symbol: string; indicators: Indicators }>(`/api/charts/indicators/${symbol}?tail=${tail}`),
+    fetchApi<{ symbol: string; indicators: Indicators }>(`/api/charts/indicators/${encodeURIComponent(symbol)}?tail=${tail}`),
   chartForecast: (symbol: string) =>
-    fetchApi<ForecastData>(`/api/charts/forecast/${symbol}`),
+    fetchApi<ForecastData>(`/api/charts/forecast/${encodeURIComponent(symbol)}`),
   chartImages: () => fetchApi<{ images: ChartImage[]; count: number }>('/api/charts/images'),
 
   // Tuning

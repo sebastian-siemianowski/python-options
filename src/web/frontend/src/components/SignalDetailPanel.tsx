@@ -12,7 +12,7 @@
  *  - Zero chart leaks: chart.remove() always runs in cleanup.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   createChart,
   CandlestickSeries,
@@ -35,6 +35,7 @@ import { isHeikinAshiUp, toHeikinAshiBars } from '../utils/heikinAshi';
 
 type ChartType = 'candles' | 'line' | 'area';
 type RangeKey = '1M' | '3M' | '6M' | '1Y' | 'MAX';
+type ChartOhlcvResponse = { symbol: string; data: OHLCVBar[]; count: number };
 
 const RANGE_DAYS: Record<RangeKey, number> = {
   '1M': 22, '3M': 66, '6M': 132, '1Y': 252, 'MAX': 10000,
@@ -128,11 +129,13 @@ export default function SignalDetailPanel({
 }: SignalDetailPanelProps) {
   const [chartType, setChartType] = useState<ChartType>('candles');
   const [range, setRange] = useState<RangeKey>('3M');
+  const queryClient = useQueryClient();
 
   // Request a generous tail so range switches never require refetch.
   const { data, isLoading, error } = useQuery({
     queryKey: ['signalDetail', ticker],
     queryFn: () => api.chartOhlcv(ticker, 365),
+    placeholderData: () => queryClient.getQueryData<ChartOhlcvResponse>(['sparkline', ticker]),
     staleTime: 300_000,
   });
 
@@ -157,6 +160,8 @@ export default function SignalDetailPanel({
   const rangePct = firstBar && firstBar.close
     ? ((lastPrice - firstBar.close) / firstBar.close) * 100
     : 0;
+  const hasChartData = visibleBars.length >= 2;
+  const isInitialLoading = isLoading && !hasChartData;
 
   return (
     <div
@@ -277,9 +282,9 @@ export default function SignalDetailPanel({
           className="flex-1 relative"
           style={{ minWidth: 0, padding: '10px 6px 10px 14px' }}
         >
-          {isLoading ? (
+          {isInitialLoading ? (
             <ChartShimmer />
-          ) : error || visibleBars.length < 2 ? (
+          ) : !hasChartData ? (
             <ChartEmpty message={error ? 'Chart unavailable' : 'No data yet'} />
           ) : (
             <TradingViewChart bars={chartBars} chartType={chartType} key={`${ticker}-${chartType}-${range}`} />
@@ -601,6 +606,7 @@ function SegmentedToggle<T extends string>({
   // and positioned from the padding edge so it aligns pixel-perfect with buttons.
   const indicatorWidth = `calc((100% - ${pad * 2}px) / ${n})`;
   const indicatorLeft = `calc(${pad}px + ${activeIndex} * (100% - ${pad * 2}px) / ${n})`;
+  const minSegmentWidth = dense ? 44 : 112;
 
   return (
     <div
@@ -608,6 +614,7 @@ function SegmentedToggle<T extends string>({
       className="relative flex items-center select-none"
       style={{
         height: dense ? 24 : 26,
+        minWidth: minSegmentWidth * n + pad * 2,
         padding: pad,
         borderRadius: 999,
         background: 'rgba(255,255,255,0.03)',
@@ -647,7 +654,7 @@ function SegmentedToggle<T extends string>({
             className="relative flex items-center justify-center transition-colors duration-150"
             style={{
               flex: '1 1 0',
-              minWidth: 0,
+              minWidth: minSegmentWidth,
               height: '100%',
               padding: 0,
               fontSize: dense ? 9.5 : 10,
@@ -669,6 +676,7 @@ function SegmentedToggle<T extends string>({
               style={{
                 gap: 5,
                 padding: dense ? '0 12px' : '0 14px',
+                minWidth: 0,
               }}
             >
               {opt.icon && (
@@ -679,7 +687,7 @@ function SegmentedToggle<T extends string>({
                   {opt.icon}
                 </span>
               )}
-              <span style={{ transform: 'translateY(0.5px)' }}>{opt.label}</span>
+              <span style={{ transform: 'translateY(0.5px)', whiteSpace: 'nowrap' }}>{opt.label}</span>
             </span>
           </button>
         );

@@ -85,8 +85,12 @@ export function SignalLabel({ label }: { label: string }) {
   };
   return (
     <span
-      className="text-[10px] font-semibold px-2 py-0.5 rounded-md"
-      style={{ color: colorMap[label] || 'var(--text-muted)', background: bgMap[label] || 'transparent' }}
+      className="inline-flex items-center justify-center whitespace-nowrap text-[10px] font-semibold px-2.5 py-1 rounded-md leading-none"
+      style={{
+        color: colorMap[label] || 'var(--text-muted)',
+        background: bgMap[label] || 'transparent',
+        minWidth: label.includes('STRONG') ? 82 : 46,
+      }}
     >
       {label}
     </span>
