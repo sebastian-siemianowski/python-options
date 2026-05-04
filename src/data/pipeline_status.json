@@ -1,71 +1,21 @@
 {
-  "started_at": "2026-04-17T23:06:57.910865+00:00",
-  "completed_at": "2026-04-17T23:06:57.910880+00:00",
-  "total_duration_seconds": 1.2749806046485901e-05,
+  "started_at": "2026-05-02T02:10:06.919065+00:00",
+  "completed_at": "2026-05-02T02:10:06.919134+00:00",
+  "total_duration_seconds": 5.191657692193985e-05,
   "phases": {
     "prices": {
       "phase": "prices",
-      "status": "success",
-      "started_at": "2026-04-17T23:06:57.910868+00:00",
-      "completed_at": "2026-04-17T23:06:57.910870+00:00",
-      "duration_seconds": 3.3294782042503357e-07,
-      "assets_processed": 10,
-      "errors": [],
-      "details": {
-        "assets_processed": 10,
-        "errors": []
-      }
-    },
-    "tune": {
-      "phase": "tune",
-      "status": "warning",
-      "started_at": "2026-04-17T23:06:57.910872+00:00",
-      "completed_at": "2026-04-17T23:06:57.910875+00:00",
-      "duration_seconds": 1.8747523427009583e-06,
-      "assets_processed": 10,
+      "status": "error",
+      "started_at": "2026-05-02T02:10:06.919119+00:00",
+      "completed_at": "2026-05-02T02:10:06.919128+00:00",
+      "duration_seconds": 3.666616976261139e-06,
+      "assets_processed": 0,
       "errors": [
-        "fail_0",
-        "fail_1",
-        "fail_2",
-        "fail_3",
-        "fail_4",
-        "fail_5",
-        "fail_6",
-        "fail_7",
-        "fail_8",
-        "fail_9"
+        "Network error"
       ],
-      "details": {
-        "assets_processed": 10,
-        "errors": [
-          "fail_0",
-          "fail_1",
-          "fail_2",
-          "fail_3",
-          "fail_4",
-          "fail_5",
-          "fail_6",
-          "fail_7",
-          "fail_8",
-          "fail_9"
-        ],
-        "total_assets": 100
-      }
-    },
-    "signals": {
-      "phase": "signals",
-      "status": "success",
-      "started_at": "2026-04-17T23:06:57.910877+00:00",
-      "completed_at": "2026-04-17T23:06:57.910879+00:00",
-      "duration_seconds": 2.0908191800117493e-07,
-      "assets_processed": 10,
-      "errors": [],
-      "details": {
-        "assets_processed": 10,
-        "errors": []
-      }
+      "details": {}
     }
   },
-  "failed_phase": null,
-  "overall_status": "warning"
+  "failed_phase": "prices",
+  "overall_status": "error"
 }

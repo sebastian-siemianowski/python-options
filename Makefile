@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market chain chain-force chain-dry stocks tune-stocks options-tune options-tune-force options-tune-dry arena arena-data arena-tune arena-results arena-safe-storage arena-safe pit pit-metals pit-full pit-g metals-diag diag diag-pit diag-debug diag-refine verify verify-quick verify-signals verify-signals-quick verify-stocks calibrate-signals
+.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots rectify-indicators tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market chain chain-force chain-dry stocks tune-stocks options-tune options-tune-force options-tune-dry arena arena-data arena-tune arena-results arena-safe-storage arena-safe pit pit-metals pit-full pit-g metals-diag diag diag-pit diag-debug diag-refine verify verify-quick verify-signals verify-signals-quick verify-stocks calibrate-signals web-install web-install-worker redis web-worker web-backend web-frontend web-build web-free-ports web web-stop
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║                              MAKEFILE USAGE                                  ║
@@ -221,6 +221,9 @@ fx-validate-kalman-plots: .venv/.deps_installed
 	@echo "Running Kalman validation with diagnostic plots..."
 	@mkdir -p src/data/plots/kalman_validation
 	@.venv/bin/python src/decision/signals.py --validate-kalman --validation-plots $(ARGS)
+
+rectify-indicators: .venv/.deps_installed
+	@PYTHONPATH=src .venv/bin/python -m rectification.ohlcv_firewall $(ARGS)
 
 # Kalman q parameter tuning via MLE (with world-class UX)
 tune: .venv/.deps_installed
@@ -782,6 +785,8 @@ market: .venv/.deps_installed
 # WEB DASHBOARD (React + FastAPI)
 # ══════════════════════════════════════════════════════════════════════════════
 
+WEB_DASHBOARD_PORTS := 8000 5173
+
 # Install web dependencies (backend + frontend)
 web-install:
 	@echo "Installing backend dependencies..."
@@ -834,6 +839,26 @@ web-build:
 	@cd src/web/frontend && npm run build
 	@echo "✓ Frontend built to src/web/frontend/dist/"
 
+# Release dashboard ports held by stale reload/server child processes.
+web-free-ports:
+	@if command -v lsof >/dev/null 2>&1; then \
+		for port in $(WEB_DASHBOARD_PORTS); do \
+			pids="$$(lsof -tiTCP:$$port -sTCP:LISTEN 2>/dev/null | tr '\n' ' ')"; \
+			if [ -n "$$pids" ]; then \
+				echo "  Releasing port $$port ($$pids)"; \
+				kill $$pids 2>/dev/null || true; \
+			fi; \
+		done; \
+		sleep 1; \
+		for port in $(WEB_DASHBOARD_PORTS); do \
+			pids="$$(lsof -tiTCP:$$port -sTCP:LISTEN 2>/dev/null | tr '\n' ' ')"; \
+			if [ -n "$$pids" ]; then \
+				echo "  Force releasing port $$port ($$pids)"; \
+				kill -9 $$pids 2>/dev/null || true; \
+			fi; \
+		done; \
+	fi
+
 # Start all web services (backend + frontend + optional worker)
 web: .venv/.deps_installed
 	@if ! .venv/bin/python -c "import fastapi" 2>/dev/null; then \
@@ -845,7 +870,7 @@ web: .venv/.deps_installed
 	@-pkill -f "vite.*src/web/frontend" 2>/dev/null || true
 	@-pkill -f "node.*src/web/frontend" 2>/dev/null || true
 	@-pkill -f "celery.*web.backend" 2>/dev/null || true
-	@sleep 1
+	@$(MAKE) --no-print-directory web-free-ports
 	@echo "╔══════════════════════════════════════════════════════╗"
 	@echo "║         Signal Engine — Web Dashboard               ║"
 	@echo "╚══════════════════════════════════════════════════════╝"
@@ -858,9 +883,11 @@ web: .venv/.deps_installed
 	@echo "    make redis        # Start Redis (Docker)"
 	@echo "    make web-worker   # Celery background worker"
 	@echo ""
-	@trap 'echo ""; echo "Shutting down..."; kill 0; exit 0' INT TERM; \
+	@trap 'echo ""; echo "Shutting down..."; kill $$backend_pid $$frontend_pid 2>/dev/null || true; $(MAKE) --no-print-directory web-free-ports >/dev/null 2>&1 || true; exit 0' INT TERM; \
 	(cd src && ../.venv/bin/uvicorn web.backend.main:app --reload --port 8000) & \
+	backend_pid=$$!; \
 	(sleep 1 && cd src/web/frontend && npm run dev -- --host 0.0.0.0) & \
+	frontend_pid=$$!; \
 	wait
 
 # Stop web services
@@ -868,7 +895,9 @@ web-stop:
 	@echo "Stopping web services..."
 	@-pkill -f "uvicorn web.backend.main:app" 2>/dev/null || true
 	@-pkill -f "vite.*src/web/frontend" 2>/dev/null || true
+	@-pkill -f "node.*src/web/frontend" 2>/dev/null || true
 	@-pkill -f "celery.*web.backend" 2>/dev/null || true
+	@$(MAKE) --no-print-directory web-free-ports
 	@echo "✓ Web services stopped"
 
 # ── Indicators Backtesting ───────────────────────────────────────────────────

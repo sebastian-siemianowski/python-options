@@ -54,7 +54,7 @@ const rowHorizonColor = (row: SummaryRow): 'greens' | 'reds' | 'mixed' => {
 type ViewMode = 'all' | 'sectors' | 'strong';
 type SignalFilter = 'all' | 'bullish' | 'bearish' | 'greens' | 'reds' | 'strong_buy' | 'buy' | 'hold' | 'sell' | 'strong_sell';
 
-type SortColumn = 'asset' | 'sector' | 'signal' | 'momentum' | 'crash_risk' | `horizon_${number}`;
+type SortColumn = 'asset' | 'sector' | 'signal' | 'momentum' | 'quality' | 'crash_risk' | `horizon_${number}`;
 type SortDir = 'asc' | 'desc';
 
 /* ── Error Boundary ──────────────────────────────────────────────── */
@@ -437,6 +437,7 @@ function SignalsPageInner() {
         case 'sector': return (a.sector || '').localeCompare(b.sector || '');
         case 'signal': return signalRank(a.nearest_label || 'HOLD') - signalRank(b.nearest_label || 'HOLD');
         case 'momentum': return (a.momentum_score ?? 0) - (b.momentum_score ?? 0);
+        case 'quality': return (qualityScores[extractTicker(a.asset_label)] ?? 50) - (qualityScores[extractTicker(b.asset_label)] ?? 50);
         case 'crash_risk': return (a.crash_risk_score ?? 0) - (b.crash_risk_score ?? 0);
         default:
           if (col.startsWith('horizon_')) {
@@ -454,7 +455,7 @@ function SignalsPageInner() {
       return 0;
     });
     return arr;
-  }, [filteredRows, sortLevels]);
+  }, [filteredRows, sortLevels, qualityScores]);
 
   /** Story 3.2: Handle sort click. Shift+Click adds secondary sort, plain click replaces. Triple-click on same column removes it. */
   const handleSort = useCallback((col: SortColumn, shiftKey: boolean) => {
@@ -2146,7 +2147,7 @@ function WatchlistView({
   type WlClass = 'bullish' | 'bearish' | 'neutral';
   type WlColor = 'greens' | 'reds' | 'mixed';
   type WlSignal = 'all' | WlClass | WlColor;
-  type WlSort = 'signal' | 'momentum' | 'risk' | 'alpha';
+  type WlSort = 'signal' | 'momentum' | 'quality' | 'risk' | 'alpha';
   const [wlSignal, setWlSignal] = useState<WlSignal>('all');
   const [wlSector, setWlSector] = useState<string>('all');
   const [wlQuery, setWlQuery] = useState<string>('');
@@ -2291,13 +2292,15 @@ function WatchlistView({
       sorted.sort((a, b) => signalRank(a) - signalRank(b) || (a.asset_label || '').localeCompare(b.asset_label || ''));
     } else if (wlSort === 'momentum') {
       sorted.sort((a, b) => (b.momentum_score ?? -Infinity) - (a.momentum_score ?? -Infinity));
+    } else if (wlSort === 'quality') {
+      sorted.sort((a, b) => (qualityScores[extractTicker(b.asset_label)] ?? -Infinity) - (qualityScores[extractTicker(a.asset_label)] ?? -Infinity));
     } else if (wlSort === 'risk') {
       sorted.sort((a, b) => (a.crash_risk_score ?? Infinity) - (b.crash_risk_score ?? Infinity));
     } else {
       sorted.sort((a, b) => (a.asset_label || '').localeCompare(b.asset_label || ''));
     }
     return sorted;
-  }, [watchlistRows, wlSignal, wlSector, wlQuery, wlSort, wlMissingOnly, wlSortOverride, classifyRow]);
+  }, [watchlistRows, wlSignal, wlSector, wlQuery, wlSort, wlMissingOnly, wlSortOverride, classifyRow, qualityScores]);
 
   // Wrap the parent's `onSort` so a column-header click inside the watchlist
   // table also flips the override flag. The parent handler still runs so the
@@ -3496,6 +3499,7 @@ function WatchlistView({
                 >
                   <option value="signal">Sort: Signal (best first)</option>
                   <option value="momentum">Sort: Momentum</option>
+                  <option value="quality">Sort: Quality</option>
                   <option value="risk">Sort: Risk (low first)</option>
                   <option value="alpha">Sort: Alphabetical</option>
                 </select>
@@ -3635,7 +3639,7 @@ function SortIndicator({ col, sortLevels }: { col: SortColumn; sortLevels: { col
 /** Story 3.2: Human-readable sort column name */
 function sortColName(col: SortColumn): string {
   if (col.startsWith('horizon_')) return formatHorizon(parseInt(col.split('_')[1], 10));
-  const names: Record<string, string> = { asset: 'Asset', sector: 'Sector', signal: 'Signal', momentum: 'Momentum', crash_risk: 'Risk' };
+  const names: Record<string, string> = { asset: 'Asset', sector: 'Sector', signal: 'Signal', momentum: 'Momentum', quality: 'Quality', crash_risk: 'Risk' };
   return names[col] || col;
 }
 
@@ -3805,8 +3809,10 @@ function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRe
                 </th>
               )}
               {visibleCols.has('quality') && (
-                <th className="text-center px-2 py-3 w-[56px]">
-                  <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-[0.06em] font-medium">Quality</span>
+                <th className={`text-center px-3 py-3 sortable-th group w-[72px] ${sortLevels.some(s => s.col === 'quality') ? 'active' : ''}`}
+                    style={sortLevels.some(s => s.col === 'quality') ? { color: 'var(--accent-violet)', textShadow: '0 0 8px var(--violet-30)' } : {}}
+                    onClick={(e) => onSort('quality', e.shiftKey)}>
+                  Quality <SortIndicator col="quality" sortLevels={sortLevels} />
                 </th>
               )}
               {visibleCols.has('risk') && (

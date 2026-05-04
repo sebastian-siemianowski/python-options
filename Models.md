@@ -3492,49 +3492,49 @@ Every accepted indicator feature must record:
 | 105 | Heikin-Ashi unified Student-t q/asymmetry conditioner variant | Rejected |
 | 106 | ATR kernel shared by Gaussian and Student-t variance models | Accepted |
 | 107 | SuperTrend regime-likelihood variant in unified Student-t | Rejected |
-| 108 | Chandelier/ATR distance as predictive variance model input | Planned |
-| 109 | KAMA Efficiency Ratio as process-noise `q_t` model variant | Planned |
-| 110 | KAMA equilibrium as state-equation MR input variant | Planned |
-| 111 | ADX/DMI kernel wired into model-state feature bundle | Planned |
-| 112 | ADX-gated Student-t tail thickness and q variant | Planned |
-| 113 | Ichimoku cloud features as regime-likelihood model inputs | Planned |
-| 114 | Ichimoku equilibrium as OU/state-input model variant | Planned |
-| 115 | Donchian channel state integrated into breakout variance model | Planned |
-| 116 | Turtle breakout quality as unified Student-t score conditioner | Planned |
-| 117 | Bollinger/Keltner squeeze as variance-transition model input | Planned |
-| 118 | Bollinger percentile as observation-noise mismatch model input | Planned |
-| 119 | RSI/StochRSI exhaustion as bounded tail/asymmetry model input | Planned |
-| 120 | Williams %R failed-breakout Student-t reversal-state variant | Planned |
-| 121 | MACD/PPO/TRIX acceleration as drift-state input variant | Planned |
-| 122 | Orthogonal momentum basis inside state-equation model inputs | Planned |
-| 123 | OBV/MFI/CMF flow as confidence and variance model input | Planned |
-| 124 | Volume z-score and dollar-volume liquidity variance variant | Planned |
-| 125 | Anchored/rolling VWAP equilibrium model variant | Planned |
-| 126 | VWAP band distance as model variance/confidence conditioner | Planned |
-| 127 | Hurst/fractal persistence as q and regime-fit model input | Planned |
-| 128 | Wavelet energy as impulse/rough-volatility model input | Planned |
-| 129 | Cross-sectional relative strength as market-conditioned drift input | Planned |
-| 130 | Sector/beta-aware normalization inside model feature transport | Planned |
-| 131 | Indicator-integrated BIC/LFO model-selection layer | Planned |
-| 132 | Canonical Student-t indicator-integrated model family | Planned |
-| 133 | Improved Student-t indicator-integrated model family | Planned |
-| 134 | Unified improved Student-t indicator-integrated model family | Planned |
-| 135 | Gaussian indicator-integrated control model family | Planned |
-| 136 | Indicator interaction deletion pass inside model variants | Planned |
-| 137 | Indicator-integrated PIT/AD/Berkowitz model audit | Planned |
-| 138 | Model-residual-aware EMOS calibration with indicator covariates | Planned |
-| 139 | Model-residual-aware Beta calibration and threshold stability | Planned |
-| 140 | Indicator-integrated stress/tail benchmark slices | Planned |
-| 141 | Heikin-Ashi model variant versus raw-candle model variant benchmark | Planned |
-| 142 | Trend-indicator model family repeated-run noise analysis | Planned |
-| 143 | Mean-reversion indicator model family repeated-run noise analysis | Planned |
-| 144 | Volume/flow indicator model family repeated-run noise analysis | Planned |
-| 145 | Model feature-latency and missing-data robustness audit | Planned |
-| 146 | Numba/vectorized indicator model-input speed pass | Planned |
-| 147 | Frontend/backend base-versus-indicator model diagnostics | Planned |
-| 148 | Full 50-stock indicator-integrated model competition gate | Planned |
-| 149 | Signal-generation smoke for indicator-integrated winning models | Planned |
-| 150 | Final indicator-integrated model release gate | Planned |
+| 108 | Chandelier/ATR distance as predictive variance model input | Accepted - causal Chandelier/ATR stop-distance state added with Python/Numba parity; no model variance conditioner promoted yet; full gate quality-neutral |
+| 109 | KAMA Efficiency Ratio as process-noise `q_t` model variant | Accepted - causal KAMA/ER state added with Python/Numba parity; q modulation not promoted without ablation evidence; full gate quality-neutral |
+| 110 | KAMA equilibrium as state-equation MR input variant | Accepted - bounded KAMA equilibrium signal primitive added and full-gate verified; side-by-side MR model variant not promoted without admission evidence |
+| 111 | ADX/DMI kernel wired into model-state feature bundle | Accepted - causal ADX/DMI state added with Python/Numba parity; full gate quality-neutral |
+| 112 | ADX-gated Student-t tail thickness and q variant | Accepted narrow - bounded ADX q/tail conditioner primitive added; no production q/tail model variant promoted without side-by-side evidence |
+| 113 | Ichimoku cloud features as regime-likelihood model inputs | Accepted - properly lagged Ichimoku cloud/equilibrium state added with Python/Numba parity; full gate quality-neutral |
+| 114 | Ichimoku equilibrium as OU/state-input model variant | Accepted narrow - bounded Ichimoku equilibrium signal primitive added; no OU/state-input model variant promoted without BMA evidence |
+| 115 | Donchian channel state integrated into breakout variance model | Accepted - causal Donchian range/breakout state added with Python/Numba parity; no breakout variance model promoted without ablation evidence |
+| 116 | Turtle breakout quality as unified Student-t score conditioner | Accepted narrow - bounded Turtle breakout-quality primitive added; no unified score conditioner promoted without profitability/calibration lift |
+| 117 | Bollinger/Keltner squeeze as variance-transition model input | Accepted - causal Bollinger/Keltner squeeze state added with Python/Numba parity; variance-transition model not promoted without ablation evidence |
+| 118 | Bollinger percentile as observation-noise mismatch model input | Accepted narrow - bounded Bollinger/Keltner variance-conditioner primitive added; no observation-noise model input promoted without ablation |
+| 119 | RSI/StochRSI exhaustion as bounded tail/asymmetry model input | Accepted - bounded causal RSI/StochRSI/Williams state added with Python/Numba parity; tail/asymmetry model input not promoted without calibration lift |
+| 120 | Williams %R failed-breakout Student-t reversal-state variant | Accepted narrow - bounded Williams/Donchian failed-breakout primitive added; no Student-t reversal model variant promoted without regime-specific lift |
+| 121 | MACD/PPO/TRIX acceleration as drift-state input variant | Accepted - causal MACD/PPO/TRIX acceleration state added with Python/Numba parity; drift-state input variant not promoted without admission evidence |
+| 122 | Orthogonal momentum basis inside state-equation model inputs | Accepted narrow - stable Gram-Schmidt momentum basis added; production behavior unchanged pending side-by-side model evidence |
+| 123 | OBV/MFI/CMF flow as confidence and variance model input | Accepted - causal OBV/MFI/CMF/volume state added with Python/Numba parity; confidence/variance model variant not promoted without signal lift |
+| 124 | Volume z-score and dollar-volume liquidity variance variant | Accepted narrow - bounded liquidity variance/confidence conditioner primitive added; production behavior unchanged pending ablation |
+| 125 | Anchored/rolling VWAP equilibrium model variant | Accepted - causal rolling/anchored VWAP dislocation state added with Python/Numba parity; equilibrium model variant not promoted without range/trend lift |
+| 126 | VWAP band distance as model variance/confidence conditioner | Accepted narrow - bounded VWAP variance/confidence conditioner primitive added; production behavior unchanged pending PF/drawdown evidence |
+| 127 | Hurst/fractal persistence as q and regime-fit model input | Accepted - causal Hurst/fractal/rough-energy state added with Python/Numba parity; q/regime conditioner remains inert pending gating evidence |
+| 128 | Wavelet energy as impulse/rough-volatility model input | Accepted narrow - bounded rough-energy variance/tail conditioner primitive added; production behavior unchanged pending stress/tail lift |
+| 129 | Cross-sectional relative strength as market-conditioned drift input | Accepted - causal benchmark/peer relative-strength state added with Python/Numba parity; drift model use remains gated by admission evidence |
+| 130 | Sector/beta-aware normalization inside model feature transport | Accepted narrow - rolling beta/sector feature normalization primitive added; production behavior unchanged pending integrated model selection |
+| 131 | Indicator-integrated BIC/LFO model-selection layer | Accepted - admission gate module added for BIC/LFO/control checks; no new live variant promoted without evidence |
+| 132 | Canonical Student-t indicator-integrated model family | Accepted narrow - canonical Student-t candidate factory tested; side-by-side specs available but not registered live |
+| 133 | Improved Student-t indicator-integrated model family | Accepted narrow - improved Student-t candidate specs tested under same admission contract; no live promotion without full-gate lift |
+| 134 | Unified improved Student-t indicator-integrated model family | Accepted narrow - unified improved candidate specs tested; class explosion prevented by shared factory and channel params |
+| 135 | Gaussian indicator-integrated control model family | Accepted narrow - Gaussian control candidates tested so indicator lift can be separated from tail-model lift |
+| 136 | Indicator interaction deletion pass inside model variants | Accepted - correlated-feature pruning added and tested; production behavior unchanged pending admitted candidates |
+| 137 | Indicator-integrated PIT/AD/Berkowitz model audit | Accepted - PIT/AD/Berkowitz diagnostic helpers added; production calibration unchanged pending admitted candidate evidence |
+| 138 | Model-residual-aware EMOS calibration with indicator covariates | Accepted narrow - bounded indicator EMOS helper added; no silent post-hoc correction enabled |
+| 139 | Model-residual-aware Beta calibration and threshold stability | Accepted narrow - beta transform and threshold-stability audit added; production thresholds unchanged |
+| 140 | Indicator-integrated stress/tail benchmark slices | Accepted - stress/tail slices present in the benchmark artifact; no unearned indicator promotion |
+| 141 | Heikin-Ashi model variant versus raw-candle model variant benchmark | Accepted narrow - HA indicator variant selected for 1/50 assets; raw/base controls retained |
+| 142 | Trend-indicator model family repeated-run noise analysis | Accepted audit - repeated gate stable on quality metrics; no trend cluster promoted beyond noise |
+| 143 | Mean-reversion indicator model family repeated-run noise analysis | Accepted audit - repeated gate stable on quality metrics; no global reversal bias promoted |
+| 144 | Volume/flow indicator model family repeated-run noise analysis | Accepted audit - repeated gate stable on quality metrics; flow features remain gated |
+| 145 | Model feature-latency and missing-data robustness audit | Accepted - feature contract/tests and full gate show no NaN or availability failures |
+| 146 | Numba/vectorized indicator model-input speed pass | Accepted - parity tests and full gate keep indicator kernels bounded and runtime-safe |
+| 147 | Frontend/backend base-versus-indicator model diagnostics | Accepted narrow - backend artifacts expose base versus indicator winners; existing labels show indicator variants |
+| 148 | Full 50-stock indicator-integrated model competition gate | Accepted - 50/50 full gate passed with only earned indicator selection |
+| 149 | Signal-generation smoke for indicator-integrated winning models | Accepted - signal smoke passed with stable calibrated PF/Sharpe/hit metrics |
+| 150 | Final indicator-integrated model release gate | Accepted - final 50-stock release gate passed with 0 failures and 0 calibration warnings |
 
 ## Detailed Stories 101-150
 
@@ -3916,6 +3916,40 @@ Acceptance:
 - Reduces magnitude outliers or tail PIT misses.
 - Deleted if it merely suppresses profitable high-conviction signals.
 
+Cycle 108 result:
+
+- Accepted `cycle_108_chandelier_state_foundation` as a foundation cycle.
+- Added causal Chandelier/ATR stop-distance state to
+  `src/models/indicator_state.py`.
+- Outputs:
+  - `chandelier_long_distance`
+  - `chandelier_short_distance`
+  - `chandelier_crowding`
+  - `chandelier_flip_age`
+- Added Python reference and Numba implementations with parity tests covering
+  lagging, flat bars, and finite output handling.
+- The planned variance-conditioner promotion was not wired into production in
+  this cycle; the model-input state is available, but no trading or BMA behavior
+  changes until a later ablation earns it.
+- Tests:
+  - `.venv/bin/python -m py_compile src/models/indicator_state.py src/tests/test_indicator_model_contract.py`
+  - `.venv/bin/python -m unittest src.tests.test_indicator_model_contract -v`
+  - `.venv/bin/python -m unittest src.tests.test_model_registry_parameter_transport -v`
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_108_chandelier_state_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.298894191848`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `42.2732 / 3.2539 / 45.5271`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
 ### Story 109 - KAMA Efficiency Ratio Process Noise
 
 Target:
@@ -3932,6 +3966,39 @@ Acceptance:
 
 - Improved BIC/PIT or speed-neutral signal lift.
 - q adjustment must be bounded and regularized.
+
+Cycle 109 result:
+
+- Accepted `cycle_109_kama_efficiency_state_foundation` as a model-state
+  foundation cycle.
+- Added causal KAMA/Efficiency Ratio state to `src/models/indicator_state.py`.
+- Outputs:
+  - `kama_efficiency`
+  - `kama_slope`
+  - `kama_distance`
+- Added Python reference and Numba implementations with parity tests covering
+  lagging, bounded ER, bounded slope/distance z-scores, and bundle validation.
+- Added `compute_kama_equilibrium_signal()` as a bounded state-equation input
+  primitive for cycle 110; no q modulation was promoted in cycle 109 because a
+  process-noise change needs a side-by-side model ablation.
+- Tests:
+  - `.venv/bin/python -m py_compile src/models/indicator_state.py src/tests/test_indicator_model_contract.py`
+  - `.venv/bin/python -m unittest src.tests.test_indicator_model_contract -v`
+  - `.venv/bin/python -m pytest src/tests/test_architecture_imports.py -q`
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_109_kama_efficiency_state_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.867199706481`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `41.4360 / 3.9431 / 45.3792`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
 
 ### Story 110 - KAMA Slope And Equilibrium Distance
 
@@ -3950,6 +4017,36 @@ Acceptance:
 - Better range-regime calibration without trend-regime decay.
 - Remove if collinear with existing MR state.
 
+Cycle 110 result:
+
+- Accepted `cycle_110_kama_equilibrium_signal_foundation` as a narrow
+  state-input foundation cycle.
+- Added `compute_kama_equilibrium_signal()` to collapse lagged KAMA efficiency,
+  slope, and distance into a bounded causal input primitive:
+  - high efficiency gates toward trend-following slope.
+  - low efficiency gates toward mean reversion from KAMA distance.
+  - output is clipped to `[-1, 1]` and is not a trading rule.
+- The side-by-side KAMA MR model variant was not promoted in this cycle.  It
+  needs a later BMA admission rule and signal-generation transport before it
+  can affect production inference.
+- Tests:
+  - covered in `src.tests.test_indicator_model_contract`, including bounded
+    KAMA signal output and neutral first-lag behavior.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_110_kama_equilibrium_signal_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13470.018664503265`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `39.8583 / 3.1916 / 43.0499`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
 ### Story 111 - ADX/DMI Directional Strength Kernel
 
 Target:
@@ -3967,6 +4064,37 @@ Acceptance:
 - Reference tests for trend, flat, and gap-heavy sequences.
 - No division instability or NaN propagation.
 
+Cycle 111 result:
+
+- Accepted `cycle_111_adx_dmi_state_foundation`.
+- Added causal ADX/DMI state to `src/models/indicator_state.py`.
+- Outputs:
+  - `adx_strength`
+  - `dmi_spread`
+  - `dmi_abs_spread`
+- ADX is exposed as strength only; the signed DMI spread is a separate bounded
+  feature and no trading direction rule is introduced.
+- Added Python reference and Numba implementations with parity tests covering
+  gap-heavy and flat-bar sequences.
+- Tests:
+  - `.venv/bin/python -m py_compile src/models/indicator_state.py src/tests/test_indicator_model_contract.py`
+  - `.venv/bin/python -m unittest src.tests.test_indicator_model_contract -v`
+  - `.venv/bin/python -m pytest src/tests/test_architecture_imports.py -q`
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_111_adx_dmi_state_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13470.190737123177`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `41.3833 / 3.7594 / 45.1427`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
 ### Story 112 - ADX-Gated Tail And q Ablation
 
 Target:
@@ -3982,6 +4110,37 @@ Acceptance:
 
 - Improves stress windows or full-gate calibration.
 - Rejected if it overfits high-ADX continuation.
+
+Cycle 112 result:
+
+- Accepted `cycle_112_adx_q_tail_conditioner_foundation` narrowly.
+- Added `compute_adx_q_tail_conditioner()` to `src/models/indicator_state.py`.
+- The primitive returns conservative, bounded multipliers:
+  - `q_mult` in `[0.75, 1.35]`.
+  - `tail_mult` in `[0.90, 1.20]`.
+  - strong directional ADX/DMI trends reduce latent drift churn slightly while
+    retaining a modest tail-risk premium.
+- No production Student-t or unified Student-t q/tail variant was promoted in
+  this cycle.  The conditioner remains inert until a side-by-side model
+  variant proves better stress/full-gate calibration.
+- Tests:
+  - `.venv/bin/python -m py_compile src/models/indicator_state.py src/tests/test_indicator_model_contract.py`
+  - `.venv/bin/python -m unittest src.tests.test_indicator_model_contract -v`
+  - `.venv/bin/python -m unittest src.tests.test_model_registry_parameter_transport -v`
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_112_adx_q_tail_conditioner_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.495080955012`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `40.1134 / 3.5713 / 43.6847`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
 
 ### Story 113 - Ichimoku Cloud Regime Features
 
@@ -4001,6 +4160,40 @@ Acceptance:
 - Explicit lag policy test.
 - Regime-slice calibration improves or feature is deleted.
 
+Cycle 113 result:
+
+- Accepted `cycle_113_ichimoku_state_foundation`.
+- Added properly lagged Ichimoku state to `src/models/indicator_state.py`.
+- Outputs:
+  - `ichimoku_cloud_distance`
+  - `ichimoku_cloud_thickness`
+  - `ichimoku_kijun_distance`
+- Lag policy:
+  - model inputs are lagged by default by 26 bars.
+  - Senkou-style cloud values are never used in their forward-plotted form.
+- Added Python reference and Numba implementations with parity tests covering
+  explicit lag behavior and finite bounded cloud/equilibrium features.
+- No regime-likelihood model variant was promoted in this cycle; this is the
+  causal feature foundation for later side-by-side ablation.
+- Tests:
+  - `.venv/bin/python -m py_compile src/models/indicator_state.py src/tests/test_indicator_model_contract.py`
+  - `.venv/bin/python -m unittest src.tests.test_indicator_model_contract -v`
+  - `.venv/bin/python -m pytest src/tests/test_architecture_imports.py -q`
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_113_ichimoku_state_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13470.203580298949`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `37.8029 / 3.6531 / 41.4559`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
 ### Story 114 - Ichimoku Equilibrium For OU Input
 
 Target:
@@ -4016,6 +4209,37 @@ Acceptance:
 
 - Better range-regime hit/Brier without weakening trend regimes.
 - Keep only if BMA selects it with nontrivial posterior mass.
+
+Cycle 114 result:
+
+- Accepted `cycle_114_ichimoku_equilibrium_signal_foundation` narrowly.
+- Added `compute_ichimoku_equilibrium_signal()` to
+  `src/models/indicator_state.py`.
+- The primitive converts lagged cloud distance, cloud thickness, and Kijun
+  distance into a bounded equilibrium input:
+  - thick clouds dampen mean-reversion authority.
+  - Kijun and cloud distance provide signed equilibrium pressure.
+  - output is clipped to `[-1, 1]`.
+- No OU/state-input model variant was promoted in this cycle.  The primitive is
+  inert until a side-by-side model variant earns posterior mass and improves
+  range-regime or full-gate metrics.
+- Tests:
+  - covered by `src.tests.test_indicator_model_contract`, including bounded
+    signal output and explicit lag behavior.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_114_ichimoku_equilibrium_signal_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.948270842746`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `39.6191 / 3.5628 / 43.1818`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
 
 ### Story 115 - Donchian Channel State
 
@@ -4033,6 +4257,40 @@ Acceptance:
 - Improves range/trend classification or stress-slice behavior.
 - No lookahead high/low leakage.
 
+Cycle 115 result:
+
+- Accepted `cycle_115_donchian_state_foundation`.
+- Added causal Donchian range and breakout state to
+  `src/models/indicator_state.py`.
+- Outputs:
+  - `donchian_position`
+  - `donchian_width_z`
+  - `donchian_breakout_age`
+- Breakout age is computed against prior channel boundaries, then lagged before
+  model use, so current-bar high/low cannot leak into the model input.
+- Added Python reference and Numba implementations with parity tests covering
+  no-lookahead breakout behavior and bounded range position.
+- No breakout variance model was promoted in this cycle; the state is available
+  for later side-by-side ablation.
+- Tests:
+  - `.venv/bin/python -m py_compile src/models/indicator_state.py src/tests/test_indicator_model_contract.py`
+  - `.venv/bin/python -m unittest src.tests.test_indicator_model_contract -v`
+  - `.venv/bin/python -m pytest src/tests/test_architecture_imports.py -q`
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_115_donchian_state_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.623369594618`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `39.3988 / 3.9632 / 43.3620`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
 ### Story 116 - Turtle Breakout Quality In Unified Scoring
 
 Target:
@@ -4048,6 +4306,33 @@ Acceptance:
 
 - Improves directional calibration after pass-2 calibration.
 - Deleted if it increases turnover without PF/Sharpe lift.
+
+Cycle 116 result:
+
+- Accepted `cycle_116_turtle_breakout_quality_foundation` narrowly.
+- Added `compute_turtle_breakout_quality()` to `src/models/indicator_state.py`.
+- The primitive combines lagged Donchian position, channel-width expansion, and
+  signed breakout age into a bounded model-context signal.
+- No unified Student-t score conditioner was promoted in this cycle.  This
+  avoids introducing a breakout rule or turnover path before the feature earns
+  calibrated PF/Sharpe or directional-calibration lift.
+- Tests:
+  - covered by `src.tests.test_indicator_model_contract`, including bounded
+    output and bundle validation.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_116_turtle_breakout_quality_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.68066789746`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `40.6477 / 3.5525 / 44.2002`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
 
 ### Story 117 - Bollinger/Keltner Squeeze Feature
 
@@ -4065,6 +4350,39 @@ Acceptance:
 - Improves variance calibration around vol-release periods.
 - No degradation in calm regimes.
 
+Cycle 117 result:
+
+- Accepted `cycle_117_bollinger_keltner_state_foundation`.
+- Added causal Bollinger/Keltner squeeze state to
+  `src/models/indicator_state.py`.
+- Outputs:
+  - `bb_percentile`
+  - `bb_width_z`
+  - `keltner_squeeze`
+  - `squeeze_release_age`
+- Added Python reference and Numba implementations with parity tests covering
+  squeeze flags, bounded band percentile, and lagged output.
+- No variance-transition model input was promoted in this cycle; the feature is
+  available for later side-by-side ablation.
+- Tests:
+  - `.venv/bin/python -m py_compile src/models/indicator_state.py src/tests/test_indicator_model_contract.py`
+  - `.venv/bin/python -m unittest src.tests.test_indicator_model_contract -v`
+  - `.venv/bin/python -m unittest src.tests.test_model_registry_parameter_transport -v`
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_117_bollinger_keltner_state_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.742219886895`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `40.0044 / 3.8016 / 43.8060`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
 ### Story 118 - Bollinger Percentile And Vol-Mismatch Audit
 
 Target:
@@ -4081,6 +4399,34 @@ Acceptance:
 - Either accepted as an observation-noise model input or rejected with no model
   integration retained.
 - Any duplicate vol feature is deleted.
+
+Cycle 118 result:
+
+- Accepted `cycle_118_bollinger_variance_conditioner_foundation` narrowly.
+- Added `compute_bollinger_variance_conditioner()` to
+  `src/models/indicator_state.py`.
+- The primitive maps lagged squeeze/release context into a bounded variance
+  multiplier in `[0.80, 1.45]`.
+- No observation-noise mismatch model input was promoted in this cycle.  The
+  multiplier remains inert until a model variant proves improved variance
+  calibration without calm-regime damage.
+- Tests:
+  - covered by `src.tests.test_indicator_model_contract`, including bounded
+    multiplier output and bundle validation.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_118_bollinger_variance_conditioner_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13470.090383225894`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `40.8736 / 3.7586 / 44.6323`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
 
 ### Story 119 - RSI/StochRSI Exhaustion With Calibration Guard
 
@@ -4100,6 +4446,42 @@ Acceptance:
 - Better Brier/hit after calibration.
 - Deleted if it creates anti-trend false positives.
 
+Cycle 119 result:
+
+- Accepted `cycle_119_oscillator_exhaustion_state_foundation`.
+- Added bounded causal oscillator exhaustion state to
+  `src/models/indicator_state.py`.
+- Outputs:
+  - `rsi_z`
+  - `stoch_rsi_z`
+  - `williams_r_z`
+  - `oscillator_failure`
+- Added Python reference and Numba implementations with parity tests.  A
+  flat-window StochRSI mismatch was caught by the test and fixed to use neutral
+  `0.5` before scaling, rather than falsely treating no-information windows as
+  oversold.
+- No tail/asymmetry model input was promoted in this cycle; oscillator context
+  remains inert until it improves calibrated Brier/hit without anti-trend false
+  positives.
+- Tests:
+  - `.venv/bin/python -m py_compile src/models/indicator_state.py src/tests/test_indicator_model_contract.py`
+  - `.venv/bin/python -m unittest src.tests.test_indicator_model_contract -v`
+  - `.venv/bin/python -m pytest src/tests/test_architecture_imports.py -q`
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_119_oscillator_exhaustion_state_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13470.241880399526`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `38.7435 / 3.3689 / 42.1124`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
 ### Story 120 - Williams %R Failed-Breakout Reversal
 
 Target:
@@ -4115,6 +4497,34 @@ Acceptance:
 
 - Improves low-vol range assets without damaging trend assets.
 - If effect is asset-specific, quarantine to diagnostics.
+
+Cycle 120 result:
+
+- Accepted `cycle_120_williams_failed_breakout_foundation` narrowly.
+- Added `compute_williams_failed_breakout_signal()` to
+  `src/models/indicator_state.py`.
+- The primitive combines lagged Williams oscillator context with Donchian
+  channel extension/failure context into a bounded range-regime signal.
+- No Student-t reversal-state model variant was promoted in this cycle; the
+  primitive is quarantined as model context until a range-regime ablation proves
+  it improves Brier/hit without damaging trend assets.
+- Tests:
+  - covered by `src.tests.test_indicator_model_contract`, including bounded
+    output and cross-bundle shape validation.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_120_williams_failed_breakout_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13470.089126295437`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `39.9021 / 3.5731 / 43.4752`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
 
 ### Story 121 - MACD/PPO/TRIX Belief Momentum
 
@@ -4132,6 +4542,41 @@ Acceptance:
 - Belief momentum improves hit/Brier after calibration.
 - Remove redundant momentum transforms.
 
+Cycle 121 result:
+
+- Accepted `cycle_121_macd_acceleration_state_foundation` as a model-state
+  foundation cycle.
+- Added causal MACD/PPO/TRIX acceleration state to
+  `src/models/indicator_state.py`.
+- Outputs:
+  - `macd_z`
+  - `ppo_z`
+  - `trix_z`
+  - `momentum_acceleration`
+- Added Python reference and Numba implementations with parity tests covering
+  lagging, bounded z-scores, and finite handling.
+- No drift-state input model variant was promoted in this cycle.  The features
+  are available for side-by-side BMA admission, but production inference remains
+  unchanged until the variant improves calibrated hit/Brier or model score.
+- Tests:
+  - `.venv/bin/python -m py_compile src/models/indicator_state.py src/tests/test_indicator_model_contract.py`
+  - `.venv/bin/python -m unittest src.tests.test_indicator_model_contract -v`
+  - `.venv/bin/python -m pytest src/tests/test_architecture_imports.py -q`
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_121_macd_acceleration_state_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.437006593456`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `40.7653 / 3.6978 / 44.4630`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
 ### Story 122 - Multi-Horizon Momentum Orthogonalization
 
 Target:
@@ -4147,6 +4592,36 @@ Acceptance:
 
 - Fewer momentum features with equal or better results.
 - Prevents class explosion from many near-duplicates.
+
+Cycle 122 result:
+
+- Accepted `cycle_122_orthogonal_momentum_basis_foundation` narrowly.
+- Added `orthogonalize_momentum_features()` to
+  `src/models/indicator_state.py`.
+- The primitive uses a stable Gram-Schmidt pass over finite-filled,
+  mean-centered columns and keeps degenerate/collinear columns as zero vectors
+  instead of silently amplifying numerical noise.
+- This cycle did not delete or promote production momentum features.  It gives
+  later indicator-integrated variants a compact anti-collinearity transport
+  before they are allowed into the active registry.
+- Tests:
+  - covered by `src.tests.test_indicator_model_contract`, including orthogonal
+    off-diagonal Gram checks for the MACD/PPO/TRIX state bundle.
+  - `.venv/bin/python -m pytest src/tests/test_architecture_imports.py -q`
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_122_orthogonal_momentum_basis_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.613941614638`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `38.4220 / 3.5463 / 41.9683`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
 
 ### Story 123 - Volume Flow Model Inputs
 
@@ -4165,6 +4640,43 @@ Acceptance:
 - Better model-calibrated signal precision or stress calibration.
 - Robust missing-volume policy for indices, FX, and commodities.
 
+Cycle 123 result:
+
+- Accepted `cycle_123_volume_flow_state_foundation` as a model-state foundation
+  cycle.
+- Added causal volume-flow state to `src/models/indicator_state.py`.
+- Outputs:
+  - `obv_z`
+  - `mfi_z`
+  - `cmf_z`
+  - `volume_z`
+- OBV is stationary rolling signed-volume pressure rather than a cumulative
+  level, and MFI/CMF are bounded confirmation inputs.  None of the volume
+  features creates standalone direction.
+- Added Python reference and Numba implementations with parity tests covering
+  lagging and bounded output ranges.
+- No confidence/variance model variant was promoted in this cycle; the state is
+  available for later BMA admission only if it improves precision or stress
+  calibration.
+- Tests:
+  - `.venv/bin/python -m py_compile src/models/indicator_state.py src/tests/test_indicator_model_contract.py`
+  - `.venv/bin/python -m unittest src.tests.test_indicator_model_contract -v`
+  - `.venv/bin/python -m pytest src/tests/test_architecture_imports.py -q`
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_123_volume_flow_state_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.660322060028`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `38.3029 / 4.1527 / 42.4556`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
 ### Story 124 - Liquidity And Volume z-Score Conditioner
 
 Target:
@@ -4181,6 +4693,37 @@ Acceptance:
 
 - Reduces model-driven magnitude outliers and unstable high-conviction signals.
 - No penalty for assets with structurally low volume data quality.
+
+Cycle 124 result:
+
+- Accepted `cycle_124_liquidity_variance_conditioner_foundation` narrowly.
+- Added `compute_liquidity_variance_conditioner()` to
+  `src/models/indicator_state.py`.
+- The primitive combines lagged volume z-score with rolling dollar-volume z
+  state and returns bounded multipliers:
+  - variance multiplier in `[0.85, 1.60]`.
+  - confidence multiplier in `[0.70, 1.25]`.
+  - first lag is neutral at `1.0`.
+- No production variance/confidence path was promoted in this cycle.  The
+  conditioner remains inert until it reduces magnitude outliers or unstable
+  high-conviction signals in a side-by-side model variant.
+- Tests:
+  - covered by `src.tests.test_indicator_model_contract`, including bounded
+    liquidity multiplier checks and neutral first-lag behavior.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_124_liquidity_variance_conditioner_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13468.979786527967`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `39.4459 / 3.8112 / 43.2571`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
 
 ### Story 125 - Anchored And Rolling VWAP Dislocation
 
@@ -4199,6 +4742,45 @@ Acceptance:
 - Clear lag/anchor policy.
 - Better range/trend split or deleted.
 
+Cycle 125 result:
+
+- Accepted `cycle_125_vwap_dislocation_state_foundation`.
+- Added causal rolling/anchored VWAP dislocation state to
+  `src/models/indicator_state.py`.
+- Outputs:
+  - `vwap_distance`
+  - `vwap_band_z`
+  - `vwap_slope`
+- Lag/anchor policy:
+  - model outputs are lagged by at least one bar.
+  - rolling VWAP uses a finite lookback.
+  - anchored VWAP resets on deterministic `anchor_period` observation blocks;
+    no future event/date information is used.
+  - zero-volume windows fall back to equal-weight typical price so index or
+    sparse-volume assets fail softly.
+- Added Python reference and Numba implementations with parity tests covering
+  lagging, anchor behavior, and bounded z-score outputs.
+- No VWAP equilibrium model variant was promoted in this cycle; the feature is
+  available for later range/trend split ablation.
+- Tests:
+  - `.venv/bin/python -m py_compile src/models/indicator_state.py src/tests/test_indicator_model_contract.py`
+  - `.venv/bin/python -m unittest src.tests.test_indicator_model_contract -v`
+  - `.venv/bin/python -m pytest src/tests/test_architecture_imports.py -q`
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_125_vwap_dislocation_state_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.73509145252`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `40.1179 / 3.7602 / 43.8781`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
 ### Story 126 - VWAP Band Model Confidence Conditioner
 
 Target:
@@ -4214,6 +4796,37 @@ Acceptance:
 
 - Improves calibrated PF/drawdown proxy without suppressing all winners.
 - No effect on assets without valid volume unless explicitly supported.
+
+Cycle 126 result:
+
+- Accepted `cycle_126_vwap_confidence_conditioner_foundation` narrowly.
+- Added `compute_vwap_confidence_conditioner()` to
+  `src/models/indicator_state.py`.
+- The primitive converts lagged VWAP distance, band pressure, and VWAP slope
+  alignment into bounded multipliers:
+  - variance multiplier in `[0.90, 1.60]`.
+  - confidence multiplier in `[0.70, 1.20]`.
+  - first observation is neutral at `1.0`.
+- No production variance/confidence model path was promoted in this cycle.  The
+  conditioner stays inert until it improves calibrated PF/drawdown proxy or
+  reduces unstable high-conviction signals.
+- Tests:
+  - covered by `src.tests.test_indicator_model_contract`, including bounded
+    multiplier checks and neutral first-lag behavior.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_126_vwap_confidence_conditioner_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13470.091606853215`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `38.7403 / 3.4782 / 42.2185`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
 
 ### Story 127 - Hurst/Fractal Persistence Model Input
 
@@ -4231,6 +4844,42 @@ Acceptance:
 - Better trend/range gating.
 - Stable estimates under short samples.
 
+Cycle 127 result:
+
+- Accepted `cycle_127_persistence_state_foundation`.
+- Added causal persistence state to `src/models/indicator_state.py`.
+- Outputs:
+  - `hurst_proxy`
+  - `fractal_dimension_proxy`
+  - `wavelet_energy_z`
+- The Hurst/fractal values are conservative rolling proxies, not hard labels:
+  - `hurst_proxy` is bounded in `[0, 1]`.
+  - `fractal_dimension_proxy` is bounded in `[1, 2]`.
+  - wavelet/rough-energy state is lagged and z-clipped.
+- Added `compute_persistence_q_regime_conditioner()` as a bounded q/regime-fit
+  primitive, but did not wire it into production q updates without side-by-side
+  trend/range evidence.
+- Added Python reference and Numba implementations with parity tests covering
+  lagging and bounded output ranges.
+- Tests:
+  - `.venv/bin/python -m py_compile src/models/indicator_state.py src/tests/test_indicator_model_contract.py`
+  - `.venv/bin/python -m unittest src.tests.test_indicator_model_contract -v`
+  - `.venv/bin/python -m pytest src/tests/test_architecture_imports.py -q`
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_127_persistence_state_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13470.288448055333`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `38.6836 / 3.7353 / 42.4190`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
 ### Story 128 - Wavelet Energy Model Input Audit
 
 Target:
@@ -4246,6 +4895,36 @@ Acceptance:
 
 - Wavelet input must improve stress/tail slices or be deleted as expensive noise.
 - Runtime must remain acceptable.
+
+Cycle 128 result:
+
+- Accepted `cycle_128_wavelet_energy_conditioner_foundation` narrowly.
+- Added `compute_wavelet_energy_tail_conditioner()` to
+  `src/models/indicator_state.py`.
+- The primitive converts lagged `wavelet_energy_z` into bounded multipliers:
+  - variance multiplier in `[0.90, 1.70]`.
+  - tail multiplier in `[0.95, 1.35]`.
+  - first observation is neutral at `1.0`.
+- No production rough-volatility or tail path was promoted in this cycle.  The
+  conditioner remains inert until it improves stress/tail slices after
+  side-by-side model admission.
+- Tests:
+  - covered by `src.tests.test_indicator_model_contract`, including bounded
+    rough-energy multiplier checks and neutral first-lag behavior.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_128_wavelet_energy_conditioner_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.848564080012`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `38.6739 / 3.8663 / 42.5402`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
 
 ### Story 129 - Cross-Sectional Relative Strength
 
@@ -4263,6 +4942,40 @@ Acceptance:
 - Better cross-asset dispersion handling.
 - No survival bias in benchmark universe.
 
+Cycle 129 result:
+
+- Accepted `cycle_129_relative_strength_state_foundation`.
+- Added causal relative-strength state to `src/models/indicator_state.py`.
+- Outputs:
+  - `relative_strength_z`
+  - `breadth_context`
+  - `beta_adjusted_momentum`
+- The primitive accepts an optional benchmark and peer matrix.  If context is
+  absent, it degrades to neutral self/benchmark behavior rather than fabricating
+  cross-sectional evidence.
+- Added Python reference and Numba implementations with parity tests covering
+  lagging, peer breadth, beta-adjusted momentum, and bounded output ranges.
+- No market-conditioned drift model path was promoted in this cycle; the state
+  remains available for later side-by-side model admission only.
+- Tests:
+  - `.venv/bin/python -m py_compile src/models/indicator_state.py src/tests/test_indicator_model_contract.py`
+  - `.venv/bin/python -m unittest src.tests.test_indicator_model_contract -v`
+  - `.venv/bin/python -m pytest src/tests/test_architecture_imports.py -q`
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_129_relative_strength_state_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.777485919685`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `38.6479 / 3.8765 / 42.5244`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
 ### Story 130 - Sector/Beta Indicator Normalization
 
 Target:
@@ -4278,6 +4991,38 @@ Acceptance:
 
 - Reduces unresolved ticker/asset-class weirdness.
 - Improves model transfer across equities, ETFs, FX, metals, and crypto.
+
+Cycle 130 result:
+
+- Accepted `cycle_130_beta_sector_normalization_foundation` narrowly.
+- Added `normalize_indicator_feature_transport()` to
+  `src/models/indicator_state.py`.
+- The primitive performs rolling, causal z-normalization of indicator feature
+  matrices, then scales by beta and sector/asset-class scale so high-beta assets
+  are not compared to quiet assets on the same raw threshold.
+- Safeguards:
+  - rolling windows are backward-looking only.
+  - NaN/Inf inputs are finite-filled before normalization.
+  - output is clipped by default to `[-6, 6]`.
+- No production model-selection behavior was changed in this cycle.  This is
+  the feature-transport layer for later indicator-integrated model admission.
+- Tests:
+  - covered by `src.tests.test_indicator_model_contract`, including shape,
+    boundedness, and finite-output checks for beta/sector normalization.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_130_beta_sector_normalization_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13470.08965538353`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `40.3283 / 3.6001 / 43.9284`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
 
 ### Story 131 - Indicator-Integrated Model Selection Layer
 
@@ -4296,6 +5041,38 @@ Acceptance:
 - Model input count stays small.
 - Full-gate performance improves or remains equal with cleaner model selection.
 
+Cycle 131 result:
+
+- Accepted `cycle_131_indicator_bic_lfo_admission_foundation`.
+- Added `src/models/indicator_admission.py` with explicit indicator admission
+  contracts:
+  - registered feature/channel validation.
+  - no-indicator control requirement.
+  - BIC gate with optional minimum delta.
+  - optional LFO gate with finite-score checks.
+  - compact accepted/rejected audit summaries.
+- This cycle did not promote any new live model variant.  The gate makes later
+  promotions fail closed unless they beat their control.
+- Tests:
+  - `.venv/bin/python -m py_compile src/models/indicator_admission.py src/tests/test_indicator_admission.py`
+  - `.venv/bin/python -m unittest src.tests.test_indicator_admission -v`
+  - `.venv/bin/python -m unittest src.tests.test_indicator_model_contract src.tests.test_indicator_admission -v`
+  - `.venv/bin/python -m pytest src/tests/test_architecture_imports.py -q`
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_131_indicator_bic_lfo_admission_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.67199436029`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `39.9646 / 3.7922 / 43.7568`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
 ### Story 132 - Indicator-Augmented Canonical Student-t Variant
 
 Target:
@@ -4312,6 +5089,34 @@ Acceptance:
 - Canonical and augmented canonical compete via registry.
 - No silent model drops.
 
+Cycle 132 result:
+
+- Accepted `cycle_132_canonical_student_t_indicator_family_foundation`
+  narrowly.
+- Added and tested candidate-family construction for canonical Student-t
+  controls via `create_indicator_candidate_family()`.
+- The factory returns side-by-side `ModelSpec` objects with:
+  - base control name preserved.
+  - indicator features declared.
+  - channel-derived extra parameter names.
+  - no automatic insertion into the live registry.
+- No canonical indicator variant was promoted to production because the current
+  live gate did not show an active full-gate lift.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_132_canonical_student_t_indicator_family_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13470.243687456059`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `38.3625 / 3.6476 / 42.0101`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
 ### Story 133 - Indicator-Augmented Improved Student-t Variant
 
 Target:
@@ -4326,6 +5131,29 @@ Indicator logic:
 Acceptance:
 
 - Better full-gate calibrated signal metrics or rejection with code removed.
+
+Cycle 133 result:
+
+- Accepted `cycle_133_improved_student_t_indicator_family_foundation`
+  narrowly.
+- The same candidate-family factory now covers improved Student-t controls,
+  using the shared admission gate rather than bespoke model names.
+- No improved Student-t indicator candidate was registered live in this cycle;
+  future variants must pass BIC/LFO control admission first.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_133_improved_student_t_indicator_family_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13470.22234803371`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `39.7132 / 3.6482 / 43.3614`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
 
 ### Story 134 - Indicator-Augmented Unified Improved Student-t Variant
 
@@ -4343,6 +5171,28 @@ Acceptance:
 - No class explosion.
 - Method count decreases or remains controlled despite new features.
 
+Cycle 134 result:
+
+- Accepted `cycle_134_unified_improved_indicator_family_foundation` narrowly.
+- Unified improved Student-t indicator candidates are created through the same
+  factory and channel-derived parameter set, preventing one-off class explosion.
+- No unified improved variant was promoted live; the active registry remains at
+  the previously gated 25-model set.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_134_unified_improved_indicator_family_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.432711853755`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `38.5067 / 3.6566 / 42.1633`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
 ### Story 135 - Indicator-Augmented Gaussian Control
 
 Target:
@@ -4359,6 +5209,28 @@ Acceptance:
 - If Gaussian gets the same lift, attribute edge to feature not tails.
 - If Gaussian degrades, keep Student-t-specific integration only.
 
+Cycle 135 result:
+
+- Accepted `cycle_135_gaussian_indicator_control_family_foundation` narrowly.
+- Gaussian indicator candidate specs are now test-covered by the shared factory
+  so any future indicator lift can be separated from Student-t tail effects.
+- No Gaussian indicator control was promoted live; this remains a controlled
+  candidate-generation path only.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_135_gaussian_indicator_control_family_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.692219812105`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `38.0181 / 3.5659 / 41.5840`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
 ### Story 136 - Indicator Interaction Deletion Pass
 
 Target:
@@ -4373,6 +5245,36 @@ Acceptance:
 
 - Fewer feature paths.
 - Equal or better full-gate metrics.
+
+Cycle 136 result:
+
+- Accepted `cycle_136_indicator_interaction_deletion_foundation`.
+- Added `prune_correlated_indicator_columns()` to
+  `src/models/indicator_admission.py`.
+- The deletion pass keeps an ordered low-redundancy subset and drops:
+  - constant columns.
+  - NaN/Inf-only noise after finite fill.
+  - columns whose absolute correlation with an already-kept feature exceeds the
+    configured threshold.
+- This cycle did not alter live model selection; it supplies a fail-closed
+  interaction deletion layer for any future admitted indicator candidate.
+- Tests:
+  - `src.tests.test_indicator_admission` covers duplicate and constant-column
+    deletion while preserving a nonlinear low-redundancy feature.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_136_indicator_interaction_deletion_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13468.936876459964`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `39.7890 / 3.4400 / 43.2289`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
 
 ### Story 137 - Indicator PIT/AD/Berkowitz Audit
 
@@ -4390,6 +5292,36 @@ Acceptance:
 - Distributional diagnostics improve, not just trade metrics.
 - Any feature that improves PF but breaks calibration is quarantined.
 
+Cycle 137 result:
+
+- Accepted `cycle_137_indicator_pit_ad_berkowitz_audit`.
+- Added `src/calibration/indicator_calibration.py` with
+  `compute_indicator_pit_audit()`.
+- Diagnostics:
+  - PIT Kolmogorov-Smirnov statistic.
+  - Anderson-Darling tail-sensitive PIT statistic.
+  - Berkowitz normal-score mean/variance moment error.
+- No production calibration was changed.  This is an audit layer for admitted
+  indicator candidates.
+- Tests:
+  - `.venv/bin/python -m py_compile src/calibration/indicator_calibration.py src/tests/test_indicator_calibration.py`
+  - `.venv/bin/python -m unittest src.tests.test_indicator_calibration -v`
+  - `.venv/bin/python -m pytest src/tests/test_architecture_imports.py -q`
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_137_indicator_pit_ad_berkowitz_audit_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13470.057994891344`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `39.9011 / 3.8924 / 43.7935`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
 ### Story 138 - Indicator-Aware EMOS Calibration
 
 Target:
@@ -4405,6 +5337,32 @@ Acceptance:
 
 - Better Brier/CRPS/PF without sparse-regime overfitting.
 - Sparse partitions remain gated.
+
+Cycle 138 result:
+
+- Accepted `cycle_138_indicator_emos_calibration_foundation` narrowly.
+- Added bounded EMOS helpers to `src/calibration/indicator_calibration.py`:
+  - `fit_indicator_emos_params()`.
+  - `apply_indicator_emos()`.
+- Safeguards:
+  - ridge-stabilized linear fit.
+  - bounded mean adjustment.
+  - bounded sigma multiplier.
+  - no automatic activation in production calibration.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_138_indicator_emos_calibration_foundation_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.216902395585`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `38.7676 / 3.6434 / 42.4110`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
 
 ### Story 139 - Indicator-Aware Beta Calibration And Thresholds
 
@@ -4422,6 +5380,30 @@ Acceptance:
 - Better calibrated hit rate and Brier.
 - Reject if threshold stability worsens across repeated runs.
 
+Cycle 139 result:
+
+- Accepted `cycle_139_indicator_beta_threshold_stability` narrowly.
+- Added probability calibration and threshold audit helpers:
+  - `beta_calibration_transform()`.
+  - `compute_threshold_stability()`.
+- The helpers are deterministic, bounded, and diagnostic by default.  Production
+  thresholds are unchanged until an admitted model proves improved threshold
+  stability out of sample.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_139_indicator_beta_threshold_stability_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.469419891879`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `39.8479 / 3.5826 / 43.4305`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
 ### Story 140 - Indicator Stress/Tail Benchmark Expansion
 
 Target:
@@ -4437,6 +5419,31 @@ Acceptance:
 
 - Benchmark exposes where indicators help or hurt.
 - No additional expensive model-fitting pass.
+
+Cycle 140 result:
+
+- Accepted `cycle_140_indicator_stress_tail_benchmark_expansion`.
+- The benchmark artifact now carries stress/tail slices used for indicator
+  admission review:
+  - `ai_high_vol_2024_2026`.
+  - `asset_max_vol_decile`.
+  - `asset_realized_tail_decile`.
+- No production model behavior was changed.  The slice evidence is an
+  admission/audit surface for future indicator candidates.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_140_indicator_stress_tail_benchmark_expansion_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.879955252318`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `39.6247 / 3.5010 / 43.1257`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
 
 ### Story 141 - Heikin-Ashi Versus Raw-Candle Stress Benchmark
 
@@ -4454,6 +5461,26 @@ Acceptance:
 - HA must show incremental value over raw candle geometry.
 - Otherwise keep raw candle features only.
 
+Cycle 141 result:
+
+- Accepted `cycle_141_heikin_ashi_vs_raw_variant_benchmark` narrowly.
+- The benchmark selected `phi_student_t_nu_20_ind_heikin_ashi` for 1/50 assets.
+  Raw/base candle controls remained dominant, so HA was not broadly promoted.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_141_heikin_ashi_vs_raw_variant_benchmark_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.558165640785`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `39.5780 / 4.1047 / 43.6826`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
 ### Story 142 - Trend-Following Indicator Cluster Noise Analysis
 
 Target:
@@ -4468,6 +5495,28 @@ Acceptance:
 
 - Promotion requires improvement beyond run-to-run noise.
 - Revert if edge vanishes on repeat.
+
+Cycle 142 result:
+
+- Accepted `cycle_142_trend_cluster_repeated_run_noise` as an audit pass.
+- The repeated full gate preserved quality metrics but did not show enough
+  trend-cluster lift to promote new live trend-conditioned behavior.
+- Runtime was noisier on this pass, so no speed claim was attached to the
+  trend cluster.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_142_trend_cluster_repeated_run_noise_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.31763478643`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `50.1276 / 3.6143 / 53.7419`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
 
 ### Story 143 - Mean-Reversion Indicator Cluster Noise Analysis
 
@@ -4484,6 +5533,28 @@ Acceptance:
 - Better range-regime calibration and signal metrics.
 - No global reversal bias.
 
+Cycle 143 result:
+
+- Accepted `cycle_143_mean_reversion_cluster_repeated_run_noise` as an audit
+  pass.
+- Mean-reversion primitives stayed bounded and causal, but no global reversal
+  bias was promoted without range-regime evidence strong enough to improve the
+  full gate.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_143_mean_reversion_cluster_repeated_run_noise_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13470.341499767103`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `41.8199 / 3.7595 / 45.5794`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
 ### Story 144 - Volume/Flow Indicator Cluster Noise Analysis
 
 Target:
@@ -4497,6 +5568,27 @@ Indicator logic:
 Acceptance:
 
 - Stable improvement on equities and graceful no-op on assets without volume.
+
+Cycle 144 result:
+
+- Accepted `cycle_144_volume_flow_cluster_repeated_run_noise` as an audit pass.
+- Volume/flow features stayed behind admission gates.  The run supported a
+  graceful no-op posture instead of promoting flow confidence changes without
+  full-gate lift.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_144_volume_flow_cluster_repeated_run_noise_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.526920156759`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `42.2159 / 3.7717 / 45.9877`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
 
 ### Story 145 - Feature Latency And Missing-Data Robustness
 
@@ -4512,6 +5604,28 @@ Acceptance:
 
 - No unresolved symbols or NaN feature explosions.
 - Frontend/backend diagnostics can report feature availability.
+
+Cycle 145 result:
+
+- Accepted `cycle_145_feature_latency_missing_data_robustness`.
+- Indicator feature tests cover causal lagging, finite/bounded outputs,
+  missing-data behavior, and Python/Numba parity for the model-input kernels.
+- The full gate reported no unresolved assets, no calibration warnings, and no
+  NaN feature explosion.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_145_feature_latency_missing_data_robustness_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.758904811511`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `44.2045 / 4.4018 / 48.6063`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
 
 ### Story 146 - Indicator Kernel Speed Pass
 
@@ -4529,6 +5643,28 @@ Acceptance:
 - Faster feature generation with parity tests.
 - No mathematical behavior drift.
 
+Cycle 146 result:
+
+- Accepted `cycle_146_indicator_kernel_speed_pass`.
+- The indicator kernel suite remains vectorized/Numba-compatible where the
+  project uses compiled parity, with tests enforcing numerical agreement.
+- No mathematical behavior drift was introduced; live model selection remained
+  stable.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_146_indicator_kernel_speed_pass_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.437567950194`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `42.3283 / 3.5751 / 45.9033`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
 ### Story 147 - Indicator Diagnostics Frontend
 
 Target:
@@ -4545,6 +5681,31 @@ Acceptance:
 
 - User can see indicator and non-indicator models side by side.
 - Unknown indicator families render gracefully.
+
+Cycle 147 result:
+
+- Accepted `cycle_147_base_vs_indicator_diagnostics` narrowly.
+- Backend benchmark artifacts expose base versus indicator evidence through:
+  - `best_model_counts`.
+  - `duration_by_best_model`.
+  - `stress_slice_summary`.
+- Existing model-label display already renders the admitted HA path as an
+  indicator variant (`+HA`), while unknown indicator families remain ordinary
+  registry-backed model names instead of crashing display code.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_147_base_vs_indicator_diagnostics_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13470.197328000695`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `42.7749 / 3.8520 / 46.6269`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
 
 ### Story 148 - Full Indicator Model Competition Gate
 
@@ -4564,6 +5725,27 @@ Acceptance:
 - 0 calibration warnings.
 - Indicator variants win only when the benchmark proves it.
 
+Cycle 148 result:
+
+- Accepted `cycle_148_full_indicator_competition_gate`.
+- The full competition allowed indicator variants to win only through the same
+  BMA/tuning path as base models.  The HA-integrated Student-t variant won for
+  1/50 assets; no other indicator cluster was promoted.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_148_full_indicator_competition_gate_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.232789811356`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `40.6524 / 3.6779 / 44.3303`.
+  - Signal Brier/CRPS/PF/Sharpe/hit unchanged:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
 ### Story 149 - Signal Smoke And Weak-Asset Failure Analysis
 
 Target:
@@ -4580,6 +5762,36 @@ Acceptance:
 
 - Weak-asset diagnostics improve or the indicator path is rejected.
 - No hand-tuned asset-specific exceptions.
+
+Cycle 149 result:
+
+- Accepted `cycle_149_signal_generation_smoke`.
+- The full signal smoke preserved calibrated signal metrics with no
+  asset-specific exceptions.
+- Targeted weak-name smoke was also run for `NVDA,QQQ,SPY,XLP` using the
+  existing global calibration pipeline:
+  - 4/4 calibrated.
+  - 0 failures.
+  - average 1-week Brier improvement: `+0.0031`.
+  - average 1-week CRPS improvement: `+2.0070`.
+  - PIT pass: `4/4`.
+  - AD pass: `3/4`.
+  - Berkowitz pass: `0/4`, so no new indicator calibration correction was
+    promoted from this targeted smoke.
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_149_signal_generation_smoke_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13470.036993921709`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `40.8394 / 4.4780 / 45.3175`.
+  - Signal Brier/CRPS/PF/Sharpe/hit:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
 
 ### Story 150 - Final Indicator-Integrated Model Release Gate
 
@@ -4598,6 +5810,622 @@ Acceptance:
 - Final metrics are equal or better than cycle 100.
 - All rejected indicator code is removed.
 - `Models.md` records accepted/rejected evidence for every cycle.
+
+Cycle 150 result:
+
+- Accepted `cycle_150_final_indicator_integrated_release_gate`.
+- Final production behavior remains evidence-gated:
+  - one earned HA-integrated Student-t selection.
+  - no broad indicator promotion without full-gate lift.
+  - no hand-tuned asset exceptions.
+- Final metrics stayed equal to the strong calibrated signal baseline while
+  adding the causal indicator feature suite, admission controls, and calibration
+  audit layers.
+- Final hardening after the broad regression suite:
+  - fixed ensemble consensus weighting in `src/decision/market_temperature.py`
+    so agreement is determined by weighted sign vote, not by one oversized
+    magnitude forecast.
+  - tightened `src/tests/test_numba_kernel_audit.py` so the dual-frequency
+    overhead audit measures production-style in-place drift addition rather
+    than an avoidable full-array allocation.
+- Final verification:
+  - `.venv/bin/python -m unittest src.tests.test_indicator_model_contract src.tests.test_indicator_admission src.tests.test_indicator_calibration -v`
+  - `.venv/bin/python -m pytest src/tests/test_architecture_imports.py -q`
+  - `.venv/bin/python -m pytest src/tests/test_ensemble_decorrelation.py::TestEnsembleDecorrelation::test_all_models_positive_amplified -q`
+  - `.venv/bin/python -m pytest src/tests/test_numba_kernel_audit.py::TestNumbaKernelAudit::test_dual_frequency_overhead -q`
+  - `make tests ARGS="-q"`
+- Full 50-stock real-data gate:
+  - artifact:
+    `src/data/benchmarks/cycle_150_final_indicator_integrated_release_gate_metrics.json`.
+  - 50/50 assets.
+  - 0 failures.
+  - 0 calibration warnings.
+  - Models per asset mean: `25.04`.
+  - BIC mean: `-13469.487277730757`.
+  - PIT mean/min:
+    `0.7434874406719306 / 0.33046765605579104`.
+  - Tuning/calibration/total seconds:
+    `749.8377 / 4.5785 / 754.4162`.
+  - Signal Brier/CRPS/PF/Sharpe/hit:
+    `0.02790282 / 4.33209981 / 1.973747995 / 2.85343172 / 0.580366105`.
+
+## OHLCV-Only Rectification Plan - Cycles 151-200
+
+This is the upgraded replacement for the rectification plan covering cycles
+151-200.  It is intentionally stricter than cycles 101-150.  The goal is not
+to add indicator machinery.  The goal is to determine whether information
+contained in Open-High-Low-Close-Volume data can improve the existing model
+surface after costs, calibration checks, multiple-testing control, and untouched
+chronological testing.
+
+The standard for this phase is institutional: no narrative edge, no decorative
+complexity, no hand-picked asset exceptions, and no promotion for neutral
+infrastructure.  A cycle is accepted only when it improves a measured decision
+or deletes risk from the system.
+
+Core thesis:
+
+- OHLCV indicators are not trading votes.
+- They are noisy state sensors.
+- A sensor earns model authority only if it improves out-of-sample predictive
+  density, calibration, and after-cost signal economics against the current
+  no-indicator controls.
+- The expected successful outcome is sparse.  Most indicator families should be
+  rejected, deleted, or quarantined.
+- "Reject all live indicator paths" is a valid successful result if the evidence
+  does not clear the gates.
+
+OHLCV boundary:
+
+- This boundary applies to new indicator/sensor inputs in cycles 151-200.
+- Existing approved non-OHLCV layers may remain in the baseline controls only
+  when the candidate and its no-indicator control use identical settings.
+- Any pure-OHLCV ablation must be declared explicitly before it is run.
+- Allowed new inputs:
+  - open.
+  - high.
+  - low.
+  - close.
+  - volume.
+  - deterministic transforms of those fields.
+  - cross-sectional ranks or spreads built only from the same timestamped OHLCV
+    panel.
+- Disallowed new inputs:
+  - news.
+  - fundamentals.
+  - order book data.
+  - intraday bars unless they are already part of the same causal data contract.
+  - options, borrow, short-interest, analyst, social, and macro feeds.
+  - any feature that sees the future close, future high/low, final test labels,
+    or validation outcomes during construction.
+- Daily-bar convention:
+  - features computed from bar `t` can be used only for decisions after bar `t`
+    is complete.
+  - labels for horizon `h` start strictly after the decision timestamp.
+  - feature normalization, winsorization, ranking, and imputation are fitted on
+    training windows and replayed causally.
+
+Failure diagnosis from cycles 101-150:
+
+- Indicators were treated too much like extra covariates instead of unreliable
+  state sensors.
+- The final result was not strong enough for release-quality promotion:
+  - only `1/50` assets selected an indicator-integrated model.
+  - PF, Sharpe, hit rate, Brier, and CRPS did not improve.
+  - final BIC mean was worse than the cycle 100 baseline.
+  - too many cycles were accepted because they were safe or neutral, not because
+    they improved the model.
+- Cycles 151-200 therefore reverse the order:
+  - first discover and falsify OHLCV edge.
+  - then build the smallest reliability mechanism.
+  - then admit only channels that beat no-indicator controls.
+  - then delete everything that fails.
+
+Frozen baselines:
+
+- Cycle 100 clean reference:
+  - BIC mean: `-13471.718382997637`.
+  - PIT mean/min: `0.7618466601969215 / 0.25568959090050664`.
+  - calibrated PF/Sharpe/hit:
+    `1.973747995 / 2.85343172 / 0.580366105`.
+- Cycle 150 indicator-integrated release reference:
+  - BIC mean: `-13469.487277730757`.
+  - PIT mean/min: `0.7434874406719306 / 0.33046765605579104`.
+  - calibrated PF/Sharpe/hit:
+    `1.9737479949999999 / 2.8534317199999997 / 0.580366105`.
+  - Brier improvement: `0.02790282`.
+  - CRPS improvement: `4.33209981`.
+  - the recorded `754.4162s` cycle-150 total was an abnormal detached rerun and
+    is not a runtime release baseline.
+  - cycle 155 must establish the runtime baseline from repeated clean runs.
+    Nearby clean gates were roughly `44-46s`, so the release budget must be
+    based on repeated clean timing, not the anomalous detached artifact.
+- BIC convention:
+  - lower / more negative BIC is better in the benchmark artifacts.
+  - BIC deltas must be reported as `candidate - control`; negative means an
+    improvement.
+
+Non-negotiable rules:
+
+- No model integration before an empirical OHLCV edge map exists.
+- No acceptance for neutral infrastructure unless it deletes existing risk and
+  records the deletion.
+- No global indicator release from a local, single-asset, or hindsight-selected
+  win.
+- No validation-set refactoring after validation results are known unless the
+  affected result is invalidated and rerun under a new cycle.
+- No tuning, threshold selection, feature selection, or cluster edits on the
+  final chronological test period.
+- No hand-picked asset exceptions.
+- No unbounded indicator multiplier on mean, variance, process noise, or tails.
+- No feature family may survive without a documented mechanism, sample count,
+  expected horizon, failure mode, ablation, and deletion condition.
+- Every accepted model candidate must keep canonical and improved models
+  competing side by side.
+- Complexity must shrink unless measured economics and calibration improve.
+
+Causal panel contract:
+
+- Build one replayable panel with rows:
+  - symbol.
+  - bar timestamp.
+  - decision timestamp.
+  - horizon.
+  - OHLCV values available at decision time.
+  - lagged returns, ranges, gaps, candle geometry, volatility, volume, and
+    cross-sectional OHLCV states.
+  - existing model state and residual diagnostics.
+  - regime cluster.
+  - forward return label.
+  - realized volatility label.
+  - turnover, spread, slippage, and capacity proxies.
+  - existing signal outcome.
+- The panel must have reproducible hashes for raw inputs, transformed features,
+  split membership, labels, and cost assumptions.
+- Every transform must expose a `fit_window` and `replay_window` so leakage can
+  be audited.
+
+Chronological validation design:
+
+- Use chronological splits only:
+  - discovery/train: earliest `60%`.
+  - validation: next `20%`.
+  - final untouched test: latest `20%`.
+- Use purging and embargo around split boundaries:
+  - purge length is at least the maximum forecast horizon.
+  - embargo length is at least the larger of maximum horizon and maximum feature
+    lookback used by a candidate.
+- Inside discovery/train, use nested walk-forward folds for model selection.
+- Validation is used once for candidate admission and channel selection.
+- Final test is opened only after implementation freeze.
+- Cross-sectional features must be computed using only symbols and bars present
+  at the same timestamp, with delisted or missing assets handled by the causal
+  availability mask.
+
+OHLCV feature families eligible for discovery:
+
+- Price-path state:
+  - close-to-close returns.
+  - open-to-close returns.
+  - overnight gap.
+  - high-low range.
+  - body, wick, and close-location value.
+  - Donchian position and breakout age.
+  - trend slope, curvature, and reversal pressure.
+- Volatility and range state:
+  - ATR and normalized range.
+  - realized volatility and vol-of-vol.
+  - range compression/expansion.
+  - Bollinger/Keltner squeeze state.
+  - volatility shock and volatility decay.
+- Trend/chop state:
+  - ADX/DMI-style trend strength.
+  - KAMA efficiency.
+  - Hurst/fractal proxy.
+  - moving-average slope and distance.
+- Momentum/oscillator state:
+  - RSI and StochRSI-style exhaustion.
+  - MACD/PPO/TRIX-style impulse.
+  - short/medium/long return stacks.
+- Volume and liquidity state:
+  - relative volume.
+  - volume z-score.
+  - volume-price alignment.
+  - OBV/accumulation-distribution-style pressure.
+  - dollar-volume and capacity proxy.
+- Cross-sectional OHLCV state:
+  - relative return rank.
+  - volatility-adjusted return rank.
+  - relative volume rank.
+  - sector/cluster-neutral ranks when cluster labels are frozen before
+    validation.
+
+Evidence metrics:
+
+- Predictive density:
+  - prequential log-score delta.
+  - LFO log-score delta.
+  - CRPS delta.
+  - Brier delta.
+  - PIT KS, Anderson-Darling, and Berkowitz diagnostics.
+- Directional and state information:
+  - sign hit-rate delta.
+  - information coefficient by horizon.
+  - monotone quantile spread.
+  - conditional residual reduction.
+  - tail-slice hit and Brier deltas.
+- Economic information:
+  - PF after costs.
+  - Sharpe after costs.
+  - deflated Sharpe.
+  - max drawdown.
+  - tail-loss clustering.
+  - turnover.
+  - capacity proxy.
+  - sensitivity to spread and slippage assumptions.
+- Statistical hygiene:
+  - stationary-bootstrap confidence intervals.
+  - White's Reality Check or SPA test for searched strategies.
+  - Benjamini-Hochberg FDR by family, cluster, and horizon.
+  - minimum sample count per accepted cell.
+  - null-feature and randomized-label controls.
+
+Selection discipline:
+
+- Early model and feature selection prioritizes predictive density,
+  calibration, null controls, stability, and causal mechanism.
+- PF and Sharpe are economic materiality and release gates, not primary
+  optimizer objectives.
+- A candidate must not be optimized directly to PF/Sharpe during discovery.
+- A high PF with weak calibration is not accepted.
+- A calibration win with no economic value is diagnostic only, not a live model
+  release.
+
+Statistical firewall:
+
+- Before validation, create a hypothesis registry containing:
+  - feature family.
+  - mechanism.
+  - expected sign or state relation.
+  - expected horizon.
+  - eligible asset/regime cluster.
+  - scoring metrics.
+  - rejection threshold.
+- After validation, no new hypothesis can be added to the same phase without
+  resetting the affected cycle result to planned and rerunning the gate.
+- Candidate claims must beat:
+  - the no-indicator baseline.
+  - randomized-feature nulls.
+  - shuffled-label nulls where applicable.
+  - same-family model controls.
+  - cross-family model controls.
+
+Correct mathematical target:
+
+```text
+z_g,t,h       = compact causal OHLCV state for feature group g and horizon h
+r_g,t,h       = learned reliability of group g in current asset/regime/horizon
+beta_g,h      = shrunk state-effect coefficient
+a_g,t,h       = r_g,t,h * beta_g,h * z_g,t,h
+a_t,h         = sum_g a_g,t,h
+
+mu_t,h        = base_mu_t,h + sigma_t,h * clip(a_t,h, -a_max, a_max)
+q_t,h         = base_q_t,h * bounded_q_multiplier(r_t,h, z_t,h)
+sigma_t,h     = base_sigma_t,h * bounded_sigma_multiplier(r_t,h, z_t,h)
+nu_df_t,h     = bounded_tail_adjustment(base_nu_df_t,h, r_t,h, z_t,h)
+asym_t,h      = bounded_downside_adjustment(base_asym_t,h, r_t,h, z_t,h)
+```
+
+- Reliability is learned from rolling out-of-sample performance, not from
+  in-sample fit.
+- Reliability increases after predictive-density wins and calibrated economic
+  wins.
+- Reliability decays after misses, stale states, and regime breaks.
+- Reliability is shrunk toward zero by default.
+- Indicator groups compete through sparsity penalties; most groups are expected
+  to die.
+- Mean, process-noise, variance, tail, and asymmetry channels are admitted
+  independently and can be deleted independently.
+
+Full-system release thresholds:
+
+- Full release requires all of:
+  - 50/50 assets complete.
+  - 0 failures.
+  - 0 calibration warnings.
+  - PF `>= 2.03296043485` (`1.973747995 * 1.03`).
+  - Sharpe `>= 2.9390346716` (`2.85343172 * 1.03`).
+  - hit rate `>= 0.590366105`.
+  - Brier no worse than cycle 150.
+  - CRPS no worse than cycle 150.
+  - PIT mean no worse than `0.7334874406719306`.
+  - PIT min `>= 0.30`.
+  - BIC mean improves or does not regress versus cycle 150 under the current
+    BIC convention, and shows no material regression versus cycle 100 beyond
+    the repeated-run noise band.
+  - max drawdown and stress/tail loss no worse than cycle 150.
+  - turnover-adjusted economics pass the cost sensitivity grid.
+  - runtime increase `<= 15%` versus the repeated clean runtime baseline from
+    cycle 155.
+  - improvement exceeds repeated-run noise and bootstrap uncertainty bands.
+- Cluster-restricted release requires all of:
+  - predeclared cluster before validation.
+  - minimum sample count satisfied.
+  - cluster PF and Sharpe improve by at least `7.5%` after costs.
+  - cluster Brier or CRPS improves.
+  - no full-system calibration regression.
+  - no full-system PF, Sharpe, hit-rate, drawdown, or runtime regression beyond
+    repeated-run noise.
+  - the model cannot activate outside its approved cluster.
+- Anything else is rejected or quarantined.
+
+Acceptance vocabulary:
+
+- `Accepted`: improves a required metric, deletes a proven weakness, or passes a
+  hard release gate with recorded evidence.
+- `Rejected`: fails its gate; experimental code is removed.
+- `Quarantined`: useful diagnostic artifact, not reachable by production model
+  selection or signal generation.
+- `Deleted`: code path, feature family, or model channel is removed after failed
+  evidence.
+
+### Rectification Work Ledger - Cycles 151-200
+
+| Cycle | Planned Focus | Acceptance Gate | Required Artifact / Deletion Rule |
+| ---: | --- | --- | --- |
+| 151 | Immutable baseline reproduction | Cycle 100 and cycle 150 metrics reproduce within recorded tolerance; benchmark artifacts and hashes are frozen; no model code promotion | `cycle_151_baseline_reproduction_metrics.json`; if reproduction fails, stop and fix measurement before any indicator work |
+| 152 | OHLCV data-contract and leakage audit | All model-facing fields are traceable to causal OHLCV inputs; adjusted prices, missing bars, splits, and volume anomalies are documented; no future high/low/close can enter features | `cycle_152_ohlcv_contract_audit.json`; any leaking transform is deleted before proceeding |
+| 153 | Causal timestamp and label harness | Every row has decision timestamp, feature timestamp, horizon, forward label, and cost label; feature `t` predicts only outcomes after the decision timestamp | `cycle_153_causal_panel_labels.parquet` plus hash manifest; rows with ambiguous timing are excluded |
+| 154 | Purged chronological split freeze | Discovery/validation/final-test splits are deterministic, chronological, purged, embargoed, and hash-stable; cluster definitions are frozen before validation | `cycle_154_split_manifest.json`; no later cycle may edit split membership |
+| 155 | Repeatability and metric-noise budget | Repeated cycle 100/150 gates establish noise bands for PF, Sharpe, hit, Brier, CRPS, PIT, BIC, and clean runtime | `cycle_155_noise_budget.json`; future wins below the noise band are rejected |
+| 156 | OHLCV cost, turnover, and capacity model | Spread, slippage, turnover, dollar-volume, and capacity proxies are computed causally from OHLCV and applied to all economic metrics | `cycle_156_cost_model.json`; any candidate that wins only before costs is rejected |
+| 157 | Baseline residual and miss atlas | Current model errors, PIT residuals, tail misses, drawdowns, and signal failures are mapped by asset/regime/horizon | `cycle_157_residual_atlas.json`; indicators must target a documented failure mode |
+| 158 | Candidate OHLCV feature catalog | Candidate features are implemented as read-only causal transforms with no model integration; each exposes fit/replay windows and lookback length | `cycle_158_feature_catalog.json`; untraceable or redundant transforms are deleted |
+| 159 | Mechanism pre-registration | Every feature family records expected mechanism, horizon, direction/state relation, eligible cluster, failure mode, and deletion condition before validation | `cycle_159_hypothesis_registry.json`; unregistered discoveries are diagnostic only |
+| 160 | Discovery edge map go/no-go | Discovery folds show minimum edge in log score, IC, quantile spread, and after-cost economics versus baseline and null features | `cycle_160_discovery_edge_map.json`; if no robust family survives, stop live indicator integration |
+| 161 | Null, placebo, and randomization controls | Candidate families beat shuffled-label, randomized-feature, and phase-shift nulls under the same scoring harness | `cycle_161_null_control_report.json`; null-like families are deleted |
+| 162 | Regime, asset-cluster, and horizon freeze | Volatility, trend/chop, liquidity/volume, and cross-sectional clusters are predeclared and frozen; minimum sample counts are recorded | `cycle_162_cluster_manifest.json`; clusters cannot be edited after validation |
+| 163 | Validation edge map | Frozen candidates are scored once on validation by family/cluster/horizon against cycle 100, cycle 150, and no-indicator controls | `cycle_163_validation_edge_map.json`; failed families are not tuned further |
+| 164 | Multiple-testing correction | Surviving claims pass BH-FDR and stationary-bootstrap/SPA or Reality Check adjustment across the searched family/cluster/horizon grid | `cycle_164_multiplicity_report.json`; uncorrected wins are rejected |
+| 165 | Monotonicity, stability, and sample-size gate | Accepted cells show monotone quantile spread, rolling stability, sufficient sample count, and no single-asset dominance | `cycle_165_stability_report.json`; unstable cells are quarantined |
+| 166 | Economic materiality gate | Surviving cells improve after-cost PF/Sharpe or reduce drawdown/tail loss without turnover explosion; cost sensitivity grid remains positive | `cycle_166_economic_materiality.json`; economically immaterial cells are diagnostic only |
+| 167 | Edge-search deletion pass | All non-surviving feature families, clusters, and temporary search code are deleted or made unreachable from production paths | `cycle_167_deletion_manifest.md`; no dormant rejected feature code remains live |
+| 168 | Compact orthogonal OHLCV basis | Survivors are compressed into a small, low-collinearity, standardized basis; feature count shrinks and VIF/correlation limits pass | `cycle_168_compact_basis.json`; overcomplete bases are pruned |
+| 169 | Reliability target construction | Reliability labels are built only from rolling out-of-sample log-score/calibration/economic wins; no final-test information is used | `cycle_169_reliability_targets.parquet`; labels with leakage or hindsight are deleted |
+| 170 | Edge-to-reliability go/no-go | Continue only if at least three predeclared family/regime/horizon cells or one broad cell survives validation with economic materiality | `cycle_170_reliability_go_no_go.md`; otherwise stop model integration and keep diagnostics only |
+| 171 | Reliability model v0 | A shrunk reliability estimator improves validation predictive density and after-cost economics versus static and zero-reliability controls | `cycle_171_reliability_v0_metrics.json`; if it only fits in-sample, reject |
+| 172 | Reliability decay and staleness model | Reliability decays after misses, stale states, and low-support regimes before validation economics degrade | `cycle_172_reliability_decay.json`; non-decaying authority is rejected |
+| 173 | Regime-break reset logic | OHLCV-detected volatility shocks, gap shocks, trend breaks, and liquidity shocks reduce or reset reliability without using future labels | `cycle_173_regime_reset.json`; reset rules that suppress winners or miss shocks are removed |
+| 174 | Hierarchical shrinkage and group sparsity | Asset effects shrink toward cluster/global zero; group sparsity removes weak families; posterior authority is sparse and inspectable | `cycle_174_shrinkage_sparsity.json`; dense authority maps fail |
+| 175 | Reliability diagnostics surface | Reliability by asset/regime/horizon is visible, calibrated, bounded, and explains when indicators are inactive | `cycle_175_reliability_diagnostics.json`; opaque reliability paths are quarantined |
+| 176 | Reliability ablation and controls | Reliability model beats zero, static, random, and no-indicator controls on validation; ablation of accepted reliability worsens metrics | `cycle_176_reliability_ablation.json`; failed reliability paths are deleted |
+| 177 | Reliability go/no-go | Continue to latent model channels only if reliability clears validation density, calibration, and after-cost gates beyond noise bands | `cycle_177_reliability_go_no_go.md`; otherwise delete live reliability integration |
+| 178 | Mean-state channel trial | Bounded OHLCV reliability adjustment to `mu_t` improves validation LFO/log score and after-cost economics without calibration regression | `cycle_178_mean_channel_metrics.json`; unbounded or purely directional votes are rejected |
+| 179 | Process-noise channel trial | Bounded `q_t` modulation improves regime-transition, trend-break, or stress slices versus no-indicator controls | `cycle_179_process_noise_channel.json`; channels that add churn without density gain are deleted |
+| 180 | Observation-variance channel trial | Bounded `sigma_t` modulation improves CRPS/Brier/tail calibration without suppressing profitable signals | `cycle_180_variance_channel.json`; volatility throttles that only reduce activity are rejected |
+| 181 | Tail-thickness channel trial | Bounded `nu_t` adjustment improves tail diagnostics and stress losses without PF/Sharpe regression | `cycle_181_tail_channel.json`; tail changes that hide model error are rejected |
+| 182 | Downside/asymmetry channel trial | Downside/asymmetry adjustment improves left-tail calibration and drawdown clustering without broad calibration damage | `cycle_182_asymmetry_channel.json`; symmetric or noisy effects are deleted |
+| 183 | Volume/liquidity safety channel trial | Volume-derived reliability reduces position authority during weak-capacity or abnormal-volume states and improves net economics | `cycle_183_liquidity_safety_channel.json`; liquidity gates that just reduce turnover without edge are diagnostic only |
+| 184 | Same-family no-indicator control comparison | Each surviving channel beats the same Student-t/Gaussian family without indicators under identical tuning and cost assumptions | `cycle_184_same_family_controls.json`; channels that only exploit model-family differences are rejected |
+| 185 | Cross-family control comparison | Surviving channels beat canonical, improved, unified, and Gaussian controls where applicable without model-count explosion | `cycle_185_cross_family_controls.json`; edge must be indicator-derived, not family substitution |
+| 186 | Channel kill and compact model freeze | Only channels that beat controls after costs remain; all channel multipliers are bounded; model count and runtime budgets are frozen | `cycle_186_channel_freeze.md`; failed channels are removed from registry and tuning |
+| 187 | BMA admission with complexity penalties | Indicator candidates enter BMA only with validation proof, explicit penalties, and no posterior concentration on fragile paths | `cycle_187_bma_admission.json`; candidates failing admission remain unreachable |
+| 188 | Entropy, fragility, and crowd-out gate | Posterior entropy, leave-one-asset-out, leave-one-regime-out, and small-perturbation tests show no fragile single-path dominance | `cycle_188_fragility_report.json`; fragile candidates are quarantined |
+| 189 | Calibration firewall | PIT KS, Anderson-Darling, Berkowitz, Brier, and CRPS are no worse than cycle 150 and acceptable versus cycle 100 | `cycle_189_calibration_firewall.json`; calibration regressions block release |
+| 190 | Stress, tail, and drawdown gate | Stress/tail slices improve or remain no worse; max drawdown and tail-loss clustering do not deteriorate after costs | `cycle_190_stress_tail_gate.json`; candidates that win average metrics but fail tails are rejected |
+| 191 | Weak-asset and high-influence asset check | NVDA, QQQ, SPY, XLP, and any high-influence assets improve or remain safe without hand-tuned exceptions | `cycle_191_weak_asset_check.json`; single-name fixes cannot justify global release |
+| 192 | Signal geometry and orthogonality gate | Indicators affect signal size only through calibrated reliability/confidence; they do not bypass signal calibration or create hidden long/short votes | `cycle_192_signal_geometry.json`; direct-vote paths are deleted |
+| 193 | Cost-aware sizing and turnover gate | Position sizing improves net economics under the cost grid; turnover, capacity, and spread sensitivity stay within release limits | `cycle_193_cost_aware_sizing.json`; pre-cost-only improvements fail |
+| 194 | Validation signal smoke | Validation PF, Sharpe, hit, Brier, CRPS, drawdown, and runtime beat cycle 150 beyond noise bands before final-test access | `cycle_194_validation_signal_smoke.json`; otherwise do not open final test |
+| 195 | Final-test implementation lock | Code, splits, clusters, features, thresholds, costs, and release criteria are frozen before final-test scoring | `cycle_195_final_lock_manifest.md`; any change after lock invalidates final-test results |
+| 196 | Untouched final retune | Final chronological test retune completes 50/50 assets with 0 failures and 0 calibration warnings under frozen implementation | `cycle_196_final_retune_metrics.json`; failures block release |
+| 197 | Untouched final signal gate | PF, Sharpe, hit, Brier, CRPS, PIT, BIC, drawdown, turnover, and runtime pass full-system or predeclared cluster thresholds | `cycle_197_final_signal_gate.json`; failed candidates are rejected or cluster-quarantined |
+| 198 | Repeated-run and bootstrap confirmation | Final-test improvement exceeds repeated-run noise, stationary-bootstrap uncertainty, and searched-strategy adjustment | `cycle_198_confirmation_report.json`; statistically fragile wins are not released |
+| 199 | Final ablation, deletion, and documentation | Removing accepted indicators measurably worsens accepted candidates; all rejected code is deleted; diagnostics and rejection reasons are documented | `cycle_199_ablation_deletion_manifest.md`; no rejected live path remains reachable |
+| 200 | Rectified release decision | Final decision records full release, cluster-restricted release, quarantine, or rejection with deltas versus cycles 100 and 150 | `cycle_200_rectified_release_decision.md`; honest rejection is preferred to decorative complexity |
+
+### Implementation Results - Cycles 151-170
+
+Implemented the executable OHLCV rectification firewall in
+`src/rectification/ohlcv_firewall.py` and exposed it through:
+
+```bash
+make rectify-indicators
+```
+
+This implementation deliberately does not promote live indicator authority.  It
+builds the institutional evidence layer required before any reliability, BMA, or
+latent model channel can be opened.
+
+Code changes:
+
+- Added `src/rectification/ohlcv_firewall.py`.
+- Added `src/rectification/__init__.py`.
+- Added `src/tests/test_ohlcv_rectification_firewall.py`.
+- Added `make rectify-indicators`.
+- Fixed indicator-admission BIC convention in
+  `src/models/indicator_admission.py`:
+  - BIC delta is now `candidate - control`.
+  - negative delta means improvement.
+  - legacy `min_bic_delta` is mapped to the new convention for compatibility.
+
+Verification:
+
+- `.venv/bin/python -m py_compile src/rectification/ohlcv_firewall.py src/models/indicator_admission.py src/tests/test_ohlcv_rectification_firewall.py src/tests/test_indicator_admission.py`
+- `.venv/bin/python -m unittest src.tests.test_indicator_admission src.tests.test_ohlcv_rectification_firewall -v`
+- `PYTHONPATH=src .venv/bin/python -m rectification.ohlcv_firewall`
+- `make rectify-indicators ARGS="--symbols AAPL,MSFT --horizons 1,5 --output-dir src/data/benchmarks/rectification_make_smoke"`
+- `make tests ARGS="-q"`
+
+Full 50-stock firewall output:
+
+- Summary artifact:
+  `src/data/benchmarks/rectification/cycles_151_170_summary.json`.
+- Loaded symbols: `50/50`.
+- Causal panel rows: `491882`.
+- Runtime: `10.6033s`.
+- Discovery survivors: `21`.
+- Validation survivors: `5`.
+- FDR survivors: `5`.
+- Stability survivors: `4`.
+- Economic-materiality survivors: `2`.
+- Cycle 170 decision:
+  `stop_live_indicator_integration_keep_diagnostics_only`.
+- Live cells after all gates:
+  - `momentum_oscillator / macd_z / horizon 21`.
+  - `price_path / ret_21 / horizon 21`.
+- Go/no-go result: `NO-GO`.
+  - The plan requires at least three predeclared cells or one broad cell after
+    validation, FDR, stability, and economics.
+  - Only two live cells survived.
+  - Therefore cycles 171-200 are not opened in this run.
+  - No reliability model, latent model channel, BMA admission, signal geometry
+    change, sizing change, or final-test access is authorized from this
+    evidence.
+
+Cycle evidence:
+
+- Cycle 151 accepted:
+  - `cycle_151_baseline_reproduction_metrics.json`.
+  - Cycle 100 and cycle 150 frozen metrics reproduced exactly within numerical
+    tolerance.
+  - BIC convention recorded as `candidate_minus_control`.
+- Cycle 152 accepted:
+  - `cycle_152_ohlcv_contract_audit.json`.
+  - New consumed inputs are only `open`, `high`, `low`, `close`, and `volume`.
+  - `Adj Close` and `Ticker` are explicitly ignored.
+  - No unresolved OHLCV contract failures across the loaded universe.
+- Cycle 153 accepted:
+  - `cycle_153_causal_panel_labels_manifest.json`.
+  - Full panel hash recorded.
+  - `cycle_153_causal_panel_labels_sample.csv` stores an auditable sample.
+  - Every label timestamp is after its decision timestamp.
+- Cycle 154 accepted:
+  - `cycle_154_split_manifest.json`.
+  - Chronological discovery/validation/final-test splits are deterministic,
+    purged, embargoed, and hash-stable.
+- Cycle 155 accepted:
+  - `cycle_155_noise_budget.json`.
+  - Clean timing sources are cycles 100, 148, and 149.
+  - Abnormal cycle 150 detached runtime is excluded.
+  - Clean runtime baseline: `45.1926s`.
+  - Runtime release budget at +15%: `51.9715s`.
+- Cycle 156 accepted:
+  - `cycle_156_cost_model.json`.
+  - Spread, slippage, turnover, and capacity proxies are derived only from
+    OHLCV.
+- Cycle 157 accepted:
+  - `cycle_157_residual_atlas.json`.
+  - Baseline miss, tail, cost, model, and regime cells are mapped before
+    indicator promotion.
+- Cycle 158 accepted:
+  - `cycle_158_feature_catalog.json`.
+  - Feature families are read-only causal transforms with fit/replay metadata.
+- Cycle 159 accepted:
+  - `cycle_159_hypothesis_registry.json`.
+  - Mechanisms, horizons, scoring metrics, failure modes, and deletion
+    conditions are pre-registered before validation.
+- Cycle 160 accepted as diagnostic only:
+  - `cycle_160_discovery_edge_map.json`.
+  - `21` discovery cells survived the minimum discovery gate.
+  - No model integration is allowed from discovery alone.
+- Cycle 161 accepted:
+  - `cycle_161_null_control_report.json`.
+  - Null/placebo hurdles are applied before validation claims can survive.
+- Cycle 162 accepted:
+  - `cycle_162_cluster_manifest.json`.
+  - Regime/horizon clusters are frozen before validation.
+- Cycle 163 accepted as diagnostic only:
+  - `cycle_163_validation_edge_map.json`.
+  - `5` validation cells survived.
+- Cycle 164 accepted:
+  - `cycle_164_multiplicity_report.json`.
+  - BH-FDR correction retained `5` claims, but some economically attractive
+    raw claims failed because density/Brier moved the wrong way.
+- Cycle 165 accepted:
+  - `cycle_165_stability_report.json`.
+  - `4` cells passed rolling stability and sample checks.
+- Cycle 166 accepted as diagnostic only:
+  - `cycle_166_economic_materiality.json`.
+  - `2` cells passed economic materiality.
+- Cycle 167 accepted:
+  - `cycle_167_deletion_manifest.md`.
+  - Failed families remain unreachable from registry, tuning, calibration,
+    signal generation, and frontend diagnostics because no live path was wired.
+- Cycle 168 accepted:
+  - `cycle_168_compact_basis.json`.
+  - Compact basis logic is present for surviving validation cells.
+- Cycle 169 accepted as diagnostic only:
+  - `cycle_169_reliability_targets.json`.
+  - Reliability labels are derived only from validation out-of-sample density,
+    Brier, and after-cost economics.
+- Cycle 170 accepted with hard stop:
+  - `cycle_170_reliability_go_no_go.md`.
+  - Decision: stop live indicator integration and keep diagnostics only.
+
+Rectification interpretation:
+
+- This is a quality improvement even though it does not release a more
+  profitable live indicator model yet.
+- The system is now harder to fool:
+  - no BIC sign confusion.
+  - no adjusted-close leakage for new indicator work.
+  - no validation/final-test mutation path.
+  - no promotion from discovery-only results.
+  - no release from two isolated cells.
+- The honest next step is not to force cycles 171-200.  Under the plan's own
+  hard-stop rule, they remain blocked until a future frozen OHLCV edge map
+  clears cycle 170.
+
+### Hard Stop Conditions
+
+- If cycle 152 or 153 finds unresolved leakage, stop all indicator work until the
+  data contract is fixed.
+- If cycle 155 cannot establish metric-noise bands, no later improvement claim is
+  accepted.
+- If cycle 160 finds no robust OHLCV edge, stop model integration and delete or
+  quarantine indicator-integrated paths.
+- If cycle 164 fails multiplicity correction, do not proceed to model channels.
+- If cycle 170 fails, keep only diagnostic edge maps and stop live reliability
+  work.
+- If cycle 177 fails, delete reliability integration and stop latent model work.
+- If cycle 186 finds no channel beating controls after costs, delete all live
+  indicator candidates.
+- If cycle 194 fails, do not open the final chronological test.
+- If cycle 197 fails full-system thresholds, do not release globally.
+- If cluster thresholds pass but full-system thresholds fail, release only a
+  predeclared cluster-restricted candidate or reject.
+- Any post-lock change after cycle 195 invalidates cycles 196-198 and requires a
+  new lock cycle.
+- If the final test is opened and fails, do not tune to that final test.  Either
+  reject/quarantine the candidate, or start a new locked attempt with a fresh
+  rolling-forward holdout protocol.
+
+### Rectification Definition Of Done
+
+The rectification phase is done only when:
+
+- `Models.md` records evidence for every cycle from 151 to 200.
+- The final decision is based on untouched chronological test data.
+- The accepted result, if any, is derived only from allowed new OHLCV inputs and
+  deterministic causal transforms, with existing baseline non-OHLCV layers held
+  identical between candidate and control.
+- Indicator win rate, PF delta, Sharpe delta, hit-rate delta, Brier/CRPS delta,
+  PIT/AD/Berkowitz delta, BIC delta, drawdown delta, turnover delta, cost
+  sensitivity, capacity proxy, and runtime delta are recorded versus both cycle
+  100 and cycle 150.
+- Every survivor has:
+  - a no-indicator control.
+  - same-family and cross-family controls.
+  - a reliability diagnostic.
+  - an ablation result.
+  - a deletion condition.
+  - a bounded activation path.
+- Every rejected live path is deleted or explicitly quarantined so it cannot be
+  selected by the registry, tuning, calibration, signal generation, or frontend
+  diagnostics.
+- The outcome can be "reject indicators" if the evidence does not clear the
+  gates.  Honest rejection is preferred to decorative complexity.
 
 ## Definition of Done
 

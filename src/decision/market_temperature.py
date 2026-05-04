@@ -1518,8 +1518,20 @@ def ensemble_forecast(prices: pd.Series, horizons: list = None, asset_type: str 
             # =========================================================
             # Sign-agreement-weighted averaging (Story 1.6)
             # =========================================================
-            weighted_median = sum(w * f for w, f in zip(weights, forecasts_at_h))
-            sign_median = 1 if weighted_median >= 0 else -1
+            weighted_mean = sum(w * f for w, f in zip(weights, forecasts_at_h))
+            sign_vote = sum(
+                w * (1 if f >= 0 else -1)
+                for w, f in zip(weights, forecasts_at_h)
+            )
+            # Consensus is a sign vote, not a magnitude vote. A single large
+            # mean-reversion forecast should raise dispersion/contested risk,
+            # but it should not define the agreement side by itself.
+            sign_median = (
+                1 if sign_vote > 1e-12
+                else -1 if sign_vote < -1e-12
+                else 1 if weighted_mean >= 0
+                else -1
+            )
             
             # Compute agreement: fraction of weight with same sign as median
             agree_weight = 0.0

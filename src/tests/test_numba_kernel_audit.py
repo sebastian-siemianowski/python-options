@@ -106,21 +106,23 @@ class TestNumbaKernelAudit(unittest.TestCase):
             _ = np.cumsum(steps, axis=1)
         t_single = time.perf_counter() - t0
 
-        # Dual-frequency: two drift components blended
+        # Dual-frequency: two drift components blended. Keep deterministic
+        # drift outside the loop and add it in place so the audit measures the
+        # intended model overhead, not an avoidable full-array allocation.
+        mu_fast = 0.0005
+        mu_slow = 0.0001
+        phi_fast = 0.95
+        phi_slow = 0.99
+        horizon_index = np.arange(max_h)
+        mu_fast_seq = mu_fast * phi_fast ** horizon_index
+        mu_slow_seq = mu_slow * phi_slow ** horizon_index
+        mu_combined = mu_fast_seq + mu_slow_seq
+
         t0 = time.perf_counter()
         for _ in range(20):
-            mu_fast = 0.0005
-            mu_slow = 0.0001
-            phi_fast = 0.95
-            phi_slow = 0.99
             sigma = 0.015
-
-            # Propagate both drift components
-            mu_fast_seq = mu_fast * phi_fast ** np.arange(max_h)
-            mu_slow_seq = mu_slow * phi_slow ** np.arange(max_h)
-            mu_combined = mu_fast_seq + mu_slow_seq
-
-            steps = rng.normal(0, sigma, (n_paths, max_h)) + mu_combined[np.newaxis, :]
+            steps = rng.normal(0, sigma, (n_paths, max_h))
+            steps += mu_combined[np.newaxis, :]
             _ = np.cumsum(steps, axis=1)
         t_dual = time.perf_counter() - t0
 
