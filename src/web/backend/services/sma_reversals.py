@@ -129,6 +129,12 @@ _MTF_SCORE_CEIL = 1.05  # at alignment=1.0 we multiply by 1.05
 
 _CACHE_TTL_SEC = 300
 
+_ISO_CURRENCY_CODES = {
+    "AUD", "BRL", "CAD", "CHF", "CNY", "CZK", "DKK", "EUR", "GBP", "HKD",
+    "HUF", "INR", "JPY", "KRW", "MXN", "NOK", "NZD", "PLN", "SEK", "SGD",
+    "TRY", "USD", "ZAR",
+}
+
 _cache: Dict[str, Any] = {
     "built_at": 0.0,
     "mtime_signature": None,
@@ -145,6 +151,8 @@ def _signature() -> Optional[float]:
     sig = 0.0
     try:
         for fp in glob.iglob(os.path.join(PRICES_DIR, "*.csv")):
+            if _is_currency_symbol(_symbol_for(fp)):
+                continue
             try:
                 sig += os.path.getmtime(fp)
             except OSError:
@@ -171,6 +179,20 @@ def _symbol_for(filepath: str) -> str:
     if fname.endswith(".csv"):
         return fname[:-4]
     return fname
+
+
+def _is_currency_symbol(symbol: str) -> bool:
+    """Return true for fiat FX pairs such as PLNJPY=X / PLNJPY_X, but not XAGUSD."""
+    sym = str(symbol or "").strip().upper()
+    if sym.endswith("_X"):
+        sym = f"{sym[:-2]}=X"
+    if not sym.endswith("=X"):
+        return False
+    pair = sym[:-2].replace("/", "").replace("-", "").replace("_", "")
+    if len(pair) != 6:
+        return False
+    base, quote = pair[:3], pair[3:]
+    return base in _ISO_CURRENCY_CODES and quote in _ISO_CURRENCY_CODES
 
 
 def _clip01(x: float) -> float:
@@ -908,10 +930,12 @@ def _build() -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         return [], {}
     reversals: List[Dict[str, Any]] = []
     for fp in sorted(glob.glob(os.path.join(PRICES_DIR, "*.csv"))):
+        sym = _symbol_for(fp)
+        if _is_currency_symbol(sym):
+            continue
         recs = _compute_one(fp)
         if not recs:
             continue
-        sym = _symbol_for(fp)
         for r in recs:
             r["symbol"] = sym
             reversals.append(r)
@@ -974,6 +998,7 @@ def get_all_sma_reversals(force: bool = False) -> Dict[str, Any]:
         "overextended_atr": _OVEREXTENDED_ATR,
         "edge_forward_days": _EDGE_DEFAULT_FORWARD,
         "edge_forward_by_period": dict(_EDGE_FORWARD_BY_PERIOD),
+        "excluded_asset_types": ["currencies"],
         "vol_regime_window": _VOL_REGIME_WINDOW,
         "vol_regime_baseline": _VOL_REGIME_BASELINE,
         "pullback_window": _PULLBACK_WINDOW,

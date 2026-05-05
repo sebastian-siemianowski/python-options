@@ -34,6 +34,8 @@ export const api = {
   intrinsicValues: () => fetchApi<IntrinsicValuesData>('/api/signals/intrinsic-values'),
   emaStates: () => fetchApi<EmaStatesData>('/api/signals/ema-states'),
   smaReversals: () => fetchApi<SmaReversalsData>('/api/signals/sma-reversals'),
+  reversalFlips: (recentDays = 4, tail = 365) =>
+    fetchApi<ReversalFlipsData>(`/api/signals/reversal-flips?recent_days=${recentDays}&tail=${tail}`),
 
   // Risk
   riskDashboard: () => fetchApi<RiskDashboard>('/api/risk/dashboard'),
@@ -260,6 +262,24 @@ export interface SmaReversalsData {
   overextended_atr: number;
   edge_forward_days: number;
   total: number;
+  built_at: number;
+}
+
+export interface ReversalFlipEntry {
+  symbol: string;
+  signal: 'buy' | 'sell' | null;
+  signal_date: string | null;
+  bars_ago: number | null;
+  price: number | null;
+}
+
+export interface ReversalFlipsData {
+  signals: Record<string, ReversalFlipEntry>;
+  counts: { buy: number; sell: number };
+  recent_days: number;
+  tail: number;
+  total: number;
+  latest_date: string | null;
   built_at: number;
 }
 

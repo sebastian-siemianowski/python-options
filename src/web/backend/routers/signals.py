@@ -127,6 +127,21 @@ async def sma_reversals():
     return get_all_sma_reversals()
 
 
+@router.get("/reversal-flips")
+async def reversal_flips(
+    recent_days: int = Query(default=4, ge=1, le=30),
+    tail: int = Query(default=365, ge=40, le=2000),
+):
+    """
+    BUY/SELL trend-reversal flips from the same detector used by the detail chart.
+
+    `recent_days` is measured in trading bars, so the default covers the latest
+    bar plus the previous three bars.
+    """
+    from web.backend.services.reversal_flips import get_recent_reversal_flips
+    return get_recent_reversal_flips(recent_days=recent_days, tail=tail)
+
+
 @router.get("/intrinsic-values")
 async def intrinsic_values():
     """Buffett/Munger intrinsic value estimates with current prices and valuation gaps."""

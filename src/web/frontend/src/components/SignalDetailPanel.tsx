@@ -15,17 +15,18 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   createChart,
+  createSeriesMarkers,
   CandlestickSeries,
-  LineSeries,
   AreaSeries,
   HistogramSeries,
   CrosshairMode,
   LineStyle,
   ColorType,
   type IChartApi,
-  type ISeriesApi,
+  type AreaData,
+  type SeriesMarker,
 } from 'lightweight-charts';
-import { ArrowUpRight, BarChart3, Activity, TrendingUp, AlertTriangle, ExternalLink } from 'lucide-react';
+import { ArrowUpRight, BarChart3, TrendingUp, AlertTriangle, ExternalLink, RefreshCw } from 'lucide-react';
 import { api, type OHLCVBar } from '../api';
 import { isHeikinAshiUp, toHeikinAshiBars } from '../utils/heikinAshi';
 
@@ -33,9 +34,28 @@ import { isHeikinAshiUp, toHeikinAshiBars } from '../utils/heikinAshi';
 // 'YYYY-MM-DD' strings are accepted natively.
 
 
-type ChartType = 'candles' | 'line' | 'area';
+export type SignalDetailChartType = 'candles' | 'reversal' | 'area';
+type ChartType = SignalDetailChartType;
 type RangeKey = '1M' | '3M' | '6M' | '1Y' | 'MAX';
 type ChartOhlcvResponse = { symbol: string; data: OHLCVBar[]; count: number };
+type ReversalTrend = 1 | -1;
+
+interface ReversalCandle {
+  time: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  color: string;
+  wickColor: string;
+  borderColor: string;
+}
+
+interface ReversalModel {
+  candles: ReversalCandle[];
+  area: AreaData<string>[];
+  markers: SeriesMarker<string>[];
+}
 
 const RANGE_DAYS: Record<RangeKey, number> = {
   '1M': 22, '3M': 66, '6M': 132, '1Y': 252, 'MAX': 10000,
@@ -73,18 +93,13 @@ const TV_THEME = Object.freeze({
     wickUpColor: '#10b981',
     wickDownColor: '#f43f5e',
   },
-  line: {
-    color: '#8b5cf6',
+  area: {
+    lineColor: '#34d399',
+    topColor: 'rgba(16,185,129,0.26)',
+    bottomColor: 'rgba(16,185,129,0)',
     lineWidth: 2 as const,
     priceLineVisible: false,
     lastValueVisible: true,
-  },
-  area: {
-    lineColor: '#8b5cf6',
-    topColor: 'rgba(139,92,246,0.24)',
-    bottomColor: 'rgba(139,92,246,0)',
-    lineWidth: 2 as const,
-    priceLineVisible: false,
   },
   volumeUp: 'rgba(16,185,129,0.35)',
   volumeDown: 'rgba(244,63,94,0.35)',
@@ -108,6 +123,122 @@ function signalColor(label: string | undefined): string {
   return '#94a3b8';
 }
 
+function computeAtr(bars: OHLCVBar[], period = 14): number[] {
+  const tr = bars.map((bar, i) => {
+    if (i === 0) return Math.max(0, bar.high - bar.low);
+    const prevClose = bars[i - 1].close;
+    return Math.max(
+      Math.max(0, bar.high - bar.low),
+      Math.abs(bar.high - prevClose),
+      Math.abs(bar.low - prevClose),
+    );
+  });
+
+  return tr.map((_, i) => {
+    const start = Math.max(0, i - period + 1);
+    const slice = tr.slice(start, i + 1);
+    const avg = slice.reduce((sum, v) => sum + v, 0) / Math.max(1, slice.length);
+    return avg || Math.max(1e-9, bars[i].high - bars[i].low);
+  });
+}
+
+function buildReversalModel(bars: OHLCVBar[]): ReversalModel {
+  if (bars.length === 0) return { candles: [], area: [], markers: [] };
+
+  const atr = computeAtr(bars);
+  const multiplier = 2.4;
+  let trend: ReversalTrend = bars[0].close >= bars[0].open ? 1 : -1;
+  let finalUpper = (bars[0].high + bars[0].low) / 2 + multiplier * atr[0];
+  let finalLower = (bars[0].high + bars[0].low) / 2 - multiplier * atr[0];
+  const candles: ReversalCandle[] = [];
+  const area: AreaData<string>[] = [];
+  const markers: SeriesMarker<string>[] = [];
+
+  bars.forEach((bar, i) => {
+    const prevBar = bars[Math.max(0, i - 1)];
+    const midpoint = (bar.high + bar.low) / 2;
+    const basicUpper = midpoint + multiplier * atr[i];
+    const basicLower = midpoint - multiplier * atr[i];
+    const prevTrend = trend;
+
+    if (i > 0) {
+      finalUpper = basicUpper < finalUpper || prevBar.close > finalUpper ? basicUpper : finalUpper;
+      finalLower = basicLower > finalLower || prevBar.close < finalLower ? basicLower : finalLower;
+
+      if (prevTrend === 1 && bar.close < finalLower) trend = -1;
+      else if (prevTrend === -1 && bar.close > finalUpper) trend = 1;
+    }
+
+    const lookback = bars[Math.max(0, i - 3)].close || bar.close;
+    const shortMomentum = bar.close - lookback;
+    const dayMomentum = i > 0 ? bar.close - prevBar.close : bar.close - bar.open;
+    const isFlip = i > 0 && trend !== prevTrend;
+    const isAligned = trend === 1
+      ? dayMomentum >= 0 && shortMomentum >= 0
+      : dayMomentum <= 0 && shortMomentum <= 0;
+
+    const color = trend === 1
+      ? isFlip
+        ? '#00f5a0'
+        : isAligned
+          ? '#34d399'
+          : '#86efac'
+      : isFlip
+        ? '#ff375f'
+        : isAligned
+          ? '#fb7185'
+          : '#fca5a5';
+    const areaTopColor = trend === 1
+      ? isFlip
+        ? 'rgba(0,245,160,0.36)'
+        : isAligned
+          ? 'rgba(16,185,129,0.28)'
+          : 'rgba(134,239,172,0.16)'
+      : isFlip
+        ? 'rgba(255,55,95,0.34)'
+        : isAligned
+          ? 'rgba(244,63,94,0.26)'
+          : 'rgba(252,165,165,0.14)';
+    const areaBottomColor = trend === 1
+      ? 'rgba(16,185,129,0)'
+      : 'rgba(244,63,94,0)';
+
+    const reversalPoint: ReversalCandle = {
+      time: bar.time,
+      open: bar.open,
+      high: bar.high,
+      low: bar.low,
+      close: bar.close,
+      color,
+      wickColor: trend === 1 ? 'rgba(110,231,183,0.92)' : 'rgba(253,164,175,0.92)',
+      borderColor: isFlip ? '#f8fafc' : color,
+    };
+
+    candles.push(reversalPoint);
+    area.push({
+      time: bar.time,
+      value: bar.close,
+      lineColor: color,
+      topColor: areaTopColor,
+      bottomColor: areaBottomColor,
+    });
+
+    if (isFlip) {
+      markers.push({
+        id: `${bar.time}-${trend === 1 ? 'buy' : 'sell'}`,
+        time: bar.time,
+        position: trend === 1 ? 'belowBar' : 'aboveBar',
+        color: trend === 1 ? '#00f5a0' : '#ff375f',
+        shape: trend === 1 ? 'arrowUp' : 'arrowDown',
+        text: trend === 1 ? 'BUY' : 'SELL',
+        size: 1.35,
+      });
+    }
+  });
+
+  return { candles, area, markers };
+}
+
 export interface SignalDetailPanelProps {
   ticker: string;
   /** Optional — stats strip shows these if provided. */
@@ -116,6 +247,8 @@ export interface SignalDetailPanelProps {
   crashRisk?: number;
   /** Horizons from the row (e.g. [7, 30, 90]) — rendered as a small forecast list. */
   horizonSignals?: Record<string, { p_up?: number; kelly_half?: number; label?: string }>;
+  defaultChartType?: ChartType;
+  defaultRange?: RangeKey;
   onNavigateChart: () => void;
 }
 
@@ -125,10 +258,12 @@ export default function SignalDetailPanel({
   momentum,
   crashRisk,
   horizonSignals,
+  defaultChartType = 'area',
+  defaultRange = '1Y',
   onNavigateChart,
 }: SignalDetailPanelProps) {
-  const [chartType, setChartType] = useState<ChartType>('candles');
-  const [range, setRange] = useState<RangeKey>('3M');
+  const [chartType, setChartType] = useState<ChartType>(defaultChartType);
+  const [range, setRange] = useState<RangeKey>(defaultRange);
   const queryClient = useQueryClient();
 
   // Request a generous tail so range switches never require refetch.
@@ -147,7 +282,10 @@ export default function SignalDetailPanel({
     const n = RANGE_DAYS[range];
     return bars.length > n ? bars.slice(-n) : bars;
   }, [bars, range]);
-  const chartBars = useMemo(() => toHeikinAshiBars(visibleBars), [visibleBars]);
+  const chartBars = useMemo(
+    () => (chartType === 'candles' ? toHeikinAshiBars(visibleBars) : visibleBars),
+    [chartType, visibleBars],
+  );
 
   const lastBar = visibleBars[visibleBars.length - 1];
   const firstBar = visibleBars[0];
@@ -225,7 +363,7 @@ export default function SignalDetailPanel({
             onChange={(v) => setChartType(v as ChartType)}
             options={[
               { value: 'candles', label: 'Heikin Ashi', icon: <BarChart3 className="w-3 h-3" /> },
-              { value: 'line', label: 'Line', icon: <Activity className="w-3 h-3" /> },
+              { value: 'reversal', label: 'Reversal', icon: <RefreshCw className="w-3 h-3" /> },
               { value: 'area', label: 'Area', icon: <TrendingUp className="w-3 h-3" /> },
             ]}
           />
@@ -344,25 +482,32 @@ function TradingViewChart({ bars, chartType }: { bars: OHLCVBar[]; chartType: Ch
     });
     chartRef.current = chart;
 
-    // Main Heikin Ashi price series
-    let priceSeries: ISeriesApi<'Candlestick'> | ISeriesApi<'Line'> | ISeriesApi<'Area'>;
-    if (chartType === 'candles') {
-      priceSeries = chart.addSeries(CandlestickSeries, TV_THEME.candles);
-      priceSeries.setData(
-        bars.map((b) => ({
-          time: b.time,
-          open: b.open,
-          high: b.high,
-          low: b.low,
-          close: b.close,
-        })),
-      );
-    } else if (chartType === 'line') {
-      priceSeries = chart.addSeries(LineSeries, TV_THEME.line);
-      priceSeries.setData(bars.map((b) => ({ time: b.time, value: b.close })));
+    // Main price series
+    if (chartType === 'candles' || chartType === 'reversal') {
+      const candleSeries = chart.addSeries(CandlestickSeries, {
+        ...TV_THEME.candles,
+        borderVisible: chartType === 'reversal',
+      });
+      if (chartType === 'reversal') {
+        const reversal = buildReversalModel(bars);
+        candleSeries.setData(reversal.candles);
+        createSeriesMarkers(candleSeries, reversal.markers, { zOrder: 'top' });
+      } else {
+        candleSeries.setData(
+          bars.map((b) => ({
+            time: b.time,
+            open: b.open,
+            high: b.high,
+            low: b.low,
+            close: b.close,
+          })),
+        );
+      }
     } else {
-      priceSeries = chart.addSeries(AreaSeries, TV_THEME.area);
-      priceSeries.setData(bars.map((b) => ({ time: b.time, value: b.close })));
+      const areaSeries = chart.addSeries(AreaSeries, TV_THEME.area);
+      const reversal = buildReversalModel(bars);
+      areaSeries.setData(reversal.area);
+      createSeriesMarkers(areaSeries, reversal.markers, { zOrder: 'top' });
     }
 
     // Volume histogram on its own price scale

@@ -4,13 +4,13 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, useMemo, useEffect, useRef, useCallback, Component, Fragment, type ReactNode, type ErrorInfo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
-import type { SummaryRow, SectorGroup, StrongSignalEntry, HighConvictionSignal, SignalSummaryData, SignalStats, EmaState, SmaReversal, SmaReversalsData } from '../api';
+import type { SummaryRow, SectorGroup, StrongSignalEntry, HighConvictionSignal, SignalSummaryData, SignalStats, EmaState, SmaReversal, SmaReversalsData, ReversalFlipEntry, ReversalFlipsData } from '../api';
 import { SignalTableSkeleton } from '../components/CosmicSkeleton';
 import { CosmicErrorCard } from '../components/CosmicErrorState';
 import { Sparkline, SparklinePct } from '../components/Sparkline';
 import { SignalLabel, SignalStrengthMeter, MomentumBadge, CrashRiskHeat, HorizonCell, QualityCell } from '../components/SignalTableVisuals';
 import { ColumnCustomizer, type ColumnDef } from '../components/ColumnCustomizer';
-import SignalDetailPanel from '../components/SignalDetailPanel';
+import SignalDetailPanel, { type SignalDetailChartType } from '../components/SignalDetailPanel';
 import { formatJobElapsed, useJobStore, type JobCounters, type JobMode, type JobStageMetric, type JobStatus } from '../stores/jobStore';
 import {
   Filter, ChevronDown, ChevronRight,
@@ -51,8 +51,58 @@ const rowHorizonColor = (row: SummaryRow): 'greens' | 'reds' | 'mixed' => {
   return 'mixed';
 };
 
+const ISO_CURRENCY_CODES = new Set([
+  'AUD', 'BRL', 'CAD', 'CHF', 'CNY', 'CZK', 'DKK', 'EUR', 'GBP', 'HKD',
+  'HUF', 'INR', 'JPY', 'KRW', 'MXN', 'NOK', 'NZD', 'PLN', 'SEK', 'SGD',
+  'TRY', 'USD', 'ZAR',
+]);
+
+const isFiatCurrencyTicker = (symbol: string | undefined | null): boolean => {
+  let sym = String(symbol || '').trim().toUpperCase();
+  if (sym.endsWith('_X')) sym = `${sym.slice(0, -2)}=X`;
+  if (!sym.endsWith('=X')) return false;
+  const pair = sym.slice(0, -2).replace(/[\/_-]/g, '');
+  if (pair.length !== 6) return false;
+  return ISO_CURRENCY_CODES.has(pair.slice(0, 3)) && ISO_CURRENCY_CODES.has(pair.slice(3));
+};
+
 type ViewMode = 'all' | 'sectors' | 'strong';
-type SignalFilter = 'all' | 'bullish' | 'bearish' | 'greens' | 'reds' | 'strong_buy' | 'buy' | 'hold' | 'sell' | 'strong_sell';
+type SignalFilter = 'all' | 'bullish' | 'bearish' | 'greens' | 'reds' | 'strong_buy' | 'buy' | 'hold' | 'sell' | 'strong_sell' | 'reversal_buy' | 'reversal_sell';
+type ReversalQuickFilter = 'reversal_buy' | 'reversal_sell';
+
+const isReversalQuickFilter = (value: SignalFilter | string): value is ReversalQuickFilter =>
+  value === 'reversal_buy' || value === 'reversal_sell';
+
+const reversalFlipForAsset = (
+  flips: ReversalFlipsData | undefined,
+  assetLabel: string | undefined | null,
+): ReversalFlipEntry | undefined => {
+  if (!flips || !assetLabel) return undefined;
+  const raw = extractTicker(assetLabel).trim();
+  if (!raw) return undefined;
+  const variants = [
+    raw,
+    raw.toUpperCase(),
+    raw.replace(/=/g, '_'),
+    raw.replace(/_/g, '='),
+    raw.replace(/-/g, '_'),
+    raw.replace(/_/g, '-'),
+  ];
+  for (const key of variants) {
+    const entry = flips.signals[key];
+    if (entry) return entry;
+  }
+  return undefined;
+};
+
+const rowMatchesReversalFilter = (
+  row: SummaryRow,
+  filter: ReversalQuickFilter,
+  flips: ReversalFlipsData | undefined,
+): boolean => {
+  const entry = reversalFlipForAsset(flips, row.asset_label);
+  return entry?.signal === (filter === 'reversal_buy' ? 'buy' : 'sell');
+};
 
 type SortColumn = 'asset' | 'sector' | 'signal' | 'momentum' | 'quality' | 'crash_risk' | `horizon_${number}`;
 type SortDir = 'asc' | 'desc';
@@ -305,8 +355,14 @@ function SignalsPageInner() {
   const emaStates = emaQ.data?.states ?? {};
 
   const reversalsQ = useQuery({
-    queryKey: ['smaReversals'],
+    queryKey: ['smaReversals', 'exclude-currencies-v2'],
     queryFn: api.smaReversals,
+    staleTime: 60_000,
+  });
+
+  const reversalFlipsQ = useQuery({
+    queryKey: ['reversalFlips', 4],
+    queryFn: () => api.reversalFlips(4, 365),
     staleTime: 60_000,
   });
 
@@ -397,13 +453,14 @@ function SignalsPageInner() {
       if (debouncedSearch && !fuzzyMatch(row.asset_label, debouncedSearch)) return false;
       if (!passesEma(row.asset_label)) return false;
       if (filter === 'all') return true;
+      if (isReversalQuickFilter(filter)) return rowMatchesReversalFilter(row, filter, reversalFlipsQ.data);
       const label = (row.nearest_label || '').toUpperCase().replace(/\s+/g, '_');
       if (filter === 'bullish') return label === 'STRONG_BUY' || label === 'BUY';
       if (filter === 'bearish') return label === 'STRONG_SELL' || label === 'SELL';
       if (filter === 'greens' || filter === 'reds') return rowHorizonColor(row) === filter;
       return label === filter.toUpperCase();
     });
-  }, [rows, debouncedSearch, filter, fuzzyMatch, passesEma]);
+  }, [rows, debouncedSearch, filter, fuzzyMatch, passesEma, reversalFlipsQ.data]);
 
   // Sectors view: apply EMA predicate at the asset level, drop empty sectors.
   const sectors = useMemo(() => {
@@ -419,6 +476,11 @@ function SignalsPageInner() {
     bullish: sectors.reduce((s, sec) => s + (sec.strong_buy ?? 0) + (sec.buy ?? 0), 0),
     bearish: sectors.reduce((s, sec) => s + (sec.strong_sell ?? 0) + (sec.sell ?? 0), 0),
   }), [sectors]);
+
+  const reversalQuickCounts = useMemo(() => ({
+    buy: rows.filter((row) => rowMatchesReversalFilter(row, 'reversal_buy', reversalFlipsQ.data)).length,
+    sell: rows.filter((row) => rowMatchesReversalFilter(row, 'reversal_sell', reversalFlipsQ.data)).length,
+  }), [rows, reversalFlipsQ.data]);
 
   /** Story 3.2: Multi-level sorted rows */
   const sortedRows = useMemo(() => {
@@ -557,6 +619,8 @@ function SignalsPageInner() {
           onSort={handleSort}
           onRemoveSort={removeSortLevel}
           qualityScores={qualityScores}
+          reversalFlips={reversalFlipsQ.data}
+          reversalFlipsLoading={reversalFlipsQ.isLoading}
           onNavigateChart={(sym) => navigate(`/charts/${sym}`)}
         />
       </div>
@@ -720,6 +784,61 @@ function SignalsPageInner() {
                   />
                   <span className="text-[10.5px] font-semibold tracking-wide" style={{ color: on ? '#fff' : 'var(--text-secondary)' }}>
                     {label}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="h-5 w-px bg-white/[0.05]" aria-hidden />
+
+          {/* Recent reversal chips — BUY/SELL flips in the last four trading bars */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-[9.5px] font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)] pr-1">
+              Reversal
+            </span>
+            {([
+              { key: 'reversal_buy' as SignalFilter, label: 'Buy Reversal', count: reversalQuickCounts.buy, accent: '#00f5a0', icon: <ArrowUp className="w-3 h-3" /> },
+              { key: 'reversal_sell' as SignalFilter, label: 'Sell Reversal', count: reversalQuickCounts.sell, accent: '#ff375f', icon: <ArrowDown className="w-3 h-3" /> },
+            ]).map(({ key, label, count, accent, icon }) => {
+              const on = filter === key;
+              const loaded = !!reversalFlipsQ.data && !reversalFlipsQ.isError;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setFilter(on ? 'all' : key)}
+                  aria-pressed={on}
+                  title={loaded ? `${label}: flips in the latest 4 trading bars` : 'Loading reversal flips…'}
+                  className="group relative inline-flex items-center gap-1.5 rounded-lg pl-2 pr-1.5 py-1 transition-all duration-200"
+                  style={{
+                    background: on
+                      ? `linear-gradient(180deg, ${accent}30, ${accent}12)`
+                      : 'rgba(255,255,255,0.02)',
+                    border: `1px solid ${on ? accent + '78' : 'rgba(255,255,255,0.05)'}`,
+                    boxShadow: on
+                      ? `0 0 0 1px ${accent}22 inset, 0 4px 14px -6px ${accent}90, 0 0 18px -5px ${accent}70`
+                      : '0 1px 0 rgba(255,255,255,0.02) inset',
+                    color: on ? '#fff' : 'var(--text-secondary)',
+                    opacity: reversalFlipsQ.isLoading ? 0.72 : 1,
+                    transition: 'all 220ms cubic-bezier(.2,.8,.2,1)',
+                  }}
+                >
+                  <span style={{ color: on ? accent : 'var(--text-muted)', filter: on ? `drop-shadow(0 0 4px ${accent})` : 'none' }}>
+                    {reversalFlipsQ.isLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : icon}
+                  </span>
+                  <span className="text-[10.5px] font-semibold tracking-wide whitespace-nowrap" style={{ color: on ? '#fff' : 'var(--text-secondary)' }}>
+                    {label}
+                  </span>
+                  <span
+                    className="inline-flex items-center justify-center rounded-md px-1 min-w-[18px] h-[15px] text-[9.5px] font-semibold tabular-nums transition-all"
+                    style={{
+                      background: on ? accent : 'rgba(255,255,255,0.05)',
+                      color: on ? '#07110d' : 'var(--text-muted)',
+                      boxShadow: on ? '0 1px 0 rgba(255,255,255,0.2) inset' : 'none',
+                    }}
+                  >
+                    {loaded ? count : '—'}
                   </span>
                 </button>
               );
@@ -1067,6 +1186,7 @@ function SignalsPageInner() {
           horizons={horizons}
           search={debouncedSearch}
           filter={filter}
+          reversalFlips={reversalFlipsQ.data}
           updatedAsset={updatedAsset}
           qualityScores={qualityScores}
         />
@@ -1576,6 +1696,7 @@ function SectorPanels({
   horizons,
   search,
   filter,
+  reversalFlips,
   updatedAsset,
   qualityScores,
 }: {
@@ -1587,6 +1708,7 @@ function SectorPanels({
   horizons: number[];
   search: string;
   filter: SignalFilter;
+  reversalFlips?: ReversalFlipsData;
   updatedAsset: string | null;
   qualityScores: Record<string, number>;
 }) {
@@ -1656,19 +1778,20 @@ function SectorPanels({
 
       {sorted.map((sector) => {
         const expanded = expandedSectors.has(sector.name);
-const matchesFilter = (lbl: string, row: SummaryRow) => {
-      if (filter === 'all') return true;
-      if (filter === 'bullish') return lbl === 'STRONG_BUY' || lbl === 'BUY';
-      if (filter === 'bearish') return lbl === 'STRONG_SELL' || lbl === 'SELL';
-      if (filter === 'greens' || filter === 'reds') return rowHorizonColor(row) === filter;
-      return lbl === filter.toUpperCase();
-    };
-    const assets = sector.assets.filter(row => {
-      if (search && !row.asset_label.toLowerCase().includes(search.toLowerCase())) return false;
-      const lbl = (row.nearest_label || '').toUpperCase().replace(/\s+/g, '_');
-      return matchesFilter(lbl, row);
-    });
-    if (assets.length === 0) return null;
+        const matchesFilter = (lbl: string, row: SummaryRow) => {
+          if (filter === 'all') return true;
+          if (isReversalQuickFilter(filter)) return rowMatchesReversalFilter(row, filter, reversalFlips);
+          if (filter === 'bullish') return lbl === 'STRONG_BUY' || lbl === 'BUY';
+          if (filter === 'bearish') return lbl === 'STRONG_SELL' || lbl === 'SELL';
+          if (filter === 'greens' || filter === 'reds') return rowHorizonColor(row) === filter;
+          return lbl === filter.toUpperCase();
+        };
+        const assets = sector.assets.filter(row => {
+          if (search && !row.asset_label.toLowerCase().includes(search.toLowerCase())) return false;
+          const lbl = (row.nearest_label || '').toUpperCase().replace(/\s+/g, '_');
+          return matchesFilter(lbl, row);
+        });
+        if (assets.length === 0) return null;
 
         const bullish = (sector.strong_buy ?? 0) + (sector.buy ?? 0);
         const bearish = (sector.strong_sell ?? 0) + (sector.sell ?? 0);
@@ -2086,6 +2209,8 @@ function WatchlistView({
   onSort,
   onRemoveSort,
   qualityScores,
+  reversalFlips,
+  reversalFlipsLoading = false,
   onNavigateChart,
 }: {
   allRows: SummaryRow[];
@@ -2095,6 +2220,8 @@ function WatchlistView({
   onSort: (col: SortColumn, shift: boolean) => void;
   onRemoveSort: (col: SortColumn) => void;
   qualityScores: Record<string, number>;
+  reversalFlips?: ReversalFlipsData;
+  reversalFlipsLoading?: boolean;
   onNavigateChart: (sym: string) => void;
 }) {
   const { symbols, proxyMap, isLoading, add, remove } = useWatchlist();
@@ -2146,7 +2273,7 @@ function WatchlistView({
   // both axes are useful filters.
   type WlClass = 'bullish' | 'bearish' | 'neutral';
   type WlColor = 'greens' | 'reds' | 'mixed';
-  type WlSignal = 'all' | WlClass | WlColor;
+  type WlSignal = 'all' | WlClass | WlColor | ReversalQuickFilter;
   type WlSort = 'signal' | 'momentum' | 'quality' | 'risk' | 'alpha';
   const [wlSignal, setWlSignal] = useState<WlSignal>('all');
   const [wlSector, setWlSector] = useState<string>('all');
@@ -2244,7 +2371,7 @@ function WatchlistView({
   }, [symbols, exp1w]);
 
   const signalCounts = useMemo(() => {
-    let bull = 0, bear = 0, neut = 0, green = 0, red = 0, mixed = 0;
+    let bull = 0, bear = 0, neut = 0, green = 0, red = 0, mixed = 0, reversalBuy = 0, reversalSell = 0;
     for (const r of watchlistRows) {
       const c = classifyRow(r);
       if (c === 'bullish') bull++;
@@ -2254,16 +2381,21 @@ function WatchlistView({
       if (hc === 'greens') green++;
       else if (hc === 'reds') red++;
       else mixed++;
+      const flip = reversalFlipForAsset(reversalFlips, r.asset_label);
+      if (flip?.signal === 'buy') reversalBuy++;
+      else if (flip?.signal === 'sell') reversalSell++;
     }
-    return { bull, bear, neut, green, red, mixed };
-  }, [watchlistRows, classifyRow]);
+    return { bull, bear, neut, green, red, mixed, reversalBuy, reversalSell };
+  }, [watchlistRows, classifyRow, reversalFlips]);
 
   const filteredWatchlistRows = useMemo(() => {
     if (wlMissingOnly) return [];
     const q = wlQuery.trim().toLowerCase();
     const rows = watchlistRows.filter((r) => {
       if (wlSignal !== 'all') {
-        if (wlSignal === 'bullish' || wlSignal === 'bearish' || wlSignal === 'neutral') {
+        if (isReversalQuickFilter(wlSignal)) {
+          if (!rowMatchesReversalFilter(r, wlSignal, reversalFlips)) return false;
+        } else if (wlSignal === 'bullish' || wlSignal === 'bearish' || wlSignal === 'neutral') {
           if (classifyRow(r) !== wlSignal) return false;
         } else {
           if (rowHorizonColor(r) !== wlSignal) return false;
@@ -2300,7 +2432,7 @@ function WatchlistView({
       sorted.sort((a, b) => (a.asset_label || '').localeCompare(b.asset_label || ''));
     }
     return sorted;
-  }, [watchlistRows, wlSignal, wlSector, wlQuery, wlSort, wlMissingOnly, wlSortOverride, classifyRow, qualityScores]);
+  }, [watchlistRows, wlSignal, wlSector, wlQuery, wlSort, wlMissingOnly, wlSortOverride, classifyRow, qualityScores, reversalFlips]);
 
   // Wrap the parent's `onSort` so a column-header click inside the watchlist
   // table also flips the override flag. The parent handler still runs so the
@@ -3298,6 +3430,8 @@ function WatchlistView({
                 { k: 'bearish' as const, label: 'Bearish', count: signalCounts.bear, accent: '#f87171', bg: 'rgba(248,113,113,0.12)', border: 'rgba(248,113,113,0.28)', dot: '#f87171' },
                 { k: 'greens' as const, label: 'Greens', count: signalCounts.green, accent: '#6ee7b7', bg: 'rgba(110,231,183,0.12)', border: 'rgba(110,231,183,0.28)', dot: '#6ee7b7' },
                 { k: 'reds' as const, label: 'Reds', count: signalCounts.red, accent: '#fca5a5', bg: 'rgba(252,165,165,0.12)', border: 'rgba(252,165,165,0.28)', dot: '#fca5a5' },
+                { k: 'reversal_buy' as const, label: 'Buy Rev', count: reversalFlipsLoading ? '—' : signalCounts.reversalBuy, accent: '#00f5a0', bg: 'rgba(0,245,160,0.12)', border: 'rgba(0,245,160,0.30)', dot: '#00f5a0' },
+                { k: 'reversal_sell' as const, label: 'Sell Rev', count: reversalFlipsLoading ? '—' : signalCounts.reversalSell, accent: '#ff375f', bg: 'rgba(255,55,95,0.12)', border: 'rgba(255,55,95,0.30)', dot: '#ff375f' },
               ]).map((seg) => {
                 const active = !wlMissingOnly && wlSignal === seg.k;
                 return (
@@ -3601,6 +3735,7 @@ function WatchlistView({
               qualityScores={qualityScores}
               onNavigateChart={onNavigateChart}
               disablePagination
+              detailDefaultChartType="area"
             />
           )}
         </>
@@ -3673,7 +3808,7 @@ function loadVisibleCols(): Set<string> {
   }
 }
 
-function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRemoveSort, expandedRow, onExpandRow, qualityScores, onNavigateChart, disablePagination }: {
+function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRemoveSort, expandedRow, onExpandRow, qualityScores, onNavigateChart, disablePagination, detailDefaultChartType }: {
   rows: SummaryRow[]; horizons: number[]; updatedAsset: string | null;
   sortLevels: { col: SortColumn; dir: SortDir }[];
   onSort: (col: SortColumn, shiftKey: boolean) => void;
@@ -3684,6 +3819,7 @@ function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRe
   /** When true, render all rows on a single page (no pager UI). Used by the
    * Watchlist panel where the row count is small and users dislike paging. */
   disablePagination?: boolean;
+  detailDefaultChartType?: SignalDetailChartType;
 }) {
   const [page, setPage] = useState(0);
   const [scrolled, setScrolled] = useState(false);
@@ -3851,6 +3987,7 @@ function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRe
                   isExpanded={isExpanded}
                   onToggleExpand={() => onExpandRow(isExpanded ? null : row.asset_label)}
                   onNavigateChart={() => onNavigateChart(ticker)}
+                  detailDefaultChartType={detailDefaultChartType}
                 />
               );
             })}
@@ -3886,12 +4023,13 @@ function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRe
 }
 
 /* ── Story 3.1: Cosmic Signal Row ────────────────────────────────── */
-function CosmicSignalRow({ row, ticker, horizons, visibleCols, qualityScore, highlighted, isExpanded, onToggleExpand, onNavigateChart }: {
+function CosmicSignalRow({ row, ticker, horizons, visibleCols, qualityScore, highlighted, isExpanded, onToggleExpand, onNavigateChart, detailDefaultChartType }: {
   row: SummaryRow; ticker: string; horizons: number[];
   visibleCols: Set<string>;
   qualityScore: number;
   highlighted?: boolean; isExpanded: boolean;
   onToggleExpand: () => void; onNavigateChart: () => void;
+  detailDefaultChartType?: SignalDetailChartType;
 }) {
   const label = (row.nearest_label || 'HOLD').toUpperCase();
   // Compute composite for strength bar
@@ -4008,6 +4146,7 @@ function CosmicSignalRow({ row, ticker, horizons, visibleCols, qualityScore, hig
               momentum={row.momentum_score}
               crashRisk={row.crash_risk_score}
               horizonSignals={row.horizon_signals as any}
+              defaultChartType={detailDefaultChartType}
               onNavigateChart={onNavigateChart}
             />
           </td>
@@ -4218,8 +4357,32 @@ function SmaReversalsPanel({
     return m;
   }, [rows]);
 
-  const reversals = data?.reversals || [];
-  const counts = data?.counts_by_period || {};
+  const reversals = useMemo(
+    () => (data?.reversals || []).filter((r) => !isFiatCurrencyTicker(r.symbol)),
+    [data?.reversals],
+  );
+  const counts = useMemo(() => {
+    const next: Record<string, { bull: number; bear: number }> = {};
+    const periods = data?.periods || [9, 50, 600];
+    for (const p of periods) next[String(p)] = { bull: 0, bear: 0 };
+    for (const r of reversals) {
+      const key = String(r.period);
+      if (!next[key]) next[key] = { bull: 0, bear: 0 };
+      if (r.direction === 'bull') next[key].bull += 1;
+      if (r.direction === 'bear') next[key].bear += 1;
+    }
+    return next;
+  }, [data?.periods, reversals]);
+  const gradeCounts = useMemo(() => ({
+    A: reversals.filter((r) => r.grade === 'A').length,
+    B: reversals.filter((r) => r.grade === 'B').length,
+    C: reversals.filter((r) => r.grade === 'C').length,
+    ungraded: reversals.filter((r) => r.grade == null).length,
+  }), [reversals]);
+  const buySetups = useMemo(
+    () => reversals.filter((r) => r.direction === 'bull' && (r.grade === 'A' || r.grade === 'B')).length,
+    [reversals],
+  );
 
   const filtered = useMemo(() => {
     const q = search.trim().toUpperCase();
@@ -4294,7 +4457,7 @@ function SmaReversalsPanel({
         <div className="h-6 w-px bg-white/[0.05]" aria-hidden />
 
         {/* Buy-setups headline — the "am I a buyer today" answer */}
-        {data?.buy_setups !== undefined && (
+        {data && (
           <div
             className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-[3px]"
             style={{
@@ -4305,7 +4468,7 @@ function SmaReversalsPanel({
             title="High-quality long setups: Grade A or B, bull direction, regime-aligned, not overextended"
           >
             <ShieldCheck className="w-3 h-3" style={{ color: '#34d399' }} />
-            <span className="text-[10.5px] font-semibold text-white tabular-nums">{data.buy_setups}</span>
+            <span className="text-[10.5px] font-semibold text-white tabular-nums">{buySetups}</span>
             <span className="text-[9.5px] uppercase tracking-[0.12em] font-semibold text-[#a7f3d0]">buy setups</span>
           </div>
         )}
@@ -4322,11 +4485,11 @@ function SmaReversalsPanel({
             <span className="text-[var(--text-secondary)]">Bear</span>
             <span className="font-semibold text-[var(--text-primary)]">{selectedTotals.bear}</span>
           </div>
-          {data?.grade_counts && (
+          {data && (
             <div className="flex items-center gap-1.5 pl-1">
-              <GradeBadge grade="A" count={data.grade_counts.A} />
-              <GradeBadge grade="B" count={data.grade_counts.B} />
-              <GradeBadge grade="C" count={data.grade_counts.C} />
+              <GradeBadge grade="A" count={gradeCounts.A} />
+              <GradeBadge grade="B" count={gradeCounts.B} />
+              <GradeBadge grade="C" count={gradeCounts.C} />
             </div>
           )}
           <div className="text-[10px] text-[var(--text-muted)]">
@@ -4481,7 +4644,7 @@ function SmaReversalsPanel({
           </div>
         )}
         {!isLoading && displayed.length > 0 && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
+          <div className="flex flex-col gap-1.5">
             {displayed.map((r) => {
               const key = `${r.symbol}-${r.period}`;
               const isExpanded = expandedKey === key;
@@ -4495,7 +4658,7 @@ function SmaReversalsPanel({
                     onClick={() => setExpandedKey((prev) => (prev === key ? null : key))}
                   />
                   {isExpanded && (
-                    <div className="md:col-span-2">
+                    <div>
                       <ReversalDetailPanel
                         r={r}
                         label={label}
@@ -4568,17 +4731,45 @@ function ReversalRow({ r, label, onClick, isExpanded = false }: { r: SmaReversal
   // Strip the trailing `(TICKER)` from the label for the body text
   const displayLabel = label.replace(/\s*\([^)]+\)\s*$/, '').trim() || r.symbol;
   const tooltip = r.grade_reasons && r.grade_reasons.length > 0 ? r.grade_reasons.join(' · ') : undefined;
+  const metricItems = [
+    {
+      key: 'dist',
+      label: 'Dist',
+      value: `${r.distance_pct > 0 ? '+' : ''}${r.distance_pct.toFixed(2)}%`,
+      color: 'var(--text-primary)',
+    },
+    ...(r.atr_distance !== null ? [{
+      key: 'atr',
+      label: 'ATR',
+      value: `${r.atr_distance.toFixed(2)}σ`,
+      color: Math.abs(r.atr_distance) >= 2 ? '#fbbf24' : 'var(--text-primary)',
+    }] : []),
+    ...(r.volume_ratio !== null ? [{
+      key: 'vol',
+      label: 'Vol',
+      value: `${r.volume_ratio.toFixed(2)}×`,
+      color: r.volume_ratio >= 1.2 ? accentSoft : 'var(--text-primary)',
+    }] : []),
+    {
+      key: 'age',
+      label: 'Age',
+      value: r.days_since_cross === 0 ? 'Today' : `${r.days_since_cross}d`,
+      color: r.days_since_cross <= 1 ? accentSoft : 'var(--text-primary)',
+    },
+  ];
+  const persistenceLabel = `${r.persistence}/${r.persistence_window}`;
 
   return (
     <button
       type="button"
       onClick={onClick}
       title={tooltip}
-      className="group relative w-full text-left rounded-xl px-3 py-2.5 transition-all duration-200"
+      aria-expanded={isExpanded}
+      className="group relative w-full text-left rounded-xl px-4 py-3.5 transition-all duration-200"
       style={{
         background: isExpanded
-          ? `linear-gradient(180deg, ${accent}14, ${accent}04)`
-          : 'linear-gradient(180deg, rgba(255,255,255,0.025), rgba(255,255,255,0.008))',
+          ? `linear-gradient(180deg, ${accent}16, ${accent}04)`
+          : 'linear-gradient(180deg, rgba(255,255,255,0.028), rgba(255,255,255,0.008))',
         border: `1px solid ${isExpanded ? `${accent}70` : 'rgba(255,255,255,0.06)'}`,
         boxShadow: isExpanded
           ? `0 1px 0 rgba(255,255,255,0.04) inset, 0 8px 28px -14px ${accent}80`
@@ -4595,169 +4786,191 @@ function ReversalRow({ r, label, onClick, isExpanded = false }: { r: SmaReversal
         (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 1px 0 rgba(255,255,255,0.03) inset';
       }}
     >
-      <div className="flex items-center gap-3">
-        {/* Direction chip */}
+      <div className="grid gap-x-3 gap-y-3 lg:grid-cols-[minmax(240px,1fr)_146px_minmax(280px,1.08fr)] xl:grid-cols-[minmax(220px,1fr)_146px_minmax(275px,1.14fr)_minmax(220px,0.9fr)_92px] lg:items-center">
+        <div className="flex items-center gap-3 min-w-0">
+          <div
+            className="flex items-center justify-center rounded-lg flex-shrink-0"
+            style={{
+              width: 36, height: 36,
+              background: `linear-gradient(180deg, ${accent}26, ${accent}08)`,
+              border: `1px solid ${accent}50`,
+              boxShadow: `0 0 14px -5px ${accent}70 inset`,
+            }}
+          >
+            <ArrowIcon className="w-4 h-4" style={{ color: accentSoft, filter: `drop-shadow(0 0 4px ${accent}90)` }} />
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[14px] font-semibold text-[var(--text-primary)] tabular-nums tracking-tight">{r.symbol}</span>
+              {g && (
+                <span
+                  className="inline-flex items-center justify-center rounded px-1.5 py-[1px] text-[9.5px] font-bold tabular-nums"
+                  style={{ background: g.bg, border: `1px solid ${g.bd}`, color: g.fg, boxShadow: g.shadow }}
+                  title={g.title}
+                >
+                  {r.grade}
+                </span>
+              )}
+              <span
+                className="text-[9px] font-semibold uppercase tracking-[0.1em] rounded px-1.5 py-[1px]"
+                style={{ background: 'rgba(167,139,250,0.14)', border: '1px solid rgba(167,139,250,0.28)', color: '#c4b5fd' }}
+              >
+                SMA {r.period}
+              </span>
+              <span
+                className="text-[9px] font-semibold uppercase tracking-[0.1em] rounded px-1.5 py-[1px]"
+                style={{ background: `${accent}14`, border: `1px solid ${accent}30`, color: accentSoft }}
+              >
+                {isBull ? 'Bull cross' : 'Bear cross'}
+              </span>
+              {!r.regime_ok && (
+                <span
+                  className="inline-flex items-center gap-0.5 rounded px-1 py-[1px] text-[8.5px] font-semibold uppercase tracking-[0.1em]"
+                  style={{ background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.30)', color: '#fca5a5' }}
+                  title={`Against regime (price ${isBull ? 'below' : 'above'} SMA${r.regime_sma !== null ? ' 200' : ''})`}
+                >
+                  vs regime
+                </span>
+              )}
+              {r.overextended && (
+                <span
+                  className="inline-flex items-center gap-0.5 rounded px-1 py-[1px] text-[8.5px] font-semibold uppercase tracking-[0.1em]"
+                  style={{ background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.35)', color: '#fbbf24' }}
+                  title="Price > 3 ATR from SMA"
+                >
+                  overext
+                </span>
+              )}
+              {r.false_break && (
+                <span title="Price re-crossed within 3 bars">
+                  <AlertTriangle className="w-3 h-3" style={{ color: '#fbbf24' }} />
+                </span>
+              )}
+            </div>
+            <span className="block text-[10.5px] text-[var(--text-muted)] truncate mt-0.5">{displayLabel}</span>
+          </div>
+        </div>
+
         <div
-          className="flex items-center justify-center rounded-lg flex-shrink-0"
+          className="rounded-lg px-2 py-1.5"
           style={{
-            width: 32, height: 32,
-            background: `linear-gradient(180deg, ${accent}26, ${accent}08)`,
-            border: `1px solid ${accent}50`,
-            boxShadow: `0 0 14px -5px ${accent}70 inset`,
+            background: 'rgba(255,255,255,0.018)',
+            border: '1px solid rgba(255,255,255,0.045)',
+          }}
+          aria-label={`${r.symbol} mini chart`}
+        >
+          <Sparkline ticker={r.symbol} width={128} height={38} />
+        </div>
+
+        <div
+          className="min-w-0 rounded-lg px-3 py-2"
+          style={{
+            background: 'rgba(255,255,255,0.018)',
+            border: '1px solid rgba(255,255,255,0.045)',
           }}
         >
-          <ArrowIcon className="w-4 h-4" style={{ color: accentSoft, filter: `drop-shadow(0 0 4px ${accent}90)` }} />
-        </div>
-
-        {/* Symbol + label */}
-        <div className="flex flex-col min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <span className="text-[13px] font-semibold text-[var(--text-primary)] tabular-nums tracking-tight">{r.symbol}</span>
-            {/* Grade pill */}
-            {g && (
-              <span
-                className="inline-flex items-center justify-center rounded px-1.5 py-[1px] text-[9.5px] font-bold tabular-nums"
-                style={{ background: g.bg, border: `1px solid ${g.bd}`, color: g.fg, boxShadow: g.shadow }}
-                title={g.title}
-              >
-                {r.grade}
-              </span>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10.5px] tabular-nums">
+            {hasTradeGeometry ? (
+              <>
+                <span className="text-[var(--text-muted)]">
+                  Stop <span className="text-[var(--text-secondary)] font-semibold">{r.stop_price!.toFixed(2)}</span>
+                </span>
+                <span className="text-white/20">·</span>
+                <span className="text-[var(--text-muted)]">
+                  Target <span className="text-[var(--text-secondary)] font-semibold">{r.target_price!.toFixed(2)}</span>
+                </span>
+                <span className="text-white/20">·</span>
+                <span className="text-[var(--text-muted)]">
+                  R:R <span className="font-semibold" style={{ color: accentSoft }}>{r.risk_reward!.toFixed(1)}</span>
+                </span>
+              </>
+            ) : (
+              <span className="text-[var(--text-muted)]">Trade geometry unavailable</span>
             )}
-            <span
-              className="text-[9px] font-semibold uppercase tracking-[0.1em] rounded px-1.5 py-[1px]"
-              style={{ background: 'rgba(167,139,250,0.14)', border: '1px solid rgba(167,139,250,0.28)', color: '#c4b5fd' }}
-            >
-              SMA {r.period}
-            </span>
-            {!r.regime_ok && (
-              <span
-                className="inline-flex items-center gap-0.5 rounded px-1 py-[1px] text-[8.5px] font-semibold uppercase tracking-[0.1em]"
-                style={{ background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.30)', color: '#fca5a5' }}
-                title={`Against regime (price ${isBull ? 'below' : 'above'} SMA${r.regime_sma !== null ? ' 200' : ''}) — buying against the trend`}
-              >
-                vs regime
-              </span>
-            )}
-            {r.overextended && (
-              <span
-                className="inline-flex items-center gap-0.5 rounded px-1 py-[1px] text-[8.5px] font-semibold uppercase tracking-[0.1em]"
-                style={{ background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.35)', color: '#fbbf24' }}
-                title="Price > 3 ATR from SMA — chasing kills edge"
-              >
-                overext
-              </span>
-            )}
-            {r.false_break && (
-              <span title="Price re-crossed within 3 bars — possible whipsaw">
-                <AlertTriangle className="w-3 h-3" style={{ color: '#fbbf24' }} />
-              </span>
-            )}
-          </div>
-          <span className="text-[10px] text-[var(--text-muted)] truncate">{displayLabel}</span>
-          {/* Trade geometry line — "Stop · Tgt · R:R · Win% (n)" */}
-          {(hasTradeGeometry || edge.win_rate !== null) && (
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5 text-[9.5px] tabular-nums">
-              {hasTradeGeometry && (
-                <>
-                  <span className="text-[var(--text-muted)]">
-                    Stop <span className="text-[var(--text-secondary)] font-medium">{r.stop_price!.toFixed(2)}</span>
-                  </span>
-                  <span className="text-[var(--text-muted)]">·</span>
-                  <span className="text-[var(--text-muted)]">
-                    Tgt <span className="text-[var(--text-secondary)] font-medium">{r.target_price!.toFixed(2)}</span>
-                  </span>
-                  <span className="text-[var(--text-muted)]">·</span>
-                  <span className="text-[var(--text-muted)]">
-                    R:R <span className="font-semibold" style={{ color: accentSoft }}>{r.risk_reward!.toFixed(1)}</span>
-                  </span>
-                </>
-              )}
-              {edge.win_rate !== null && (
-                <>
-                  {hasTradeGeometry && <span className="text-[var(--text-muted)]">·</span>}
+            {edge.win_rate !== null && (
+              <>
+                <span className="text-white/20">·</span>
+                <span
+                  className="inline-flex items-center gap-1"
+                  title={`Historical ${r.edge_forward_days}-bar forward win-rate across ${edge.samples} past crossings. Median return ${edge.median_fwd_pct !== null ? edge.median_fwd_pct.toFixed(2) + '%' : '—'}.`}
+                >
+                  <Target className="w-3 h-3" style={{ color: edge.win_rate >= 0.55 ? accentSoft : '#94a3b8' }} />
                   <span
-                    className="inline-flex items-center gap-0.5"
-                    title={`Historical ${r.edge_forward_days}-bar forward win-rate across ${edge.samples} past crossings. Median return ${edge.median_fwd_pct !== null ? edge.median_fwd_pct.toFixed(2) + '%' : '—'}.`}
+                    className="font-semibold"
+                    style={{ color: edge.win_rate >= 0.55 ? accentSoft : 'var(--text-secondary)' }}
                   >
-                    <Target className="w-2.5 h-2.5" style={{ color: edge.win_rate >= 0.55 ? accentSoft : '#94a3b8' }} />
-                    <span
-                      className="font-semibold"
-                      style={{ color: edge.win_rate >= 0.55 ? accentSoft : 'var(--text-secondary)' }}
-                    >
-                      {(edge.win_rate * 100).toFixed(0)}%
-                    </span>
-                    <span className="text-[var(--text-muted)]">n={edge.samples}</span>
+                    {(edge.win_rate * 100).toFixed(0)}%
                   </span>
-                </>
-              )}
-            </div>
-          )}
+                  <span className="text-[var(--text-muted)]">{r.edge_forward_days}d edge</span>
+                </span>
+              </>
+            )}
+          </div>
         </div>
 
-        {/* Metrics cluster (md+ only) */}
-        <div className="hidden md:flex items-center gap-3 text-[10px] tabular-nums">
-          <div className="flex flex-col items-end">
-            <span className="text-[9px] uppercase tracking-[0.12em] text-[var(--text-muted)]">Dist</span>
-            <span className="text-[var(--text-primary)] font-medium">
-              {r.distance_pct > 0 ? '+' : ''}{r.distance_pct.toFixed(2)}%
-            </span>
-          </div>
-          {r.atr_distance !== null && (
-            <div className="flex flex-col items-end">
-              <span className="text-[9px] uppercase tracking-[0.12em] text-[var(--text-muted)]">ATR</span>
-              <span className="text-[var(--text-primary)] font-medium">{r.atr_distance.toFixed(2)}σ</span>
-            </div>
-          )}
-          {r.volume_ratio !== null && (
-            <div className="flex flex-col items-end">
-              <span className="text-[9px] uppercase tracking-[0.12em] text-[var(--text-muted)]">Vol</span>
-              <span
-                className="font-medium"
-                style={{ color: r.volume_ratio >= 1.2 ? accentSoft : 'var(--text-primary)' }}
-              >
-                {r.volume_ratio.toFixed(2)}×
+        <div
+          className="rounded-lg px-3 py-2"
+          style={{
+            background: 'rgba(255,255,255,0.016)',
+            border: '1px solid rgba(255,255,255,0.04)',
+          }}
+        >
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] tabular-nums">
+            {metricItems.map((item) => (
+              <span key={item.key} className="inline-flex items-baseline gap-1">
+                <span className="text-[8.5px] uppercase tracking-[0.12em] text-[var(--text-muted)]">{item.label}</span>
+                <span className="font-semibold" style={{ color: item.color }}>{item.value}</span>
               </span>
-            </div>
-          )}
-          <div className="flex flex-col items-end">
-            <span className="text-[9px] uppercase tracking-[0.12em] text-[var(--text-muted)]">Age</span>
-            <span className="text-[var(--text-primary)] font-medium">
-              {r.days_since_cross === 0 ? 'Today' : `${r.days_since_cross}d`}
+            ))}
+            <span className="inline-flex items-center gap-1" title={`On new side: ${r.persistence} of last ${r.persistence_window} bars`}>
+              <span className="text-[8.5px] uppercase tracking-[0.12em] text-[var(--text-muted)]">Persist</span>
+              <span className="font-semibold" style={{ color: r.persistence >= r.persistence_threshold ? accentSoft : 'var(--text-secondary)' }}>
+                {persistenceLabel}
+              </span>
+              <span className="hidden sm:inline-flex items-center gap-0.5">
+                {persistencePips.map((on, i) => (
+                  <span
+                    key={i}
+                    className="rounded-full"
+                    style={{
+                      width: 4.5, height: 4.5,
+                      background: on ? accentSoft : 'rgba(255,255,255,0.1)',
+                      boxShadow: on ? `0 0 4px ${accentSoft}` : 'none',
+                    }}
+                  />
+                ))}
+              </span>
             </span>
           </div>
         </div>
 
-        {/* Persistence pips */}
-        <div className="flex items-center gap-0.5 px-1" title={`On new side: ${r.persistence} of last ${r.persistence_window} bars`}>
-          {persistencePips.map((on, i) => (
-            <span
-              key={i}
-              className="rounded-full"
-              style={{
-                width: 5, height: 5,
-                background: on ? accentSoft : 'rgba(255,255,255,0.1)',
-                boxShadow: on ? `0 0 4px ${accentSoft}` : 'none',
-              }}
-            />
-          ))}
-        </div>
-
-        {/* Score bar */}
-        <div className="flex flex-col items-end gap-0.5 w-14 flex-shrink-0">
-          <span className="text-[12px] font-bold tabular-nums" style={{ color: scoreColor }}>
-            {r.score.toFixed(0)}
-          </span>
-          <div className="w-full h-[3px] rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}>
-            <div
-              className="h-full rounded-full"
-              style={{
-                width: `${scorePct}%`,
-                background: `linear-gradient(90deg, ${scoreColor}, ${scoreColor}cc)`,
-                boxShadow: `0 0 8px -2px ${scoreColor}`,
-                transition: 'width 320ms cubic-bezier(.2,.8,.2,1)',
-              }}
-            />
+        <div className="flex items-center justify-between lg:justify-end gap-3">
+          <div className="flex flex-col items-end gap-0.5 w-16 flex-shrink-0">
+            <span className="text-[13px] font-bold tabular-nums" style={{ color: scoreColor }}>
+              {r.score.toFixed(0)}
+            </span>
+            <div className="w-full h-[4px] rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}>
+              <div
+                className="h-full rounded-full"
+                style={{
+                  width: `${scorePct}%`,
+                  background: `linear-gradient(90deg, ${scoreColor}, ${scoreColor}cc)`,
+                  boxShadow: `0 0 8px -2px ${scoreColor}`,
+                  transition: 'width 320ms cubic-bezier(.2,.8,.2,1)',
+                }}
+              />
+            </div>
+            <span className="text-[8.5px] uppercase tracking-[0.12em] text-[var(--text-muted)]">Score</span>
           </div>
+
+          <ChevronRight
+            className="w-4 h-4 flex-shrink-0 transition-transform duration-200"
+            style={{
+              color: isExpanded ? accentSoft : 'var(--text-muted)',
+              transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+            }}
+          />
         </div>
       </div>
     </button>
@@ -4809,7 +5022,7 @@ function ReversalDetailPanel({ r, label, onClose, onOpenFullChart }: {
     {
       label: 'Win %',
       value: edge?.win_rate != null ? `${(edge.win_rate * 100).toFixed(0)}%` : '—',
-      sub: edge?.samples ? `n=${edge.samples}` : undefined,
+      sub: edge?.win_rate != null ? `${r.edge_forward_days}d edge` : undefined,
     },
     { label: 'Age', value: `${r.days_since_cross}d`, sub: `since cross` },
   ];
