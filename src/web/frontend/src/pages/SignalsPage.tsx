@@ -3952,7 +3952,9 @@ const ALL_ASSETS_COLUMN_DEFS: ColumnDef[] = [
   { key: 'horizons', label: 'Horizons' },
 ];
 const ALL_ASSETS_COLS_LS_KEY = 'signals-visible-cols-v2';
+const ALL_ASSETS_CHART_VIEW_LS_KEY = 'signals-all-assets-chart-view-v1';
 const DEFAULT_VISIBLE_COLS = new Set(ALL_ASSETS_COLUMN_DEFS.map((c) => c.key));
+const CHART_VIEW_HORIZONS = [1, 3, 7, 30, 90, 180];
 
 function loadVisibleCols(): Set<string> {
   try {
@@ -3965,6 +3967,14 @@ function loadVisibleCols(): Set<string> {
     return set;
   } catch {
     return new Set(DEFAULT_VISIBLE_COLS);
+  }
+}
+
+function loadAllAssetsChartView(): boolean {
+  try {
+    return localStorage.getItem(ALL_ASSETS_CHART_VIEW_LS_KEY) === '1';
+  } catch {
+    return false;
   }
 }
 
@@ -3983,6 +3993,7 @@ function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRe
   const [page, setPage] = useState(0);
   const [scrolled, setScrolled] = useState(false);
   const [visibleCols, setVisibleCols] = useState<Set<string>>(() => loadVisibleCols());
+  const [chartView, setChartView] = useState<boolean>(() => loadAllAssetsChartView());
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const pageSize = 50;
 
@@ -3994,6 +4005,12 @@ function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRe
       );
     } catch { /* ignore quota / privacy errors */ }
   }, [visibleCols]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(ALL_ASSETS_CHART_VIEW_LS_KEY, chartView ? '1' : '0');
+    } catch { /* ignore quota / privacy errors */ }
+  }, [chartView]);
 
   const toggleCol = (key: string) => {
     setVisibleCols((prev) => {
@@ -4025,19 +4042,52 @@ function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRe
   return (
     <div className="glass-card overflow-hidden fade-up-delay-3">
       {/* Table toolbar: column visibility (click headers to sort, use Columns to hide/show) */}
-      <div className="flex items-center justify-between gap-3 px-4 h-9 border-b" style={{ borderColor: 'var(--border-void)' }}>
+      <div className="flex items-center justify-between gap-3 px-4 h-10 border-b" style={{ borderColor: 'var(--border-void)' }}>
         <span className="text-[10px] uppercase tracking-[0.08em]" style={{ color: 'var(--text-muted)' }}>
           {rows.length} asset{rows.length === 1 ? '' : 's'}
           <span className="ml-2" style={{ color: 'var(--text-muted)', opacity: 0.6 }}>
-            Click a column to sort · Shift+Click to add
+            {chartView ? 'Chart-first decision view' : 'Click a column to sort · Shift+Click to add'}
           </span>
         </span>
-        <ColumnCustomizer
-          columns={ALL_ASSETS_COLUMN_DEFS}
-          visible={visibleCols}
-          onToggle={toggleCol}
-          onReset={resetCols}
-        />
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            aria-pressed={chartView}
+            title={chartView ? 'Switch to the current table view' : 'Switch to chart-first decision view'}
+            onClick={() => setChartView((prev) => !prev)}
+            className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] transition-all"
+            style={{
+              color: chartView ? '#c4b5fd' : 'var(--text-muted)',
+              background: chartView ? 'rgba(167,139,250,0.12)' : 'rgba(255,255,255,0.018)',
+              border: `1px solid ${chartView ? 'rgba(167,139,250,0.42)' : 'rgba(255,255,255,0.055)'}`,
+              boxShadow: chartView ? '0 0 16px -10px rgba(167,139,250,0.9)' : 'none',
+            }}
+          >
+            <BarChart3 className="w-3.5 h-3.5" />
+            Chart view
+            <span
+              className="ml-0.5 inline-flex h-4 w-7 items-center rounded-full p-[2px] transition-colors"
+              style={{ background: chartView ? 'rgba(167,139,250,0.38)' : 'rgba(100,116,139,0.24)' }}
+            >
+              <span
+                className="h-3 w-3 rounded-full transition-transform"
+                style={{
+                  background: chartView ? '#c4b5fd' : '#64748b',
+                  transform: chartView ? 'translateX(12px)' : 'translateX(0)',
+                  boxShadow: chartView ? '0 0 7px rgba(196,181,253,0.8)' : 'none',
+                }}
+              />
+            </span>
+          </button>
+          {!chartView && (
+            <ColumnCustomizer
+              columns={ALL_ASSETS_COLUMN_DEFS}
+              visible={visibleCols}
+              onToggle={toggleCol}
+              onReset={resetCols}
+            />
+          )}
+        </div>
       </div>
       {/* Story 3.2 AC-5: Sort indicator bar */}
       {sortLevels.length > 0 && (
@@ -4061,10 +4111,32 @@ function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRe
         </div>
       )}
       <div ref={tableContainerRef} className="overflow-auto max-h-[calc(100vh-280px)]">
-        <table className="w-full text-sm">
-          <thead className={headerCls}>
-            <tr>
-              <th className={`text-left px-4 py-3 sortable-th group ${sortLevels.some(s => s.col === 'asset') ? 'active' : ''}`}
+        {chartView ? (
+          <div className="space-y-2.5 p-3">
+            {pageRows.map((row) => {
+              const ticker = extractTicker(row.asset_label);
+              const isExpanded = expandedRow === row.asset_label;
+              return (
+                <ChartAssetRow
+                  key={row.asset_label}
+                  row={row}
+                  ticker={ticker}
+                  horizons={horizons}
+                  qualityScore={qualityScores[ticker] ?? 50}
+                  highlighted={row.asset_label === updatedAsset}
+                  isExpanded={isExpanded}
+                  onToggleExpand={() => onExpandRow(isExpanded ? null : row.asset_label)}
+                  onNavigateChart={() => onNavigateChart(ticker)}
+                  detailDefaultChartType={detailDefaultChartType}
+                />
+              );
+            })}
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className={headerCls}>
+              <tr>
+                <th className={`text-left px-4 py-3 sortable-th group ${sortLevels.some(s => s.col === 'asset') ? 'active' : ''}`}
                   style={sortLevels.some(s => s.col === 'asset') ? { color: 'var(--accent-violet)', textShadow: '0 0 8px var(--violet-30)' } : {}}
                   onClick={(e) => onSort('asset', e.shiftKey)}>
                 Asset <SortIndicator col="asset" sortLevels={sortLevels} />
@@ -4150,8 +4222,9 @@ function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRe
                 />
               );
             })}
-          </tbody>
-        </table>
+            </tbody>
+          </table>
+        )}
       </div>
       {!disablePagination && totalPages > 1 && (
         <div className="flex items-center justify-between px-4 py-2.5 border-t border-[var(--border-void)]">
@@ -4178,6 +4251,255 @@ function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRe
         </div>
       )}
     </div>
+  );
+}
+
+function chartViewHorizonLabel(days: number): string {
+  if (days === 1) return '1D';
+  if (days === 3) return '3D';
+  if (days === 7) return '1W';
+  if (days === 30) return '1M';
+  if (days === 90) return '3M';
+  if (days === 180) return '6M';
+  return formatHorizon(days).toUpperCase();
+}
+
+function compactChartSignalLabel(label: string): string {
+  const normalized = label.toUpperCase();
+  if (normalized === 'STRONG BUY') return 'STRONG BUY';
+  if (normalized === 'STRONG SELL') return 'STRONG SELL';
+  return normalized;
+}
+
+function chartRiskTone(score: number) {
+  const s = Math.max(0, Math.min(100, score ?? 0));
+  if (s < 25) return { label: 'LOW', color: '#34d399', bg: 'rgba(16,185,129,0.105)', border: 'rgba(16,185,129,0.28)' };
+  if (s < 50) return { label: 'MOD', color: '#fbbf24', bg: 'rgba(251,191,36,0.105)', border: 'rgba(251,191,36,0.30)' };
+  if (s < 75) return { label: 'ELEV', color: '#fb923c', bg: 'rgba(251,146,60,0.115)', border: 'rgba(251,146,60,0.34)' };
+  return { label: 'HIGH', color: '#fb7185', bg: 'rgba(244,63,94,0.125)', border: 'rgba(244,63,94,0.38)' };
+}
+
+function ChartMiniMetric({ label, value, sub, color, bg, border }: {
+  label: string;
+  value: ReactNode;
+  sub?: string;
+  color: string;
+  bg: string;
+  border: string;
+}) {
+  return (
+    <div
+      className="h-full min-w-0 overflow-hidden rounded-lg px-2 py-1.5"
+      style={{ background: bg, border: `1px solid ${border}` }}
+    >
+      <div className="mb-1 truncate text-[7.5px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+        {label}
+      </div>
+      <div className="min-w-0 truncate text-[9px] font-extrabold uppercase tracking-[0.03em] tabular-nums" style={{ color }}>
+        {value}
+      </div>
+      {sub && (
+        <div className="mt-0.5 truncate text-[7.5px] font-semibold uppercase tracking-[0.06em]" style={{ color, opacity: 0.78 }}>
+          {sub}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ChartHorizonMiniTile({ label, expRet }: { label: string; expRet: number | null | undefined }) {
+  const pct = expRet == null ? null : expRet * 100;
+  const isUp = (pct ?? 0) > 0;
+  const isFlat = pct == null || Math.abs(pct) < 0.1;
+  const absPct = Math.abs(pct ?? 0);
+  const color = isFlat ? 'var(--text-muted)' : isUp ? '#34d399' : '#fb7185';
+  const bg = isFlat
+    ? 'rgba(100,116,139,0.085)'
+    : isUp
+      ? `rgba(16,185,129,${Math.min(0.22, 0.08 + absPct / 42)})`
+      : `rgba(244,63,94,${Math.min(0.22, 0.08 + absPct / 42)})`;
+  const border = isFlat
+    ? 'rgba(100,116,139,0.16)'
+    : isUp
+      ? 'rgba(16,185,129,0.26)'
+      : 'rgba(244,63,94,0.28)';
+
+  return (
+    <div className="min-w-0 overflow-hidden rounded-lg px-1.5 py-1.5 text-center" style={{ background: bg, border: `1px solid ${border}` }}>
+      <div className="mb-1 text-[7.5px] font-bold uppercase tracking-[0.12em] text-[var(--text-muted)]">{label}</div>
+      <div className="truncate text-[10px] font-extrabold tabular-nums leading-none" style={{ color }}>
+        {pct == null ? '—' : `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`}
+      </div>
+    </div>
+  );
+}
+
+function ChartAssetRow({ row, ticker, horizons, qualityScore, highlighted, isExpanded, onToggleExpand, onNavigateChart, detailDefaultChartType }: {
+  row: SummaryRow;
+  ticker: string;
+  horizons: number[];
+  qualityScore: number;
+  highlighted?: boolean;
+  isExpanded: boolean;
+  onToggleExpand: () => void;
+  onNavigateChart: () => void;
+  detailDefaultChartType?: SignalDetailChartType;
+}) {
+  const label = (row.nearest_label || 'HOLD').toUpperCase();
+  const labelColor = signalLabelColor(label);
+  const company = row.asset_label.includes('(') ? row.asset_label.split('(')[0].trim() : '';
+  const chartHorizons = CHART_VIEW_HORIZONS.filter((h) => horizons.includes(h) || row.horizon_signals[h] || row.horizon_signals[String(h)]);
+  const risk = Math.max(0, Math.min(100, row.crash_risk_score ?? 0));
+  const riskTone = chartRiskTone(risk);
+  const quality = Math.round(qualityScore ?? 50);
+  const qualityTone = smaQualityTone(quality);
+
+  return (
+    <>
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={onToggleExpand}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onToggleExpand();
+          }
+        }}
+        className={`group rounded-xl transition-all duration-200 outline-none ${highlighted ? 'aurora-upgrade' : ''}`}
+        style={{
+          background: isExpanded
+            ? 'linear-gradient(180deg, rgba(139,92,246,0.075), rgba(255,255,255,0.014))'
+            : 'linear-gradient(180deg, rgba(255,255,255,0.026), rgba(255,255,255,0.008))',
+          border: `1px solid ${isExpanded ? 'rgba(167,139,250,0.38)' : 'rgba(255,255,255,0.055)'}`,
+          boxShadow: isExpanded ? '0 10px 34px -20px rgba(139,92,246,0.58)' : '0 1px 0 rgba(255,255,255,0.03) inset',
+        }}
+      >
+        <div className="grid w-full min-w-0 gap-3 p-3 xl:grid-cols-[minmax(150px,0.46fr)_minmax(0,2.15fr)_minmax(236px,0.76fr)] xl:items-center 2xl:grid-cols-[minmax(176px,0.45fr)_minmax(0,2.2fr)_minmax(292px,0.82fr)]">
+          <div className="flex min-w-0 items-center gap-3">
+            <span
+              className="h-10 w-1.5 rounded-full flex-shrink-0"
+              style={{ background: labelColor, boxShadow: `0 0 12px -4px ${labelColor}` }}
+            />
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-[14px] font-bold tabular-nums text-[var(--text-primary)]">{ticker}</span>
+                <span
+                  className="rounded px-1.5 py-[1px] text-[8.5px] font-semibold uppercase tracking-[0.1em]"
+                  style={{ background: 'rgba(255,255,255,0.035)', color: 'var(--text-muted)', border: '1px solid rgba(255,255,255,0.05)' }}
+                >
+                  {row.sector || 'Other'}
+                </span>
+              </div>
+              {company && <span className="mt-0.5 block max-w-[190px] truncate text-[10.5px] text-[var(--text-muted)]">{company}</span>}
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <MomentumBadge value={row.momentum_score} />
+                <span
+                  className="inline-flex h-[22px] items-center rounded-md px-2 text-[9.5px] font-bold tabular-nums"
+                  title={`Business quality: ${quality}`}
+                  style={{
+                    color: qualityTone.color,
+                    background: qualityTone.background,
+                    border: `1px solid ${qualityTone.border}`,
+                  }}
+                >
+                  Q {quality}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div
+            className="min-w-0 rounded-lg px-3 py-2"
+            style={{
+              background: `linear-gradient(180deg, ${labelColor}10, rgba(255,255,255,0.012))`,
+              border: `1px solid ${labelColor}24`,
+              boxShadow: `0 0 18px -15px ${labelColor} inset`,
+            }}
+          >
+            <Sparkline ticker={ticker} width={720} height={76} tail={220} variant="reversal" fluid />
+          </div>
+
+          <div
+            className="w-full min-w-0 overflow-hidden rounded-lg p-2"
+            style={{
+              background: 'linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01))',
+              border: '1px solid rgba(255,255,255,0.055)',
+            }}
+          >
+            <div className="mb-1.5 grid min-w-0 grid-cols-[minmax(0,1.15fr)_minmax(0,0.72fr)_minmax(58px,0.72fr)] gap-1.5">
+              <ChartMiniMetric
+                label="Signal"
+                value={compactChartSignalLabel(label)}
+                color={labelColor}
+                bg={`${labelColor}14`}
+                border={`${labelColor}42`}
+              />
+              <ChartMiniMetric
+                label="Risk"
+                value={risk.toFixed(0)}
+                sub={riskTone.label}
+                color={riskTone.color}
+                bg={riskTone.bg}
+                border={riskTone.border}
+              />
+              <div className="min-w-0 overflow-hidden rounded-lg px-1 py-1.5" style={{ background: 'rgba(255,255,255,0.018)', border: '1px solid rgba(255,255,255,0.055)' }}>
+                <div className="mb-1 truncate text-[7.5px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+                  Reversal
+                </div>
+                <SparklineReversalStateBadge ticker={ticker} tail={220} compact />
+              </div>
+            </div>
+            <div className="grid min-w-0 grid-cols-3 gap-1.5">
+              {chartHorizons.map((h) => {
+                const sig = row.horizon_signals[h] || row.horizon_signals[String(h)];
+                return (
+                  <ChartHorizonMiniTile key={h} label={chartViewHorizonLabel(h)} expRet={sig?.exp_ret} />
+                );
+              })}
+            </div>
+          </div>
+        </div>
+        <div className="flex min-w-0 items-center justify-between gap-2 border-t px-3 py-1.5" style={{ borderColor: 'rgba(255,255,255,0.035)' }}>
+          <span className="min-w-0 truncate text-[9px] text-[var(--text-muted)]">Click row for full diagnostics</span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onNavigateChart();
+              }}
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.08em] transition-colors"
+              style={{
+                color: '#c4b5fd',
+                background: 'rgba(167,139,250,0.08)',
+                border: '1px solid rgba(167,139,250,0.18)',
+              }}
+            >
+              <ExternalLink className="h-3 w-3" />
+              Chart
+            </button>
+            <ChevronRight
+              className="h-3.5 w-3.5 transition-transform duration-200"
+              style={{ color: isExpanded ? '#c4b5fd' : 'var(--text-muted)', transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}
+            />
+          </div>
+        </div>
+      </div>
+      {isExpanded && (
+        <div className="overflow-hidden rounded-b-xl border-x border-b" style={{ borderColor: 'rgba(167,139,250,0.20)' }}>
+          <SignalDetailPanel
+            ticker={ticker}
+            signal={row.nearest_label}
+            momentum={row.momentum_score}
+            crashRisk={row.crash_risk_score}
+            horizonSignals={row.horizon_signals as any}
+            defaultChartType={detailDefaultChartType ?? 'area'}
+            onNavigateChart={onNavigateChart}
+          />
+        </div>
+      )}
+    </>
   );
 }
 

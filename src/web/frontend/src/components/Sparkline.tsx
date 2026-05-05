@@ -584,7 +584,7 @@ function SparklineInner({ ticker, width = 60, height = 28, tail = 30, variant = 
 
 export const Sparkline = memo(SparklineInner);
 
-function SparklineReversalStateBadgeInner({ ticker, tail = 220 }: { ticker: string; tail?: number }) {
+function SparklineReversalStateBadgeInner({ ticker, tail = 220, compact = false }: { ticker: string; tail?: number; compact?: boolean }) {
   const { ref: visibilityRef, isNearViewport } = useNearViewport<HTMLDivElement>();
   const { data } = useQuery({
     queryKey: ['sparkline', ticker, tail],
@@ -596,9 +596,9 @@ function SparklineReversalStateBadgeInner({ ticker, tail = 220 }: { ticker: stri
   const state = getReversalState(validOhlcvBars(data?.data));
   if (!state) {
     return (
-      <div ref={visibilityRef} className="flex flex-col items-center gap-0.5 min-w-[62px]">
+      <div ref={visibilityRef} className={`flex flex-col items-center gap-0.5 ${compact ? 'min-w-0 w-full' : 'min-w-[62px]'}`}>
         <span
-          className="inline-flex h-[26px] min-w-[58px] items-center justify-center rounded-lg text-[9px] font-bold uppercase tracking-[0.08em]"
+          className={`inline-flex ${compact ? 'h-[30px] w-full' : 'h-[26px] min-w-[58px]'} items-center justify-center rounded-lg text-[9px] font-bold uppercase tracking-[0.08em]`}
           style={{
             color: 'var(--text-muted)',
             background: 'rgba(255,255,255,0.018)',
@@ -607,7 +607,7 @@ function SparklineReversalStateBadgeInner({ ticker, tail = 220 }: { ticker: stri
         >
           —
         </span>
-        <span className="text-[8.5px] uppercase tracking-[0.12em] text-[var(--text-muted)]">Reversal</span>
+        {!compact && <span className="text-[8.5px] uppercase tracking-[0.12em] text-[var(--text-muted)]">Reversal</span>}
       </div>
     );
   }
@@ -617,11 +617,26 @@ function SparklineReversalStateBadgeInner({ ticker, tail = 220 }: { ticker: stri
   const stateLabel = isBuy ? 'Buy' : 'Sell';
   const color = isBuy ? '#00f5a0' : '#ff375f';
   const softColor = isBuy ? '#a7f3d0' : '#fecdd3';
+  const compactBadgeContent = (
+    <>
+      <span
+        className="rounded-full"
+        style={{
+          width: 4,
+          height: 4,
+          background: color,
+          boxShadow: `0 0 7px ${color}`,
+        }}
+      />
+      <span className="text-[9px] font-extrabold uppercase tracking-[0.05em] leading-none">{stateLabel}</span>
+      {ageLabel && <span className="text-[8px] font-bold leading-none opacity-85">{ageLabel}</span>}
+    </>
+  );
 
   return (
-    <div ref={visibilityRef} className="flex flex-col items-center gap-0.5 min-w-[68px]">
+    <div ref={visibilityRef} className={`flex flex-col items-center gap-0.5 ${compact ? 'min-w-0 w-full' : 'min-w-[68px]'}`}>
       <span
-        className="inline-flex h-[26px] min-w-[64px] items-center justify-center gap-1.5 rounded-lg px-2 tabular-nums"
+        className={`inline-flex ${compact ? 'h-[30px] w-full flex-col gap-0.5 px-1' : 'h-[26px] min-w-[64px] gap-1.5 px-2'} items-center justify-center rounded-lg tabular-nums`}
         title={`Current mini reversal state: ${stateLabel}${ageLabel ? ` for ${ageLabel}` : ''}`}
         style={{
           color: softColor,
@@ -630,19 +645,23 @@ function SparklineReversalStateBadgeInner({ ticker, tail = 220 }: { ticker: stri
           boxShadow: `0 0 14px -9px ${color}`,
         }}
       >
-        <span
-          className="rounded-full"
-          style={{
-            width: 5,
-            height: 5,
-            background: color,
-            boxShadow: `0 0 7px ${color}`,
-          }}
-        />
-        <span className="text-[9.5px] font-extrabold uppercase tracking-[0.08em]">{stateLabel}</span>
-        {ageLabel && <span className="text-[9px] font-bold opacity-90">{ageLabel}</span>}
+        {compact ? compactBadgeContent : (
+          <>
+            <span
+              className="rounded-full"
+              style={{
+                width: 5,
+                height: 5,
+                background: color,
+                boxShadow: `0 0 7px ${color}`,
+              }}
+            />
+            <span className="text-[9.5px] font-extrabold uppercase tracking-[0.08em]">{stateLabel}</span>
+            {ageLabel && <span className="text-[9px] font-bold opacity-90">{ageLabel}</span>}
+          </>
+        )}
       </span>
-      <span className="text-[8.5px] uppercase tracking-[0.12em] text-[var(--text-muted)]">Reversal</span>
+      {!compact && <span className="text-[8.5px] uppercase tracking-[0.12em] text-[var(--text-muted)]">Reversal</span>}
     </div>
   );
 }
