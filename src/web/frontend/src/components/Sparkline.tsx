@@ -34,7 +34,7 @@ interface ReversalState {
   age: number | null;
 }
 
-const MAX_CONCURRENT_SPARKLINE_REQUESTS = 6;
+const MAX_CONCURRENT_SPARKLINE_REQUESTS = 14;
 let activeSparklineRequests = 0;
 const pendingSparklineRequests: Array<() => void> = [];
 
@@ -46,7 +46,7 @@ function runSparklineRequest<T>(request: () => Promise<T>): Promise<T> {
         .then(resolve, reject)
         .finally(() => {
           activeSparklineRequests = Math.max(0, activeSparklineRequests - 1);
-          pendingSparklineRequests.shift()?.();
+          pendingSparklineRequests.pop()?.();
         });
     };
 
@@ -58,7 +58,7 @@ function runSparklineRequest<T>(request: () => Promise<T>): Promise<T> {
   });
 }
 
-function useNearViewport<T extends HTMLElement>(rootMargin = '720px') {
+function useNearViewport<T extends HTMLElement>(rootMargin = '1800px 0px') {
   const ref = useRef<T | null>(null);
   const [isNearViewport, setIsNearViewport] = useState(false);
 
@@ -85,6 +85,56 @@ function useNearViewport<T extends HTMLElement>(rootMargin = '720px') {
   }, [isNearViewport, rootMargin]);
 
   return { ref, isNearViewport };
+}
+
+function SparklineSkeleton({ width, height, fluid, variant }: {
+  width: number;
+  height: number;
+  fluid: boolean;
+  variant: SparklineProps['variant'];
+}) {
+  const bullish = variant === 'reversal';
+  const accent = bullish ? '#34d399' : '#8b5cf6';
+  const areaFill = bullish ? 'rgba(52,211,153,0.14)' : 'rgba(139,92,246,0.13)';
+  return (
+    <div
+      style={{
+        width: fluid ? '100%' : width,
+        height,
+        background: 'linear-gradient(180deg, rgba(255,255,255,0.026), rgba(255,255,255,0.008))',
+        border: '1px solid rgba(255,255,255,0.038)',
+      }}
+      className="relative overflow-hidden rounded-md"
+      aria-label="Loading mini chart"
+    >
+      <svg
+        viewBox="0 0 120 36"
+        preserveAspectRatio="none"
+        className="absolute inset-0 h-full w-full opacity-70"
+        aria-hidden
+      >
+        <path
+          d="M2 27 C14 24 18 18 30 20 S47 28 59 20 73 11 86 15 101 24 118 10 L118 36 L2 36 Z"
+          fill={areaFill}
+        />
+        <path
+          d="M2 27 C14 24 18 18 30 20 S47 28 59 20 73 11 86 15 101 24 118 10"
+          fill="none"
+          stroke={accent}
+          strokeWidth="1.4"
+          strokeLinecap="round"
+          opacity="0.58"
+        />
+      </svg>
+      <div
+        className="absolute inset-y-0 -left-1/2 w-1/2"
+        style={{
+          background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.055), transparent)',
+          animation: 'sparklineSkeletonSweep 1.25s ease-in-out infinite',
+        }}
+      />
+    </div>
+  );
 }
 
 function validOhlcvBars(bars: OHLCVBar[] | undefined): OHLCVBar[] {
@@ -401,6 +451,7 @@ function SparklineInner({ ticker, width = 60, height = 28, tail = 30, variant = 
     queryFn: () => runSparklineRequest(() => api.chartOhlcv(ticker, tail)),
     enabled: isNearViewport,
     staleTime: 600_000,
+    retry: 1,
   });
 
   useEffect(() => {
@@ -546,9 +597,9 @@ function SparklineInner({ ticker, width = 60, height = 28, tail = 30, variant = 
       <div
         ref={visibilityRef}
         style={{ width: fluid ? '100%' : width, height }}
-        className="opacity-20 flex items-center justify-center text-[8px] text-[var(--text-muted)]"
+        title={isNearViewport ? 'Preparing mini chart' : 'Mini chart queued'}
       >
-        —
+        <SparklineSkeleton width={renderWidth} height={height} fluid={fluid} variant={variant} />
       </div>
     );
   }
@@ -591,6 +642,7 @@ function SparklineReversalStateBadgeInner({ ticker, tail = 220, compact = false 
     queryFn: () => runSparklineRequest(() => api.chartOhlcv(ticker, tail)),
     enabled: isNearViewport,
     staleTime: 600_000,
+    retry: 1,
   });
 
   const state = getReversalState(validOhlcvBars(data?.data));
@@ -679,6 +731,7 @@ function SparklinePctInner({ ticker }: { ticker: string }) {
     queryFn: () => runSparklineRequest(() => api.chartOhlcv(ticker, 30)),
     enabled: isNearViewport,
     staleTime: 600_000,
+    retry: 1,
   });
   const bars = data?.data;
   if (!bars || bars.length < 3) {

@@ -66,6 +66,40 @@ const isFiatCurrencyTicker = (symbol: string | undefined | null): boolean => {
   return ISO_CURRENCY_CODES.has(pair.slice(0, 3)) && ISO_CURRENCY_CODES.has(pair.slice(3));
 };
 
+const isCurrencyAsset = (assetLabelOrTicker: string | undefined | null): boolean =>
+  isFiatCurrencyTicker(extractTicker(String(assetLabelOrTicker || '').trim()));
+
+const SIGNALS_SHOW_CURRENCIES_LS_KEY = 'signals-show-currencies-v1';
+
+const rebuildSectorFromAssets = (sector: SectorGroup, assets: SummaryRow[]): SectorGroup => {
+  const counts = { strong_buy: 0, buy: 0, hold: 0, sell: 0, strong_sell: 0, exit: 0 };
+  for (const asset of assets) {
+    const label = (asset.nearest_label || 'HOLD').toUpperCase().replace(/\s+/g, '_');
+    if (label === 'STRONG_BUY') counts.strong_buy += 1;
+    else if (label === 'BUY') counts.buy += 1;
+    else if (label === 'SELL') counts.sell += 1;
+    else if (label === 'STRONG_SELL') counts.strong_sell += 1;
+    else if (label === 'EXIT') counts.exit += 1;
+    else counts.hold += 1;
+  }
+  const avg = (field: 'momentum_score' | 'crash_risk_score') => (
+    assets.length > 0 ? assets.reduce((sum, asset) => sum + (asset[field] ?? 0), 0) / assets.length : 0
+  );
+  return {
+    ...sector,
+    assets,
+    asset_count: assets.length,
+    strong_buy: counts.strong_buy,
+    buy: counts.buy,
+    hold: counts.hold,
+    sell: counts.sell,
+    strong_sell: counts.strong_sell,
+    exit: counts.exit,
+    avg_momentum: avg('momentum_score'),
+    avg_crash_risk: avg('crash_risk_score'),
+  };
+};
+
 const cleanSmaReason = (reason: string): string => reason.replace(/\s*\(n=\d+\)/gi, '');
 
 const SMA_CHART_VIEW_PREFS_KEY = 'signals.smaReversalChartView.v1';
@@ -114,6 +148,15 @@ const loadStoredSmaChartRange = (): SmaChartRange => {
     return isSmaChartRange(raw) ? raw : '1Y';
   } catch {
     return '1Y';
+  }
+};
+
+const loadStoredShowCurrencies = (): boolean => {
+  if (typeof window === 'undefined') return true;
+  try {
+    return window.localStorage.getItem(SIGNALS_SHOW_CURRENCIES_LS_KEY) !== '0';
+  } catch {
+    return true;
   }
 };
 
@@ -343,6 +386,10 @@ function SignalsPageInner() {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [expandedSectors, setExpandedSectors] = useState<Set<string>>(new Set());
+  const [showCurrencies, setShowCurrencies] = useState<boolean>(() => loadStoredShowCurrencies());
+  useEffect(() => {
+    try { localStorage.setItem(SIGNALS_SHOW_CURRENCIES_LS_KEY, showCurrencies ? '1' : '0'); } catch { /* ignore */ }
+  }, [showCurrencies]);
   // EMA-below filters — apply to all three views. Multi-select, AND-combined.
   const [emaFilters, setEmaFilters] = useState<{ p9: boolean; p50: boolean; p600: boolean }>(
     () => {
@@ -610,8 +657,19 @@ function SignalsPageInner() {
     return true;
   }, [emaFilters, emaLookup]);
 
+  const passesCurrency = useCallback((assetLabelOrTicker: string | undefined | null): boolean => (
+    showCurrencies || !isCurrencyAsset(assetLabelOrTicker)
+  ), [showCurrencies]);
+
+  const currencyVisibleRows = useMemo(() => (
+    showCurrencies ? rows : rows.filter((row) => passesCurrency(row.asset_label))
+  ), [rows, showCurrencies, passesCurrency]);
+  const currencyAssetCount = useMemo(() => (
+    rows.filter((row) => isCurrencyAsset(row.asset_label)).length
+  ), [rows]);
+
   const filteredRows = useMemo(() => {
-    return rows.filter((row) => {
+    return currencyVisibleRows.filter((row) => {
       if (debouncedSearch && !fuzzyMatch(row.asset_label, debouncedSearch)) return false;
       if (!passesEma(row.asset_label)) return false;
       if (filter === 'all') return true;
@@ -622,15 +680,18 @@ function SignalsPageInner() {
       if (filter === 'greens' || filter === 'reds') return rowHorizonColor(row) === filter;
       return label === filter.toUpperCase();
     });
-  }, [rows, debouncedSearch, filter, fuzzyMatch, passesEma, reversalFlipsQ.data]);
+  }, [currencyVisibleRows, debouncedSearch, filter, fuzzyMatch, passesEma, reversalFlipsQ.data]);
 
   // Sectors view: apply EMA predicate at the asset level, drop empty sectors.
   const sectors = useMemo(() => {
-    if (!emaFilters.p9 && !emaFilters.p50 && !emaFilters.p600) return rawSectors;
+    if (showCurrencies && !emaFilters.p9 && !emaFilters.p50 && !emaFilters.p600) return rawSectors;
     return rawSectors
-      .map(sec => ({ ...sec, assets: sec.assets.filter(a => passesEma(a.asset_label)) }))
+      .map(sec => rebuildSectorFromAssets(
+        sec,
+        sec.assets.filter(a => passesCurrency(a.asset_label) && passesEma(a.asset_label)),
+      ))
       .filter(sec => sec.assets.length > 0);
-  }, [rawSectors, emaFilters, passesEma]);
+  }, [rawSectors, showCurrencies, emaFilters, passesCurrency, passesEma]);
 
   // Global sector totals shown in the unified filter card footer.
   const sectorTotals = useMemo(() => ({
@@ -640,9 +701,9 @@ function SignalsPageInner() {
   }), [sectors]);
 
   const reversalQuickCounts = useMemo(() => ({
-    buy: rows.filter((row) => rowMatchesReversalFilter(row, 'reversal_buy', reversalFlipsQ.data)).length,
-    sell: rows.filter((row) => rowMatchesReversalFilter(row, 'reversal_sell', reversalFlipsQ.data)).length,
-  }), [rows, reversalFlipsQ.data]);
+    buy: currencyVisibleRows.filter((row) => rowMatchesReversalFilter(row, 'reversal_buy', reversalFlipsQ.data)).length,
+    sell: currencyVisibleRows.filter((row) => rowMatchesReversalFilter(row, 'reversal_sell', reversalFlipsQ.data)).length,
+  }), [currencyVisibleRows, reversalFlipsQ.data]);
 
   /** Story 3.2: Multi-level sorted rows */
   const sortedRows = useMemo(() => {
@@ -757,7 +818,7 @@ function SignalsPageInner() {
         elapsedSec={jobElapsedSec}
         phaseTitle={jobPhases.length > 0 ? jobPhases[jobPhases.length - 1].title : null}
         filteredRows={filteredRows}
-        totalRows={rows.length}
+        totalRows={currencyVisibleRows.length}
         onRefreshStocks={() => openOrStartJob('stocks')}
         onRunTune={() => openOrStartJob('retune')}
         onRunBoth={() => openOrStartJob('tune-stocks')}
@@ -769,7 +830,7 @@ function SignalsPageInner() {
       />
 
       {/* ── v1 PREMIUM HERO BAND ─────────────────────────────────────── */}
-      <SignalsHero stats={stats} rows={rows} horizons={horizons} filteredCount={filteredRows.length} wsStatus={wsStatus} />
+      <SignalsHero stats={showCurrencies ? stats : undefined} rows={currencyVisibleRows} horizons={horizons} filteredCount={filteredRows.length} wsStatus={wsStatus} />
 
       {/* Watchlist — always-visible, user-curated tickers persisted server-side */}
       <div className="mb-5 fade-up-delay-1">
@@ -787,23 +848,14 @@ function SignalsPageInner() {
         />
       </div>
 
-      {/* High Conviction Panels — full positions with rich data */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-8 fade-up-delay-1">
-        <HighConvictionPanel
-          title="High Conviction BUY"
-          signals={buyQ.data?.signals || []}
-          color="green"
-          isLoading={buyQ.isLoading}
-          emaStates={emaStates}
-        />
-        <HighConvictionPanel
-          title="High Conviction SELL"
-          signals={sellQ.data?.signals || []}
-          color="red"
-          isLoading={sellQ.isLoading}
-          emaStates={emaStates}
-        />
-      </div>
+      {/* High Conviction — tabbed decision workspace */}
+      <HighConvictionTabs
+        buySignals={(buyQ.data?.signals || []).filter((signal) => passesCurrency(signal.ticker))}
+        sellSignals={(sellQ.data?.signals || []).filter((signal) => passesCurrency(signal.ticker))}
+        buyLoading={buyQ.isLoading}
+        sellLoading={sellQ.isLoading}
+        emaStates={emaStates}
+      />
 
       {/* SMA Reversals — world-class crossover detection (9 / 50 / 600) */}
       <SmaReversalsPanel
@@ -887,7 +939,7 @@ function SignalsPageInner() {
             {search && (
               <>
                 <span className="text-[10px] text-[var(--text-muted)] tabular-nums whitespace-nowrap">
-                  {filteredRows.length}/{rows.length}
+                  {filteredRows.length}/{currencyVisibleRows.length}
                 </span>
                 <button onClick={() => setSearch('')} className="text-[var(--text-muted)] hover:text-[var(--accent-rose)] transition-colors duration-120">
                   <X className="w-3 h-3" />
@@ -1072,6 +1124,38 @@ function SignalsPageInner() {
             })}
           </div>
 
+          <div className="h-5 w-px bg-white/[0.05]" aria-hidden />
+
+          <button
+            type="button"
+            onClick={() => setShowCurrencies((prev) => !prev)}
+            aria-pressed={showCurrencies}
+            title={showCurrencies ? 'Hide FX currency pairs from Signals views' : 'Show FX currency pairs in Signals views'}
+            className="inline-flex items-center gap-1.5 rounded-lg pl-2 pr-1.5 py-1 transition-all duration-200"
+            style={{
+              background: showCurrencies
+                ? 'linear-gradient(180deg, rgba(56,217,245,0.18), rgba(56,217,245,0.07))'
+                : 'rgba(255,255,255,0.02)',
+              border: `1px solid ${showCurrencies ? 'rgba(56,217,245,0.38)' : 'rgba(255,255,255,0.05)'}`,
+              color: showCurrencies ? '#bae6fd' : 'var(--text-secondary)',
+              boxShadow: showCurrencies ? '0 0 14px -9px rgba(56,217,245,0.95)' : '0 1px 0 rgba(255,255,255,0.02) inset',
+            }}
+          >
+            <Eye className="w-3 h-3" style={{ color: showCurrencies ? '#67e8f9' : 'var(--text-muted)' }} />
+            <span className="text-[10.5px] font-semibold tracking-wide whitespace-nowrap">
+              FX {showCurrencies ? 'On' : 'Off'}
+            </span>
+            <span
+              className="inline-flex items-center justify-center rounded-md px-1 min-w-[18px] h-[15px] text-[9.5px] font-semibold tabular-nums"
+              style={{
+                background: showCurrencies ? 'rgba(56,217,245,0.24)' : 'rgba(255,255,255,0.05)',
+                color: showCurrencies ? '#cffafe' : 'var(--text-muted)',
+              }}
+            >
+              {currencyAssetCount}
+            </span>
+          </button>
+
           <div className="flex-1 min-w-[8px]" />
 
           {/* Result count */}
@@ -1119,12 +1203,13 @@ function SignalsPageInner() {
           </button>
 
           {/* Clear all */}
-          {(filter !== 'all' || emaFilters.p9 || emaFilters.p50 || emaFilters.p600 || search) && (
+          {(filter !== 'all' || emaFilters.p9 || emaFilters.p50 || emaFilters.p600 || !showCurrencies || search) && (
             <button
               type="button"
               onClick={() => {
                 setFilter('all');
                 setEmaFilters({ p9: false, p50: false, p600: false });
+                setShowCurrencies(true);
                 setSearch('');
               }}
               className="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-md transition-colors"
@@ -1375,8 +1460,8 @@ function SignalsPageInner() {
       )}
       {view === 'strong' && (
         <StrongSignalsView
-          strongBuy={(strongQ.data?.strong_buy || []).filter(s => passesEma(s.symbol))}
-          strongSell={(strongQ.data?.strong_sell || []).filter(s => passesEma(s.symbol))}
+          strongBuy={(strongQ.data?.strong_buy || []).filter(s => passesCurrency(s.symbol) && passesEma(s.symbol))}
+          strongSell={(strongQ.data?.strong_sell || []).filter(s => passesCurrency(s.symbol) && passesEma(s.symbol))}
           filter={filter}
           onNavigateChart={(sym) => navigate(`/charts/${sym}`)}
         />
@@ -1735,12 +1820,24 @@ function SignalsHero({
   filteredCount: number;
   wsStatus: WSStatus;
 }) {
+  const rowCounts = useMemo(() => {
+    const counts = { strongBuy: 0, buy: 0, hold: 0, sell: 0, strongSell: 0 };
+    for (const row of rows) {
+      const label = (row.nearest_label || 'HOLD').toUpperCase().replace(/\s+/g, '_');
+      if (label === 'STRONG_BUY') counts.strongBuy += 1;
+      else if (label === 'BUY') counts.buy += 1;
+      else if (label === 'SELL') counts.sell += 1;
+      else if (label === 'STRONG_SELL') counts.strongSell += 1;
+      else counts.hold += 1;
+    }
+    return counts;
+  }, [rows]);
   const total = stats?.total_assets ?? rows.length;
-  const strongBuy = stats?.strong_buy_signals ?? 0;
-  const buy = stats?.buy_signals ?? 0;
-  const hold = stats?.hold_signals ?? 0;
-  const sell = stats?.sell_signals ?? 0;
-  const strongSell = stats?.strong_sell_signals ?? 0;
+  const strongBuy = stats?.strong_buy_signals ?? rowCounts.strongBuy;
+  const buy = stats?.buy_signals ?? (rowCounts.buy + rowCounts.strongBuy);
+  const hold = stats?.hold_signals ?? rowCounts.hold;
+  const sell = stats?.sell_signals ?? (rowCounts.sell + rowCounts.strongSell);
+  const strongSell = stats?.strong_sell_signals ?? rowCounts.strongSell;
   const conviction = strongBuy + strongSell;
   const bullishCount = buy; // buy_signals already includes strong_buy in backend convention
   const bearishCount = sell;
@@ -4353,9 +4450,14 @@ function ChartIdentityChip({ value, color, bg, border, title }: {
 }) {
   return (
     <span
-      className="inline-flex h-[22px] min-w-[48px] max-w-full items-center justify-center truncate rounded-md px-2 text-[9px] font-extrabold uppercase tracking-[0.045em] tabular-nums"
+      className="inline-flex h-[21px] min-w-[44px] max-w-full items-center justify-center truncate rounded-md px-2 text-[8.8px] font-extrabold uppercase tracking-[0.04em] tabular-nums transition-transform duration-150 group-hover:translate-y-[-0.5px]"
       title={title}
-      style={{ color, background: bg, border: `1px solid ${border}` }}
+      style={{
+        color,
+        background: `linear-gradient(180deg, ${bg}, rgba(255,255,255,0.012))`,
+        border: `1px solid ${border}`,
+        boxShadow: `inset 0 1px 0 rgba(255,255,255,0.06), 0 6px 14px -12px ${color}`,
+      }}
     >
       {value}
     </span>
@@ -4432,24 +4534,16 @@ function ChartAssetRow({ row, ticker, horizons, qualityScore, highlighted, isExp
           boxShadow: isExpanded ? '0 10px 34px -20px rgba(139,92,246,0.58)' : '0 1px 0 rgba(255,255,255,0.03) inset',
         }}
       >
-        <div className="grid w-full min-w-0 gap-3 p-3 xl:grid-cols-[minmax(150px,0.46fr)_minmax(0,2.15fr)_minmax(236px,0.76fr)] xl:items-center 2xl:grid-cols-[minmax(176px,0.45fr)_minmax(0,2.2fr)_minmax(292px,0.82fr)]">
-          <div className="flex min-w-0 items-center gap-3">
+        <div className="grid w-full min-w-0 gap-3 p-3 xl:grid-cols-[minmax(132px,0.38fr)_minmax(0,2.22fr)_minmax(236px,0.76fr)] xl:items-center 2xl:grid-cols-[minmax(150px,0.36fr)_minmax(0,2.28fr)_minmax(292px,0.82fr)]">
+          <div className="flex min-w-0 items-center gap-2.5">
             <span
-              className="h-10 w-1.5 rounded-full flex-shrink-0"
+              className="h-9 w-1 rounded-full flex-shrink-0"
               style={{ background: labelColor, boxShadow: `0 0 12px -4px ${labelColor}` }}
             />
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="text-[14px] font-bold tabular-nums text-[var(--text-primary)]">{ticker}</span>
-                <span
-                  className="rounded px-1.5 py-[1px] text-[8.5px] font-semibold uppercase tracking-[0.1em]"
-                  style={{ background: 'rgba(255,255,255,0.035)', color: 'var(--text-muted)', border: '1px solid rgba(255,255,255,0.05)' }}
-                >
-                  {row.sector || 'Other'}
-                </span>
-              </div>
-              {company && <span className="mt-0.5 block max-w-[190px] truncate text-[10.5px] text-[var(--text-muted)]">{company}</span>}
-              <div className="mt-2 flex max-w-[220px] flex-wrap items-center gap-1.5">
+              <span className="block truncate text-[12.5px] font-bold tabular-nums text-[var(--text-primary)]">{ticker}</span>
+              {company && <span className="mt-0.5 block max-w-[138px] truncate text-[9px] leading-tight text-[var(--text-muted)]">{company}</span>}
+              <div className="mt-1.5 flex max-w-[162px] flex-wrap items-center gap-1.5">
                 <ChartIdentityChip
                   value={compactChartSignalLabel(label)}
                   color={labelColor}
@@ -4517,7 +4611,13 @@ function ChartAssetRow({ row, ticker, horizons, qualityScore, highlighted, isExp
           </div>
         </div>
         <div className="flex min-w-0 items-center justify-between gap-2 border-t px-3 py-1.5" style={{ borderColor: 'rgba(255,255,255,0.035)' }}>
-          <span className="min-w-0 truncate text-[9px] text-[var(--text-muted)]">Click row for full diagnostics</span>
+          <span
+            className="min-w-0 truncate rounded px-1.5 py-[1px] text-[8px] font-semibold uppercase tracking-[0.1em]"
+            style={{ background: 'rgba(255,255,255,0.026)', color: 'var(--text-muted)', border: '1px solid rgba(255,255,255,0.045)' }}
+            title={row.sector || 'Other'}
+          >
+            {row.sector || 'Other'}
+          </span>
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -5265,54 +5365,59 @@ function GradeBadge({ grade, count }: { grade: 'A' | 'B' | 'C'; count: number })
 
 function SmaScoreRing({ score, color }: { score: number; color: string }) {
   const pct = Math.max(0, Math.min(100, score));
-  const radius = 18;
+  const radius = 20.5;
   const circumference = 2 * Math.PI * radius;
   const dashOffset = circumference * (1 - pct / 100);
   const tier = pct >= 80 ? 'Elite' : pct >= 60 ? 'Strong' : pct >= 40 ? 'Watch' : 'Low';
 
   return (
     <div
-      className="flex w-[58px] flex-shrink-0 flex-col items-center justify-center gap-0.5"
+      className="flex w-[68px] flex-shrink-0 flex-col items-center justify-center gap-1"
       title={`Setup score: ${pct.toFixed(0)} (${tier})`}
     >
-      <div className="relative h-[48px] w-[48px]">
-        <svg className="h-full w-full -rotate-90" viewBox="0 0 48 48" aria-hidden>
+      <div
+        className="relative h-[54px] w-[54px] rounded-full"
+        style={{
+          background: `radial-gradient(circle, ${color}14 0%, ${color}08 42%, rgba(255,255,255,0.012) 72%)`,
+          border: '1px solid rgba(255,255,255,0.055)',
+          boxShadow: `inset 0 1px 0 rgba(255,255,255,0.055), 0 0 18px -14px ${color}`,
+        }}
+      >
+        <svg className="absolute inset-0 h-full w-full -rotate-90" viewBox="0 0 56 56" aria-hidden>
           <circle
-            cx="24"
-            cy="24"
+            cx="28"
+            cy="28"
             r={radius}
             fill="none"
-            stroke="rgba(255,255,255,0.07)"
-            strokeWidth="4"
+            stroke="rgba(255,255,255,0.075)"
+            strokeWidth="4.5"
           />
           <circle
-            cx="24"
-            cy="24"
+            cx="28"
+            cy="28"
             r={radius}
             fill="none"
             stroke={color}
-            strokeWidth="4"
+            strokeWidth="4.5"
             strokeLinecap="round"
             strokeDasharray={circumference}
             strokeDashoffset={dashOffset}
             style={{
-              filter: `drop-shadow(0 0 5px ${color}99)`,
               transition: 'stroke-dashoffset 360ms cubic-bezier(.2,.8,.2,1)',
             }}
           />
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-[13px] font-extrabold tabular-nums leading-none" style={{ color }}>
+          <span className="text-[15px] font-extrabold tabular-nums leading-none" style={{ color }}>
             {pct.toFixed(0)}
-          </span>
-          <span className="mt-[1px] text-[6.5px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
-            Score
           </span>
         </div>
       </div>
-      <span className="text-[7.5px] font-semibold uppercase tracking-[0.12em]" style={{ color, opacity: 0.86 }}>
-        {tier}
-      </span>
+      <div className="flex items-center justify-center gap-1 whitespace-nowrap text-[7.5px] font-semibold uppercase tracking-[0.08em]">
+        <span className="text-[var(--text-muted)]">Score</span>
+        <span className="h-1 w-1 rounded-full" style={{ background: color, opacity: 0.65 }} />
+        <span style={{ color, opacity: 0.9 }}>{tier}</span>
+      </div>
     </div>
   );
 }
@@ -6263,6 +6368,181 @@ function EmaFilterBar({
   );
 }
 
+type HighConvictionTabKey = 'buy' | 'sell';
+
+function summarizeHighConvictionSignals(signals: HighConvictionSignal[]) {
+  const byTicker = new Map<string, number>();
+  for (const signal of signals) {
+    const ticker = signal.ticker || 'UNKNOWN';
+    byTicker.set(ticker, Math.max(byTicker.get(ticker) ?? -Infinity, signal.expected_return_pct ?? 0));
+  }
+  const bestReturns = Array.from(byTicker.values()).filter((value) => Number.isFinite(value));
+  const avgReturn = bestReturns.length > 0
+    ? bestReturns.reduce((sum, value) => sum + value, 0) / bestReturns.length
+    : 0;
+  return {
+    positions: byTicker.size,
+    signals: signals.length,
+    avgReturn,
+  };
+}
+
+function HighConvictionTabs({
+  buySignals,
+  sellSignals,
+  buyLoading,
+  sellLoading,
+  emaStates,
+}: {
+  buySignals: HighConvictionSignal[];
+  sellSignals: HighConvictionSignal[];
+  buyLoading: boolean;
+  sellLoading: boolean;
+  emaStates: Record<string, EmaState>;
+}) {
+  const [activeTab, setActiveTab] = useState<HighConvictionTabKey>('buy');
+  const buySummary = useMemo(() => summarizeHighConvictionSignals(buySignals), [buySignals]);
+  const sellSummary = useMemo(() => summarizeHighConvictionSignals(sellSignals), [sellSignals]);
+  const activeSummary = activeTab === 'buy' ? buySummary : sellSummary;
+  const activeColor = activeTab === 'buy' ? '#10b981' : '#f43f5e';
+  const activeSoft = activeTab === 'buy' ? 'rgba(16,185,129,0.13)' : 'rgba(244,63,94,0.13)';
+  const tabs: Array<{
+    key: HighConvictionTabKey;
+    label: string;
+    shortLabel: string;
+    color: string;
+    summary: ReturnType<typeof summarizeHighConvictionSignals>;
+    icon: ReactNode;
+  }> = [
+    { key: 'buy', label: 'High Conviction BUY', shortLabel: 'BUY', color: '#10b981', summary: buySummary, icon: <TrendingUp className="w-4 h-4" /> },
+    { key: 'sell', label: 'High Conviction SELL', shortLabel: 'SELL', color: '#f43f5e', summary: sellSummary, icon: <TrendingDown className="w-4 h-4" /> },
+  ];
+
+  return (
+    <section className="mb-8 fade-up-delay-1">
+      <div
+        className="overflow-hidden rounded-[24px]"
+        style={{
+          background: 'linear-gradient(180deg, rgba(255,255,255,0.026), rgba(255,255,255,0.008))',
+          border: '1px solid rgba(255,255,255,0.065)',
+          boxShadow: `0 24px 72px -48px ${activeColor}99, 0 16px 48px -34px rgba(0,0,0,0.9), inset 0 1px 0 rgba(255,255,255,0.045)`,
+        }}
+      >
+        <div
+          className="flex flex-wrap items-center gap-3 px-4 py-3"
+          style={{
+            background: `radial-gradient(760px 180px at 10% -90%, ${activeSoft}, transparent 64%), rgba(255,255,255,0.01)`,
+            borderBottom: '1px solid rgba(255,255,255,0.045)',
+          }}
+        >
+          <div className="min-w-0 mr-1">
+            <div className="flex items-center gap-2">
+              <span
+                className="inline-flex h-8 w-8 items-center justify-center rounded-xl"
+                style={{
+                  color: activeColor,
+                  background: `${activeColor}18`,
+                  border: `1px solid ${activeColor}36`,
+                  boxShadow: `0 0 18px -10px ${activeColor}`,
+                }}
+              >
+                <Target className="w-4 h-4" />
+              </span>
+              <div>
+                <h2 className="text-[13.5px] font-semibold tracking-tight text-[var(--text-primary)]">
+                  High Conviction
+                </h2>
+                <p className="text-[10.5px] text-[var(--text-muted)]">
+                  Tabbed decision view · BUY opens first
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div
+            className="relative inline-flex items-center rounded-2xl p-1"
+            style={{
+              background: 'rgba(255,255,255,0.035)',
+              border: '1px solid rgba(255,255,255,0.06)',
+              boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.035)',
+            }}
+          >
+            <div
+              aria-hidden
+              className="absolute top-1 bottom-1 rounded-xl transition-all duration-300"
+              style={{
+                width: 'calc((100% - 8px) / 2)',
+                left: activeTab === 'buy' ? '4px' : 'calc(4px + (100% - 8px) / 2)',
+                background: activeColor,
+                boxShadow: `0 10px 24px -14px ${activeColor}, inset 0 1px 0 rgba(255,255,255,0.22)`,
+              }}
+            />
+            {tabs.map((tab) => {
+              const on = activeTab === tab.key;
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setActiveTab(tab.key)}
+                  aria-pressed={on}
+                  className="relative z-10 inline-flex min-w-[190px] items-center justify-between gap-3 rounded-xl px-3 py-2 text-left transition-colors"
+                  style={{ color: on ? 'var(--void-bg)' : 'var(--text-secondary)' }}
+                >
+                  <span className="inline-flex min-w-0 items-center gap-2">
+                    <span style={{ color: on ? 'var(--void-bg)' : tab.color }}>{tab.icon}</span>
+                    <span className="truncate text-[11px] font-bold uppercase tracking-[0.08em]">{tab.shortLabel}</span>
+                  </span>
+                  <span
+                    className="inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-bold tabular-nums"
+                    style={{
+                      background: on ? 'rgba(0,0,0,0.15)' : `${tab.color}14`,
+                      color: on ? 'var(--void-bg)' : tab.color,
+                    }}
+                  >
+                    {tab.summary.positions}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="ml-auto flex flex-wrap items-center gap-2 text-[10.5px] tabular-nums">
+            <span className="rounded-lg px-2 py-1" style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>
+              <span className="font-semibold text-[var(--text-secondary)]">{activeSummary.positions}</span> positions
+            </span>
+            <span className="rounded-lg px-2 py-1" style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>
+              <span className="font-semibold text-[var(--text-secondary)]">{activeSummary.signals}</span> signals
+            </span>
+            <span className="rounded-lg px-2 py-1" style={{ background: `${activeColor}12`, border: `1px solid ${activeColor}2e`, color: activeColor }}>
+              Avg {activeSummary.avgReturn >= 0 ? '+' : ''}{activeSummary.avgReturn.toFixed(1)}%
+            </span>
+          </div>
+        </div>
+
+        <div className="p-3">
+          {activeTab === 'buy' ? (
+            <HighConvictionPanel
+              title="High Conviction BUY"
+              signals={buySignals}
+              color="green"
+              isLoading={buyLoading}
+              emaStates={emaStates}
+            />
+          ) : (
+            <HighConvictionPanel
+              title="High Conviction SELL"
+              signals={sellSignals}
+              color="red"
+              isLoading={sellLoading}
+              emaStates={emaStates}
+            />
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function HighConvictionPanel({
   title, signals, color, isLoading, emaStates,
 }: {
@@ -6272,10 +6552,11 @@ function HighConvictionPanel({
   isLoading: boolean;
   emaStates: Record<string, EmaState>;
 }) {
+  const navigate = useNavigate();
   const [sortCol, setSortCol] = useState<HCSortCol>('exp_ret');
   const [sortDir, setSortDir] = useState<HCSortDir>('desc');
   const [expandedTicker, setExpandedTicker] = useState<string | null>(null);
-  const [expandedView, setExpandedView] = useState<'details' | 'chart'>('chart');
+  const [expandedView, setExpandedView] = useState<'extended' | 'standard' | 'details'>('extended');
   const [tvRange, setTvRange] = useState<string>('3M');
   // Track which timeframes have been activated so we can keep them mounted
   // (avoids re-initializing the TradingView iframe every time the user switches)
@@ -6312,8 +6593,8 @@ function HighConvictionPanel({
     return ticker;
   }, []);
 
-  // Reset tab to chart when row changes (chart is the default view)
-  useEffect(() => { setExpandedView('chart'); }, [expandedTicker]);
+  // Reset tab to the richer chart when row changes.
+  useEffect(() => { setExpandedView('extended'); }, [expandedTicker]);
 
   // Esc collapses the expanded row
   useEffect(() => {
@@ -6807,8 +7088,12 @@ function HighConvictionPanel({
                                   aria-hidden
                                   className="absolute top-1 bottom-1 rounded-lg transition-all"
                                   style={{
-                                    width: 'calc(50% - 4px)',
-                                    left: expandedView === 'chart' ? '4px' : 'calc(50% + 0px)',
+                                    width: 'calc((100% - 8px) / 3)',
+                                    left: expandedView === 'extended'
+                                      ? '4px'
+                                      : expandedView === 'standard'
+                                        ? 'calc(4px + (100% - 8px) / 3)'
+                                        : 'calc(4px + 2 * (100% - 8px) / 3)',
                                     background: accent,
                                     boxShadow: `0 2px 8px -2px ${accent}88, inset 0 1px 0 rgba(255,255,255,0.2)`,
                                     transition: 'left 260ms cubic-bezier(0.2, 0.8, 0.2, 1)',
@@ -6816,16 +7101,29 @@ function HighConvictionPanel({
                                 />
                                 <button
                                   type="button"
-                                  onClick={() => setExpandedView('chart')}
+                                  onClick={() => setExpandedView('extended')}
                                   className="relative z-10 inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[11px] font-semibold transition-colors"
                                   style={{
-                                    color: expandedView === 'chart' ? 'var(--void-bg)' : 'var(--text-secondary)',
-                                    minWidth: 110,
+                                    color: expandedView === 'extended' ? 'var(--void-bg)' : 'var(--text-secondary)',
+                                    minWidth: 132,
                                     justifyContent: 'center',
                                   }}
                                 >
                                   <BarChart3 className="w-3.5 h-3.5" />
-                                  Chart
+                                  Extended Chart
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedView('standard')}
+                                  className="relative z-10 inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[11px] font-semibold transition-colors"
+                                  style={{
+                                    color: expandedView === 'standard' ? 'var(--void-bg)' : 'var(--text-secondary)',
+                                    minWidth: 132,
+                                    justifyContent: 'center',
+                                  }}
+                                >
+                                  <Activity className="w-3.5 h-3.5" />
+                                  Standard Chart
                                 </button>
                                 <button
                                   type="button"
@@ -6848,7 +7146,31 @@ function HighConvictionPanel({
                               </div>
                             </div>
 
-                            {expandedView === 'chart' && (() => {
+                            {expandedView === 'extended' && (() => {
+                              const horizonSignals = Object.fromEntries(
+                                g.signals.map((s) => [
+                                  formatHorizon(s.horizon_days),
+                                  {
+                                    p_up: s.probability_up,
+                                    label: s.signal_type || (color === 'green' ? 'STRONG BUY' : 'STRONG SELL'),
+                                  },
+                                ]),
+                              ) as Record<string, { p_up?: number; label?: string }>;
+                              return (
+                                <div className="overflow-hidden rounded-2xl" style={{ border: `1px solid ${accentSoft}` }}>
+                                  <SignalDetailPanel
+                                    ticker={g.ticker}
+                                    signal={color === 'green' ? 'STRONG BUY' : 'STRONG SELL'}
+                                    horizonSignals={horizonSignals}
+                                    defaultChartType="area"
+                                    defaultRange="1Y"
+                                    onNavigateChart={() => navigate(`/charts/${g.ticker}`)}
+                                  />
+                                </div>
+                              );
+                            })()}
+
+                            {expandedView === 'standard' && (() => {
                               const tvSym = toTvSymbol(g.ticker);
                               const buildSrc = (interval: string, range: string) =>
                                 `https://s.tradingview.com/widgetembed/?frameElementId=tv_${encodeURIComponent(g.ticker)}_${range}&symbol=${encodeURIComponent(tvSym)}&interval=${interval}&range=${range}&hidesidetoolbar=0&hidetoptoolbar=0&symboledit=1&saveimage=0&toolbarbg=0f0f1a&theme=dark&style=8&timezone=Etc/UTC&withdateranges=1&hideideas=1&hideideasbutton=1&locale=en`;

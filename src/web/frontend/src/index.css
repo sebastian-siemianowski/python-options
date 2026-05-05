@@ -852,6 +852,10 @@ button:active:not(:disabled) {
   animation: skeleton-shimmer 1.8s ease-in-out infinite;
   border-radius: 8px;
 }
+@keyframes sparklineSkeletonSweep {
+  from { transform: translateX(0); }
+  to { transform: translateX(300%); }
+}
 /* Shape variants */
 .skeleton-text {
   height: 12px;
