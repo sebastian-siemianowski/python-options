@@ -40,10 +40,12 @@ Score tiers:
 """
 
 import json
-import os
+from pathlib import Path
 
-# All scores are subjective AI assessments based on publicly available
-# fundamental data as of April 2026.
+# Baseline scores are subjective AI assessments based on publicly available
+# fundamental data as of April 2026.  A generated overlay in
+# src/data/quality/business_quality_scores.json refreshes these scores with
+# current fundamentals and per-symbol component diagnostics.
 
 QUALITY_SCORES = {
     # ── FX Pairs (sovereign credit + macro fundamentals) ──────────
@@ -547,7 +549,7 @@ QUALITY_SCORES = {
 # Formula description for display
 QUALITY_FORMULA = {
     "title": "AI Business Quality Score (0-100)",
-    "description": "Subjective AI assessment of fundamental business quality based on publicly available data as of April 2026.",
+    "description": "AI assessment of fundamental business quality. Uses the generated score overlay when available, with this curated table as fallback.",
     "components": [
         {"name": "Revenue Growth", "weight": 0.20, "desc": "YoY revenue trajectory, TAM expansion, growth consistency"},
         {"name": "Profitability", "weight": 0.20, "desc": "Margins (gross/operating/net), FCF generation, ROE"},
@@ -578,14 +580,72 @@ QUALITY_FORMULA = {
 }
 
 
+GENERATED_QUALITY_PATH = Path(__file__).resolve().parents[3] / "data" / "quality" / "business_quality_scores.json"
+
+
+def _load_generated_quality_payload() -> dict:
+    """Load the generated score overlay. Kept dynamic so refreshes are visible without a backend restart."""
+    try:
+        with GENERATED_QUALITY_PATH.open("r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _ticker_variants(ticker: str) -> list[str]:
+    raw = (ticker or "").strip().upper()
+    variants = [
+        raw,
+        raw.replace("_X", "=X") if raw.endswith("_X") else raw,
+        raw.replace("_F", "=F") if raw.endswith("_F") else raw,
+        raw.replace("=", "_"),
+        raw.replace("_", "="),
+        raw.replace("-", "."),
+        raw.replace(".", "-"),
+    ]
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for variant in variants:
+        if variant and variant not in seen:
+            ordered.append(variant)
+            seen.add(variant)
+    return ordered
+
+
+def _combined_quality_scores() -> tuple[dict[str, int], dict]:
+    payload = _load_generated_quality_payload()
+    scores = {str(symbol).upper(): int(score) for symbol, score in QUALITY_SCORES.items()}
+    generated_scores = payload.get("scores", {})
+    if isinstance(generated_scores, dict):
+        for symbol, score in generated_scores.items():
+            try:
+                scores[str(symbol).upper()] = int(round(float(score)))
+            except (TypeError, ValueError):
+                continue
+    return scores, payload
+
+
 def get_quality_score(ticker: str) -> int:
     """Return the quality score for a ticker. Default 50 if unknown."""
-    return QUALITY_SCORES.get(ticker, 50)
+    scores, _payload = _combined_quality_scores()
+    for variant in _ticker_variants(ticker):
+        if variant in scores:
+            return scores[variant]
+    return 50
 
 
 def get_all_quality_scores() -> dict:
     """Return all quality scores and formula."""
+    scores, payload = _combined_quality_scores()
+    formula = dict(QUALITY_FORMULA)
+    if payload:
+        formula["generated_at"] = payload.get("generated_at")
+        formula["method_version"] = payload.get("method_version")
+        formula["source"] = payload.get("source")
+        formula["coverage"] = payload.get("coverage")
     return {
-        "scores": QUALITY_SCORES,
-        "formula": QUALITY_FORMULA,
+        "scores": scores,
+        "details": payload.get("details", {}) if isinstance(payload.get("details"), dict) else {},
+        "formula": formula,
     }

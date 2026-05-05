@@ -7,7 +7,7 @@ import { api } from '../api';
 import type { SummaryRow, SectorGroup, StrongSignalEntry, HighConvictionSignal, SignalSummaryData, SignalStats, EmaState, SmaReversal, SmaReversalsData, ReversalFlipEntry, ReversalFlipsData } from '../api';
 import { SignalTableSkeleton } from '../components/CosmicSkeleton';
 import { CosmicErrorCard } from '../components/CosmicErrorState';
-import { Sparkline, SparklinePct } from '../components/Sparkline';
+import { Sparkline, SparklinePct, SparklineReversalStateBadge } from '../components/Sparkline';
 import { SignalLabel, SignalStrengthMeter, MomentumBadge, CrashRiskHeat, HorizonCell, QualityCell } from '../components/SignalTableVisuals';
 import { ColumnCustomizer, type ColumnDef } from '../components/ColumnCustomizer';
 import SignalDetailPanel, { type SignalDetailChartType } from '../components/SignalDetailPanel';
@@ -1366,6 +1366,7 @@ function SignalsPageInner() {
           expandedRow={expandedRow} onExpandRow={setExpandedRow}
           qualityScores={qualityScores}
           onNavigateChart={(sym) => navigate(`/charts/${sym}`)}
+          disablePagination
         />
       )}
     </>
@@ -3975,8 +3976,7 @@ function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRe
   expandedRow: string | null; onExpandRow: (label: string | null) => void;
   qualityScores: Record<string, number>;
   onNavigateChart: (symbol: string) => void;
-  /** When true, render all rows on a single page (no pager UI). Used by the
-   * Watchlist panel where the row count is small and users dislike paging. */
+  /** When true, render all rows in one scrollable table with no pager UI. */
   disablePagination?: boolean;
   detailDefaultChartType?: SignalDetailChartType;
 }) {
@@ -4949,7 +4949,7 @@ function ReversalRow({ r, label, qualityScore, onClick, isExpanded = false }: {
       onClick={onClick}
       title={tooltip}
       aria-expanded={isExpanded}
-      className="group relative w-full text-left rounded-xl px-4 py-3.5 transition-all duration-200"
+      className="group relative w-full text-left rounded-xl px-3 py-3 transition-all duration-200"
       style={{
         background: isExpanded
           ? `linear-gradient(180deg, ${accent}16, ${accent}04)`
@@ -4970,192 +4970,204 @@ function ReversalRow({ r, label, qualityScore, onClick, isExpanded = false }: {
         (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 1px 0 rgba(255,255,255,0.03) inset';
       }}
     >
-      <div className="grid gap-x-3 gap-y-3 lg:grid-cols-[minmax(240px,1fr)_146px_minmax(280px,1.08fr)] xl:grid-cols-[minmax(220px,1fr)_146px_minmax(275px,1.14fr)_minmax(220px,0.9fr)_minmax(142px,0.72fr)] lg:items-center">
-        <div className="flex items-center gap-3 min-w-0">
+      <div className="grid gap-2.5">
+        <div className="grid gap-3 lg:grid-cols-[minmax(176px,0.52fr)_minmax(500px,1.82fr)_226px_18px] lg:items-center">
+          <div className="flex min-h-[76px] items-center gap-3 min-w-0">
+            <div
+              className="flex items-center justify-center rounded-lg flex-shrink-0"
+              style={{
+                width: 38, height: 38,
+                background: `linear-gradient(180deg, ${accent}26, ${accent}08)`,
+                border: `1px solid ${accent}50`,
+                boxShadow: `0 0 14px -5px ${accent}70 inset`,
+              }}
+            >
+              <ArrowIcon className="w-4 h-4" style={{ color: accentSoft, filter: `drop-shadow(0 0 4px ${accent}90)` }} />
+            </div>
+
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[14px] font-semibold text-[var(--text-primary)] tabular-nums tracking-tight">{r.symbol}</span>
+                {g && (
+                  <span
+                    className="inline-flex items-center justify-center rounded px-1.5 py-[1px] text-[9.5px] font-bold tabular-nums"
+                    style={{ background: g.bg, border: `1px solid ${g.bd}`, color: g.fg, boxShadow: g.shadow }}
+                    title={g.title}
+                  >
+                    {r.grade}
+                  </span>
+                )}
+                <span
+                  className="text-[9px] font-semibold uppercase tracking-[0.1em] rounded px-1.5 py-[1px]"
+                  style={{ background: 'rgba(167,139,250,0.14)', border: '1px solid rgba(167,139,250,0.28)', color: '#c4b5fd' }}
+                >
+                  SMA {r.period}
+                </span>
+                <span
+                  className="text-[9px] font-semibold uppercase tracking-[0.1em] rounded px-1.5 py-[1px]"
+                  style={{ background: `${accent}14`, border: `1px solid ${accent}30`, color: accentSoft }}
+                >
+                  {isBull ? 'Bull cross' : 'Bear cross'}
+                </span>
+                {!r.regime_ok && (
+                  <span
+                    className="inline-flex items-center gap-0.5 rounded px-1 py-[1px] text-[8.5px] font-semibold uppercase tracking-[0.1em]"
+                    style={{ background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.30)', color: '#fca5a5' }}
+                    title={`Against regime (price ${isBull ? 'below' : 'above'} SMA${r.regime_sma !== null ? ' 200' : ''})`}
+                  >
+                    vs regime
+                  </span>
+                )}
+                {r.overextended && (
+                  <span
+                    className="inline-flex items-center gap-0.5 rounded px-1 py-[1px] text-[8.5px] font-semibold uppercase tracking-[0.1em]"
+                    style={{ background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.35)', color: '#fbbf24' }}
+                    title="Price > 3 ATR from SMA"
+                  >
+                    overext
+                  </span>
+                )}
+                {r.false_break && (
+                  <span title="Price re-crossed within 3 bars">
+                    <AlertTriangle className="w-3 h-3" style={{ color: '#fbbf24' }} />
+                  </span>
+                )}
+              </div>
+              <span className="block text-[10.5px] text-[var(--text-muted)] truncate mt-0.5">{displayLabel}</span>
+            </div>
+          </div>
+
           <div
-            className="flex items-center justify-center rounded-lg flex-shrink-0"
+            className="rounded-lg h-[76px] px-3 py-2 flex items-center justify-center overflow-hidden min-w-0 transition-transform duration-200 group-hover:scale-[1.006]"
             style={{
-              width: 36, height: 36,
-              background: `linear-gradient(180deg, ${accent}26, ${accent}08)`,
-              border: `1px solid ${accent}50`,
-              boxShadow: `0 0 14px -5px ${accent}70 inset`,
+              background: `linear-gradient(180deg, ${accent}0d, rgba(255,255,255,0.012))`,
+              border: `1px solid ${accent}24`,
+              boxShadow: `0 0 18px -15px ${accent} inset`,
+            }}
+            aria-label={`${r.symbol} mini chart`}
+          >
+            <Sparkline ticker={r.symbol} width={560} height={62} tail={220} variant="reversal" fluid />
+          </div>
+
+          <div
+            className="h-[76px] rounded-lg px-3 py-2 flex items-center justify-between gap-3"
+            style={{
+              background: 'linear-gradient(180deg, rgba(255,255,255,0.028), rgba(255,255,255,0.010))',
+              border: '1px solid rgba(255,255,255,0.055)',
             }}
           >
-            <ArrowIcon className="w-4 h-4" style={{ color: accentSoft, filter: `drop-shadow(0 0 4px ${accent}90)` }} />
-          </div>
-
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-[14px] font-semibold text-[var(--text-primary)] tabular-nums tracking-tight">{r.symbol}</span>
-              {g && (
-                <span
-                  className="inline-flex items-center justify-center rounded px-1.5 py-[1px] text-[9.5px] font-bold tabular-nums"
-                  style={{ background: g.bg, border: `1px solid ${g.bd}`, color: g.fg, boxShadow: g.shadow }}
-                  title={g.title}
-                >
-                  {r.grade}
-                </span>
-              )}
-              <span
-                className="text-[9px] font-semibold uppercase tracking-[0.1em] rounded px-1.5 py-[1px]"
-                style={{ background: 'rgba(167,139,250,0.14)', border: '1px solid rgba(167,139,250,0.28)', color: '#c4b5fd' }}
-              >
-                SMA {r.period}
+            <SmaQualityBadge score={qualityScore} compact />
+            <SparklineReversalStateBadge ticker={r.symbol} tail={220} />
+            <div className="flex flex-col items-end gap-1 w-16 flex-shrink-0">
+              <span className="text-[15px] font-bold tabular-nums leading-none" style={{ color: scoreColor }}>
+                {r.score.toFixed(0)}
               </span>
-              <span
-                className="text-[9px] font-semibold uppercase tracking-[0.1em] rounded px-1.5 py-[1px]"
-                style={{ background: `${accent}14`, border: `1px solid ${accent}30`, color: accentSoft }}
-              >
-                {isBull ? 'Bull cross' : 'Bear cross'}
-              </span>
-              {!r.regime_ok && (
-                <span
-                  className="inline-flex items-center gap-0.5 rounded px-1 py-[1px] text-[8.5px] font-semibold uppercase tracking-[0.1em]"
-                  style={{ background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.30)', color: '#fca5a5' }}
-                  title={`Against regime (price ${isBull ? 'below' : 'above'} SMA${r.regime_sma !== null ? ' 200' : ''})`}
-                >
-                  vs regime
-                </span>
-              )}
-              {r.overextended && (
-                <span
-                  className="inline-flex items-center gap-0.5 rounded px-1 py-[1px] text-[8.5px] font-semibold uppercase tracking-[0.1em]"
-                  style={{ background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.35)', color: '#fbbf24' }}
-                  title="Price > 3 ATR from SMA"
-                >
-                  overext
-                </span>
-              )}
-              {r.false_break && (
-                <span title="Price re-crossed within 3 bars">
-                  <AlertTriangle className="w-3 h-3" style={{ color: '#fbbf24' }} />
-                </span>
-              )}
+              <div className="w-full h-[5px] rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.07)' }}>
+                <div
+                  className="h-full rounded-full"
+                  style={{
+                    width: `${scorePct}%`,
+                    background: `linear-gradient(90deg, ${scoreColor}, ${scoreColor}cc)`,
+                    boxShadow: `0 0 8px -2px ${scoreColor}`,
+                    transition: 'width 320ms cubic-bezier(.2,.8,.2,1)',
+                  }}
+                />
+              </div>
+              <span className="text-[8.5px] uppercase tracking-[0.12em] text-[var(--text-muted)]">Score</span>
             </div>
-            <span className="block text-[10.5px] text-[var(--text-muted)] truncate mt-0.5">{displayLabel}</span>
-          </div>
-        </div>
-
-        <div
-          className="rounded-lg px-2 py-1.5"
-          style={{
-            background: 'rgba(255,255,255,0.018)',
-            border: '1px solid rgba(255,255,255,0.045)',
-          }}
-          aria-label={`${r.symbol} mini chart`}
-        >
-          <Sparkline ticker={r.symbol} width={128} height={38} />
-        </div>
-
-        <div
-          className="min-w-0 rounded-lg px-3 py-2"
-          style={{
-            background: 'rgba(255,255,255,0.018)',
-            border: '1px solid rgba(255,255,255,0.045)',
-          }}
-        >
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10.5px] tabular-nums">
-            {hasTradeGeometry ? (
-              <>
-                <span className="text-[var(--text-muted)]">
-                  Stop <span className="text-[var(--text-secondary)] font-semibold">{r.stop_price!.toFixed(2)}</span>
-                </span>
-                <span className="text-white/20">·</span>
-                <span className="text-[var(--text-muted)]">
-                  Target <span className="text-[var(--text-secondary)] font-semibold">{r.target_price!.toFixed(2)}</span>
-                </span>
-                <span className="text-white/20">·</span>
-                <span className="text-[var(--text-muted)]">
-                  R:R <span className="font-semibold" style={{ color: accentSoft }}>{r.risk_reward!.toFixed(1)}</span>
-                </span>
-              </>
-            ) : (
-              <span className="text-[var(--text-muted)]">Trade geometry unavailable</span>
-            )}
-            {edge.win_rate !== null && (
-              <>
-                <span className="text-white/20">·</span>
-                <span
-                  className="inline-flex items-center gap-1"
-                  title={`Historical ${r.edge_forward_days}-bar forward win-rate across ${edge.samples} past crossings. Median return ${edge.median_fwd_pct !== null ? edge.median_fwd_pct.toFixed(2) + '%' : '—'}.`}
-                >
-                  <Target className="w-3 h-3" style={{ color: edge.win_rate >= 0.55 ? accentSoft : '#94a3b8' }} />
-                  <span
-                    className="font-semibold"
-                    style={{ color: edge.win_rate >= 0.55 ? accentSoft : 'var(--text-secondary)' }}
-                  >
-                    {(edge.win_rate * 100).toFixed(0)}%
-                  </span>
-                  <span className="text-[var(--text-muted)]">{r.edge_forward_days}d edge</span>
-                </span>
-              </>
-            )}
-          </div>
-        </div>
-
-        <div
-          className="rounded-lg px-3 py-2"
-          style={{
-            background: 'rgba(255,255,255,0.016)',
-            border: '1px solid rgba(255,255,255,0.04)',
-          }}
-        >
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] tabular-nums">
-            {metricItems.map((item) => (
-              <span key={item.key} className="inline-flex items-baseline gap-1">
-                <span className="text-[8.5px] uppercase tracking-[0.12em] text-[var(--text-muted)]">{item.label}</span>
-                <span className="font-semibold" style={{ color: item.color }}>{item.value}</span>
-              </span>
-            ))}
-            <span className="inline-flex items-center gap-1" title={`On new side: ${r.persistence} of last ${r.persistence_window} bars`}>
-              <span className="text-[8.5px] uppercase tracking-[0.12em] text-[var(--text-muted)]">Persist</span>
-              <span className="font-semibold" style={{ color: r.persistence >= r.persistence_threshold ? accentSoft : 'var(--text-secondary)' }}>
-                {persistenceLabel}
-              </span>
-              <span className="hidden sm:inline-flex items-center gap-0.5">
-                {persistencePips.map((on, i) => (
-                  <span
-                    key={i}
-                    className="rounded-full"
-                    style={{
-                      width: 4.5, height: 4.5,
-                      background: on ? accentSoft : 'rgba(255,255,255,0.1)',
-                      boxShadow: on ? `0 0 4px ${accentSoft}` : 'none',
-                    }}
-                  />
-                ))}
-              </span>
-            </span>
-          </div>
-        </div>
-
-        <div className="flex items-center justify-between lg:justify-end gap-3">
-          <SmaQualityBadge score={qualityScore} compact />
-          <div className="flex flex-col items-end gap-0.5 w-16 flex-shrink-0">
-            <span className="text-[13px] font-bold tabular-nums" style={{ color: scoreColor }}>
-              {r.score.toFixed(0)}
-            </span>
-            <div className="w-full h-[4px] rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}>
-              <div
-                className="h-full rounded-full"
-                style={{
-                  width: `${scorePct}%`,
-                  background: `linear-gradient(90deg, ${scoreColor}, ${scoreColor}cc)`,
-                  boxShadow: `0 0 8px -2px ${scoreColor}`,
-                  transition: 'width 320ms cubic-bezier(.2,.8,.2,1)',
-                }}
-              />
-            </div>
-            <span className="text-[8.5px] uppercase tracking-[0.12em] text-[var(--text-muted)]">Score</span>
           </div>
 
           <ChevronRight
-            className="w-4 h-4 flex-shrink-0 transition-transform duration-200"
+            className="hidden lg:block w-4 h-4 flex-shrink-0 transition-transform duration-200 justify-self-end"
             style={{
               color: isExpanded ? accentSoft : 'var(--text-muted)',
               transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
             }}
           />
+        </div>
+
+        <div className="grid gap-2 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)]">
+          <div
+            className="rounded-lg min-h-[36px] px-3 py-2 flex items-center"
+            style={{
+              background: 'rgba(255,255,255,0.012)',
+              border: '1px solid rgba(255,255,255,0.032)',
+            }}
+          >
+            <div className="flex w-full flex-wrap items-center gap-x-2.5 gap-y-1 text-[10px] tabular-nums">
+              {hasTradeGeometry ? (
+                <>
+                  <span className="text-[var(--text-muted)]">
+                    Stop <span className="text-[var(--text-secondary)] font-semibold">{r.stop_price!.toFixed(2)}</span>
+                  </span>
+                  <span className="text-white/15">·</span>
+                  <span className="text-[var(--text-muted)]">
+                    Target <span className="text-[var(--text-secondary)] font-semibold">{r.target_price!.toFixed(2)}</span>
+                  </span>
+                  <span className="text-white/15">·</span>
+                  <span className="text-[var(--text-muted)]">
+                    R:R <span className="font-semibold" style={{ color: accentSoft }}>{r.risk_reward!.toFixed(1)}</span>
+                  </span>
+                </>
+              ) : (
+                <span className="text-[var(--text-muted)]">Trade geometry unavailable</span>
+              )}
+              {edge.win_rate !== null && (
+                <>
+                  <span className="text-white/15">·</span>
+                  <span
+                    className="inline-flex items-center gap-1"
+                    title={`Historical ${r.edge_forward_days}-bar forward win-rate across ${edge.samples} past crossings. Median return ${edge.median_fwd_pct !== null ? edge.median_fwd_pct.toFixed(2) + '%' : '—'}.`}
+                  >
+                    <Target className="w-3 h-3 opacity-80" style={{ color: edge.win_rate >= 0.55 ? accentSoft : '#94a3b8' }} />
+                    <span
+                      className="font-semibold"
+                      style={{ color: edge.win_rate >= 0.55 ? accentSoft : 'var(--text-secondary)' }}
+                    >
+                      {(edge.win_rate * 100).toFixed(0)}%
+                    </span>
+                    <span className="text-[var(--text-muted)]">{r.edge_forward_days}d edge</span>
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+
+          <div
+            className="rounded-lg min-h-[36px] px-3 py-2 flex items-center"
+            style={{
+              background: 'rgba(255,255,255,0.010)',
+              border: '1px solid rgba(255,255,255,0.030)',
+            }}
+          >
+            <div className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 text-[10px] tabular-nums">
+              {metricItems.map((item) => (
+                <span key={item.key} className="inline-flex items-baseline gap-1">
+                  <span className="text-[8px] uppercase tracking-[0.12em] text-[var(--text-muted)]">{item.label}</span>
+                  <span className="font-semibold" style={{ color: item.color }}>{item.value}</span>
+                </span>
+              ))}
+              <span className="inline-flex items-center gap-1" title={`On new side: ${r.persistence} of last ${r.persistence_window} bars`}>
+                <span className="text-[8px] uppercase tracking-[0.12em] text-[var(--text-muted)]">Persist</span>
+                <span className="font-semibold" style={{ color: r.persistence >= r.persistence_threshold ? accentSoft : 'var(--text-secondary)' }}>
+                  {persistenceLabel}
+                </span>
+                <span className="hidden sm:inline-flex items-center gap-0.5">
+                  {persistencePips.map((on, i) => (
+                    <span
+                      key={i}
+                      className="rounded-full"
+                      style={{
+                        width: 4.5, height: 4.5,
+                        background: on ? accentSoft : 'rgba(255,255,255,0.1)',
+                        boxShadow: on ? `0 0 4px ${accentSoft}` : 'none',
+                      }}
+                    />
+                  ))}
+                </span>
+              </span>
+            </div>
+          </div>
         </div>
       </div>
     </button>
