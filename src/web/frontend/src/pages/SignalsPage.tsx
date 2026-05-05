@@ -366,9 +366,13 @@ function SignalsPageInner() {
   // sectorSort + sectorVisibleCols as props.
   const [sectorSort, setSectorSort] = useState<SectorSortBy>('momentum');
   const [sectorVisibleCols, setSectorVisibleCols] = useState<Set<string>>(() => loadSectorVisibleCols());
+  const [sectorChartView, setSectorChartView] = useState<boolean>(() => loadSectorChartView());
   useEffect(() => {
     try { localStorage.setItem(SECTOR_COLS_LS_KEY, JSON.stringify(Array.from(sectorVisibleCols))); } catch { /* ignore */ }
   }, [sectorVisibleCols]);
+  useEffect(() => {
+    try { localStorage.setItem(SECTOR_CHART_VIEW_LS_KEY, sectorChartView ? '1' : '0'); } catch { /* ignore */ }
+  }, [sectorChartView]);
   const toggleSectorCol = (key: string) => {
     setSectorVisibleCols((prev) => {
       const def = SECTOR_COLUMN_DEFS.find((c) => c.key === key);
@@ -1266,6 +1270,22 @@ function SignalsPageInner() {
 
             <div className="flex items-center gap-2 ml-auto">
               <button
+                type="button"
+                aria-pressed={sectorChartView}
+                onClick={() => setSectorChartView((prev) => !prev)}
+                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[10.5px] font-medium transition-all duration-[160ms]"
+                style={{
+                  color: sectorChartView ? '#c4b5fd' : 'var(--text-secondary)',
+                  background: sectorChartView ? 'rgba(167,139,250,0.10)' : 'rgba(255,255,255,0.02)',
+                  border: `1px solid ${sectorChartView ? 'rgba(167,139,250,0.30)' : 'rgba(255,255,255,0.05)'}`,
+                  boxShadow: sectorChartView ? '0 0 14px -10px rgba(167,139,250,0.95)' : 'none',
+                }}
+                title={sectorChartView ? 'Show sector tables' : 'Show chart-first rows inside each sector'}
+              >
+                <BarChart3 className="w-3 h-3" />
+                Chart view
+              </button>
+              <button
                 onClick={expandAll}
                 className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10.5px] font-medium transition-all duration-[160ms]"
                 style={{ color: 'var(--accent-violet)', background: 'rgba(167,139,250,0.08)', border: '1px solid rgba(167,139,250,0.18)' }}
@@ -1284,12 +1304,14 @@ function SignalsPageInner() {
                 Collapse all
               </button>
               <div className="h-4 w-px bg-white/[0.05]" aria-hidden />
-              <ColumnCustomizer
-                columns={SECTOR_COLUMN_DEFS}
-                visible={sectorVisibleCols}
-                onToggle={toggleSectorCol}
-                onReset={resetSectorCols}
-              />
+              {!sectorChartView && (
+                <ColumnCustomizer
+                  columns={SECTOR_COLUMN_DEFS}
+                  visible={sectorVisibleCols}
+                  onToggle={toggleSectorCol}
+                  onReset={resetSectorCols}
+                />
+              )}
             </div>
           </div>
         )}
@@ -1342,6 +1364,7 @@ function SignalsPageInner() {
           toggleSector={toggleSector}
           sectorSort={sectorSort}
           sectorVisibleCols={sectorVisibleCols}
+          sectorChartView={sectorChartView}
           horizons={horizons}
           search={debouncedSearch}
           filter={filter}
@@ -1853,6 +1876,7 @@ function SectorPanels({
   toggleSector,
   sectorSort,
   sectorVisibleCols,
+  sectorChartView,
   horizons,
   search,
   filter,
@@ -1865,6 +1889,7 @@ function SectorPanels({
   toggleSector: (name: string) => void;
   sectorSort: SectorSortBy;
   sectorVisibleCols: Set<string>;
+  sectorChartView: boolean;
   horizons: number[];
   search: string;
   filter: SignalFilter;
@@ -1873,6 +1898,7 @@ function SectorPanels({
   qualityScores: Record<string, number>;
 }) {
   const navigate = useNavigate();
+  const [chartExpandedRow, setChartExpandedRow] = useState<string | null>(null);
 
   /** Per-row sort within each sector (Task 2). Single-column toggle. */
   type RowSortCol = 'asset' | 'signal' | 'strength' | 'momentum' | 'quality' | 'risk' | `horizon_${number}`;
@@ -1980,6 +2006,7 @@ function SectorPanels({
 
         const avgMom = sector.avg_momentum ?? 0;
         const bullishPct = total > 0 ? Math.round((bullish / total) * 100) : 0;
+        const sortedAssets = applyRowSort(assets);
 
         return (
           <div key={sector.name} className="glass-card overflow-hidden transition-all duration-200"
@@ -2134,6 +2161,27 @@ function SectorPanels({
                   </div>
                 </div>
 
+                {sectorChartView ? (
+                  <div className="space-y-2.5 p-3">
+                    {sortedAssets.map((row) => {
+                      const ticker = extractTicker(row.asset_label);
+                      const isExpandedRow = chartExpandedRow === row.asset_label;
+                      return (
+                        <ChartAssetRow
+                          key={row.asset_label}
+                          row={row}
+                          ticker={ticker}
+                          horizons={horizons}
+                          qualityScore={qualityScores[ticker] ?? 50}
+                          highlighted={row.asset_label === updatedAsset}
+                          isExpanded={isExpandedRow}
+                          onToggleExpand={() => setChartExpandedRow(isExpandedRow ? null : row.asset_label)}
+                          onNavigateChart={() => navigate(`/charts/${ticker}`)}
+                        />
+                      );
+                    })}
+                  </div>
+                ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
@@ -2168,7 +2216,7 @@ function SectorPanels({
                       </tr>
                     </thead>
                     <tbody>
-                      {applyRowSort(assets).map((row, i) => (
+                      {sortedAssets.map((row, i) => (
                         <SectorSignalRow
                           key={row.asset_label}
                           row={row}
@@ -2183,6 +2231,7 @@ function SectorPanels({
                     </tbody>
                   </table>
                 </div>
+                )}
                 {assets.length === 0 && (
                   <div className="px-5 py-6 text-center">
                     <Shield className="w-5 h-5 mx-auto mb-1.5" style={{ color: 'var(--text-muted)', opacity: 0.4 }} />
@@ -3953,6 +4002,7 @@ const ALL_ASSETS_COLUMN_DEFS: ColumnDef[] = [
 ];
 const ALL_ASSETS_COLS_LS_KEY = 'signals-visible-cols-v2';
 const ALL_ASSETS_CHART_VIEW_LS_KEY = 'signals-all-assets-chart-view-v1';
+const SECTOR_CHART_VIEW_LS_KEY = 'signals-sector-chart-view-v1';
 const DEFAULT_VISIBLE_COLS = new Set(ALL_ASSETS_COLUMN_DEFS.map((c) => c.key));
 const CHART_VIEW_HORIZONS = [1, 3, 7, 30, 90, 180];
 
@@ -3973,6 +4023,14 @@ function loadVisibleCols(): Set<string> {
 function loadAllAssetsChartView(): boolean {
   try {
     return localStorage.getItem(ALL_ASSETS_CHART_VIEW_LS_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function loadSectorChartView(): boolean {
+  try {
+    return localStorage.getItem(SECTOR_CHART_VIEW_LS_KEY) === '1';
   } catch {
     return false;
   }
@@ -4279,31 +4337,28 @@ function chartRiskTone(score: number) {
   return { label: 'HIGH', color: '#fb7185', bg: 'rgba(244,63,94,0.125)', border: 'rgba(244,63,94,0.38)' };
 }
 
-function ChartMiniMetric({ label, value, sub, color, bg, border }: {
-  label: string;
+function chartMomentumTone(value: number) {
+  const v = value ?? 0;
+  if (v > 0) return { color: '#34d399', bg: 'rgba(16,185,129,0.105)', border: 'rgba(16,185,129,0.28)' };
+  if (v < -1) return { color: '#fb7185', bg: 'rgba(244,63,94,0.115)', border: 'rgba(244,63,94,0.32)' };
+  return { color: 'var(--text-muted)', bg: 'rgba(100,116,139,0.095)', border: 'rgba(100,116,139,0.20)' };
+}
+
+function ChartIdentityChip({ value, color, bg, border, title }: {
   value: ReactNode;
-  sub?: string;
   color: string;
   bg: string;
   border: string;
+  title?: string;
 }) {
   return (
-    <div
-      className="h-full min-w-0 overflow-hidden rounded-lg px-2 py-1.5"
-      style={{ background: bg, border: `1px solid ${border}` }}
+    <span
+      className="inline-flex h-[22px] min-w-[48px] max-w-full items-center justify-center truncate rounded-md px-2 text-[9px] font-extrabold uppercase tracking-[0.045em] tabular-nums"
+      title={title}
+      style={{ color, background: bg, border: `1px solid ${border}` }}
     >
-      <div className="mb-1 truncate text-[7.5px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
-        {label}
-      </div>
-      <div className="min-w-0 truncate text-[9px] font-extrabold uppercase tracking-[0.03em] tabular-nums" style={{ color }}>
-        {value}
-      </div>
-      {sub && (
-        <div className="mt-0.5 truncate text-[7.5px] font-semibold uppercase tracking-[0.06em]" style={{ color, opacity: 0.78 }}>
-          {sub}
-        </div>
-      )}
-    </div>
+      {value}
+    </span>
   );
 }
 
@@ -4353,6 +4408,8 @@ function ChartAssetRow({ row, ticker, horizons, qualityScore, highlighted, isExp
   const riskTone = chartRiskTone(risk);
   const quality = Math.round(qualityScore ?? 50);
   const qualityTone = smaQualityTone(quality);
+  const momentumTone = chartMomentumTone(row.momentum_score);
+  const momentumText = `${row.momentum_score > 0 ? '+' : ''}${Math.round(row.momentum_score ?? 0)}%`;
 
   return (
     <>
@@ -4392,19 +4449,35 @@ function ChartAssetRow({ row, ticker, horizons, qualityScore, highlighted, isExp
                 </span>
               </div>
               {company && <span className="mt-0.5 block max-w-[190px] truncate text-[10.5px] text-[var(--text-muted)]">{company}</span>}
-              <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                <MomentumBadge value={row.momentum_score} />
-                <span
-                  className="inline-flex h-[22px] items-center rounded-md px-2 text-[9.5px] font-bold tabular-nums"
+              <div className="mt-2 flex max-w-[220px] flex-wrap items-center gap-1.5">
+                <ChartIdentityChip
+                  value={compactChartSignalLabel(label)}
+                  color={labelColor}
+                  bg={`${labelColor}12`}
+                  border={`${labelColor}34`}
+                  title={`Current signal: ${label}`}
+                />
+                <ChartIdentityChip
+                  value={momentumText}
+                  color={momentumTone.color}
+                  bg={momentumTone.bg}
+                  border={momentumTone.border}
+                  title={`Momentum score: ${momentumText}`}
+                />
+                <ChartIdentityChip
+                  value={`Q ${quality}`}
+                  color={qualityTone.color}
+                  bg={qualityTone.background}
+                  border={qualityTone.border}
                   title={`Business quality: ${quality}`}
-                  style={{
-                    color: qualityTone.color,
-                    background: qualityTone.background,
-                    border: `1px solid ${qualityTone.border}`,
-                  }}
-                >
-                  Q {quality}
-                </span>
+                />
+                <ChartIdentityChip
+                  value={`R ${risk.toFixed(0)}`}
+                  color={riskTone.color}
+                  bg={riskTone.bg}
+                  border={riskTone.border}
+                  title={`Crash risk: ${risk.toFixed(0)} (${riskTone.label})`}
+                />
               </div>
             </div>
           </div>
@@ -4427,28 +4500,11 @@ function ChartAssetRow({ row, ticker, horizons, qualityScore, highlighted, isExp
               border: '1px solid rgba(255,255,255,0.055)',
             }}
           >
-            <div className="mb-1.5 grid min-w-0 grid-cols-[minmax(0,1.15fr)_minmax(0,0.72fr)_minmax(58px,0.72fr)] gap-1.5">
-              <ChartMiniMetric
-                label="Signal"
-                value={compactChartSignalLabel(label)}
-                color={labelColor}
-                bg={`${labelColor}14`}
-                border={`${labelColor}42`}
-              />
-              <ChartMiniMetric
-                label="Risk"
-                value={risk.toFixed(0)}
-                sub={riskTone.label}
-                color={riskTone.color}
-                bg={riskTone.bg}
-                border={riskTone.border}
-              />
-              <div className="min-w-0 overflow-hidden rounded-lg px-1 py-1.5" style={{ background: 'rgba(255,255,255,0.018)', border: '1px solid rgba(255,255,255,0.055)' }}>
-                <div className="mb-1 truncate text-[7.5px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
-                  Reversal
-                </div>
-                <SparklineReversalStateBadge ticker={ticker} tail={220} compact />
+            <div className="mb-1.5 min-w-0 overflow-hidden rounded-lg px-2 py-1.5" style={{ background: 'rgba(255,255,255,0.018)', border: '1px solid rgba(255,255,255,0.055)' }}>
+              <div className="mb-1 truncate text-[7.5px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+                Reversal
               </div>
+              <SparklineReversalStateBadge ticker={ticker} tail={220} compact />
             </div>
             <div className="grid min-w-0 grid-cols-3 gap-1.5">
               {chartHorizons.map((h) => {
@@ -5207,6 +5263,60 @@ function GradeBadge({ grade, count }: { grade: 'A' | 'B' | 'C'; count: number })
   );
 }
 
+function SmaScoreRing({ score, color }: { score: number; color: string }) {
+  const pct = Math.max(0, Math.min(100, score));
+  const radius = 18;
+  const circumference = 2 * Math.PI * radius;
+  const dashOffset = circumference * (1 - pct / 100);
+  const tier = pct >= 80 ? 'Elite' : pct >= 60 ? 'Strong' : pct >= 40 ? 'Watch' : 'Low';
+
+  return (
+    <div
+      className="flex w-[58px] flex-shrink-0 flex-col items-center justify-center gap-0.5"
+      title={`Setup score: ${pct.toFixed(0)} (${tier})`}
+    >
+      <div className="relative h-[48px] w-[48px]">
+        <svg className="h-full w-full -rotate-90" viewBox="0 0 48 48" aria-hidden>
+          <circle
+            cx="24"
+            cy="24"
+            r={radius}
+            fill="none"
+            stroke="rgba(255,255,255,0.07)"
+            strokeWidth="4"
+          />
+          <circle
+            cx="24"
+            cy="24"
+            r={radius}
+            fill="none"
+            stroke={color}
+            strokeWidth="4"
+            strokeLinecap="round"
+            strokeDasharray={circumference}
+            strokeDashoffset={dashOffset}
+            style={{
+              filter: `drop-shadow(0 0 5px ${color}99)`,
+              transition: 'stroke-dashoffset 360ms cubic-bezier(.2,.8,.2,1)',
+            }}
+          />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className="text-[13px] font-extrabold tabular-nums leading-none" style={{ color }}>
+            {pct.toFixed(0)}
+          </span>
+          <span className="mt-[1px] text-[6.5px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+            Score
+          </span>
+        </div>
+      </div>
+      <span className="text-[7.5px] font-semibold uppercase tracking-[0.12em]" style={{ color, opacity: 0.86 }}>
+        {tier}
+      </span>
+    </div>
+  );
+}
+
 function ReversalRow({ r, label, qualityScore, onClick, isExpanded = false }: {
   r: SmaReversal;
   label: string;
@@ -5218,8 +5328,6 @@ function ReversalRow({ r, label, qualityScore, onClick, isExpanded = false }: {
   const accent = isBull ? '#10b981' : '#f43f5e';
   const accentSoft = isBull ? '#34d399' : '#fb7185';
   const ArrowIcon = isBull ? TrendingUp : TrendingDown;
-  // Score bar fill
-  const scorePct = Math.max(0, Math.min(100, r.score));
   const scoreColor = r.score >= 80 ? accent : r.score >= 60 ? accentSoft : r.score >= 40 ? '#fbbf24' : '#64748b';
 
   const persistencePips = Array.from({ length: r.persistence_window }, (_, i) => i < r.persistence);
@@ -5380,23 +5488,7 @@ function ReversalRow({ r, label, qualityScore, onClick, isExpanded = false }: {
           >
             <SmaQualityBadge score={qualityScore} compact />
             <SparklineReversalStateBadge ticker={r.symbol} tail={220} />
-            <div className="flex flex-col items-end gap-1 w-16 flex-shrink-0">
-              <span className="text-[15px] font-bold tabular-nums leading-none" style={{ color: scoreColor }}>
-                {r.score.toFixed(0)}
-              </span>
-              <div className="w-full h-[5px] rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.07)' }}>
-                <div
-                  className="h-full rounded-full"
-                  style={{
-                    width: `${scorePct}%`,
-                    background: `linear-gradient(90deg, ${scoreColor}, ${scoreColor}cc)`,
-                    boxShadow: `0 0 8px -2px ${scoreColor}`,
-                    transition: 'width 320ms cubic-bezier(.2,.8,.2,1)',
-                  }}
-                />
-              </div>
-              <span className="text-[8.5px] uppercase tracking-[0.12em] text-[var(--text-muted)]">Score</span>
-            </div>
+            <SmaScoreRing score={r.score} color={scoreColor} />
           </div>
 
           <ChevronRight
