@@ -68,6 +68,162 @@ const isFiatCurrencyTicker = (symbol: string | undefined | null): boolean => {
 
 const cleanSmaReason = (reason: string): string => reason.replace(/\s*\(n=\d+\)/gi, '');
 
+const SMA_CHART_VIEW_PREFS_KEY = 'signals.smaReversalChartView.v1';
+const SMA_CHART_RANGE_PREFS_KEY = 'signals.smaReversalChartRange.v1';
+const SMA_DETAIL_MAX_TAIL = 2000;
+const SMA_CHART_VIEWS: MiniPriceChartView[] = ['sma', 'heikinAshi', 'reversal', 'area'];
+type SmaChartRange = '1M' | '3M' | '6M' | '1Y' | 'MAX';
+const SMA_CHART_RANGES: SmaChartRange[] = ['1M', '3M', '6M', '1Y', 'MAX'];
+const SMA_CHART_RANGE_DAYS: Record<SmaChartRange, number> = {
+  '1M': 22,
+  '3M': 66,
+  '6M': 132,
+  '1Y': 252,
+  MAX: SMA_DETAIL_MAX_TAIL,
+};
+
+const isMiniPriceChartView = (value: unknown): value is MiniPriceChartView =>
+  typeof value === 'string' && SMA_CHART_VIEWS.includes(value as MiniPriceChartView);
+
+const isSmaChartRange = (value: unknown): value is SmaChartRange =>
+  typeof value === 'string' && SMA_CHART_RANGES.includes(value as SmaChartRange);
+
+const loadStoredSmaChartView = (): MiniPriceChartView => {
+  if (typeof window === 'undefined') return 'sma';
+  try {
+    const raw = window.localStorage.getItem(SMA_CHART_VIEW_PREFS_KEY);
+    return isMiniPriceChartView(raw) ? raw : 'sma';
+  } catch {
+    return 'sma';
+  }
+};
+
+const saveStoredSmaChartView = (view: MiniPriceChartView): void => {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(SMA_CHART_VIEW_PREFS_KEY, view);
+  } catch {
+    // In-memory selection still works if storage is unavailable.
+  }
+};
+
+const loadStoredSmaChartRange = (): SmaChartRange => {
+  if (typeof window === 'undefined') return '1Y';
+  try {
+    const raw = window.localStorage.getItem(SMA_CHART_RANGE_PREFS_KEY);
+    return isSmaChartRange(raw) ? raw : '1Y';
+  } catch {
+    return '1Y';
+  }
+};
+
+const saveStoredSmaChartRange = (range: SmaChartRange): void => {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(SMA_CHART_RANGE_PREFS_KEY, range);
+  } catch {
+    // In-memory selection still works if storage is unavailable.
+  }
+};
+
+const lookupQualityScore = (scores: Record<string, number>, symbol: string | undefined | null): number | null => {
+  const raw = String(symbol || '').trim();
+  if (!raw) return null;
+  const upper = raw.toUpperCase();
+  const variants = [
+    raw,
+    upper,
+    upper.replace(/-/g, '.'),
+    upper.replace(/\./g, '-'),
+    upper.replace(/=/g, '_'),
+    upper.replace(/_/g, '='),
+  ];
+  for (const key of variants) {
+    const score = scores[key];
+    if (typeof score === 'number' && isFinite(score)) return score;
+  }
+  return null;
+};
+
+const smaQualityTone = (score: number | null | undefined) => {
+  if (score == null || !isFinite(score)) {
+    return {
+      label: 'Unknown',
+      color: 'var(--text-muted)',
+      background: 'rgba(100,116,139,0.10)',
+      border: 'rgba(100,116,139,0.20)',
+      glow: 'none',
+    };
+  }
+  if (score >= 80) {
+    return {
+      label: 'Elite',
+      color: '#34d399',
+      background: 'rgba(6,78,59,0.25)',
+      border: 'rgba(16,185,129,0.42)',
+      glow: '0 0 14px -8px rgba(16,185,129,0.9)',
+    };
+  }
+  if (score >= 60) {
+    return {
+      label: 'Good',
+      color: '#c4b5fd',
+      background: 'rgba(30,27,75,0.28)',
+      border: 'rgba(167,139,250,0.34)',
+      glow: '0 0 14px -9px rgba(167,139,250,0.8)',
+    };
+  }
+  if (score >= 40) {
+    return {
+      label: 'Mixed',
+      color: '#fbbf24',
+      background: 'rgba(60,40,10,0.22)',
+      border: 'rgba(251,191,36,0.30)',
+      glow: 'none',
+    };
+  }
+  return {
+    label: 'Weak',
+    color: '#fb7185',
+    background: 'rgba(76,5,25,0.22)',
+    border: 'rgba(244,63,94,0.34)',
+    glow: '0 0 14px -10px rgba(244,63,94,0.8)',
+  };
+};
+
+function SmaQualityBadge({ score, compact = false }: { score: number | null | undefined; compact?: boolean }) {
+  const tone = smaQualityTone(score);
+  const hasScore = score != null && isFinite(score);
+  const rounded = hasScore ? Math.round(score) : null;
+  return (
+    <div className={`flex ${compact ? 'flex-col items-end gap-0.5' : 'items-center gap-2'}`}>
+      <div
+        className="inline-flex items-center justify-center rounded-lg tabular-nums"
+        title={hasScore ? `Business quality score: ${rounded} (${tone.label})` : 'Business quality score unavailable'}
+        style={{
+          minWidth: compact ? 44 : 52,
+          height: compact ? 26 : 30,
+          padding: compact ? '0 8px' : '0 10px',
+          background: tone.background,
+          border: `1px solid ${tone.border}`,
+          boxShadow: tone.glow,
+          color: tone.color,
+        }}
+      >
+        <span className={`${compact ? 'text-[10.5px]' : 'text-[12px]'} font-bold leading-none`}>
+          {rounded ?? '--'}
+        </span>
+      </div>
+      <span
+        className={`${compact ? 'text-[8.5px] uppercase tracking-[0.12em]' : 'text-[10px] font-semibold'} whitespace-nowrap`}
+        style={{ color: compact ? 'var(--text-muted)' : tone.color }}
+      >
+        {compact ? 'Quality' : tone.label}
+      </span>
+    </div>
+  );
+}
+
 type ViewMode = 'all' | 'sectors' | 'strong';
 type SignalFilter = 'all' | 'bullish' | 'bearish' | 'greens' | 'reds' | 'strong_buy' | 'buy' | 'hold' | 'sell' | 'strong_sell' | 'reversal_buy' | 'reversal_sell';
 type ReversalQuickFilter = 'reversal_buy' | 'reversal_sell';
@@ -650,6 +806,7 @@ function SignalsPageInner() {
         data={reversalsQ.data}
         isLoading={reversalsQ.isLoading}
         rows={rows}
+        qualityScores={qualityScores}
         onNavigateChart={(sym) => navigate(`/charts/${sym}`)}
       />
 
@@ -4320,11 +4477,13 @@ function SmaReversalsPanel({
   data,
   isLoading,
   rows,
+  qualityScores,
   onNavigateChart,
 }: {
   data: SmaReversalsData | undefined;
   isLoading: boolean;
   rows: SummaryRow[];
+  qualityScores: Record<string, number>;
   onNavigateChart: (symbol: string) => void;
 }) {
   const [periodFilter, setPeriodFilter] = useState<Set<number>>(() => new Set([9, 50, 600]));
@@ -4335,6 +4494,8 @@ function SmaReversalsPanel({
   const [search, setSearch] = useState<string>('');
   const [showAll, setShowAll] = useState<boolean>(false);
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const [detailChartView, setDetailChartView] = useState<MiniPriceChartView>(() => loadStoredSmaChartView());
+  const [detailChartRange, setDetailChartRange] = useState<SmaChartRange>(() => loadStoredSmaChartRange());
 
   useEffect(() => {
     if (!expandedKey) return;
@@ -4344,6 +4505,14 @@ function SmaReversalsPanel({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [expandedKey]);
+
+  useEffect(() => {
+    saveStoredSmaChartView(detailChartView);
+  }, [detailChartView]);
+
+  useEffect(() => {
+    saveStoredSmaChartRange(detailChartRange);
+  }, [detailChartRange]);
 
   const labelMap = useMemo(() => {
     const m = new Map<string, string>();
@@ -4651,11 +4820,13 @@ function SmaReversalsPanel({
               const key = `${r.symbol}-${r.period}`;
               const isExpanded = expandedKey === key;
               const label = labelMap.get(r.symbol) ?? labelMap.get(r.symbol.replace(/=/g, '_')) ?? r.symbol;
+              const qualityScore = lookupQualityScore(qualityScores, r.symbol);
               return (
                 <React.Fragment key={key}>
                   <ReversalRow
                     r={r}
                     label={label}
+                    qualityScore={qualityScore}
                     isExpanded={isExpanded}
                     onClick={() => setExpandedKey((prev) => (prev === key ? null : key))}
                   />
@@ -4664,6 +4835,11 @@ function SmaReversalsPanel({
                       <ReversalDetailPanel
                         r={r}
                         label={label}
+                        qualityScore={qualityScore}
+                        chartView={detailChartView}
+                        chartRange={detailChartRange}
+                        onChartViewChange={setDetailChartView}
+                        onChartRangeChange={setDetailChartRange}
                         onClose={() => setExpandedKey(null)}
                         onOpenFullChart={() => onNavigateChart(r.symbol)}
                       />
@@ -4709,7 +4885,13 @@ function GradeBadge({ grade, count }: { grade: 'A' | 'B' | 'C'; count: number })
   );
 }
 
-function ReversalRow({ r, label, onClick, isExpanded = false }: { r: SmaReversal; label: string; onClick: () => void; isExpanded?: boolean }) {
+function ReversalRow({ r, label, qualityScore, onClick, isExpanded = false }: {
+  r: SmaReversal;
+  label: string;
+  qualityScore: number | null;
+  onClick: () => void;
+  isExpanded?: boolean;
+}) {
   const isBull = r.direction === 'bull';
   const accent = isBull ? '#10b981' : '#f43f5e';
   const accentSoft = isBull ? '#34d399' : '#fb7185';
@@ -4788,7 +4970,7 @@ function ReversalRow({ r, label, onClick, isExpanded = false }: { r: SmaReversal
         (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 1px 0 rgba(255,255,255,0.03) inset';
       }}
     >
-      <div className="grid gap-x-3 gap-y-3 lg:grid-cols-[minmax(240px,1fr)_146px_minmax(280px,1.08fr)] xl:grid-cols-[minmax(220px,1fr)_146px_minmax(275px,1.14fr)_minmax(220px,0.9fr)_92px] lg:items-center">
+      <div className="grid gap-x-3 gap-y-3 lg:grid-cols-[minmax(240px,1fr)_146px_minmax(280px,1.08fr)] xl:grid-cols-[minmax(220px,1fr)_146px_minmax(275px,1.14fr)_minmax(220px,0.9fr)_minmax(142px,0.72fr)] lg:items-center">
         <div className="flex items-center gap-3 min-w-0">
           <div
             className="flex items-center justify-center rounded-lg flex-shrink-0"
@@ -4948,6 +5130,7 @@ function ReversalRow({ r, label, onClick, isExpanded = false }: { r: SmaReversal
         </div>
 
         <div className="flex items-center justify-between lg:justify-end gap-3">
+          <SmaQualityBadge score={qualityScore} compact />
           <div className="flex flex-col items-end gap-0.5 w-16 flex-shrink-0">
             <span className="text-[13px] font-bold tabular-nums" style={{ color: scoreColor }}>
               {r.score.toFixed(0)}
@@ -4980,21 +5163,25 @@ function ReversalRow({ r, label, onClick, isExpanded = false }: { r: SmaReversal
 }
 
 
-function ReversalDetailPanel({ r, label, onClose, onOpenFullChart }: {
+function ReversalDetailPanel({ r, label, qualityScore, chartView, chartRange, onChartViewChange, onChartRangeChange, onClose, onOpenFullChart }: {
   r: SmaReversal;
   label: string;
+  qualityScore: number | null;
+  chartView: MiniPriceChartView;
+  chartRange: SmaChartRange;
+  onChartViewChange: (view: MiniPriceChartView) => void;
+  onChartRangeChange: (range: SmaChartRange) => void;
   onClose: () => void;
   onOpenFullChart: () => void;
 }) {
-  const [chartView, setChartView] = useState<MiniPriceChartView>('sma');
   const ohlcvQ = useQuery({
-    queryKey: ['sma-reversal-ohlcv', r.symbol, 365],
-    queryFn: () => api.chartOhlcv(r.symbol, 365),
+    queryKey: ['sma-reversal-ohlcv', r.symbol, SMA_DETAIL_MAX_TAIL],
+    queryFn: () => api.chartOhlcv(r.symbol, SMA_DETAIL_MAX_TAIL),
     staleTime: 120_000,
   });
   const indQ = useQuery({
-    queryKey: ['sma-reversal-indicators', r.symbol, 365],
-    queryFn: () => api.chartIndicators(r.symbol, 365),
+    queryKey: ['sma-reversal-indicators', r.symbol, SMA_DETAIL_MAX_TAIL],
+    queryFn: () => api.chartIndicators(r.symbol, SMA_DETAIL_MAX_TAIL),
     staleTime: 120_000,
   });
   const forecastQ = useQuery({
@@ -5009,12 +5196,47 @@ function ReversalDetailPanel({ r, label, onClose, onOpenFullChart }: {
   const displayLabel = label.replace(/\s*\([^)]+\)\s*$/, '').trim();
   const showLabel = displayLabel && displayLabel !== r.symbol;
   const edge = r.historical_edge;
+  const qualityTone = smaQualityTone(qualityScore);
   const chartViews: Array<{ key: MiniPriceChartView; label: string; icon: ReactNode; title: string }> = [
     { key: 'sma', label: 'SMA', icon: <Activity className="w-3 h-3" />, title: 'Current SMA structure with overlays' },
     { key: 'heikinAshi', label: 'Heikin Ashi', icon: <BarChart3 className="w-3 h-3" />, title: 'Smoothed candles for trend clarity' },
     { key: 'reversal', label: 'Reversal', icon: <RefreshCw className="w-3 h-3" />, title: 'BUY and SELL reversal flips' },
     { key: 'area', label: 'Area', icon: <TrendingUp className="w-3 h-3" />, title: 'Reversal-colored trend gradient' },
   ];
+  const chartRanges: Array<{ key: SmaChartRange; label: string; title: string }> = [
+    { key: '1M', label: '1M', title: 'Show roughly one month' },
+    { key: '3M', label: '3M', title: 'Show roughly three months' },
+    { key: '6M', label: '6M', title: 'Show roughly six months' },
+    { key: '1Y', label: '1Y', title: 'Show roughly one year' },
+    { key: 'MAX', label: 'MAX', title: 'Show the longest available history' },
+  ];
+
+  const visibleOhlcv = useMemo(() => {
+    const bars = ohlcvQ.data?.data ?? [];
+    if (chartRange === 'MAX') return bars;
+    const days = SMA_CHART_RANGE_DAYS[chartRange];
+    return bars.length > days ? bars.slice(-days) : bars;
+  }, [chartRange, ohlcvQ.data?.data]);
+
+  const visibleIndicators = useMemo(() => {
+    const raw = indQ.data?.indicators;
+    if (!raw || chartRange === 'MAX') return raw;
+    const visibleTimes = new Set(visibleOhlcv.map((bar) => bar.time));
+    const keep = <T extends { time: string },>(series?: T[]): T[] | undefined =>
+      series?.filter((point) => visibleTimes.has(point.time));
+    return {
+      ...raw,
+      sma20: keep(raw.sma20),
+      sma50: keep(raw.sma50),
+      sma200: keep(raw.sma200),
+      bollinger: raw.bollinger
+        ? {
+            upper: keep(raw.bollinger.upper) ?? [],
+            lower: keep(raw.bollinger.lower) ?? [],
+          }
+        : undefined,
+    };
+  }, [chartRange, indQ.data?.indicators, visibleOhlcv]);
 
   const fmtPx = (v: number | null | undefined): string => {
     if (v == null || !isFinite(v)) return '—';
@@ -5026,6 +5248,12 @@ function ReversalDetailPanel({ r, label, onClose, onOpenFullChart }: {
 
   const stats: Array<{ label: string; value: string; sub?: string; color?: string }> = [
     { label: 'Entry', value: fmtPx(r.price) },
+    {
+      label: 'Quality',
+      value: qualityScore != null ? Math.round(qualityScore).toString() : '—',
+      sub: qualityScore != null ? qualityTone.label : 'unavailable',
+      color: qualityTone.color,
+    },
     { label: 'Stop', value: fmtPx(r.stop_price), color: '#fb7185' },
     { label: 'Target', value: fmtPx(r.target_price), color: '#34d399' },
     { label: 'R : R', value: r.risk_reward != null ? r.risk_reward.toFixed(2) : '—' },
@@ -5109,7 +5337,7 @@ function ReversalDetailPanel({ r, label, onClose, onOpenFullChart }: {
       </div>
 
       {/* Stats strip */}
-      <div className="grid grid-cols-3 md:grid-cols-6 gap-1.5 px-4 pt-3 pb-1">
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-7 gap-1.5 px-4 pt-3 pb-1">
         {stats.map((s, i) => (
           <div
             key={i}
@@ -5150,7 +5378,7 @@ function ReversalDetailPanel({ r, label, onClose, onOpenFullChart }: {
                   type="button"
                   title={view.title}
                   aria-pressed={active}
-                  onClick={() => setChartView(view.key)}
+                  onClick={() => onChartViewChange(view.key)}
                   className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[10.5px] font-semibold transition-all"
                   style={{
                     color: active ? '#ffffff' : 'var(--text-secondary)',
@@ -5170,20 +5398,51 @@ function ReversalDetailPanel({ r, label, onClose, onOpenFullChart }: {
               );
             })}
           </div>
+          <div
+            className="inline-flex items-center gap-1 rounded-xl p-1"
+            style={{
+              background: 'rgba(15,23,42,0.56)',
+              border: '1px solid rgba(148,163,184,0.14)',
+              boxShadow: '0 1px 0 rgba(255,255,255,0.035) inset',
+            }}
+            aria-label="SMA reversal chart range"
+          >
+            {chartRanges.map((range) => {
+              const active = chartRange === range.key;
+              return (
+                <button
+                  key={range.key}
+                  type="button"
+                  title={range.title}
+                  aria-pressed={active}
+                  onClick={() => onChartRangeChange(range.key)}
+                  className="inline-flex min-w-[34px] justify-center rounded-lg px-2.5 py-1.5 text-[10.5px] font-bold tabular-nums transition-all"
+                  style={{
+                    color: active ? '#f8fafc' : 'var(--text-secondary)',
+                    background: active ? `linear-gradient(180deg, ${accent}24, rgba(15,23,42,0.45))` : 'transparent',
+                    border: `1px solid ${active ? `${accent}55` : 'transparent'}`,
+                    boxShadow: active ? `0 0 0 1px ${accent}14 inset, 0 6px 18px -12px ${accent}` : 'none',
+                  }}
+                >
+                  {range.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
         {ohlcvQ.isLoading ? (
           <div className="h-[320px] flex items-center justify-center gap-2 text-[11px] text-[var(--text-muted)]">
             <Loader2 className="w-4 h-4 animate-spin" />
             Loading chart…
           </div>
-        ) : ohlcvQ.error || !ohlcvQ.data?.data?.length ? (
+        ) : ohlcvQ.error || !visibleOhlcv.length ? (
           <div className="h-[320px] flex items-center justify-center text-[11px] text-[var(--text-muted)]">
             No chart data available for {r.symbol}
           </div>
         ) : (
           <MiniPriceChart
-            ohlcv={ohlcvQ.data.data}
-            indicators={indQ.data?.indicators}
+            ohlcv={visibleOhlcv}
+            indicators={visibleIndicators}
             forecast={forecastQ.data}
             height={320}
             viewMode={chartView}
