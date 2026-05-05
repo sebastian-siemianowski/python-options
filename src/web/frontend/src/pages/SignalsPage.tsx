@@ -19,7 +19,7 @@ import {
   Activity, Eye, Layers, ChevronUp, AlertTriangle, Zap, Loader2,
   Star, Plus, SlidersHorizontal, RefreshCw, Play, Square,
 } from 'lucide-react';
-import MiniPriceChart from '../components/MiniPriceChart';
+import MiniPriceChart, { type MiniPriceChartView } from '../components/MiniPriceChart';
 import { formatHorizon, responsiveHorizons } from '../utils/horizons';
 
 import { useWebSocket, type WSStatus } from '../hooks/useWebSocket';
@@ -65,6 +65,8 @@ const isFiatCurrencyTicker = (symbol: string | undefined | null): boolean => {
   if (pair.length !== 6) return false;
   return ISO_CURRENCY_CODES.has(pair.slice(0, 3)) && ISO_CURRENCY_CODES.has(pair.slice(3));
 };
+
+const cleanSmaReason = (reason: string): string => reason.replace(/\s*\(n=\d+\)/gi, '');
 
 type ViewMode = 'all' | 'sectors' | 'strong';
 type SignalFilter = 'all' | 'bullish' | 'bearish' | 'greens' | 'reds' | 'strong_buy' | 'buy' | 'hold' | 'sell' | 'strong_sell' | 'reversal_buy' | 'reversal_sell';
@@ -4730,7 +4732,7 @@ function ReversalRow({ r, label, onClick, isExpanded = false }: { r: SmaReversal
 
   // Strip the trailing `(TICKER)` from the label for the body text
   const displayLabel = label.replace(/\s*\([^)]+\)\s*$/, '').trim() || r.symbol;
-  const tooltip = r.grade_reasons && r.grade_reasons.length > 0 ? r.grade_reasons.join(' · ') : undefined;
+  const tooltip = r.grade_reasons && r.grade_reasons.length > 0 ? r.grade_reasons.map(cleanSmaReason).join(' · ') : undefined;
   const metricItems = [
     {
       key: 'dist',
@@ -4984,6 +4986,7 @@ function ReversalDetailPanel({ r, label, onClose, onOpenFullChart }: {
   onClose: () => void;
   onOpenFullChart: () => void;
 }) {
+  const [chartView, setChartView] = useState<MiniPriceChartView>('sma');
   const ohlcvQ = useQuery({
     queryKey: ['sma-reversal-ohlcv', r.symbol, 365],
     queryFn: () => api.chartOhlcv(r.symbol, 365),
@@ -5002,9 +5005,16 @@ function ReversalDetailPanel({ r, label, onClose, onOpenFullChart }: {
 
   const isBull = r.direction === 'bull';
   const accent = isBull ? '#10b981' : '#f43f5e';
+  const accentSoft = isBull ? '#34d399' : '#fb7185';
   const displayLabel = label.replace(/\s*\([^)]+\)\s*$/, '').trim();
   const showLabel = displayLabel && displayLabel !== r.symbol;
   const edge = r.historical_edge;
+  const chartViews: Array<{ key: MiniPriceChartView; label: string; icon: ReactNode; title: string }> = [
+    { key: 'sma', label: 'SMA', icon: <Activity className="w-3 h-3" />, title: 'Current SMA structure with overlays' },
+    { key: 'heikinAshi', label: 'Heikin Ashi', icon: <BarChart3 className="w-3 h-3" />, title: 'Smoothed candles for trend clarity' },
+    { key: 'reversal', label: 'Reversal', icon: <RefreshCw className="w-3 h-3" />, title: 'BUY and SELL reversal flips' },
+    { key: 'area', label: 'Area', icon: <TrendingUp className="w-3 h-3" />, title: 'Reversal-colored trend gradient' },
+  ];
 
   const fmtPx = (v: number | null | undefined): string => {
     if (v == null || !isFinite(v)) return '—';
@@ -5122,6 +5132,45 @@ function ReversalDetailPanel({ r, label, onClose, onOpenFullChart }: {
 
       {/* Chart */}
       <div className="px-4 pb-4 pt-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+          <div
+            className="inline-flex items-center gap-1 rounded-xl p-1"
+            style={{
+              background: 'rgba(255,255,255,0.028)',
+              border: '1px solid rgba(255,255,255,0.06)',
+              boxShadow: '0 1px 0 rgba(255,255,255,0.035) inset',
+            }}
+            aria-label="SMA reversal chart view"
+          >
+            {chartViews.map((view) => {
+              const active = chartView === view.key;
+              return (
+                <button
+                  key={view.key}
+                  type="button"
+                  title={view.title}
+                  aria-pressed={active}
+                  onClick={() => setChartView(view.key)}
+                  className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[10.5px] font-semibold transition-all"
+                  style={{
+                    color: active ? '#ffffff' : 'var(--text-secondary)',
+                    background: active ? `linear-gradient(180deg, ${accent}28, ${accent}0c)` : 'transparent',
+                    border: `1px solid ${active ? `${accent}58` : 'transparent'}`,
+                    boxShadow: active ? `0 0 0 1px ${accent}18 inset, 0 5px 18px -9px ${accent}` : 'none',
+                  }}
+                >
+                  <span
+                    className="inline-flex"
+                    style={{ color: active ? accentSoft : 'var(--text-muted)', filter: active ? `drop-shadow(0 0 4px ${accent})` : 'none' }}
+                  >
+                    {view.icon}
+                  </span>
+                  <span className="whitespace-nowrap">{view.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
         {ohlcvQ.isLoading ? (
           <div className="h-[320px] flex items-center justify-center gap-2 text-[11px] text-[var(--text-muted)]">
             <Loader2 className="w-4 h-4 animate-spin" />
@@ -5137,7 +5186,8 @@ function ReversalDetailPanel({ r, label, onClose, onOpenFullChart }: {
             indicators={indQ.data?.indicators}
             forecast={forecastQ.data}
             height={320}
-            candleMode="heikinAshi"
+            viewMode={chartView}
+            showOverlayControls
           />
         )}
       </div>
@@ -5155,7 +5205,7 @@ function ReversalDetailPanel({ r, label, onClose, onOpenFullChart }: {
               className="px-2 py-0.5 rounded-full text-[9.5px] font-medium"
               style={{ background: 'rgba(167,139,250,0.06)', border: '1px solid rgba(167,139,250,0.15)', color: '#c4b5fd' }}
             >
-              {reason}
+              {cleanSmaReason(reason)}
             </span>
           ))}
         </div>

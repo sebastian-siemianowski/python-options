@@ -799,7 +799,7 @@ def detect_reversals(
                 grade_reasons = [
                     "regime+slope aligned", "persistence confirmed", "not overextended",
                     f"R:R {risk_reward:.1f}",
-                    f"win {win_rate:.0%} (n={edge['samples']})",
+                    f"win {win_rate:.0%}",
                     f"E[R] {expectancy_r:.2f}",
                 ]
                 if stop_hit_rate is not None:
@@ -811,7 +811,7 @@ def detect_reversals(
                     f"R:R {risk_reward:.1f}",
                 ]
                 if win_rate is not None:
-                    grade_reasons.append(f"edge {win_rate:.0%} (n={edge['samples']})")
+                    grade_reasons.append(f"edge {win_rate:.0%}")
                 if expectancy_r is not None:
                     grade_reasons.append(f"E[R] {expectancy_r:.2f}")
             else:
