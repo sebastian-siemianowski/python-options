@@ -20,6 +20,11 @@ export default function QualityFloorSlider({
   const pct = Math.max(0, Math.min(100, draftValue));
   const handlePct = Math.max(1.5, Math.min(98.5, pct));
   const accent = pct >= 75 ? '#6ee7b7' : pct >= 50 ? '#c4b5fd' : '#38bdf8';
+  const rangeHeight = compact ? 28 : 30;
+  const trackHeight = compact ? 14 : 16;
+  const fillHeight = compact ? 8 : 10;
+  const handleWidth = compact ? 12 : 14;
+  const handleHeight = compact ? 22 : 24;
   const cleanValue = (next: number) => Math.max(0, Math.min(100, Math.round(next)));
   const flushCommit = (next: number) => {
     const clean = cleanValue(next);
@@ -54,51 +59,51 @@ export default function QualityFloorSlider({
 
   return (
     <div
-      className={`relative overflow-hidden rounded-[14px] ${compact ? 'px-3 py-2' : 'px-3.5 py-2.5'} ${className}`}
+      className={`relative overflow-hidden rounded-[12px] ${compact ? 'px-2.5 py-1.5' : 'px-3 py-2'} ${className}`}
       style={{
         background: active
           ? `linear-gradient(135deg, ${accent}18, rgba(255,255,255,0.018) 58%, rgba(15,23,42,0.42))`
           : 'linear-gradient(135deg, rgba(255,255,255,0.032), rgba(255,255,255,0.012))',
         border: `1px solid ${active ? `${accent}4f` : 'rgba(255,255,255,0.06)'}`,
         boxShadow: active
-          ? `0 0 0 1px ${accent}16, inset 0 1px 0 rgba(255,255,255,0.08), 0 18px 34px -28px ${accent}`
-          : 'inset 0 1px 0 rgba(255,255,255,0.035)',
+          ? `0 0 0 1px ${accent}12, inset 0 1px 0 rgba(255,255,255,0.07), 0 12px 24px -24px ${accent}`
+          : 'inset 0 1px 0 rgba(255,255,255,0.032)',
       }}
     >
       <style>{`
         .quality-floor-range {
           -webkit-appearance: none;
           appearance: none;
-          height: 38px;
+          height: ${rangeHeight}px;
           background: transparent;
           cursor: pointer;
           touch-action: none;
         }
         .quality-floor-range::-webkit-slider-runnable-track {
-          height: 30px;
+          height: ${rangeHeight}px;
           border-radius: 999px;
           background: transparent;
         }
         .quality-floor-range::-moz-range-track {
-          height: 30px;
+          height: ${rangeHeight}px;
           border-radius: 999px;
           background: transparent;
         }
         .quality-floor-range::-webkit-slider-thumb {
           -webkit-appearance: none;
           appearance: none;
-          width: 38px;
-          height: 38px;
-          margin-top: -4px;
+          width: ${Math.max(28, handleWidth + 18)}px;
+          height: ${rangeHeight}px;
+          margin-top: 0;
           border-radius: 999px;
           border: 0;
           background: transparent;
           box-shadow: none;
         }
         .quality-floor-range::-moz-range-thumb {
-          width: 38px;
-          height: 38px;
-          border-radius: 8px;
+          width: ${Math.max(28, handleWidth + 18)}px;
+          height: ${rangeHeight}px;
+          border-radius: 999px;
           border: 0;
           background: transparent;
           box-shadow: none;
@@ -111,30 +116,31 @@ export default function QualityFloorSlider({
         style={{ background: `linear-gradient(90deg, transparent, ${accent}7a, transparent)` }}
       />
 
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <div className="flex min-w-[132px] items-center gap-2">
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+        <div className="flex min-w-[118px] items-center gap-2">
           <span
-            className="inline-flex h-7 w-7 items-center justify-center rounded-[9px]"
+            className="inline-flex h-6 w-6 items-center justify-center rounded-[8px]"
             style={{
               color: active ? accent : 'var(--text-secondary)',
               background: active ? `${accent}18` : 'rgba(255,255,255,0.035)',
               border: `1px solid ${active ? `${accent}3d` : 'rgba(255,255,255,0.055)'}`,
             }}
           >
-            <ShieldCheck className="w-3.5 h-3.5" />
+            <ShieldCheck className="w-3 h-3" />
           </span>
           <div>
-            <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">
+            <div className="text-[9.5px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">
               Min Quality
             </div>
           </div>
         </div>
 
-        <div className="relative min-w-[220px] flex-1">
+        <div className="relative min-w-[200px] flex-1">
           <div
             aria-hidden
-            className="absolute left-0 right-0 top-1/2 h-[22px] -translate-y-1/2 rounded-full"
+            className="absolute left-0 right-0 top-1/2 -translate-y-1/2 rounded-full"
             style={{
+              height: trackHeight,
               background:
                 'linear-gradient(180deg, rgba(255,255,255,0.075), rgba(255,255,255,0.035))',
               border: '1px solid rgba(255,255,255,0.075)',
@@ -144,8 +150,9 @@ export default function QualityFloorSlider({
           />
           <div
             aria-hidden
-            className="absolute left-[3px] top-1/2 h-[16px] -translate-y-1/2 rounded-full"
+            className="absolute left-[3px] top-1/2 -translate-y-1/2 rounded-full"
             style={{
+              height: fillHeight,
               width: `calc(${pct}% - ${pct > 0 ? 6 : 0}px)`,
               background: `linear-gradient(90deg, ${accent}cc 0%, ${accent}f2 58%, rgba(255,255,255,0.88) 100%)`,
               boxShadow: active
@@ -170,24 +177,24 @@ export default function QualityFloorSlider({
             <div
               className="relative flex items-center justify-center rounded-full"
               style={{
-                width: 18,
-                height: 32,
+                width: handleWidth,
+                height: handleHeight,
                 background:
                   'linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(241,245,249,0.94) 42%, rgba(203,213,225,0.82) 100%)',
                 border: '1px solid rgba(255,255,255,0.78)',
                 boxShadow: isDragging
-                  ? `0 0 0 5px ${accent}1f, 0 13px 24px -15px rgba(0,0,0,0.86), 0 0 18px -7px ${accent}, inset 0 1px 0 rgba(255,255,255,0.96)`
-                  : '0 9px 20px -15px rgba(0,0,0,0.92), inset 0 1px 0 rgba(255,255,255,0.94), inset 0 -7px 12px rgba(15,23,42,0.10)',
+                  ? `0 0 0 4px ${accent}1a, 0 10px 20px -15px rgba(0,0,0,0.86), 0 0 14px -8px ${accent}, inset 0 1px 0 rgba(255,255,255,0.96)`
+                  : '0 8px 16px -14px rgba(0,0,0,0.92), inset 0 1px 0 rgba(255,255,255,0.94), inset 0 -6px 10px rgba(15,23,42,0.10)',
                 transform: isDragging ? 'scale(1.035)' : 'scale(1)',
                 transition: isDragging ? 'none' : 'transform 160ms ease, box-shadow 160ms ease',
               }}
             >
               <span
-                className="absolute inset-x-[5px] top-[5px] h-px rounded-full"
+                className="absolute inset-x-[4px] top-[4px] h-px rounded-full"
                 style={{ background: 'rgba(255,255,255,0.95)' }}
               />
               <span
-                className="h-4 w-[2px] rounded-full"
+                className="h-3 w-[2px] rounded-full"
                 style={{
                   background: active ? accent : 'rgba(100,116,139,0.68)',
                   boxShadow: active ? `0 0 8px -2px ${accent}` : 'none',
@@ -215,7 +222,7 @@ export default function QualityFloorSlider({
 
         <div className="flex items-center gap-2">
           <span
-            className="min-w-[54px] rounded-[12px] px-3 py-1.5 text-center text-[18px] font-bold leading-none tabular-nums"
+            className="min-w-[42px] rounded-[10px] px-2.5 py-1 text-center text-[14px] font-bold leading-none tabular-nums"
             style={{
               color: active ? accent : '#94a3b8',
               background: active ? `${accent}13` : 'rgba(255,255,255,0.025)',
@@ -233,7 +240,7 @@ export default function QualityFloorSlider({
                 setDraftValue(0);
                 flushCommit(0);
               }}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] transition-all active:scale-[0.96] hover:-translate-y-[1px]"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-[9px] transition-all active:scale-[0.96] hover:-translate-y-[1px]"
               style={{
                 color: 'var(--text-secondary)',
                 background: 'rgba(255,255,255,0.025)',
@@ -241,7 +248,7 @@ export default function QualityFloorSlider({
               }}
               title="Reset quality floor"
             >
-              <RotateCcw className="w-3.5 h-3.5" />
+              <RotateCcw className="w-3 h-3" />
             </button>
           )}
         </div>
