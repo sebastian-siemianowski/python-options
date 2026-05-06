@@ -47,11 +47,16 @@ export default function CyberProgressRing({
   const segmentCount = Math.max(1, stages.length);
   const segmentGap = Math.min(18, circumference / segmentCount * 0.13);
   const segmentLength = Math.max(4, circumference / segmentCount - segmentGap);
+  const cursorRadians = ((-90 + (pct / 100) * 360) * Math.PI) / 180;
+  const cursorOrbit = compact ? 41.5 : 47;
+  const cursorX = 50 + Math.cos(cursorRadians) * cursorOrbit;
+  const cursorY = 50 + Math.sin(cursorRadians) * cursorOrbit;
   const wrapperStyle = {
     width: size,
     height: size,
     '--ring-color': ringColor,
     '--ring-accent': ringAccent,
+    '--ring-progress': `${pct * 3.6}deg`,
   } as CSSProperties;
 
   return (
@@ -65,7 +70,10 @@ export default function CyberProgressRing({
       aria-valuenow={Math.round(pct)}
     >
       <div className="cyber-progress-ring__aura" aria-hidden />
+      <div className="cyber-progress-ring__holo-plate" aria-hidden />
+      <div className="cyber-progress-ring__progress-wake" aria-hidden />
       <div className="cyber-progress-ring__ticks" aria-hidden />
+      <div className="cyber-progress-ring__cardinals" aria-hidden />
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden>
         <defs>
           <linearGradient id={`${rawId}-stroke`} x1="12%" y1="8%" x2="88%" y2="92%">
@@ -88,6 +96,7 @@ export default function CyberProgressRing({
           </filter>
         </defs>
         <circle
+          className="cyber-progress-ring__track"
           cx={center}
           cy={center}
           r={radius}
@@ -117,6 +126,7 @@ export default function CyberProgressRing({
           );
         })}
         <circle
+          className="cyber-progress-ring__inner-rail"
           cx={center}
           cy={center}
           r={innerRadius}
@@ -140,29 +150,14 @@ export default function CyberProgressRing({
           transform={`rotate(-90 ${center} ${center})`}
         />
       </svg>
-      {stages.map((stage, index) => {
-        const stageNumber = index + 1;
-        const angle = -90 + (360 / segmentCount) * (index + 0.5);
-        const radians = (angle * Math.PI) / 180;
-        const orbit = compact ? 45 : 46;
-        const x = 50 + Math.cos(radians) * orbit;
-        const y = 50 + Math.sin(radians) * orbit;
-        const stageDone = activeStageIndex > stageNumber;
-        const stageActive = activeStageIndex === stageNumber;
-        return (
-          <span
-            key={`${stage.key}-node`}
-            className={`cyber-progress-ring__node ${stageActive ? 'is-active' : ''} ${stageDone ? 'is-done' : ''}`}
-            title={stage.label}
-            style={{
-              left: `${x}%`,
-              top: `${y}%`,
-              '--node-color': stage.tone,
-            } as CSSProperties}
-            aria-hidden
-          />
-        );
-      })}
+      <span
+        className="cyber-progress-ring__cursor"
+        style={{
+          left: `${cursorX}%`,
+          top: `${cursorY}%`,
+        }}
+        aria-hidden
+      />
       <div className="cyber-progress-ring__core">
         <div className="cyber-progress-ring__value">{Math.round(pct)}</div>
         {!compact && <div className="cyber-progress-ring__label">{label}</div>}
