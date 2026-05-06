@@ -4533,7 +4533,7 @@ function ChartHorizonMiniTile({ label, expRet }: { label: string; expRet: number
 
   return (
     <div
-      className="relative h-[42px] min-w-0 overflow-hidden rounded-[9px] px-1.5 py-1.5 text-center"
+      className="relative h-[38px] min-w-0 overflow-hidden rounded-[9px] px-1.5 py-1 text-center"
       title={pct == null ? `${label}: no forecast` : `${label}: ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`}
       style={{
         background: `linear-gradient(180deg, ${bg}, rgba(255,255,255,0.012))`,
@@ -4542,10 +4542,10 @@ function ChartHorizonMiniTile({ label, expRet }: { label: string; expRet: number
       }}
     >
       <div aria-hidden className="absolute inset-x-2 top-0 h-px" style={{ background: `linear-gradient(90deg, transparent, ${color}66, transparent)` }} />
-      <div className="text-[7px] font-bold uppercase tracking-[0.11em] text-[var(--text-muted)]">{label}</div>
-      <div className="mt-1 flex min-w-0 items-baseline justify-center gap-0.5 leading-none" style={{ color }}>
-        <span className="min-w-0 truncate text-[10.5px] font-extrabold tabular-nums tracking-[-0.01em]">{value}</span>
-        {pct != null && <span className="text-[7.4px] font-bold opacity-80">%</span>}
+      <div className="text-[6.6px] font-bold uppercase tracking-[0.09em] text-[var(--text-muted)]">{label}</div>
+      <div className="mt-0.5 flex min-w-0 items-baseline justify-center gap-0.5 leading-none" style={{ color }}>
+        <span className="min-w-0 truncate text-[9.7px] font-extrabold tabular-nums">{value}</span>
+        {pct != null && <span className="text-[6.8px] font-bold opacity-80">%</span>}
       </div>
     </div>
   );
@@ -4572,6 +4572,7 @@ function ChartAssetRow({ row, ticker, horizons, qualityScore, highlighted, isExp
   const qualityTone = smaQualityTone(quality);
   const momentumTone = chartMomentumTone(row.momentum_score);
   const momentumText = `${row.momentum_score > 0 ? '+' : ''}${Math.round(row.momentum_score ?? 0)}%`;
+  const industryLabel = row.sector || 'Other';
 
   return (
     <>
@@ -4596,7 +4597,7 @@ function ChartAssetRow({ row, ticker, horizons, qualityScore, highlighted, isExp
       >
         <div aria-hidden className="absolute inset-x-3 top-0 h-px opacity-80" style={{ background: `linear-gradient(90deg, transparent, ${labelColor}66, transparent)` }} />
         <div className="grid w-full min-w-0 gap-2 p-2 xl:grid-cols-[minmax(178px,0.42fr)_minmax(0,2.38fr)_minmax(336px,0.94fr)_30px] xl:items-center 2xl:grid-cols-[minmax(196px,0.40fr)_minmax(0,2.58fr)_minmax(388px,0.98fr)_30px]">
-          <div className="flex min-w-0 items-center gap-2">
+          <div className="flex min-h-[76px] min-w-0 items-center gap-2">
             <span
               className="h-[62px] w-1 rounded-full flex-shrink-0"
               style={{ background: labelColor, boxShadow: `0 0 15px -4px ${labelColor}` }}
@@ -4604,15 +4605,8 @@ function ChartAssetRow({ row, ticker, horizons, qualityScore, highlighted, isExp
             <div className="min-w-0 flex-1">
               <div className="flex min-w-0 items-center gap-1.5">
                 <span className="truncate text-[13.2px] font-bold leading-none tabular-nums text-[var(--text-primary)]">{ticker}</span>
-                <span
-                  className="min-w-0 truncate rounded-md px-1.5 py-[1px] text-[7.5px] font-semibold uppercase tracking-[0.08em]"
-                  style={{ background: 'rgba(255,255,255,0.026)', color: 'var(--text-muted)', border: '1px solid rgba(255,255,255,0.045)' }}
-                  title={row.sector || 'Other'}
-                >
-                  {row.sector || 'Other'}
-                </span>
               </div>
-              {company && <span className="mt-1 block max-w-[178px] truncate text-[8.7px] leading-tight text-[var(--text-muted)]">{company}</span>}
+              {company && <span className="mt-1 block max-w-[196px] truncate text-[8.7px] leading-tight text-[var(--text-muted)]">{company}</span>}
               <div className="mt-1.5 grid max-w-[190px] grid-cols-3 gap-1">
                 <div className="col-span-3">
                   <ChartIdentityChip
@@ -4649,7 +4643,7 @@ function ChartAssetRow({ row, ticker, horizons, qualityScore, highlighted, isExp
           </div>
 
           <div
-            className="min-w-0 rounded-[10px] px-2.5 py-1.5"
+            className="flex h-[76px] min-w-0 items-center rounded-[10px] px-2.5 py-1.5"
             style={{
               background: `linear-gradient(180deg, ${labelColor}10, rgba(255,255,255,0.012))`,
               border: `1px solid ${labelColor}24`,
@@ -4659,24 +4653,40 @@ function ChartAssetRow({ row, ticker, horizons, qualityScore, highlighted, isExp
             <Sparkline ticker={ticker} width={760} height={60} tail={220} variant="reversal" fluid />
           </div>
 
-          <div
-            className="flex min-w-0 items-stretch gap-1.5 overflow-hidden rounded-[12px] p-1.5"
-            style={{
-              background: 'radial-gradient(240px 72px at 0% 0%, rgba(167,139,250,0.08), transparent 58%), linear-gradient(180deg, rgba(255,255,255,0.034), rgba(255,255,255,0.01))',
-              border: '1px solid rgba(255,255,255,0.065)',
-              boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04), 0 12px 28px -30px rgba(167,139,250,0.75)',
-            }}
-          >
-            <div className="w-[66px] shrink-0">
-              <SparklineReversalStateBadge ticker={ticker} tail={220} compact tile />
+          <div className="flex h-[76px] min-w-0 flex-col">
+            <div className="mb-1 flex justify-center">
+              <span
+                className="max-w-full truncate rounded-full px-3 py-1 text-center text-[8.5px] font-semibold uppercase tracking-[0.12em] backdrop-blur-md"
+                style={{
+                  color: '#cbd5e1',
+                  background: 'linear-gradient(135deg, rgba(15,23,42,0.72), rgba(255,255,255,0.035))',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  boxShadow: '0 10px 24px -22px rgba(148,163,184,0.80), inset 0 1px 0 rgba(255,255,255,0.055)',
+                }}
+                title={industryLabel}
+              >
+                {industryLabel}
+              </span>
             </div>
-            <div className="grid min-w-0 flex-1 grid-cols-[repeat(auto-fit,minmax(58px,1fr))] gap-1">
-              {chartHorizons.map((h) => {
-                const sig = row.horizon_signals[h] || row.horizon_signals[String(h)];
-                return (
-                  <ChartHorizonMiniTile key={h} label={chartViewHorizonLabel(h)} expRet={sig?.exp_ret} />
-                );
-              })}
+            <div
+              className="flex min-h-0 min-w-0 flex-1 items-stretch gap-1.5 overflow-hidden rounded-[12px] p-1"
+              style={{
+                background: 'radial-gradient(240px 72px at 0% 0%, rgba(167,139,250,0.08), transparent 58%), linear-gradient(180deg, rgba(255,255,255,0.034), rgba(255,255,255,0.01))',
+                border: '1px solid rgba(255,255,255,0.065)',
+                boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04), 0 12px 28px -30px rgba(167,139,250,0.75)',
+              }}
+            >
+              <div className="w-[66px] shrink-0">
+                <SparklineReversalStateBadge ticker={ticker} tail={220} compact tile />
+              </div>
+              <div className="grid min-w-0 flex-1 grid-cols-[repeat(auto-fit,minmax(58px,1fr))] gap-1">
+                {chartHorizons.map((h) => {
+                  const sig = row.horizon_signals[h] || row.horizon_signals[String(h)];
+                  return (
+                    <ChartHorizonMiniTile key={h} label={chartViewHorizonLabel(h)} expRet={sig?.exp_ret} />
+                  );
+                })}
+              </div>
             </div>
           </div>
           <div className="flex items-center justify-end gap-1 xl:flex-col xl:justify-center">

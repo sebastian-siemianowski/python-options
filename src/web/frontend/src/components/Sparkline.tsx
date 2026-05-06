@@ -650,7 +650,7 @@ function SparklineReversalStateBadgeInner({ ticker, tail = 220, compact = false,
     return (
       <div ref={visibilityRef} className={`flex flex-col items-center gap-0.5 ${compact ? 'min-w-0 w-full' : 'min-w-[62px]'}`}>
         <span
-          className={`inline-flex ${compact ? tile ? 'h-[42px] w-full rounded-[9px]' : 'h-[30px] w-full rounded-lg' : 'h-[26px] min-w-[58px] rounded-lg'} items-center justify-center text-[9px] font-bold uppercase tracking-[0.08em]`}
+          className={`inline-flex ${compact ? tile ? 'h-[38px] w-full rounded-[9px]' : 'h-[30px] w-full rounded-lg' : 'h-[26px] min-w-[58px] rounded-lg'} items-center justify-center text-[8.4px] font-bold uppercase tracking-[0.08em]`}
           style={{
             color: 'var(--text-muted)',
             background: tile ? 'linear-gradient(180deg, rgba(100,116,139,0.075), rgba(255,255,255,0.012))' : 'rgba(255,255,255,0.018)',
@@ -681,15 +681,15 @@ function SparklineReversalStateBadgeInner({ ticker, tail = 220, compact = false,
           boxShadow: `0 0 7px ${color}`,
         }}
       />
-      <span className="text-[9px] font-extrabold uppercase tracking-[0.05em] leading-none">{stateLabel}</span>
-      {ageLabel && <span className="text-[8px] font-bold leading-none opacity-85">{ageLabel}</span>}
+      <span className={`${tile ? 'text-[8.4px]' : 'text-[9px]'} font-extrabold uppercase tracking-[0.045em] leading-none`}>{stateLabel}</span>
+      {ageLabel && <span className={`${tile ? 'text-[7.5px]' : 'text-[8px]'} font-bold leading-none opacity-85`}>{ageLabel}</span>}
     </>
   );
 
   return (
     <div ref={visibilityRef} className={`flex flex-col items-center gap-0.5 ${compact ? 'min-w-0 w-full' : 'min-w-[68px]'}`}>
       <span
-        className={`inline-flex ${compact ? tile ? 'h-[42px] w-full flex-col gap-0.5 rounded-[9px] px-1.5' : 'h-[30px] w-full flex-col gap-0.5 rounded-lg px-1' : 'h-[26px] min-w-[64px] gap-1.5 rounded-lg px-2'} items-center justify-center tabular-nums`}
+        className={`inline-flex ${compact ? tile ? 'h-[38px] w-full flex-col gap-[1px] rounded-[9px] px-1' : 'h-[30px] w-full flex-col gap-0.5 rounded-lg px-1' : 'h-[26px] min-w-[64px] gap-1.5 rounded-lg px-2'} items-center justify-center tabular-nums`}
         title={`Current mini reversal state: ${stateLabel}${ageLabel ? ` for ${ageLabel}` : ''}`}
         style={{
           color: softColor,
