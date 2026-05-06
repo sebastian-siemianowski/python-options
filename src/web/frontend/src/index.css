@@ -1881,18 +1881,6 @@ button:active:not(:disabled) {
   opacity: 0.72;
 }
 
-.cyber-progress-ring__grid {
-  position: absolute;
-  inset: 13%;
-  border-radius: 999px;
-  background:
-    linear-gradient(color-mix(in srgb, var(--ring-color) 13%, transparent) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in srgb, var(--ring-accent) 12%, transparent) 1px, transparent 1px);
-  background-size: 18px 18px;
-  mask: radial-gradient(circle, transparent 0 47%, #000 48% 70%, transparent 71%);
-  opacity: 0.38;
-}
-
 .cyber-progress-ring__ticks {
   position: absolute;
   inset: 2%;

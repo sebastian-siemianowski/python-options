@@ -65,7 +65,6 @@ export default function CyberProgressRing({
       aria-valuenow={Math.round(pct)}
     >
       <div className="cyber-progress-ring__aura" aria-hidden />
-      <div className="cyber-progress-ring__grid" aria-hidden />
       <div className="cyber-progress-ring__ticks" aria-hidden />
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden>
         <defs>
