@@ -7,6 +7,7 @@ import { api } from '../api';
 import type { SummaryRow, SectorGroup, StrongSignalEntry, HighConvictionSignal, SignalSummaryData, SignalStats, EmaState, SmaReversal, SmaReversalsData, ReversalFlipEntry, ReversalFlipsData } from '../api';
 import { SignalTableSkeleton } from '../components/CosmicSkeleton';
 import { CosmicErrorCard } from '../components/CosmicErrorState';
+import CyberProgressRing from '../components/CyberProgressRing';
 import { Sparkline, SparklinePct, SparklineReversalStateBadge } from '../components/Sparkline';
 import { SignalLabel, SignalStrengthMeter, MomentumBadge, CrashRiskHeat, HorizonCell, QualityCell } from '../components/SignalTableVisuals';
 import { ColumnCustomizer, type ColumnDef } from '../components/ColumnCustomizer';
@@ -1542,15 +1543,16 @@ function SignalOperationsBar({
         : status === 'stopped' ? '#94a3b8'
           : '#a78bfa';
   const statusLabel = isRunning
-    ? isBoth ? 'Tuning, then refreshing' : mode === 'stocks' ? 'Refreshing market data' : 'Tuning models'
+    ? isBoth ? 'Refreshing 7d, retuning, then signals' : mode === 'stocks' ? 'Refreshing market data' : 'Tuning models'
     : status === 'completed' ? 'Last job complete'
       : status === 'stopped' ? 'Stopped'
         : status === 'failed' || status === 'error' ? 'Needs attention'
           : 'Ready';
   const pipelineStages = isBoth
     ? [
-        { key: 'tune', label: 'Tune stocks', tone: '#c084fc' },
-        { key: 'download', label: 'Refresh prices', tone: '#60a5fa' },
+        { key: 'download', label: 'Refresh 7d data', tone: '#60a5fa' },
+        { key: 'backup', label: 'Backup cache', tone: '#a78bfa' },
+        { key: 'tune', label: 'Retune models', tone: '#c084fc' },
         { key: 'signals', label: 'Generate signals', tone: '#38d9f5' },
       ]
     : isStocks
@@ -1559,27 +1561,37 @@ function SignalOperationsBar({
         { key: 'signals', label: 'Generate signals', tone: '#38d9f5' },
       ]
     : [
-        { key: 'download', label: 'Refresh data', tone: '#60a5fa' },
+        { key: 'download', label: 'Refresh 7d data', tone: '#60a5fa' },
         { key: 'backup', label: 'Backup cache', tone: '#a78bfa' },
-        { key: 'tune', label: 'Tune stocks', tone: '#c084fc' },
+        { key: 'tune', label: 'Retune models', tone: '#c084fc' },
         { key: 'calibration', label: 'Calibration', tone: '#10b981' },
       ];
   const activeStageIndex = (() => {
     const title = (phaseTitle ?? '').toLowerCase();
+    if (!isRunning) return status === 'completed' ? pipelineStages.length : 0;
     if (activeStage?.kind) {
       const stageIndex = pipelineStages.findIndex((stage) => stage.key === activeStage.kind);
       if (stageIndex >= 0) return stageIndex + 1;
     }
-    if (!isRunning) return status === 'completed' ? pipelineStages.length : 0;
     if (title.includes('refresh') || title.includes('download')) return 1;
-    if (title.includes('signal')) return isBoth ? 3 : isStocks ? 2 : 1;
+    if (title.includes('signal')) return isBoth ? 4 : isStocks ? 2 : 1;
     if (title.includes('backup')) return 2;
     if (title.includes('calibrat')) return 4;
-    if (title.includes('fit') || title.includes('tune') || title.includes('model')) return isBoth ? 1 : 3;
+    if (title.includes('fit') || title.includes('tune') || title.includes('model')) return 3;
     return Math.max(1, Math.min(pipelineStages.length, Math.ceil((progressPct / 100) * pipelineStages.length)));
   })();
+  const activeStageTone = isRunning && activeStage?.kind
+    ? pipelineStages.find((stage) => stage.key === activeStage.kind)?.tone ?? statusColor
+    : status === 'completed' ? '#10b981'
+      : status === 'failed' || status === 'error' ? '#fb7185'
+        : '#a78bfa';
+  const progressAccent = isRunning ? '#38d9f5' : status === 'completed' ? '#6ee7b7' : '#38d9f5';
+  const progressStageTitle = isRunning ? activeStage?.title ?? phaseTitle ?? 'Pipeline runway' : 'Pipeline runway';
+  const progressStageBadge = isRunning || status === 'completed'
+    ? `Stage ${Math.max(0, activeStageIndex)} / ${pipelineStages.length}`
+    : status === 'stopped' ? 'Stopped' : status === 'failed' || status === 'error' ? 'Needs attention' : 'Ready';
   const activeStageLabel = activeStage?.kind === 'download'
-    ? 'ready'
+    ? (isBoth || mode === 'retune' ? 'refreshed' : 'ready')
     : activeStage?.kind === 'signals'
       ? 'generated'
     : activeStage?.kind === 'backup'
@@ -1593,16 +1605,24 @@ function SignalOperationsBar({
       ? 'Generating signals'
       : activeStage?.kind === 'backup'
         ? 'Backing up cache'
-        : 'Working';
+      : 'Working';
   const runTuneSubtitle = isRunning
-    ? isTune && !isBoth ? 'Live fitting in progress' : 'Open the live activity drawer'
-    : 'Full BMA retune, streamed live';
+    ? isTune && !isBoth
+      ? activeStage?.kind === 'download'
+        ? 'Refreshing last 7 days first'
+        : activeStage?.kind === 'backup'
+          ? 'Backing up tune cache'
+          : activeStage?.kind === 'tune'
+            ? 'Retuning models live with CPU minus one workers'
+            : 'Live pipeline in progress'
+      : 'Open the live activity drawer'
+    : 'Refresh 7d data, back up, then retune';
   const stocksSubtitle = isRunning
     ? isStocks ? 'Refreshing market data' : 'Open the live activity drawer'
     : 'Prices, cache, and signals';
   const runBothSubtitle = isRunning
-    ? isBoth ? 'Tune first, refresh next' : 'Open the live activity drawer'
-    : 'Tune first, then refresh stocks';
+    ? isBoth ? 'Max-speed refresh, retune, then signals' : 'Open the live activity drawer'
+    : 'CPU - 1 retune, then regenerate signals';
 
   return (
     <div className="mb-6 fade-up">
@@ -1666,19 +1686,44 @@ function SignalOperationsBar({
                 );
               })}
             </div>
-            <div className="relative mt-4 h-3 max-w-[760px] overflow-hidden rounded-full p-[1px]" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.18), rgba(255,255,255,0.045))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.42), 0 10px 34px -28px rgba(255,255,255,0.75)' }}>
-              <div aria-hidden className="absolute inset-0 rounded-full" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.08), transparent 52%, rgba(0,0,0,0.16))' }} />
-              <div
-                className="relative h-full rounded-full transition-[width] duration-700 ease-out"
-                style={{
-                  width: `${progressPct}%`,
-                  background: isRunning ? 'linear-gradient(90deg,#8b5cf6 0%,#38d9f5 56%,rgba(255,255,255,0.94) 100%)' : 'linear-gradient(90deg,rgba(139,92,246,0.52),rgba(56,217,245,0.26))',
-                  boxShadow: isRunning ? '0 0 28px -9px rgba(139,92,246,0.95), inset 0 1px 0 rgba(255,255,255,0.48), inset 0 -1px 0 rgba(0,0,0,0.18)' : 'inset 0 1px 0 rgba(255,255,255,0.24)',
-                }}
-              >
-                <span aria-hidden className="absolute inset-x-1 top-0 h-px rounded-full" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.88), transparent)' }} />
-                <span aria-hidden className="absolute inset-0 rounded-full" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.16), transparent 48%)' }} />
-                {isRunning && progressPct > 2 && <span aria-hidden className="absolute right-0 top-1/2 h-4 w-4 -translate-y-1/2 translate-x-1/2 rounded-full" style={{ background: '#fff', boxShadow: '0 0 24px 5px rgba(139,92,246,0.58), 0 0 0 1px rgba(255,255,255,0.65) inset' }} />}
+            <div
+              className="relative mt-4 flex max-w-[800px] items-center gap-4 overflow-hidden rounded-[28px] p-3"
+              style={{
+                background: `radial-gradient(320px 160px at 0% 50%, ${activeStageTone}18, transparent 68%), linear-gradient(135deg, rgba(255,255,255,0.055), rgba(255,255,255,0.018))`,
+                border: `1px solid ${activeStageTone}24`,
+                boxShadow: `0 22px 58px -42px ${activeStageTone}, inset 0 1px 0 rgba(255,255,255,0.07)`,
+              }}
+              aria-label={`Live job progress ${Math.round(progressPct)} percent`}
+            >
+              <CyberProgressRing
+                percent={progressPct}
+                color={activeStageTone}
+                accent={progressAccent}
+                size={162}
+                stroke={11}
+                label={isRunning ? 'Live' : status === 'completed' ? 'Done' : status === 'stopped' ? 'Stopped' : 'Ready'}
+                caption={isBoth ? 'Run both' : isTune ? 'Retune' : 'Signals'}
+                running={isRunning}
+                status={status}
+                stages={pipelineStages}
+                activeStageIndex={activeStageIndex}
+              />
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em]" style={{ color: activeStageTone, background: `${activeStageTone}14`, border: `1px solid ${activeStageTone}2d` }}>
+                    Pipeline state
+                  </span>
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">{progressStageBadge}</span>
+                </div>
+                <div className="mt-2 truncate text-[18px] font-semibold tracking-[-0.035em] text-white">{progressStageTitle}</div>
+                <div className="mt-1 text-[12px] text-[var(--text-secondary)]">
+                  {isRunning ? runningProgressText : status === 'completed' ? 'Fresh results are ready.' : status === 'stopped' ? 'Stopped safely. Ready for the next run.' : 'Ready to run at full CPU - 1 speed.'}
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-[10.5px] text-[var(--text-muted)]">
+                  <span className="rounded-full px-2.5 py-1 tabular-nums" style={{ background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.07)' }}>{Math.round(progressPct)}% complete</span>
+                  {isRunning && <span className="rounded-full px-2.5 py-1 tabular-nums" style={{ color: '#bfdbfe', background: 'rgba(96,165,250,0.09)', border: '1px solid rgba(147,197,253,0.20)' }}>{formatJobElapsed(elapsedSec)} elapsed</span>}
+                  {etaSec !== null && <span className="rounded-full px-2.5 py-1 tabular-nums" style={{ color: '#ddd6fe', background: 'rgba(139,92,246,0.10)', border: '1px solid rgba(167,139,250,0.22)' }}>ETA {formatJobElapsed(etaSec)}</span>}
+                </div>
               </div>
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-[var(--text-muted)]">

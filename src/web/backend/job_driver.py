@@ -38,10 +38,9 @@ TUNE_DIR = REPO_ROOT / "src" / "data" / "tune"
 VALID_MODES = {"stocks", "tune", "retune", "calibrate", "tune-stocks"}
 
 
-def _browser_safe_worker_count(max_workers: int) -> str:
-    cpu_total = os.cpu_count() or 4
-    reserved_for_browser = 2 if cpu_total > 2 else 1
-    return str(max(1, min(max_workers, cpu_total - reserved_for_browser)))
+def _processor_minus_one_worker_count() -> str:
+    cpu_total = os.cpu_count() or 2
+    return str(max(1, cpu_total - 1))
 
 
 def _emit(payload: dict) -> None:
@@ -171,7 +170,7 @@ def _phase_plan(mode: str) -> List[Phase]:
         # Makefile `retune` target prints these markers in order.
         return [
             Phase(
-                "Refreshing market data",
+                "Refreshing last 7 days",
                 "download",
                 PRICES_DIR,
                 ".csv",
@@ -195,18 +194,25 @@ def _phase_plan(mode: str) -> List[Phase]:
     if mode == "tune-stocks":
         return [
             Phase(
-                "Fitting models",
-                "tune",
-                TUNE_DIR,
-                ".json",
-                re.compile(r"Step 1/3:\s*Running tune", re.IGNORECASE),
-            ),
-            Phase(
-                "Refreshing market data",
+                "Refreshing last 7 days",
                 "download",
                 PRICES_DIR,
                 ".csv",
-                re.compile(r"Step 2/3:\s*Refreshing", re.IGNORECASE),
+                re.compile(r"Step 1/3:\s*Refreshing|Step 1/4:\s*Running retune", re.IGNORECASE),
+            ),
+            Phase(
+                "Backing up previous tune",
+                "backup",
+                None,
+                None,
+                re.compile(r"Step 2/3:\s*Backing up", re.IGNORECASE),
+            ),
+            Phase(
+                "Retuning models",
+                "tune",
+                TUNE_DIR,
+                ".json",
+                re.compile(r"Step 3/3:\s*Running tune", re.IGNORECASE),
             ),
             Phase(
                 "Generating dashboard signals",
@@ -214,7 +220,7 @@ def _phase_plan(mode: str) -> List[Phase]:
                 None,
                 None,
                 re.compile(
-                    r"Step 3/3:\s*Generating"
+                    r"Step 4/4:\s*Generating"
                     r"|▸\s*VALIDATION"
                     r"|▸\s*PROCESSING"
                     r"|\d+\s+assets\s+requested",
@@ -353,14 +359,21 @@ def _run(mode: str) -> int:
         "NO_COLOR": "1",
         "COLUMNS": "120",
     }
+    if mode in {"retune", "tune-stocks"}:
+        env.update(
+            {
+                "RETUNE_TUNE_WORKERS": _processor_minus_one_worker_count(),
+                "RETUNE_REFRESH_WORKERS": _processor_minus_one_worker_count(),
+                "PYTHON_OPTIONS_BACKGROUND_SAFE": "1",
+            }
+        )
     if mode == "tune-stocks":
         env.update(
             {
-                "TUNE_STOCKS_TUNE_WORKERS": _browser_safe_worker_count(4),
-                "TUNE_STOCKS_REFRESH_WORKERS": _browser_safe_worker_count(6),
-                "PYTHON_OPTIONS_SIGNAL_WORKERS": _browser_safe_worker_count(4),
-                "PYTHON_OPTIONS_CHART_WORKERS": _browser_safe_worker_count(2),
-                "PYTHON_OPTIONS_BACKGROUND_SAFE": "1",
+                "TUNE_STOCKS_TUNE_WORKERS": _processor_minus_one_worker_count(),
+                "TUNE_STOCKS_REFRESH_WORKERS": _processor_minus_one_worker_count(),
+                "PYTHON_OPTIONS_SIGNAL_WORKERS": _processor_minus_one_worker_count(),
+                "PYTHON_OPTIONS_CHART_WORKERS": _processor_minus_one_worker_count(),
             }
         )
 

@@ -28,6 +28,7 @@ import {
   type JobStageMetric,
   type JobStatus,
 } from '../stores/jobStore';
+import CyberProgressRing from './CyberProgressRing';
 
 const SIGNAL_QUERY_KEYS = [
   ['signalSummary'],
@@ -90,13 +91,13 @@ function stageTone(kind: string) {
   if (kind === 'signals') return { color: '#38d9f5', label: 'Generate signals', doneLabel: 'Generated', unit: 'signals' };
   if (kind === 'backup') return { color: '#a78bfa', label: 'Backup tune', doneLabel: 'Backed up', unit: 'cache' };
   if (kind === 'calibration') return { color: '#10b981', label: 'Calibration', doneLabel: 'Calibrated', unit: 'assets' };
-  if (kind === 'tune') return { color: '#c084fc', label: 'Tune stocks', doneLabel: 'Tuned', unit: 'assets' };
+  if (kind === 'tune') return { color: '#c084fc', label: 'Retune models', doneLabel: 'Tuned', unit: 'assets' };
   return { color: '#94a3b8', label: 'Working', doneLabel: 'Done', unit: 'items' };
 }
 
 const RETUNE_STAGE_ORDER = ['download', 'backup', 'tune', 'calibration'];
 const STOCKS_STAGE_ORDER = ['download', 'signals'];
-const TUNE_STOCKS_STAGE_ORDER = ['tune', 'download', 'signals'];
+const TUNE_STOCKS_STAGE_ORDER = ['download', 'backup', 'tune', 'signals'];
 
 function stagePercent(stage: JobStageMetric | null | undefined) {
   if (!stage || stage.total <= 0) return stage?.status === 'completed' ? 100 : 0;
@@ -141,7 +142,12 @@ export default function JobLiveActivity() {
   const hasCountableActiveStage = activeCounters.total > 0;
   const progressPct = activeCounters.total > 0
     ? Math.min(100, (processed / activeCounters.total) * 100)
-    : isRunning ? 3 : status === 'idle' ? 0 : 100;
+    : isRunning ? 3 : status === 'completed' ? 100 : 0;
+  const activeTone = activeStage ? stageTone(activeStage.kind).color
+    : status === 'completed' ? '#10b981'
+      : status === 'failed' || status === 'error' ? '#fb7185'
+        : '#a78bfa';
+  const activeAccent = isRunning ? '#38d9f5' : status === 'completed' ? '#6ee7b7' : '#38d9f5';
   const stageElapsedSec = activeStage ? Math.max(1, Math.floor((Date.now() - activeStage.startedAt) / 1000)) : elapsedSec;
   const rate = processed > 0 && activeStage?.kind !== 'download' && activeStage?.kind !== 'backup' ? processed / Math.max(stageElapsedSec, 1) : 0;
   const successRate = processed > 0 && activeCounters.fail + activeCounters.done > 0 ? Math.round((activeCounters.done / processed) * 100) : null;
@@ -149,11 +155,33 @@ export default function JobLiveActivity() {
     ? Math.round((activeCounters.total - processed) / rate)
     : null;
   const currentPhase = phases.length > 0 ? phases[phases.length - 1] : null;
+  const ringKinds = mode === 'tune-stocks'
+    ? TUNE_STOCKS_STAGE_ORDER
+    : mode === 'retune'
+      ? RETUNE_STAGE_ORDER
+      : mode === 'stocks'
+        ? STOCKS_STAGE_ORDER
+        : activeStage?.kind ? [activeStage.kind] : ['tune'];
+  const ringStages = ringKinds.map((kind) => {
+    const toneForKind = stageTone(kind);
+    return { key: kind, label: toneForKind.label, tone: toneForKind.color };
+  });
+  const ringActiveStageIndex = (() => {
+    if (status === 'completed') return ringStages.length;
+    if (!isRunning) return 0;
+    const idx = ringStages.findIndex((stage) => stage.key === activeStage?.kind);
+    return idx >= 0 ? idx + 1 : 1;
+  })();
+  const ringStageBadge = isRunning || status === 'completed'
+    ? `Stage ${ringActiveStageIndex} / ${ringStages.length}`
+    : status === 'stopped' ? 'Stopped' : status === 'failed' || status === 'error' ? 'Needs attention' : 'Ready';
   const liveTitle = mode === 'retune' || mode === 'tune' || mode === 'calibrate' || mode === 'tune-stocks'
     ? 'Live Tune Activity'
     : 'Live Market Refresh';
   const liveSubtitle = isRunning
-    ? 'Running quietly in the background — keep exploring Signals.'
+    ? mode === 'tune-stocks'
+      ? 'Refreshing the last 7 days, retuning, then regenerating signals with CPU minus one workers.'
+      : 'Running quietly in the background — keep exploring Signals.'
     : status === 'completed'
       ? 'Finished cleanly. Fresh data is being reflected across the dashboard.'
       : status === 'stopped'
@@ -349,21 +377,35 @@ export default function JobLiveActivity() {
               </div>
             </div>
 
-            <div className="relative h-3 overflow-hidden rounded-full mx-5 mb-4 p-[1px]" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.18), rgba(255,255,255,0.045))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.42), 0 10px 34px -28px rgba(255,255,255,0.75)' }}>
-              <div aria-hidden className="absolute inset-0 rounded-full" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.08), transparent 52%, rgba(0,0,0,0.16))' }} />
-              <div
-                className="relative h-full rounded-full transition-[width] duration-700 ease-out"
-                style={{
-                  width: `${progressPct}%`,
-                  background: job.status === 'failed' || job.status === 'error'
-                    ? 'linear-gradient(90deg,#f43f5e,#fb7185,#fecdd3)'
-                    : `linear-gradient(90deg, ${info.color} 0%, #38d9f5 55%, rgba(255,255,255,0.94) 100%)`,
-                  boxShadow: `0 0 28px -9px ${info.color}, inset 0 1px 0 rgba(255,255,255,0.48), inset 0 -1px 0 rgba(0,0,0,0.18)`,
-                }}
-              >
-                <span aria-hidden className="absolute inset-x-1 top-0 h-px rounded-full" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.88), transparent)' }} />
-                <span aria-hidden className="absolute inset-0 rounded-full" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.16), transparent 48%)' }} />
-                {isRunning && progressPct > 2 && <span aria-hidden className="absolute right-0 top-1/2 h-4 w-4 -translate-y-1/2 translate-x-1/2 rounded-full" style={{ background: '#ffffff', boxShadow: `0 0 24px 5px ${info.color}96, 0 0 0 1px rgba(255,255,255,0.65) inset` }} />}
+            <div className="mx-5 mb-4 flex items-center gap-4 rounded-[26px] p-3" style={{ background: `radial-gradient(320px 160px at 0% 50%, ${activeTone}18, transparent 68%), linear-gradient(135deg, rgba(255,255,255,0.055), rgba(255,255,255,0.018))`, border: `1px solid ${activeTone}24`, boxShadow: `0 22px 58px -42px ${activeTone}, inset 0 1px 0 rgba(255,255,255,0.07)` }}>
+              <CyberProgressRing
+                percent={progressPct}
+                color={activeTone}
+                accent={activeAccent}
+                size={146}
+                stroke={10}
+                label={isRunning ? 'Live' : status === 'completed' ? 'Done' : status === 'stopped' ? 'Stopped' : 'Ready'}
+                caption={mode === 'tune-stocks' ? 'Run both' : mode === 'stocks' ? 'Stocks' : 'Retune'}
+                running={isRunning}
+                status={status}
+                stages={ringStages}
+                activeStageIndex={ringActiveStageIndex}
+              />
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em]" style={{ color: activeTone, background: `${activeTone}14`, border: `1px solid ${activeTone}2d` }}>
+                    Pipeline state
+                  </span>
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">{ringStageBadge}</span>
+                </div>
+                <div className="mt-2 truncate text-[17px] font-semibold tracking-[-0.035em] text-white">{activeStage?.title ?? currentPhase?.title ?? 'Live pipeline'}</div>
+                <div className="mt-1 text-[12px] text-[var(--text-secondary)]">
+                  {isRunning ? `${hasCountableActiveStage ? `${processed} / ${activeCounters.total}` : 'Live'} ${activeStage ? stageTone(activeStage.kind).unit : 'items'}` : liveSubtitle}
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-[10.5px] text-[var(--text-muted)]">
+                  <span className="rounded-full px-2.5 py-1 tabular-nums" style={{ background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.07)' }}>{Math.round(progressPct)}% complete</span>
+                  {eta !== null && <span className="rounded-full px-2.5 py-1 tabular-nums" style={{ color: '#ddd6fe', background: 'rgba(139,92,246,0.10)', border: '1px solid rgba(167,139,250,0.22)' }}>ETA {formatJobElapsed(eta)}</span>}
+                </div>
               </div>
             </div>
           </div>
@@ -644,12 +686,23 @@ export default function JobLiveActivity() {
             <button
               type="button"
               onClick={job.toggleExpanded}
-              className="relative h-9 w-9 rounded-[14px] flex items-center justify-center shrink-0 transition-transform hover:scale-[1.03] active:scale-95"
-              style={{ background: `linear-gradient(145deg, ${info.color}2a, rgba(255,255,255,0.03))`, border: `1px solid ${info.color}36`, color: info.color, boxShadow: isRunning ? `0 0 18px -6px ${info.color}` : undefined }}
+              className="relative flex h-14 w-14 items-center justify-center shrink-0 transition-transform hover:scale-[1.03] active:scale-95"
+              style={{ color: activeTone }}
               aria-label="Expand live job progress"
             >
-              {isRunning ? <Loader2 className="h-4.5 w-4.5 animate-spin" /> : job.status === 'completed' ? <CheckCircle2 className="h-4.5 w-4.5" /> : job.status === 'failed' || job.status === 'error' ? <XCircle className="h-4.5 w-4.5" /> : <Activity className="h-4.5 w-4.5" />}
-              {isRunning && <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full pulse-dot" style={{ background: info.color, boxShadow: `0 0 8px ${info.color}` }} />}
+              <CyberProgressRing
+                percent={progressPct}
+                color={activeTone}
+                accent={activeAccent}
+                size={54}
+                stroke={5}
+                running={isRunning}
+                status={status}
+                compact
+                stages={ringStages}
+                activeStageIndex={ringActiveStageIndex}
+                ariaLabel="Expand live job progress"
+              />
             </button>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
@@ -669,10 +722,8 @@ export default function JobLiveActivity() {
                 )}
               </div>
               <div className="mt-2 flex items-center gap-2">
-                <div className="h-2.5 flex-1 overflow-hidden rounded-full p-[1px]" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.16), rgba(255,255,255,0.045))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.40)' }}>
-                  <div className="relative h-full rounded-full transition-[width] duration-700" style={{ width: `${progressPct}%`, background: `linear-gradient(90deg, ${info.color} 0%, #38d9f5 58%, rgba(255,255,255,0.9) 100%)`, boxShadow: `0 0 18px -7px ${info.color}, inset 0 1px 0 rgba(255,255,255,0.45)` }}>
-                    <span aria-hidden className="absolute inset-x-1 top-0 h-px rounded-full" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.82), transparent)' }} />
-                  </div>
+                <div className="flex-1 text-[10px] uppercase tracking-[0.12em] text-[var(--text-muted)]">
+                  {ringStageBadge}
                 </div>
                 <span className="text-[10px] font-mono text-[var(--text-secondary)] tabular-nums min-w-[74px] text-right">
                   {processed}{activeCounters.total > 0 ? ` / ${activeCounters.total}` : ''}
@@ -788,8 +839,11 @@ function StageTelemetryPanel({ stages, activeKey, mode }: { stages: JobStageMetr
                   {stage.kind === 'download' ? `${pending} pending` : !hasCount && active ? 'working' : stage.fail > 0 ? `${stage.fail} failed` : tone.unit}
                 </div>
               </div>
-              <div className="mt-3 h-2.5 overflow-hidden rounded-full p-[1px]" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.15), rgba(255,255,255,0.04))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.34)' }}>
-                <div className="h-full rounded-full transition-[width] duration-700 ease-out" style={{ width: `${pct}%`, background: `linear-gradient(90deg, ${tone.color}, #38d9f5, rgba(255,255,255,0.9))`, boxShadow: active ? `0 0 20px -8px ${tone.color}, inset 0 1px 0 rgba(255,255,255,0.44)` : 'inset 0 1px 0 rgba(255,255,255,0.22)' }} />
+              <div className="mt-3 h-3.5 overflow-hidden rounded-full p-[1px]" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.16), rgba(255,255,255,0.04))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.36)' }}>
+                <div className="relative h-full overflow-hidden rounded-full transition-[width] duration-700 ease-out" style={{ width: `${Math.max(active ? 6 : 0, pct)}%`, background: `linear-gradient(90deg, ${tone.color}, #38d9f5, rgba(255,255,255,0.92))`, boxShadow: active ? `0 0 22px -8px ${tone.color}, inset 0 1px 0 rgba(255,255,255,0.46)` : 'inset 0 1px 0 rgba(255,255,255,0.24)' }}>
+                  {active && <span aria-hidden className="job-progress-stripes absolute inset-0" />}
+                  <span aria-hidden className="absolute inset-x-1 top-0 h-px rounded-full" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.84), transparent)' }} />
+                </div>
               </div>
             </div>
           );
@@ -837,8 +891,9 @@ function RefreshPassCard({ pass, totalPasses, ok, pending }: { pass: number; tot
             <span>Pass cycle</span>
             <span className="text-[#bfdbfe] tabular-nums">{Math.round(passPct)}%</span>
           </div>
-          <div className="relative h-3 overflow-hidden rounded-full p-[1px]" style={{ background: 'linear-gradient(180deg, rgba(191,219,254,0.18), rgba(191,219,254,0.045))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.38)' }}>
-            <div className="relative h-full rounded-full transition-[width] duration-700 ease-out" style={{ width: `${passPct}%`, background: 'linear-gradient(90deg, #60a5fa 0%, #818cf8 55%, rgba(255,255,255,0.92) 100%)', boxShadow: '0 0 24px -9px rgba(96,165,250,0.95), inset 0 1px 0 rgba(255,255,255,0.45)' }}>
+          <div className="relative h-3.5 overflow-hidden rounded-full p-[1px]" style={{ background: 'linear-gradient(180deg, rgba(191,219,254,0.20), rgba(191,219,254,0.045))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.40)' }}>
+            <div className="relative h-full overflow-hidden rounded-full transition-[width] duration-700 ease-out" style={{ width: `${passPct}%`, background: 'linear-gradient(90deg, #60a5fa 0%, #818cf8 55%, rgba(255,255,255,0.92) 100%)', boxShadow: '0 0 24px -9px rgba(96,165,250,0.95), inset 0 1px 0 rgba(255,255,255,0.45)' }}>
+              <span aria-hidden className="job-progress-stripes absolute inset-0" />
               <span aria-hidden className="absolute inset-x-1 top-0 h-px rounded-full" style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.86), transparent)' }} />
             </div>
           </div>
@@ -849,10 +904,12 @@ function RefreshPassCard({ pass, totalPasses, ok, pending }: { pass: number; tot
             <span>Universe coverage</span>
             <span className="text-[#a7f3d0] tabular-nums">{coverageLabel} ready</span>
           </div>
-          <div className="relative flex h-3 overflow-hidden rounded-full p-[1px]" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.15), rgba(255,255,255,0.04))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.38)' }}>
+          <div className="relative flex h-3.5 overflow-hidden rounded-full p-[1px]" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.16), rgba(255,255,255,0.04))', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.40)' }}>
             {processed > 0 ? (
               <>
-                <div className="relative h-full rounded-l-full transition-[width] duration-700 ease-out" style={{ width: `${okPct}%`, background: 'linear-gradient(90deg, #10b981 0%, #34d399 72%, #a7f3d0 100%)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.35)' }} />
+                <div className="relative h-full overflow-hidden rounded-l-full transition-[width] duration-700 ease-out" style={{ width: `${okPct}%`, background: 'linear-gradient(90deg, #10b981 0%, #34d399 72%, #a7f3d0 100%)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.35)' }}>
+                  <span aria-hidden className="job-progress-stripes absolute inset-0" />
+                </div>
                 <div className="relative h-full rounded-r-full transition-[width] duration-700 ease-out" style={{ width: `${pendingPct}%`, background: pending > 0 ? 'linear-gradient(90deg, rgba(251,191,36,0.34), rgba(253,230,138,0.62))' : 'transparent' }} />
               </>
             ) : (

@@ -10,7 +10,7 @@ This ensures fresh data. The download is unreliable so we always run multiple pa
 
 Usage:
     python src/data_ops/refresh_data.py
-    python src/data_ops/refresh_data.py --days 5 --retries 5
+    python src/data_ops/refresh_data.py --days 7 --retries 5
     python src/data_ops/refresh_data.py --days 3 --retries 3 --workers 2
 """
 
@@ -678,7 +678,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Refresh price data by trimming recent days and re-downloading"
     )
-    parser.add_argument("--days", type=int, default=5, help="Days to trim from cache (default: 5)")
+    parser.add_argument("--days", type=int, default=7, help="Days to trim from cache (default: 7)")
     parser.add_argument("--retries", type=int, default=5, help="Download passes - ALWAYS runs this many (default: 5)")
     parser.add_argument("--workers", type=int, default=2, help="Parallel download workers (default: 2)")
     parser.add_argument("--batch-size", type=int, default=16, help="Symbols per batch (default: 16)")

@@ -1821,6 +1821,259 @@ button:active:not(:disabled) {
   100% { transform: translateX(350%); }
 }
 
+@keyframes job-progress-flow {
+  from { background-position: 0 0; }
+  to { background-position: 32px 0; }
+}
+
+@keyframes job-progress-sheen {
+  0% { transform: translateX(-130%) skewX(-18deg); opacity: 0; }
+  18% { opacity: 0.55; }
+  62% { opacity: 0.75; }
+  100% { transform: translateX(170%) skewX(-18deg); opacity: 0; }
+}
+
+.job-progress-stripes {
+  background-image: linear-gradient(135deg, rgba(255,255,255,0.28) 0 9px, transparent 9px 18px);
+  background-size: 32px 32px;
+  animation: job-progress-flow 1.35s linear infinite;
+  mix-blend-mode: screen;
+  opacity: 0.22;
+}
+
+.job-progress-sheen {
+  animation: job-progress-sheen 2.4s ease-in-out infinite;
+}
+
+@keyframes cyber-ring-breathe {
+  0%, 100% { opacity: 0.52; transform: scale(0.96); }
+  50% { opacity: 0.92; transform: scale(1.05); }
+}
+
+@keyframes cyber-ring-ticks {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes cyber-ring-sweep {
+  0% { transform: rotate(0deg); opacity: 0.08; }
+  45% { opacity: 0.32; }
+  100% { transform: rotate(360deg); opacity: 0.08; }
+}
+
+.cyber-progress-ring {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  isolation: isolate;
+}
+
+.cyber-progress-ring__aura {
+  position: absolute;
+  inset: -22%;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle, color-mix(in srgb, var(--ring-color) 48%, transparent), transparent 56%),
+    radial-gradient(circle at 72% 18%, color-mix(in srgb, var(--ring-accent) 34%, transparent), transparent 42%),
+    radial-gradient(circle at 18% 76%, rgba(244,114,182,0.18), transparent 46%);
+  filter: blur(12px);
+  opacity: 0.72;
+}
+
+.cyber-progress-ring__grid {
+  position: absolute;
+  inset: 13%;
+  border-radius: 999px;
+  background:
+    linear-gradient(color-mix(in srgb, var(--ring-color) 13%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--ring-accent) 12%, transparent) 1px, transparent 1px);
+  background-size: 18px 18px;
+  mask: radial-gradient(circle, transparent 0 47%, #000 48% 70%, transparent 71%);
+  opacity: 0.38;
+}
+
+.cyber-progress-ring__ticks {
+  position: absolute;
+  inset: 2%;
+  border-radius: 999px;
+  background: repeating-conic-gradient(from -90deg, color-mix(in srgb, var(--ring-color) 58%, transparent) 0deg 2deg, transparent 2deg 10deg);
+  mask: radial-gradient(circle, transparent 58%, #000 59% 63%, transparent 64%);
+  opacity: 0.58;
+}
+
+.cyber-progress-ring.is-running .cyber-progress-ring__aura {
+  animation: cyber-ring-breathe 2.8s ease-in-out infinite;
+}
+
+.cyber-progress-ring.is-running .cyber-progress-ring__ticks {
+  animation: cyber-ring-ticks 18s linear infinite;
+}
+
+.cyber-progress-ring svg {
+  position: relative;
+  z-index: 2;
+  overflow: visible;
+}
+
+.cyber-progress-ring__arc {
+  transition: stroke-dashoffset 700ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.cyber-progress-ring__core {
+  position: absolute;
+  z-index: 3;
+  inset: 18%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--ring-accent) 20%, transparent), transparent 48%),
+    radial-gradient(circle at 50% 100%, color-mix(in srgb, var(--ring-color) 15%, transparent), transparent 50%),
+    linear-gradient(180deg, rgba(12,15,28,0.92), rgba(3,6,14,0.96));
+  border: 1px solid color-mix(in srgb, var(--ring-accent) 18%, rgba(255,255,255,0.08));
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.12),
+    inset 0 -18px 26px rgba(0,0,0,0.30),
+    0 0 28px color-mix(in srgb, var(--ring-color) 18%, transparent);
+}
+
+.cyber-progress-ring__core::before {
+  content: '';
+  position: absolute;
+  inset: 9%;
+  border-radius: inherit;
+  border: 1px solid color-mix(in srgb, var(--ring-color) 22%, transparent);
+  box-shadow: inset 0 0 18px color-mix(in srgb, var(--ring-color) 16%, transparent);
+  pointer-events: none;
+}
+
+.cyber-progress-ring__core::after {
+  content: '';
+  position: absolute;
+  inset: 24%;
+  border-radius: inherit;
+  background: radial-gradient(circle, color-mix(in srgb, var(--ring-accent) 16%, transparent), transparent 68%);
+  pointer-events: none;
+}
+
+.cyber-progress-ring__value {
+  position: relative;
+  z-index: 1;
+  color: #fff;
+  font-size: clamp(18px, 28%, 34px);
+  line-height: 0.9;
+  font-weight: 750;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 18px color-mix(in srgb, var(--ring-color) 62%, transparent);
+}
+
+.cyber-progress-ring__value::after {
+  content: '%';
+  margin-left: 1px;
+  color: color-mix(in srgb, var(--ring-accent) 76%, white);
+  font-size: 0.42em;
+  font-weight: 800;
+}
+
+.cyber-progress-ring__label,
+.cyber-progress-ring__caption {
+  position: relative;
+  z-index: 1;
+  max-width: 78%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.cyber-progress-ring__label {
+  margin-top: 5px;
+  color: color-mix(in srgb, var(--ring-accent) 72%, white);
+  font-size: 8.5px;
+  font-weight: 800;
+}
+
+.cyber-progress-ring__caption {
+  margin-top: 2px;
+  color: rgba(226,232,240,0.52);
+  font-size: 7.5px;
+  font-weight: 700;
+}
+
+.cyber-progress-ring__sweep {
+  position: absolute;
+  z-index: 1;
+  inset: 6%;
+  border-radius: 999px;
+  background: conic-gradient(from 0deg, transparent 0deg, transparent 285deg, color-mix(in srgb, var(--ring-accent) 40%, transparent) 318deg, transparent 350deg);
+  filter: blur(1px);
+  animation: cyber-ring-sweep 2.2s linear infinite;
+}
+
+.cyber-progress-ring__node {
+  position: absolute;
+  z-index: 4;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+  background: rgba(255,255,255,0.22);
+  border: 1px solid rgba(255,255,255,0.26);
+  box-shadow: 0 0 0 3px rgba(255,255,255,0.035), 0 0 12px rgba(255,255,255,0.08);
+}
+
+.cyber-progress-ring__node.is-done,
+.cyber-progress-ring__node.is-active {
+  background: var(--node-color);
+  border-color: color-mix(in srgb, var(--node-color) 70%, white);
+}
+
+.cyber-progress-ring__node.is-active {
+  width: 11px;
+  height: 11px;
+  box-shadow:
+    0 0 18px color-mix(in srgb, var(--node-color) 85%, transparent),
+    0 0 0 4px color-mix(in srgb, var(--node-color) 16%, transparent);
+}
+
+.cyber-progress-ring.is-compact .cyber-progress-ring__core {
+  inset: 25%;
+}
+
+.cyber-progress-ring.is-compact .cyber-progress-ring__value {
+  font-size: 13px;
+}
+
+.cyber-progress-ring.is-compact .cyber-progress-ring__ticks {
+  opacity: 0.34;
+}
+
+.cyber-progress-ring.is-compact .cyber-progress-ring__node {
+  width: 4px;
+  height: 4px;
+}
+
+.cyber-progress-ring.is-compact .cyber-progress-ring__node.is-active {
+  width: 6px;
+  height: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .job-progress-stripes,
+  .job-progress-sheen,
+  .cyber-progress-ring__aura,
+  .cyber-progress-ring__ticks,
+  .cyber-progress-ring__sweep {
+    animation: none !important;
+  }
+}
+
 /* ================================================================
    STATUS STRIP
    ================================================================ */

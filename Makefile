@@ -2,6 +2,14 @@ SHELL := /bin/bash
 
 .PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots rectify-indicators tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market chain chain-force chain-dry stocks tune-stocks options-tune options-tune-force options-tune-dry arena arena-data arena-tune arena-results arena-safe-storage arena-safe pit pit-metals pit-full pit-g metals-diag diag diag-pit diag-debug diag-refine verify verify-quick verify-signals verify-signals-quick verify-stocks calibrate-signals web-install web-install-worker redis web-worker web-backend web-frontend web-build web-free-ports web web-stop
 
+CPU_MINUS_ONE ?= $(shell python3 -c 'import os; print(max(1, (os.cpu_count() or 2) - 1))' 2>/dev/null || echo 1)
+RETUNE_REFRESH_WORKERS ?= $(CPU_MINUS_ONE)
+RETUNE_TUNE_WORKERS ?= $(CPU_MINUS_ONE)
+TUNE_STOCKS_REFRESH_WORKERS ?= $(CPU_MINUS_ONE)
+TUNE_STOCKS_TUNE_WORKERS ?= $(CPU_MINUS_ONE)
+TUNE_STOCKS_SIGNAL_WORKERS ?= $(CPU_MINUS_ONE)
+TUNE_STOCKS_CHART_WORKERS ?= $(CPU_MINUS_ONE)
+
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║                              MAKEFILE USAGE                                  ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -51,7 +59,7 @@ SHELL := /bin/bash
 # ├──────────────────────────────────────────────────────────────────────────────┤
 # │  make tune               Estimate optimal Kalman q parameters via MLE        │
 # │  make tune ARGS="--force"  Re-estimate all (ignore cache)                    │
-# │  make retune             Refresh data, backup tune folder, run tune          │
+# │  make retune             Refresh last 7 days, backup tune, run tune          │
 # │  make calibrate          Re-tune only assets with PIT failures (p < 0.05)   │
 # │  make calibrate-four     Re-tune 4 random failing assets (for testing)      │
 # │  make escalate           Re-tune assets needing escalation (mixture/ν)      │
@@ -230,15 +238,15 @@ tune: .venv/.deps_installed
 	@mkdir -p cache
 	@.venv/bin/python src/tuning/tune_ux.py $(ARGS)
 
-# Full retune: refresh data, backup existing tune folder, then run tune
+# Full retune: refresh the latest 7-day data window, backup existing tune folder, then run tune
 # Backup folder is named with timestamp: tune-bak/tune_YYYYMMDD_HHMMSS
 retune: .venv/.deps_installed
 	@echo "═══════════════════════════════════════════════════════════════════════════"
-	@echo "  🔄 RETUNE: Refresh Data → Backup Tune → Run Tune"
+	@echo "  🔄 RETUNE: Refresh Last 7 Days → Backup Tune → Run Tune"
 	@echo "═══════════════════════════════════════════════════════════════════════════"
 	@echo ""
-	@echo "📥 Step 1/3: Refreshing market data..."
-	@$(MAKE) refresh
+	@echo "📥 Step 1/3: Refreshing last 7 days of market data..."
+	@.venv/bin/python src/data_ops/refresh_data.py --days 7 --retries 5 --workers $(RETUNE_REFRESH_WORKERS) --batch-size 16 $(ARGS)
 	@echo ""
 	@echo "📦 Step 2/3: Backing up existing tune folder..."
 	@if [ -d src/data/tune ] && [ -n "$$(ls -A src/data/tune 2>/dev/null)" ]; then \
@@ -253,7 +261,7 @@ retune: .venv/.deps_installed
 	fi
 	@echo ""
 	@echo "🎛️  Step 3/3: Running tune..."
-	@$(MAKE) tune $(ARGS)
+	@$(MAKE) tune ARGS="$(ARGS) $(if $(RETUNE_TUNE_WORKERS),--workers $(RETUNE_TUNE_WORKERS),)"
 	@echo ""
 	@echo "═══════════════════════════════════════════════════════════════════════════"
 	@echo "  ✅ RETUNE COMPLETE"
@@ -514,12 +522,10 @@ stocks: .venv/.deps_installed
 	@$(MAKE) fx-plnjpy
 
 tune-stocks: .venv/.deps_installed
-	@echo "Step 1/3: Running tune..."
-	@$(MAKE) tune ARGS="$(ARGS) $(if $(TUNE_STOCKS_TUNE_WORKERS),--workers $(TUNE_STOCKS_TUNE_WORKERS),)"
-	@echo "Step 2/3: Refreshing market data..."
-	@.venv/bin/python src/data_ops/refresh_data.py --skip-trim --retries 5 --workers $(or $(TUNE_STOCKS_REFRESH_WORKERS),12) --batch-size 16 $(ARGS)
-	@echo "Step 3/3: Generating signals..."
-	@$(MAKE) fx-plnjpy ARGS="$(ARGS)"
+	@echo "Step 1/4: Running retune (refresh last 7 days → backup → tune)..."
+	@$(MAKE) retune ARGS="$(ARGS)" RETUNE_REFRESH_WORKERS="$(TUNE_STOCKS_REFRESH_WORKERS)" RETUNE_TUNE_WORKERS="$(TUNE_STOCKS_TUNE_WORKERS)"
+	@echo "Step 4/4: Generating signals..."
+	@PYTHON_OPTIONS_SIGNAL_WORKERS="$(TUNE_STOCKS_SIGNAL_WORKERS)" PYTHON_OPTIONS_CHART_WORKERS="$(TUNE_STOCKS_CHART_WORKERS)" $(MAKE) fx-plnjpy ARGS="$(ARGS)"
 
 # ┌──────────────────────────────────────────────────────────────────────────────┐
 # │  🔗 OPTIONS CHAIN ANALYSIS (Hierarchical Bayesian Framework)                 │
@@ -568,9 +574,9 @@ top20: .venv/.deps_installed
 data: .venv/.deps_installed
 	@.venv/bin/python src/data_ops/refresh_data.py --skip-trim --retries 5 --workers 12 --batch-size 16 $(ARGS)
 
-# Refresh data: delete last 5 days from cache, then bulk re-download 5 times
+# Refresh data: delete last 7 days from cache, then bulk re-download 5 times
 refresh: .venv/.deps_installed
-	@.venv/bin/python src/data_ops/refresh_data.py --days 5 --retries 5 --workers 12 --batch-size 16 $(ARGS)
+	@.venv/bin/python src/data_ops/refresh_data.py --days 7 --retries 5 --workers 12 --batch-size 16 $(ARGS)
 
 four:
 	@if [ ! -d src/data/tune ] || [ -z "$$(ls -A src/data/tune/*.json 2>/dev/null | head -1)" ]; then \

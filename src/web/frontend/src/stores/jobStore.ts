@@ -291,9 +291,9 @@ function initialState(): Omit<JobState,
 export const JOB_MODE_LABELS: Record<JobMode, { title: string; shortTitle: string; desc: string; color: string }> = {
   tune: { title: 'Retune models', shortTitle: 'Tune', desc: 'Re-estimating model parameters', color: '#8b5cf6' },
   stocks: { title: 'Refresh stocks', shortTitle: 'Stocks', desc: 'Refreshing prices and signals', color: '#3b82f6' },
-  retune: { title: 'Run Tune', shortTitle: 'Tune', desc: 'Full retune pipeline', color: '#8b5cf6' },
+  retune: { title: 'Run Tune', shortTitle: 'Tune', desc: 'Refresh the last 7 days, back up cache, then retune', color: '#8b5cf6' },
   calibrate: { title: 'Calibrate', shortTitle: 'Calibrate', desc: 'Repairing calibration failures', color: '#10b981' },
-  'tune-stocks': { title: 'Run Both', shortTitle: 'Both', desc: 'Tune models, then refresh prices and signals', color: '#14b8a6' },
+  'tune-stocks': { title: 'Run Both', shortTitle: 'Both', desc: 'CPU - 1 retune with a fresh 7-day refresh, then regenerate signals', color: '#14b8a6' },
 };
 
 function metricKindFromPhase(kind?: string, title?: string): string | null {
@@ -318,9 +318,9 @@ function stageKeyFor(kind: string, step?: number): string {
 }
 
 function stageTitleFor(kind: string, title: string): string {
-  if (kind === 'download') return 'Refresh data';
+  if (kind === 'download') return title.toLowerCase().includes('7') ? 'Refresh last 7 days' : 'Refresh data';
   if (kind === 'backup') return 'Backup tune cache';
-  if (kind === 'tune') return 'Tune stocks';
+  if (kind === 'tune') return 'Retune models';
   if (kind === 'signals') return 'Generate signals';
   if (kind === 'calibration') return 'Calibration';
   return title;
