@@ -287,6 +287,8 @@ def compute_and_render_unified_risk(
     
     if console is None:
         console = Console()
+    if os.getenv("PYTHON_OPTIONS_BACKGROUND_SAFE") == "1":
+        use_parallel = False
     
     # Use maximum available processors
     max_workers = min(3, multiprocessing.cpu_count())  # 3 modules max

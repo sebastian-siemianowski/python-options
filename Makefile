@@ -515,9 +515,9 @@ stocks: .venv/.deps_installed
 
 tune-stocks: .venv/.deps_installed
 	@echo "Step 1/3: Running tune..."
-	@$(MAKE) tune ARGS="$(ARGS)"
+	@$(MAKE) tune ARGS="$(ARGS) $(if $(TUNE_STOCKS_TUNE_WORKERS),--workers $(TUNE_STOCKS_TUNE_WORKERS),)"
 	@echo "Step 2/3: Refreshing market data..."
-	@.venv/bin/python src/data_ops/refresh_data.py --skip-trim --retries 5 --workers 12 --batch-size 16 $(ARGS)
+	@.venv/bin/python src/data_ops/refresh_data.py --skip-trim --retries 5 --workers $(or $(TUNE_STOCKS_REFRESH_WORKERS),12) --batch-size 16 $(ARGS)
 	@echo "Step 3/3: Generating signals..."
 	@$(MAKE) fx-plnjpy ARGS="$(ARGS)"
 

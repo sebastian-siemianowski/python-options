@@ -36,6 +36,28 @@ SMA_CHARTS_DIR = os.path.join(REPO_ROOT, "src", "data", "plots", "sma")
 INDEX_CHARTS_DIR = os.path.join(REPO_ROOT, "src", "data", "plots", "index")
 TUNE_DIR = os.path.join(REPO_ROOT, "src", "data", "tune")
 
+
+def _env_worker_cap(name: str) -> Optional[int]:
+    raw = os.getenv(name)
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _resolve_chart_worker_count(task_count: int) -> int:
+    if task_count <= 0:
+        return 1
+    base = os.cpu_count() or 4
+    cap = _env_worker_cap("PYTHON_OPTIONS_CHART_WORKERS")
+    if cap is not None:
+        base = min(base, cap)
+    return max(1, min(base, task_count))
+
+
 # ─── Index fund / ETF universe ────────────────────────────────────────────────
 INDEX_FUND_TICKERS = [
     # Broad market
@@ -1220,7 +1242,7 @@ def generate_signal_charts(quiet: bool = False) -> Dict:
     # Generate charts in parallel using multiple processes
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
-    n_workers = min(os.cpu_count() or 4, len(tasks))
+    n_workers = _resolve_chart_worker_count(len(tasks))
     with ProcessPoolExecutor(max_workers=n_workers, initializer=_pool_initializer) as pool:
         futures = {pool.submit(_chart_worker, t): t for t in tasks}
         for future in as_completed(futures):
@@ -1571,7 +1593,7 @@ def generate_sma_charts(
     # Generate charts in parallel using multiple processes
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
-    n_workers = min(os.cpu_count() or 4, len(tasks))
+    n_workers = _resolve_chart_worker_count(len(tasks))
     with ProcessPoolExecutor(max_workers=n_workers, initializer=_pool_initializer) as pool:
         futures = {pool.submit(_chart_worker, t): t for t in tasks}
         for future in as_completed(futures):
@@ -1681,7 +1703,7 @@ def generate_index_charts(quiet: bool = False) -> Dict:
     # Generate charts in parallel
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
-    n_workers = min(os.cpu_count() or 4, len(tasks))
+    n_workers = _resolve_chart_worker_count(len(tasks))
     with ProcessPoolExecutor(max_workers=n_workers, initializer=_pool_initializer) as pool:
         futures = {pool.submit(_chart_worker, t): t for t in tasks}
         for future in as_completed(futures):

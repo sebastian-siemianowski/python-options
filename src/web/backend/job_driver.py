@@ -38,6 +38,12 @@ TUNE_DIR = REPO_ROOT / "src" / "data" / "tune"
 VALID_MODES = {"stocks", "tune", "retune", "calibrate", "tune-stocks"}
 
 
+def _browser_safe_worker_count(max_workers: int) -> str:
+    cpu_total = os.cpu_count() or 4
+    reserved_for_browser = 2 if cpu_total > 2 else 1
+    return str(max(1, min(max_workers, cpu_total - reserved_for_browser)))
+
+
 def _emit(payload: dict) -> None:
     """Write a semantic event as a single line to stdout."""
     sys.stdout.write("@@EVT@@ " + json.dumps(payload, ensure_ascii=False) + "\n")
@@ -347,6 +353,16 @@ def _run(mode: str) -> int:
         "NO_COLOR": "1",
         "COLUMNS": "120",
     }
+    if mode == "tune-stocks":
+        env.update(
+            {
+                "TUNE_STOCKS_TUNE_WORKERS": _browser_safe_worker_count(4),
+                "TUNE_STOCKS_REFRESH_WORKERS": _browser_safe_worker_count(6),
+                "PYTHON_OPTIONS_SIGNAL_WORKERS": _browser_safe_worker_count(4),
+                "PYTHON_OPTIONS_CHART_WORKERS": _browser_safe_worker_count(2),
+                "PYTHON_OPTIONS_BACKGROUND_SAFE": "1",
+            }
+        )
 
     proc = subprocess.Popen(
         ["make", mode],

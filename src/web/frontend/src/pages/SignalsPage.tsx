@@ -796,13 +796,15 @@ function SignalsPageInner() {
   const collapseAll = () => setExpandedSectors(new Set());
 
   const openOrStartJob = (mode: 'stocks' | 'retune' | 'tune-stocks') => {
+    const currentRunBothIsRunning = isJobRunning && activeJobMode === 'tune-stocks';
+    const openDetailedProgress = mode !== 'tune-stocks' && !currentRunBothIsRunning;
     if (isJobRunning) {
       showJobSurface();
-      setJobExpanded(true);
+      setJobExpanded(openDetailedProgress);
     } else {
       startJob(mode);
       showJobSurface();
-      setJobExpanded(true);
+      setJobExpanded(openDetailedProgress);
     }
   };
 

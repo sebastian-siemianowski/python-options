@@ -151,6 +151,8 @@ const STORAGE_KEY = 'python-options-live-job-snapshot-v1';
 const MAX_ASSETS = 500;
 const MAX_LOGS = 300;
 const MAX_PHASES = 30;
+const RUN_BOTH_ASSET_MIN_DELTA = 10;
+const RUN_BOTH_ASSET_MIN_INTERVAL_MS = 700;
 const REFRESH_PASS_RX = /Pass\s+(\d+)\s*\/\s*(\d+)/i;
 const REFRESH_PROGRESS_RX = /●\s*(\d+)\s*ok\s*[·|/•]\s*(\d+)\s*pending/i;
 const REFRESH_COMPLETE_RX = /✓\s*(\d+)\s*\/\s*(\d+)\s*complete/i;
@@ -161,6 +163,8 @@ let eventSource: EventSource | null = null;
 let elapsedTimer: number | null = null;
 let logFlushTimer: number | null = null;
 let pendingLogLines: JobLogLine[] = [];
+let lastRunBothAssetDone = 0;
+let lastRunBothAssetUiUpdate = 0;
 let logId = 0;
 let phaseId = 0;
 
@@ -222,6 +226,7 @@ function safeLoadSnapshot(): Partial<JobState> | null {
 
 function persistSnapshot(state: JobState) {
   try {
+    const compactRunningSnapshot = state.status === 'running' && state.mode === 'tune-stocks';
     const snapshot = {
       mode: state.mode,
       status: state.status,
@@ -236,9 +241,9 @@ function persistSnapshot(state: JobState) {
       finishedAt: state.finishedAt,
       errorMsg: state.errorMsg,
       refreshPass: state.refreshPass,
-      modelBySymbol: state.modelBySymbol,
-      modelMetaBySymbol: state.modelMetaBySymbol,
-      modelCounts: state.modelCounts,
+      modelBySymbol: compactRunningSnapshot ? {} : state.modelBySymbol,
+      modelMetaBySymbol: compactRunningSnapshot ? {} : state.modelMetaBySymbol,
+      modelCounts: compactRunningSnapshot ? {} : state.modelCounts,
       surfaceVisible: state.surfaceVisible,
       expanded: state.expanded,
       rawLogOpen: false,
@@ -461,13 +466,15 @@ export const useJobStore = create<JobState>((set, get) => ({
   startJob: (mode) => {
     const current = get();
     if (current.status === 'running') {
-      set({ surfaceVisible: true, expanded: true });
+      set({ surfaceVisible: true, expanded: current.mode !== 'tune-stocks' });
       return;
     }
 
     cleanupStream();
     logId = 0;
     phaseId = 0;
+    lastRunBothAssetDone = 0;
+    lastRunBothAssetUiUpdate = 0;
     const startedAt = Date.now();
     const launchInfo = JOB_MODE_LABELS[mode];
     let persistTimer: number | null = null;
@@ -639,6 +646,19 @@ export const useJobStore = create<JobState>((set, get) => ({
       if (data.type === 'log') {
         if (data.message) enqueueLogLine(data.message);
         return;
+      }
+
+      if (mode === 'tune-stocks' && data.type === 'asset' && data.status !== 'fail') {
+        const processed = (data.done ?? 0) + (data.fail ?? 0);
+        const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        const reachedTerminalCount = typeof data.total === 'number' && data.total > 0 && processed >= data.total;
+        const enoughProgress = processed <= 1 || processed - lastRunBothAssetDone >= RUN_BOTH_ASSET_MIN_DELTA;
+        const enoughTime = now - lastRunBothAssetUiUpdate >= RUN_BOTH_ASSET_MIN_INTERVAL_MS;
+        if (!reachedTerminalCount && !enoughProgress && !enoughTime) {
+          return;
+        }
+        lastRunBothAssetDone = Math.max(lastRunBothAssetDone, processed);
+        lastRunBothAssetUiUpdate = now;
       }
 
       set((state) => {
@@ -860,18 +880,37 @@ export const useJobStore = create<JobState>((set, get) => ({
             break;
 
           case 'completed':
-          case 'failed':
+          case 'failed': {
             cleanupStream();
+            const now = Date.now();
+            const finalDone = typeof data.done === 'number' ? data.done : undefined;
+            const finalTotal = typeof data.total === 'number' ? data.total : undefined;
+            const finalFail = state.counters.fail;
             next.status = data.type;
-            next.finishedAt = Date.now();
+            next.finishedAt = now;
+            if (finalDone !== undefined || finalTotal !== undefined) {
+              const done = finalDone ?? state.counters.done;
+              next.counters = {
+                done,
+                fail: finalFail,
+                total: Math.max(finalTotal ?? state.counters.total, done + finalFail),
+              };
+            }
             next.stageMetrics = state.stageMetrics.map((stage) => (
               stage.status === 'running'
-                ? { ...stage, status: data.type === 'completed' ? 'completed' : 'failed', updatedAt: Date.now() }
+                ? {
+                    ...stage,
+                    done: finalDone ?? stage.done,
+                    total: Math.max(finalTotal ?? stage.total, finalDone ?? stage.done),
+                    status: data.type === 'completed' ? 'completed' : 'failed',
+                    updatedAt: now,
+                  }
                 : stage
             ));
             if (data.type === 'failed') next.errorMsg = state.errorMsg || data.error || 'Job failed';
             if (typeof data.elapsed_s === 'number') next.elapsedSec = data.elapsed_s;
             break;
+          }
         }
 
         return next;

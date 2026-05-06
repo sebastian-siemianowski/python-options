@@ -85,6 +85,31 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _background_safe_enabled() -> bool:
+    return os.getenv("PYTHON_OPTIONS_BACKGROUND_SAFE") == "1"
+
+
+def _env_worker_cap(name: str) -> Optional[int]:
+    raw = os.getenv(name)
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _resolve_signal_worker_count(job_count: int) -> int:
+    if job_count <= 0:
+        return 1
+    base = cpu_count()
+    cap = _env_worker_cap("PYTHON_OPTIONS_SIGNAL_WORKERS")
+    if cap is not None:
+        base = min(base, cap)
+    return max(1, min(base, job_count))
+
+
 def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, horizons: List[int], max_retries: int = 3):
     """Run asset processing with bounded retries and collect failures.
     Retries only the assets that failed on prior attempts.
@@ -115,7 +140,7 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
     console.print()
 
     # Stats row
-    n_workers = min(cpu_count(), len(pending))
+    n_workers = _resolve_signal_worker_count(len(pending))
     stats = Text()
     stats.append("    ", style="")
     stats.append(f"{len(pending)}", style="bold bright_cyan")
@@ -131,7 +156,7 @@ def _process_assets_with_retries(assets: List[str], args: argparse.Namespace, ho
 
     attempt = 1
     while attempt <= max_retries and pending:
-        n_workers = min(cpu_count(), len(pending))
+        n_workers = _resolve_signal_worker_count(len(pending))
 
         # Pass indicator
         pass_text = Text()
@@ -481,7 +506,7 @@ def main() -> None:
                         start_date="2020-01-01",
                         suppress_output=True,
                         console=Console(),
-                        use_parallel=True,  # Use maximum processors for speed
+                        use_parallel=not _background_safe_enabled(),
                     )
                 except Exception:
                     # Fallback to legacy
@@ -1447,7 +1472,7 @@ def main() -> None:
                     start_date="2020-01-01",
                     suppress_output=True,
                     console=Console(),
-                    use_parallel=True,  # Use maximum processors for speed
+                    use_parallel=not _background_safe_enabled(),
                 )
             except Exception as rd_e:
                 if os.getenv("DEBUG"):

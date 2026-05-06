@@ -123,10 +123,10 @@ export default function JobLiveActivity() {
   const toggleExpanded = useJobStore((state) => state.toggleExpanded);
   const setRawLogOpen = useJobStore((state) => state.setRawLogOpen);
   const clearTerminalJob = useJobStore((state) => state.clearTerminalJob);
-  const assets = useJobStore((state) => state.expanded ? state.assets : EMPTY_ASSETS);
-  const modelBySymbol = useJobStore((state) => state.expanded ? state.modelBySymbol : EMPTY_MODEL_BY_SYMBOL);
-  const modelMetaBySymbol = useJobStore((state) => state.expanded ? state.modelMetaBySymbol : EMPTY_MODEL_META_BY_SYMBOL);
-  const modelCounts = useJobStore((state) => state.expanded ? state.modelCounts : EMPTY_MODEL_COUNTS);
+  const assets = useJobStore((state) => state.expanded && !(state.mode === 'tune-stocks' && state.status === 'running') ? state.assets : EMPTY_ASSETS);
+  const modelBySymbol = useJobStore((state) => state.expanded && !(state.mode === 'tune-stocks' && state.status === 'running') ? state.modelBySymbol : EMPTY_MODEL_BY_SYMBOL);
+  const modelMetaBySymbol = useJobStore((state) => state.expanded && !(state.mode === 'tune-stocks' && state.status === 'running') ? state.modelMetaBySymbol : EMPTY_MODEL_META_BY_SYMBOL);
+  const modelCounts = useJobStore((state) => state.expanded && !(state.mode === 'tune-stocks' && state.status === 'running') ? state.modelCounts : EMPTY_MODEL_COUNTS);
   const logLines = useJobStore((state) => state.rawLogOpen ? state.logLines : EMPTY_LOGS);
   const prevStatusRef = useRef<JobStatus>(status);
   const rawLogRef = useRef<HTMLDivElement | null>(null);
