@@ -13,10 +13,13 @@ import {
   rowHorizonColor,
   rowMatchesReversalFilter,
   type SignalFilter,
+  type SortColumn,
+  type SortDir,
 } from '../utils';
 
 /* ── Sector Panels — Premium Redesign ─────────────────────────────── */
 export type SectorSortBy = 'momentum' | 'exp_ret' | 'signal' | 'count' | 'alpha';
+export type SectorRowSortColumn = SortColumn | 'strength';
 export const SECTOR_SORT_OPTIONS: { key: SectorSortBy; label: string; icon: React.ReactNode }[] = [
   { key: 'momentum', label: 'Momentum', icon: <TrendingUp className="w-3 h-3" /> },
   { key: 'signal', label: 'Signal Score', icon: <Target className="w-3 h-3" /> },
@@ -65,6 +68,9 @@ export default function SectorPanels({
   expandedSectors,
   toggleSector,
   sectorSort,
+  rowSortCol,
+  rowSortDir,
+  onRowSort,
   sectorVisibleCols,
   sectorChartView,
   horizons,
@@ -78,6 +84,9 @@ export default function SectorPanels({
   expandedSectors: Set<string>;
   toggleSector: (name: string) => void;
   sectorSort: SectorSortBy;
+  rowSortCol: SectorRowSortColumn;
+  rowSortDir: SortDir;
+  onRowSort: (col: SectorRowSortColumn) => void;
   sectorVisibleCols: Set<string>;
   sectorChartView: boolean;
   horizons: number[];
@@ -90,28 +99,17 @@ export default function SectorPanels({
   const navigate = useNavigate();
   const [chartExpandedRow, setChartExpandedRow] = useState<string | null>(null);
 
-  /** Per-row sort within each sector (Task 2). Single-column toggle. */
-  type RowSortCol = 'asset' | 'signal' | 'strength' | 'momentum' | 'quality' | 'risk' | `horizon_${number}`;
-  const [rowSortCol, setRowSortCol] = useState<RowSortCol>('momentum');
-  const [rowSortDir, setRowSortDir] = useState<'asc' | 'desc'>('desc');
-  const onRowSort = (col: RowSortCol) => {
-    if (rowSortCol === col) {
-      setRowSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
-    } else {
-      setRowSortCol(col);
-      setRowSortDir(col === 'asset' ? 'asc' : 'desc');
-    }
-  };
   const applyRowSort = (arr: SummaryRow[]) => {
     const signalRank: Record<string, number> = { 'STRONG BUY': 5, 'BUY': 4, 'HOLD': 3, 'SELL': 2, 'STRONG SELL': 1, 'EXIT': 0 };
     const getter = (r: SummaryRow): number | string => {
       const col = rowSortCol;
       if (col === 'asset') return r.asset_label;
+      if (col === 'sector') return r.sector || '';
       if (col === 'signal') return signalRank[(r.nearest_label || 'HOLD').toUpperCase()] ?? 3;
       if (col === 'strength') return r.horizon_signals[Number(Object.keys(r.horizon_signals)[0])]?.p_up ?? 0.5;
       if (col === 'momentum') return r.momentum_score ?? 0;
       if (col === 'quality') return qualityScores[extractTicker(r.asset_label)] ?? 50;
-      if (col === 'risk') return r.crash_risk_score ?? 0;
+      if (col === 'crash_risk') return r.crash_risk_score ?? 0;
       if (col.startsWith('horizon_')) {
         const h = parseInt(col.split('_')[1], 10);
         return r.horizon_signals[h]?.exp_ret ?? 0;
@@ -126,9 +124,9 @@ export default function SectorPanels({
       return (((av as number) - (bv as number)) || 0) * mult;
     });
   };
-  const sortArrow = (col: RowSortCol) =>
+  const sortArrow = (col: SectorRowSortColumn) =>
     rowSortCol === col ? (rowSortDir === 'asc' ? ' \u2191' : ' \u2193') : '';
-  const thSortClass = (col: RowSortCol) =>
+  const thSortClass = (col: SectorRowSortColumn) =>
     `cursor-pointer select-none hover:text-[var(--text-secondary)] transition-colors ${rowSortCol === col ? 'text-[var(--accent-violet)]' : ''}`;
 
 
@@ -394,13 +392,13 @@ export default function SectorPanels({
                           <th onClick={() => onRowSort('quality')} className={`text-center px-1.5 py-2 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[56px] ${thSortClass('quality')}`}>Quality{sortArrow('quality')}</th>
                         )}
                         {sectorVisibleCols.has('horizons') && horizons.map(h => {
-                          const col = `horizon_${h}` as RowSortCol;
+                          const col = `horizon_${h}` as SectorRowSortColumn;
                           return (
                             <th key={h} onClick={() => onRowSort(col)} className={`text-center px-1 py-2 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[56px] ${thSortClass(col)}`}>{formatHorizon(h)}{sortArrow(col)}</th>
                           );
                         })}
                         {sectorVisibleCols.has('risk') && (
-                          <th onClick={() => onRowSort('risk')} className={`text-center px-1.5 py-2 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[56px] ${thSortClass('risk')}`}>Risk{sortArrow('risk')}</th>
+                          <th onClick={() => onRowSort('crash_risk')} className={`text-center px-1.5 py-2 text-[10px] text-[var(--text-muted)] font-semibold uppercase tracking-wider w-[56px] ${thSortClass('crash_risk')}`}>Risk{sortArrow('crash_risk')}</th>
                         )}
                         <th className="w-6"></th>
                       </tr>

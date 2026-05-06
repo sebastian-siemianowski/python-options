@@ -17,6 +17,8 @@ export type SignalFilter =
 export type ReversalQuickFilter = 'reversal_buy' | 'reversal_sell';
 export type SortColumn = 'asset' | 'sector' | 'signal' | 'momentum' | 'quality' | 'crash_risk' | `horizon_${number}`;
 export type SortDir = 'asc' | 'desc';
+export type SignalSortLevel = { col: SortColumn; dir: SortDir };
+export const DEFAULT_SIGNAL_SORT: SignalSortLevel = { col: 'quality', dir: 'desc' };
 
 const ISO_CURRENCY_CODES = new Set([
   'AUD', 'BRL', 'CAD', 'CHF', 'CNY', 'CZK', 'DKK', 'EUR', 'GBP', 'HKD',
@@ -45,6 +47,102 @@ export const rowHorizonColor = (row: SummaryRow): HorizonTone => {
   if (pos / total > 0.5) return 'greens';
   if (neg / total > 0.5) return 'reds';
   return 'mixed';
+};
+
+export const defaultSortDirFor = (col: SortColumn): SortDir =>
+  col === 'asset' || col === 'sector' || col === 'crash_risk' ? 'asc' : 'desc';
+
+export const nextSortLevels = (
+  previous: SignalSortLevel[],
+  col: SortColumn,
+  shiftKey: boolean,
+): SignalSortLevel[] => {
+  const idx = previous.findIndex((s) => s.col === col);
+  if (idx >= 0) {
+    const existing = previous[idx];
+    const defaultDir = defaultSortDirFor(col);
+    const oppositeDir: SortDir = defaultDir === 'asc' ? 'desc' : 'asc';
+    if (existing.dir === oppositeDir) {
+      const next = previous.filter((_, i) => i !== idx);
+      return next.length > 0 ? next : [DEFAULT_SIGNAL_SORT];
+    }
+    return previous.map((s, i) => (i === idx ? { ...s, dir: oppositeDir } : s));
+  }
+  if (shiftKey && previous.length < 3) {
+    return [...previous, { col, dir: defaultSortDirFor(col) }];
+  }
+  return [{ col, dir: defaultSortDirFor(col) }];
+};
+
+export const removeSortLevel = (previous: SignalSortLevel[], col: SortColumn): SignalSortLevel[] => {
+  const next = previous.filter((s) => s.col !== col);
+  return next.length > 0 ? next : [DEFAULT_SIGNAL_SORT];
+};
+
+export const horizonSignalFor = (row: SummaryRow, horizon: number) => {
+  const sigs = row.horizon_signals || {};
+  return sigs[horizon] || sigs[String(horizon)];
+};
+
+export const horizonExpReturn = (row: SummaryRow, horizon: number): number => {
+  const value = horizonSignalFor(row, horizon)?.exp_ret;
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+};
+
+const signalSortRank = (label: string | undefined | null): number => {
+  const normalized = (label || 'HOLD').toUpperCase();
+  const ranks: Record<string, number> = {
+    'STRONG BUY': 5,
+    BUY: 4,
+    HOLD: 3,
+    SELL: 2,
+    'STRONG SELL': 1,
+    EXIT: 0,
+  };
+  return ranks[normalized] ?? 3;
+};
+
+const sortValueForColumn = (
+  row: SummaryRow,
+  col: SortColumn,
+  qualityScores: Record<string, number>,
+): number | string => {
+  if (col === 'asset') return row.asset_label || '';
+  if (col === 'sector') return row.sector || '';
+  if (col === 'signal') return signalSortRank(row.nearest_label);
+  if (col === 'momentum') return row.momentum_score ?? 0;
+  if (col === 'quality') return qualityScores[extractTicker(row.asset_label)] ?? 50;
+  if (col === 'crash_risk') return row.crash_risk_score ?? 0;
+  if (col.startsWith('horizon_')) {
+    const horizon = Number.parseInt(col.slice('horizon_'.length), 10);
+    return Number.isFinite(horizon) ? horizonExpReturn(row, horizon) : 0;
+  }
+  return 0;
+};
+
+export const sortSummaryRows = (
+  rows: SummaryRow[],
+  sortLevels: SignalSortLevel[],
+  qualityScores: Record<string, number>,
+): SummaryRow[] => {
+  if (sortLevels.length === 0 || rows.length < 2) return rows.slice();
+  const decorated = rows.map((row, index) => ({
+    row,
+    index,
+    values: sortLevels.map((level) => sortValueForColumn(row, level.col, qualityScores)),
+  }));
+  decorated.sort((a, b) => {
+    for (let i = 0; i < sortLevels.length; i += 1) {
+      const av = a.values[i];
+      const bv = b.values[i];
+      let cmp = 0;
+      if (typeof av === 'string' && typeof bv === 'string') cmp = av.localeCompare(bv);
+      else cmp = ((av as number) - (bv as number)) || 0;
+      if (cmp !== 0) return sortLevels[i].dir === 'desc' ? -cmp : cmp;
+    }
+    return a.index - b.index;
+  });
+  return decorated.map((entry) => entry.row);
 };
 
 export const isFiatCurrencyTicker = (symbol: string | undefined | null): boolean => {

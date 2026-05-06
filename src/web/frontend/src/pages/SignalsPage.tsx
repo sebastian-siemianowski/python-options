@@ -15,16 +15,24 @@ import WatchlistView from '../features/signals/components/WatchlistView';
 import HighConvictionTabs from '../features/signals/components/HighConvictionTabs';
 import SegmentedControl from '../features/signals/components/SegmentedControl';
 import SmaReversalsPanel from '../features/signals/components/SmaReversalsPanel';
-import SectorPanels, { DEFAULT_SECTOR_VISIBLE_COLS, SECTOR_COLUMN_DEFS, SECTOR_COLS_LS_KEY, SECTOR_SORT_OPTIONS, loadSectorVisibleCols, type SectorSortBy } from '../features/signals/components/SectorPanels';
+import SortPillStrip from '../features/signals/components/SortPillStrip';
+import QualityFloorSlider from '../features/signals/components/QualityFloorSlider';
+import SectorPanels, { DEFAULT_SECTOR_VISIBLE_COLS, SECTOR_COLUMN_DEFS, SECTOR_COLS_LS_KEY, SECTOR_SORT_OPTIONS, loadSectorVisibleCols, type SectorRowSortColumn, type SectorSortBy } from '../features/signals/components/SectorPanels';
 import StrongSignalsView from '../features/signals/components/StrongSignalsView';
 import {
   extractTicker,
+  DEFAULT_SIGNAL_SORT,
+  defaultSortDirFor,
   isCurrencyAsset,
   isReversalQuickFilter,
+  nextSortLevels,
   rebuildSectorFromAssets,
+  removeSortLevel as removeSignalSortLevel,
   rowHorizonColor,
   rowMatchesReversalFilter,
+  sortSummaryRows,
   type SignalFilter,
+  type SignalSortLevel,
   type SortColumn,
   type SortDir,
 } from '../features/signals/utils';
@@ -39,6 +47,7 @@ import { formatHorizon, responsiveHorizons } from '../utils/horizons';
 import { useWebSocket } from '../hooks/useWebSocket';
 
 const SIGNALS_SHOW_CURRENCIES_LS_KEY = 'signals-show-currencies-v1';
+const SIGNALS_MIN_QUALITY_LS_KEY = 'signals-min-quality-v1';
 
 const loadStoredShowCurrencies = (): boolean => {
   if (typeof window === 'undefined') return true;
@@ -50,6 +59,8 @@ const loadStoredShowCurrencies = (): boolean => {
 };
 
 type ViewMode = 'all' | 'sectors' | 'strong';
+type SortLevel = SignalSortLevel;
+type SectorRowSortLevel = { col: SectorRowSortColumn; dir: SortDir };
 
 /* ── Error Boundary ──────────────────────────────────────────────── */
 class SignalsErrorBoundary extends Component<
@@ -157,6 +168,23 @@ function SignalsPageInner() {
   const [sectorSort, setSectorSort] = useState<SectorSortBy>('momentum');
   const [sectorVisibleCols, setSectorVisibleCols] = useState<Set<string>>(() => loadSectorVisibleCols());
   const [sectorChartView, setSectorChartView] = useState<boolean>(() => loadSectorChartView());
+  const [sectorRowSort, setSectorRowSort] = useState<SectorRowSortLevel>({ col: 'momentum', dir: 'desc' });
+  const [minQuality, setMinQualityState] = useState<number>(() => {
+    try {
+      const stored = Number(localStorage.getItem(SIGNALS_MIN_QUALITY_LS_KEY) || 0);
+      return Number.isFinite(stored) ? Math.max(0, Math.min(100, Math.round(stored))) : 0;
+    } catch {
+      return 0;
+    }
+  });
+  const setMinQuality = useCallback((value: number) => {
+    const next = Math.max(0, Math.min(100, Math.round(value)));
+    setMinQualityState(next);
+    try {
+      if (next > 0) localStorage.setItem(SIGNALS_MIN_QUALITY_LS_KEY, String(next));
+      else localStorage.removeItem(SIGNALS_MIN_QUALITY_LS_KEY);
+    } catch { /* ignore */ }
+  }, []);
   useEffect(() => {
     try { localStorage.setItem(SECTOR_COLS_LS_KEY, JSON.stringify(Array.from(sectorVisibleCols))); } catch { /* ignore */ }
   }, [sectorVisibleCols]);
@@ -173,6 +201,15 @@ function SignalsPageInner() {
     });
   };
   const resetSectorCols = () => setSectorVisibleCols(new Set(DEFAULT_SECTOR_VISIBLE_COLS));
+  const handleSectorRowSort = useCallback((col: SectorRowSortColumn) => {
+    setSectorRowSort((prev) => {
+      if (prev.col === col) return { col, dir: prev.dir === 'asc' ? 'desc' : 'asc' };
+      return { col, dir: col === 'strength' ? 'desc' : defaultSortDirFor(col) };
+    });
+  }, []);
+  const resetSectorRowSort = useCallback(() => {
+    setSectorRowSort({ col: 'momentum', dir: 'desc' });
+  }, []);
 
   // Story 3.4: Change tracking for aurora trails + ticker tape
   type ChangeEntry = { asset: string; from: string; to: string; time: number };
@@ -182,14 +219,13 @@ function SignalsPageInner() {
   const changeCountRef = useRef(0);
 
   // Story 3.2: Multi-axis sort (up to 3 levels, persisted in localStorage)
-  type SortLevel = { col: SortColumn; dir: SortDir };
   const sortKey = `signals-sort-${view}`;
   const [sortLevels, setSortLevels] = useState<SortLevel[]>(() => {
     try {
       const stored = localStorage.getItem(sortKey);
       if (stored) return JSON.parse(stored);
     } catch { /* ignore */ }
-    return [{ col: 'momentum' as SortColumn, dir: 'desc' as SortDir }];
+    return [DEFAULT_SIGNAL_SORT];
   });
   // Persist sort state
   useEffect(() => {
@@ -403,6 +439,11 @@ function SignalsPageInner() {
   const passesCurrency = useCallback((assetLabelOrTicker: string | undefined | null): boolean => (
     showCurrencies || !isCurrencyAsset(assetLabelOrTicker)
   ), [showCurrencies]);
+  const passesQuality = useCallback((assetLabel: string | undefined | null): boolean => {
+    if (minQuality <= 0) return true;
+    const score = qualityScores[extractTicker(String(assetLabel || ''))] ?? 50;
+    return score >= minQuality;
+  }, [minQuality, qualityScores]);
 
   const currencyVisibleRows = useMemo(() => (
     showCurrencies ? rows : rows.filter((row) => passesCurrency(row.asset_label))
@@ -411,7 +452,7 @@ function SignalsPageInner() {
     rows.filter((row) => isCurrencyAsset(row.asset_label)).length
   ), [rows]);
 
-  const filteredRows = useMemo(() => {
+  const baseFilteredRows = useMemo(() => {
     return currencyVisibleRows.filter((row) => {
       if (debouncedSearch && !fuzzyMatch(row.asset_label, debouncedSearch)) return false;
       if (!passesEma(row.asset_label)) return false;
@@ -424,17 +465,23 @@ function SignalsPageInner() {
       return label === filter.toUpperCase();
     });
   }, [currencyVisibleRows, debouncedSearch, filter, fuzzyMatch, passesEma, reversalFlipsQ.data]);
+  const filteredRows = useMemo(() => (
+    baseFilteredRows.filter((row) => passesQuality(row.asset_label))
+  ), [baseFilteredRows, passesQuality]);
+  const baseSortedRows = useMemo(() => (
+    sortSummaryRows(baseFilteredRows, sortLevels, qualityScores)
+  ), [baseFilteredRows, sortLevels, qualityScores]);
 
   // Sectors view: apply EMA predicate at the asset level, drop empty sectors.
   const sectors = useMemo(() => {
-    if (showCurrencies && !emaFilters.p9 && !emaFilters.p50 && !emaFilters.p600) return rawSectors;
+    if (showCurrencies && !emaFilters.p9 && !emaFilters.p50 && !emaFilters.p600 && minQuality <= 0) return rawSectors;
     return rawSectors
       .map(sec => rebuildSectorFromAssets(
         sec,
-        sec.assets.filter(a => passesCurrency(a.asset_label) && passesEma(a.asset_label)),
+        sec.assets.filter(a => passesCurrency(a.asset_label) && passesEma(a.asset_label) && passesQuality(a.asset_label)),
       ))
       .filter(sec => sec.assets.length > 0);
-  }, [rawSectors, showCurrencies, emaFilters, passesCurrency, passesEma]);
+  }, [rawSectors, showCurrencies, emaFilters, minQuality, passesCurrency, passesEma, passesQuality]);
 
   // Global sector totals shown in the unified filter card footer.
   const sectorTotals = useMemo(() => ({
@@ -450,70 +497,20 @@ function SignalsPageInner() {
 
   /** Story 3.2: Multi-level sorted rows */
   const sortedRows = useMemo(() => {
-    const arr = [...filteredRows];
-    const signalRank = (label: string): number => {
-      const m: Record<string, number> = { 'STRONG BUY': 5, 'BUY': 4, 'HOLD': 3, 'SELL': 2, 'STRONG SELL': 1, 'EXIT': 0 };
-      return m[label.toUpperCase()] ?? 3;
-    };
-    const getHorizonVal = (r: SummaryRow, h: number): number => {
-      const sig = r.horizon_signals[h] || r.horizon_signals[String(h)];
-      return sig?.exp_ret ?? 0;
-    };
-    const compare = (a: SummaryRow, b: SummaryRow, col: SortColumn): number => {
-      switch (col) {
-        case 'asset': return a.asset_label.localeCompare(b.asset_label);
-        case 'sector': return (a.sector || '').localeCompare(b.sector || '');
-        case 'signal': return signalRank(a.nearest_label || 'HOLD') - signalRank(b.nearest_label || 'HOLD');
-        case 'momentum': return (a.momentum_score ?? 0) - (b.momentum_score ?? 0);
-        case 'quality': return (qualityScores[extractTicker(a.asset_label)] ?? 50) - (qualityScores[extractTicker(b.asset_label)] ?? 50);
-        case 'crash_risk': return (a.crash_risk_score ?? 0) - (b.crash_risk_score ?? 0);
-        default:
-          if (col.startsWith('horizon_')) {
-            const h = parseInt(col.split('_')[1], 10);
-            return getHorizonVal(a, h) - getHorizonVal(b, h);
-          }
-          return 0;
-      }
-    };
-    arr.sort((a, b) => {
-      for (const { col, dir } of sortLevels) {
-        const cmp = compare(a, b, col);
-        if (cmp !== 0) return dir === 'desc' ? -cmp : cmp;
-      }
-      return 0;
-    });
-    return arr;
+    return sortSummaryRows(filteredRows, sortLevels, qualityScores);
   }, [filteredRows, sortLevels, qualityScores]);
 
   /** Story 3.2: Handle sort click. Shift+Click adds secondary sort, plain click replaces. Triple-click on same column removes it. */
   const handleSort = useCallback((col: SortColumn, shiftKey: boolean) => {
-    setSortLevels(prev => {
-      const idx = prev.findIndex(s => s.col === col);
-      if (idx >= 0) {
-        // Column already sorted: toggle direction, or remove on third click
-        const existing = prev[idx];
-        if (existing.dir === 'asc') {
-          // Remove this sort level
-          const next = prev.filter((_, i) => i !== idx);
-          return next.length > 0 ? next : [{ col: 'momentum' as SortColumn, dir: 'desc' as SortDir }];
-        }
-        return prev.map((s, i) => i === idx ? { ...s, dir: 'asc' as SortDir } : s);
-      }
-      if (shiftKey && prev.length < 3) {
-        // Add as secondary/tertiary sort
-        return [...prev, { col, dir: 'desc' as SortDir }];
-      }
-      // Replace all with single primary sort
-      return [{ col, dir: 'desc' as SortDir }];
-    });
+    setSortLevels(prev => nextSortLevels(prev, col, shiftKey));
   }, []);
 
   /** Remove a specific sort level */
   const removeSortLevel = useCallback((col: SortColumn) => {
-    setSortLevels(prev => {
-      const next = prev.filter(s => s.col !== col);
-      return next.length > 0 ? next : [{ col: 'momentum' as SortColumn, dir: 'desc' as SortDir }];
-    });
+    setSortLevels(prev => removeSignalSortLevel(prev, col));
+  }, []);
+  const resetSortLevels = useCallback(() => {
+    setSortLevels([DEFAULT_SIGNAL_SORT]);
   }, []);
 
   const toggleSector = (name: string) => {
@@ -580,12 +577,12 @@ function SignalsPageInner() {
       {/* Watchlist — always-visible, user-curated tickers persisted server-side */}
       <div className="mb-5 fade-up-delay-1">
         <WatchlistView
-          allRows={sortedRows}
+          allRows={baseSortedRows}
           horizons={horizons}
+          sortHorizons={allHorizons}
+          minQuality={minQuality}
+          onMinQualityChange={setMinQuality}
           updatedAsset={updatedAsset}
-          sortLevels={sortLevels}
-          onSort={handleSort}
-          onRemoveSort={removeSortLevel}
           qualityScores={qualityScores}
           reversalFlips={reversalFlipsQ.data}
           reversalFlipsLoading={reversalFlipsQ.isLoading}
@@ -600,6 +597,7 @@ function SignalsPageInner() {
         buyLoading={buyQ.isLoading}
         sellLoading={sellQ.isLoading}
         emaStates={emaStates}
+        qualityScores={qualityScores}
       />
 
       {/* SMA Reversals — world-class crossover detection (9 / 50 / 600) */}
@@ -948,7 +946,7 @@ function SignalsPageInner() {
           </button>
 
           {/* Clear all */}
-          {(filter !== 'all' || emaFilters.p9 || emaFilters.p50 || emaFilters.p600 || !showCurrencies || search) && (
+          {(filter !== 'all' || emaFilters.p9 || emaFilters.p50 || emaFilters.p600 || !showCurrencies || search || minQuality > 0) && (
             <button
               type="button"
               onClick={() => {
@@ -956,6 +954,7 @@ function SignalsPageInner() {
                 setEmaFilters({ p9: false, p50: false, p600: false });
                 setShowCurrencies(true);
                 setSearch('');
+                setMinQuality(0);
               }}
               className="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-md transition-colors"
               style={{
@@ -971,20 +970,44 @@ function SignalsPageInner() {
           )}
         </div>
 
-        {/* ── Row 3 ─ Sort (sectors only) + Horizons ──
-            Labels are tiny uppercase muted, pills themselves carry the active
-            violet glow. This lets the entire control surface read as one
-            cohesive hierarchy (what → when) with zero dividers fighting the
-            content. */}
-        {(view === 'sectors' || (view === 'all' && allHorizons.length > 0)) && (
+        {/* ── Row 3 ─ Quality floor ───────────────────────────────────
+            Composes with search, signal, reversal, trend, FX, and the table
+            sort controls below. */}
+        <div
+          className="px-4 py-2.5"
+          style={{ borderTop: '1px solid rgba(255,255,255,0.03)', background: 'rgba(255,255,255,0.006)' }}
+        >
+          <QualityFloorSlider
+            value={minQuality}
+            onChange={setMinQuality}
+          />
+        </div>
+
+        {/* ── Row 3 ─ Sorting + Horizons ─────────────────────────────
+            The sort pills mirror the table headers, but keep the decision
+            workflow visible above the content so users can quickly rank by
+            quality, momentum, risk, or projected returns. */}
+        {(view === 'all' || view === 'sectors') && (
           <div
             className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5"
             style={{ borderTop: '1px solid rgba(255,255,255,0.03)', background: 'rgba(255,255,255,0.006)' }}
           >
+            <SortPillStrip
+              sortLevels={view === 'sectors' ? (sectorRowSort.col !== 'strength' ? [{ col: sectorRowSort.col, dir: sectorRowSort.dir }] : []) : sortLevels}
+              onSort={(col) => {
+                if (view === 'sectors') handleSectorRowSort(col);
+                else handleSort(col, false);
+              }}
+              onClear={view === 'sectors' ? resetSectorRowSort : resetSortLevels}
+              title="Sort"
+              subtitle={view === 'sectors' ? 'rows inside sectors' : 'assets'}
+              horizons={allHorizons}
+            />
+
             {view === 'sectors' && (
               <>
                 <span className="text-[9.5px] font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">
-                  Sort
+                  Sectors
                 </span>
                 <div className="flex items-center gap-1">
                   {SECTOR_SORT_OPTIONS.map(({ key, label, icon }) => {
@@ -1015,7 +1038,7 @@ function SignalsPageInner() {
                     );
                   })}
                 </div>
-                {(view === 'sectors' && allHorizons.length > 0) && <div className="h-4 w-px bg-white/[0.05]" aria-hidden />}
+                {allHorizons.length > 0 && <div className="h-4 w-px bg-white/[0.05]" aria-hidden />}
               </>
             )}
 
@@ -1193,6 +1216,9 @@ function SignalsPageInner() {
           expandedSectors={expandedSectors}
           toggleSector={toggleSector}
           sectorSort={sectorSort}
+          rowSortCol={sectorRowSort.col}
+          rowSortDir={sectorRowSort.dir}
+          onRowSort={handleSectorRowSort}
           sectorVisibleCols={sectorVisibleCols}
           sectorChartView={sectorChartView}
           horizons={horizons}

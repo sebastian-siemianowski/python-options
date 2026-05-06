@@ -4,8 +4,9 @@ import { Activity, ArrowDown, ArrowUp, BarChart3, ChevronDown, ChevronUp, Clock,
 import type { EmaState, HighConvictionSignal } from '../../../api';
 import SignalDetailPanel from '../../../components/SignalDetailPanel';
 import { formatHorizon } from '../../../utils/horizons';
+import { smaQualityTone } from '../theme';
 /* ── High Conviction Panel — full positions with rich data ────────── */
-type HCSortCol = 'ticker' | 'exp_ret' | 'p_up' | 'strength' | 'sector';
+type HCSortCol = 'ticker' | 'quality' | 'exp_ret' | 'p_up' | 'strength' | 'sector';
 type HCSortDir = 'asc' | 'desc';
 
 interface GroupedTicker {
@@ -17,6 +18,32 @@ interface GroupedTicker {
   avgPUp: number;
   maxStrength: number;
 }
+
+const lookupBusinessQuality = (
+  scores: Record<string, number>,
+  ticker: string | undefined | null,
+  assetLabel?: string,
+): number | null => {
+  const rawTicker = String(ticker || '').trim();
+  const rawLabel = String(assetLabel || '').trim();
+  const fromLabel = rawLabel.match(/\(([^)]+)\)\s*$/)?.[1]?.trim() || '';
+  const base = [rawTicker, fromLabel, rawLabel].filter(Boolean);
+  const variants = new Set<string>();
+  for (const value of base) {
+    const upper = value.toUpperCase();
+    variants.add(value);
+    variants.add(upper);
+    variants.add(upper.replace(/-/g, '.'));
+    variants.add(upper.replace(/\./g, '-'));
+    variants.add(upper.replace(/=/g, '_'));
+    variants.add(upper.replace(/_/g, '='));
+  }
+  for (const key of variants) {
+    const score = scores[key];
+    if (typeof score === 'number' && Number.isFinite(score)) return score;
+  }
+  return null;
+};
 
 function KpiCell({
   label,
@@ -86,6 +113,99 @@ function ArcGauge({
         style={{ transition: 'stroke-dasharray 320ms cubic-bezier(0.2, 0.8, 0.2, 1)' }}
       />
     </svg>
+  );
+}
+
+function BusinessQualityRing({
+  score,
+  compact = false,
+}: {
+  score: number | null | undefined;
+  compact?: boolean;
+}) {
+  const hasScore = score != null && Number.isFinite(score);
+  const pct = hasScore ? Math.max(0, Math.min(100, Math.round(score))) : 0;
+  const tone = smaQualityTone(hasScore ? pct : null);
+  const size = compact ? 46 : 50;
+  const stroke = compact ? 4.2 : 4.6;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const dashOffset = circumference * (1 - pct / 100);
+  const ringShadow = [
+    tone.glow !== 'none' ? tone.glow : null,
+    'inset 0 1px 0 rgba(255,255,255,0.08)',
+    '0 12px 24px -18px rgba(0,0,0,0.95)',
+  ].filter(Boolean).join(', ');
+
+  return (
+    <div
+      className="inline-flex items-center gap-2"
+      title={hasScore ? `Business quality: ${pct} (${tone.label})` : 'Business quality unavailable'}
+    >
+      <div
+        className="relative shrink-0 rounded-full"
+        style={{
+          width: size,
+          height: size,
+          background:
+            `radial-gradient(circle at 50% 42%, ${tone.color}18 0%, rgba(255,255,255,0.018) 50%, rgba(0,0,0,0.18) 100%)`,
+          border: `1px solid ${tone.border}`,
+          boxShadow: ringShadow,
+        }}
+      >
+        <svg className="absolute inset-0 h-full w-full -rotate-90" viewBox={`0 0 ${size} ${size}`} aria-hidden>
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            fill="none"
+            stroke="rgba(255,255,255,0.075)"
+            strokeWidth={stroke}
+          />
+          {hasScore && (
+            <circle
+              cx={size / 2}
+              cy={size / 2}
+              r={radius}
+              fill="none"
+              stroke={tone.color}
+              strokeWidth={stroke}
+              strokeLinecap="round"
+              strokeDasharray={circumference}
+              strokeDashoffset={dashOffset}
+              style={{
+                filter: `drop-shadow(0 0 5px ${tone.color}66)`,
+                transition: 'stroke-dashoffset 420ms cubic-bezier(.2,.8,.2,1)',
+              }}
+            />
+          )}
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span
+            className="text-[13px] font-extrabold tabular-nums leading-none"
+            style={{ color: hasScore ? tone.color : 'var(--text-muted)' }}
+          >
+            {hasScore ? pct : '—'}
+          </span>
+          <span
+            className="mt-[1px] text-[6.8px] font-bold uppercase leading-none"
+            style={{ color: hasScore ? tone.color : 'var(--text-muted)', opacity: 0.78 }}
+          >
+            Q
+          </span>
+        </div>
+      </div>
+      {!compact && (
+        <div className="hidden min-w-0 flex-col leading-tight lg:flex">
+          <span className="text-[8px] font-semibold uppercase text-[var(--text-muted)]">
+            Business
+          </span>
+          <span className="text-[10px] font-bold" style={{ color: tone.color }}>
+            {tone.label}
+          </span>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -305,12 +425,14 @@ export default function HighConvictionTabs({
   buyLoading,
   sellLoading,
   emaStates,
+  qualityScores,
 }: {
   buySignals: HighConvictionSignal[];
   sellSignals: HighConvictionSignal[];
   buyLoading: boolean;
   sellLoading: boolean;
   emaStates: Record<string, EmaState>;
+  qualityScores: Record<string, number>;
 }) {
   const [activeTab, setActiveTab] = useState<HighConvictionTabKey>('buy');
   const buySummary = useMemo(() => summarizeHighConvictionSignals(buySignals), [buySignals]);
@@ -439,6 +561,7 @@ export default function HighConvictionTabs({
               color="green"
               isLoading={buyLoading}
               emaStates={emaStates}
+              qualityScores={qualityScores}
             />
           ) : (
             <HighConvictionPanel
@@ -447,6 +570,7 @@ export default function HighConvictionTabs({
               color="red"
               isLoading={sellLoading}
               emaStates={emaStates}
+              qualityScores={qualityScores}
             />
           )}
         </div>
@@ -456,13 +580,14 @@ export default function HighConvictionTabs({
 }
 
 function HighConvictionPanel({
-  title, signals, color, isLoading, emaStates,
+  title, signals, color, isLoading, emaStates, qualityScores,
 }: {
   title: string;
   signals: HighConvictionSignal[];
   color: 'green' | 'red';
   isLoading: boolean;
   emaStates: Record<string, EmaState>;
+  qualityScores: Record<string, number>;
 }) {
   const navigate = useNavigate();
   const [sortCol, setSortCol] = useState<HCSortCol>('exp_ret');
@@ -601,6 +726,12 @@ function HighConvictionPanel({
       let cmp = 0;
       switch (sortCol) {
         case 'ticker': cmp = a.ticker.localeCompare(b.ticker); break;
+        case 'quality': {
+          const aq = lookupBusinessQuality(qualityScores, a.ticker, a.asset_label) ?? -1;
+          const bq = lookupBusinessQuality(qualityScores, b.ticker, b.asset_label) ?? -1;
+          cmp = aq - bq;
+          break;
+        }
         case 'exp_ret': cmp = a.bestReturn - b.bestReturn; break;
         case 'p_up': cmp = a.avgPUp - b.avgPUp; break;
         case 'strength': cmp = a.maxStrength - b.maxStrength; break;
@@ -609,7 +740,7 @@ function HighConvictionPanel({
       return cmp * mult;
     });
     return arr;
-  }, [filtered, sortCol, sortDir]);
+  }, [filtered, sortCol, sortDir, qualityScores]);
 
   const handleSort = (col: HCSortCol) => {
     if (sortCol === col) setSortDir(d => d === 'desc' ? 'asc' : 'desc');
@@ -840,6 +971,7 @@ function HighConvictionPanel({
               <tr>
                 <SortHeader col="ticker" label="Asset" w="140px" />
                 <SortHeader col="sector" label="Sector" />
+                <SortHeader col="quality" label="Quality" w="92px" />
                 <th className="px-2 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]" style={{ background: '#0b0c12' }}>Horizons</th>
                 <SortHeader col="exp_ret" label="Best Return" />
                 <SortHeader col="p_up" label="Avg P(up)" />
@@ -852,6 +984,7 @@ function HighConvictionPanel({
                 const isExpanded = expandedTicker === g.ticker;
                 const companyName = g.asset_label.includes('(') ? g.asset_label.split('(')[0].trim() : '';
                 const returnIsUp = g.bestReturn >= 0;
+                const qualityScore = lookupBusinessQuality(qualityScores, g.ticker, g.asset_label);
                 return (
                   <React.Fragment key={g.ticker}>
                     <tr
@@ -903,6 +1036,12 @@ function HighConvictionPanel({
                         >
                           {g.sector}
                         </span>
+                      </td>
+                      {/* Business Quality */}
+                      <td className="px-2 py-2">
+                        <div className="flex items-center justify-center">
+                          <BusinessQualityRing score={qualityScore} />
+                        </div>
                       </td>
                       {/* Horizons pills */}
                       <td className="px-2 py-3">
@@ -978,7 +1117,7 @@ function HighConvictionPanel({
                     {isExpanded && (
                       <tr>
                         <td
-                          colSpan={7}
+                          colSpan={8}
                           style={{
                             background: `linear-gradient(180deg, ${accent}0a 0%, transparent 100%)`,
                             borderBottom: `1px solid ${accentSoft}`,

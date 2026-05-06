@@ -1,9 +1,14 @@
 import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Filter, Layers, Loader2, Plus, Search, SlidersHorizontal, Star, X } from 'lucide-react';
+import { AlertTriangle, ArrowDownRight, ArrowUpRight, Filter, Layers, Loader2, Plus, Search, SlidersHorizontal, Star, X } from 'lucide-react';
 import type { ReversalFlipsData, SummaryRow } from '../../../api';
 import { useWatchlist } from '../../../hooks/useWatchlist';
 import AllAssetsTable from './AllAssetsTable';
+import SortPillStrip from './SortPillStrip';
+import QualityFloorSlider from './QualityFloorSlider';
 import {
+  nextSortLevels,
+  removeSortLevel,
+  sortSummaryRows,
   extractTicker,
   isReversalQuickFilter,
   reversalFlipForAsset,
@@ -14,14 +19,17 @@ import {
   type SortDir,
 } from '../utils';
 
+const WATCHLIST_BIG_MOVE_ABS_THRESHOLD = 0.03;
+const WATCHLIST_BIG_MOVE_HORIZON = 7;
+
 /* ── Watchlist View — user-curated tickers with full detail ─────── */
 export default function WatchlistView({
   allRows,
   horizons,
+  sortHorizons,
+  minQuality,
+  onMinQualityChange,
   updatedAsset,
-  sortLevels,
-  onSort,
-  onRemoveSort,
   qualityScores,
   reversalFlips,
   reversalFlipsLoading = false,
@@ -29,10 +37,10 @@ export default function WatchlistView({
 }: {
   allRows: SummaryRow[];
   horizons: number[];
+  sortHorizons: number[];
+  minQuality: number;
+  onMinQualityChange: (value: number) => void;
   updatedAsset: string | null;
-  sortLevels: { col: SortColumn; dir: SortDir }[];
-  onSort: (col: SortColumn, shift: boolean) => void;
-  onRemoveSort: (col: SortColumn) => void;
   qualityScores: Record<string, number>;
   reversalFlips?: ReversalFlipsData;
   reversalFlipsLoading?: boolean;
@@ -87,13 +95,15 @@ export default function WatchlistView({
   // both axes are useful filters.
   type WlClass = 'bullish' | 'bearish' | 'neutral';
   type WlColor = 'greens' | 'reds' | 'mixed';
-  type WlSignal = 'all' | WlClass | WlColor | ReversalQuickFilter;
+  type WlBigMove = 'big_green' | 'big_red';
+  type WlSignal = 'all' | WlClass | WlColor | WlBigMove | ReversalQuickFilter;
   type WlSort = 'signal' | 'momentum' | 'quality' | 'risk' | 'alpha';
   const [wlSignal, setWlSignal] = useState<WlSignal>('all');
   const [wlSector, setWlSector] = useState<string>('all');
   const [wlQuery, setWlQuery] = useState<string>('');
   const [wlSort, setWlSort] = useState<WlSort>('signal');
   const [wlMissingOnly, setWlMissingOnly] = useState<boolean>(false);
+  const [wlSortLevels, setWlSortLevels] = useState<{ col: SortColumn; dir: SortDir }[]>([]);
   // Manage drawer is HIDDEN by default once the user has a populated list —
   // it auto-opens only when the watchlist is empty (first-run experience)
   // or when the user explicitly clicks the "+ Add" button. This keeps the
@@ -109,12 +119,8 @@ export default function WatchlistView({
   // trigger so the two primary rows (insight bar, segmented control) can
   // breathe.
   const [refineOpen, setRefineOpen] = useState<boolean>(false);
-  // When the user clicks a column header inside the watchlist table, we
-  // let the parent's sortLevels drive the row order (allRows arrive
-  // pre-sorted). The wlSort dropdown becomes a no-op until the user picks
-  // a preset again, at which point the override is cleared. This resolves
-  // the historic "sorting doesn't work" bug where column clicks had no
-  // visible effect on the watchlist table (see Watchlist.md §10).
+  // Column-header and pill sorts are local to the watchlist. That keeps sort
+  // clicks fast because we rank only the curated list, not the full signal set.
   const [wlSortOverride, setWlSortOverride] = useState<boolean>(false);
   useEffect(() => {
     if (symbols.length === 0) setManageOpen(true);
@@ -157,6 +163,13 @@ export default function WatchlistView({
     [rowByTicker, proxyMap],
   );
 
+  const expAtHorizon = useCallback((row: SummaryRow, horizon = WATCHLIST_BIG_MOVE_HORIZON): number => {
+    const sigs = row.horizon_signals as Record<string | number, { exp_ret?: number } | undefined>;
+    const sig = sigs?.[horizon] || sigs?.[String(horizon)];
+    const r = sig?.exp_ret;
+    return Number.isFinite(r) ? (r as number) : 0;
+  }, []);
+
   // 1-week implied return (exp_ret at horizon=7) per watchlist symbol.
   // Used to scale chip color intensity — stronger moves render with deeper
   // saturation so the eye can rank conviction at a glance.
@@ -164,12 +177,9 @@ export default function WatchlistView({
     (sym: string): number => {
       const row = rowForSymbol(sym);
       if (!row) return 0;
-      const sigs = row.horizon_signals as Record<string | number, { exp_ret?: number } | undefined>;
-      const sig = sigs?.[7] || sigs?.['7'];
-      const r = sig?.exp_ret;
-      return Number.isFinite(r) ? (r as number) : 0;
+      return expAtHorizon(row);
     },
-    [rowForSymbol],
+    [rowForSymbol, expAtHorizon],
   );
 
   // Max |1w exp_ret| across the current watchlist — normalises intensity
@@ -185,8 +195,9 @@ export default function WatchlistView({
   }, [symbols, exp1w]);
 
   const signalCounts = useMemo(() => {
-    let bull = 0, bear = 0, neut = 0, green = 0, red = 0, mixed = 0, reversalBuy = 0, reversalSell = 0;
-    for (const r of watchlistRows) {
+    let bull = 0, bear = 0, neut = 0, green = 0, red = 0, mixed = 0, bigGreen = 0, bigRed = 0, reversalBuy = 0, reversalSell = 0;
+    const qualityRows = watchlistRows.filter((row) => (qualityScores[extractTicker(row.asset_label)] ?? 50) >= minQuality);
+    for (const r of qualityRows) {
       const c = classifyRow(r);
       if (c === 'bullish') bull++;
       else if (c === 'bearish') bear++;
@@ -195,22 +206,30 @@ export default function WatchlistView({
       if (hc === 'greens') green++;
       else if (hc === 'reds') red++;
       else mixed++;
+      const move1w = expAtHorizon(r);
+      if (move1w >= WATCHLIST_BIG_MOVE_ABS_THRESHOLD) bigGreen++;
+      else if (move1w <= -WATCHLIST_BIG_MOVE_ABS_THRESHOLD) bigRed++;
       const flip = reversalFlipForAsset(reversalFlips, r.asset_label);
       if (flip?.signal === 'buy') reversalBuy++;
       else if (flip?.signal === 'sell') reversalSell++;
     }
-    return { bull, bear, neut, green, red, mixed, reversalBuy, reversalSell };
-  }, [watchlistRows, classifyRow, reversalFlips]);
+    return { bull, bear, neut, green, red, mixed, bigGreen, bigRed, reversalBuy, reversalSell };
+  }, [watchlistRows, classifyRow, reversalFlips, expAtHorizon, minQuality, qualityScores]);
 
   const filteredWatchlistRows = useMemo(() => {
     if (wlMissingOnly) return [];
     const q = wlQuery.trim().toLowerCase();
     const rows = watchlistRows.filter((r) => {
+      if ((qualityScores[extractTicker(r.asset_label)] ?? 50) < minQuality) return false;
       if (wlSignal !== 'all') {
         if (isReversalQuickFilter(wlSignal)) {
           if (!rowMatchesReversalFilter(r, wlSignal, reversalFlips)) return false;
         } else if (wlSignal === 'bullish' || wlSignal === 'bearish' || wlSignal === 'neutral') {
           if (classifyRow(r) !== wlSignal) return false;
+        } else if (wlSignal === 'big_green' || wlSignal === 'big_red') {
+          const move1w = expAtHorizon(r);
+          if (wlSignal === 'big_green' && move1w < WATCHLIST_BIG_MOVE_ABS_THRESHOLD) return false;
+          if (wlSignal === 'big_red' && move1w > -WATCHLIST_BIG_MOVE_ABS_THRESHOLD) return false;
         } else {
           if (rowHorizonColor(r) !== wlSignal) return false;
         }
@@ -219,45 +238,29 @@ export default function WatchlistView({
       if (q && !(r.asset_label || '').toLowerCase().includes(q)) return false;
       return true;
     });
-    // When the user has clicked a column header (sort override), we want the
-    // parent's sortLevels to win — and the parent already handed us rows in
-    // sortLevels order. Since `watchlistRows` is derived from `allRows` with
-    // `filter` (order-preserving), we can simply skip the preset sort.
-    if (wlSortOverride) return rows;
-    const sorted = rows.slice();
-    const signalRank = (r: SummaryRow) => {
-      const lbl = (r.nearest_label || '').toUpperCase();
-      if (lbl === 'STRONG_BUY') return 0;
-      if (lbl === 'BUY') return 1;
-      if (lbl === 'HOLD' || lbl === 'EXIT' || !lbl) return 2;
-      if (lbl === 'SELL') return 3;
-      if (lbl === 'STRONG_SELL') return 4;
-      return 2;
-    };
-    if (wlSort === 'signal') {
-      sorted.sort((a, b) => signalRank(a) - signalRank(b) || (a.asset_label || '').localeCompare(b.asset_label || ''));
-    } else if (wlSort === 'momentum') {
-      sorted.sort((a, b) => (b.momentum_score ?? -Infinity) - (a.momentum_score ?? -Infinity));
-    } else if (wlSort === 'quality') {
-      sorted.sort((a, b) => (qualityScores[extractTicker(b.asset_label)] ?? -Infinity) - (qualityScores[extractTicker(a.asset_label)] ?? -Infinity));
-    } else if (wlSort === 'risk') {
-      sorted.sort((a, b) => (a.crash_risk_score ?? Infinity) - (b.crash_risk_score ?? Infinity));
-    } else {
-      sorted.sort((a, b) => (a.asset_label || '').localeCompare(b.asset_label || ''));
-    }
-    return sorted;
-  }, [watchlistRows, wlSignal, wlSector, wlQuery, wlSort, wlMissingOnly, wlSortOverride, classifyRow, qualityScores, reversalFlips]);
+    if (wlSortOverride) return sortSummaryRows(rows, wlSortLevels, qualityScores);
+    if (wlSort === 'signal') return sortSummaryRows(rows, [{ col: 'signal', dir: 'desc' }, { col: 'asset', dir: 'asc' }], qualityScores);
+    if (wlSort === 'momentum') return sortSummaryRows(rows, [{ col: 'momentum', dir: 'desc' }], qualityScores);
+    if (wlSort === 'quality') return sortSummaryRows(rows, [{ col: 'quality', dir: 'desc' }], qualityScores);
+    if (wlSort === 'risk') return sortSummaryRows(rows, [{ col: 'crash_risk', dir: 'asc' }], qualityScores);
+    return sortSummaryRows(rows, [{ col: 'asset', dir: 'asc' }], qualityScores);
+  }, [watchlistRows, wlSignal, wlSector, wlQuery, wlSort, wlMissingOnly, wlSortOverride, wlSortLevels, classifyRow, qualityScores, reversalFlips, expAtHorizon, minQuality]);
 
-  // Wrap the parent's `onSort` so a column-header click inside the watchlist
-  // table also flips the override flag. The parent handler still runs so the
-  // main Signals table stays in sync — this matches the "most-recent intent
-  // wins" contract documented in Watchlist.md §10.
+  // Watchlist sorts are deliberately local now. Sorting 20-100 curated rows is
+  // much cheaper than re-sorting and re-rendering the whole Signals surface.
   const handleWatchlistSort = useCallback(
     (col: SortColumn, shift: boolean) => {
       setWlSortOverride(true);
-      onSort(col, shift);
+      setWlSortLevels((prev) => nextSortLevels(prev, col, shift));
     },
-    [onSort],
+    [],
+  );
+  const handleWatchlistPillSort = useCallback(
+    (col: SortColumn) => {
+      setWlSortOverride(true);
+      setWlSortLevels((prev) => nextSortLevels(prev, col, false));
+    },
+    [],
   );
 
   // Changing the Sort preset is an explicit reset of the override.
@@ -265,6 +268,21 @@ export default function WatchlistView({
     setWlSort(key);
     setWlSortOverride(false);
   }, []);
+  const watchlistPresetSortLevels = useMemo((): { col: SortColumn; dir: SortDir }[] => {
+    if (wlSort === 'momentum') return [{ col: 'momentum', dir: 'desc' }];
+    if (wlSort === 'quality') return [{ col: 'quality', dir: 'desc' }];
+    if (wlSort === 'risk') return [{ col: 'crash_risk', dir: 'asc' }];
+    return [];
+  }, [wlSort]);
+  const resetWatchlistSort = useCallback(() => {
+    setWlSort('signal');
+    setWlSortOverride(false);
+    setWlSortLevels([]);
+  }, []);
+  const removeWatchlistSort = useCallback((col: SortColumn) => {
+    setWlSortLevels((prev) => removeSortLevel(prev, col));
+  }, []);
+  const activeWatchlistSortLevels = wlSortOverride ? wlSortLevels : watchlistPresetSortLevels;
 
   // Suggested tickers for the first-run empty state. Keeping this tiny and
   // opinionated: one mega-cap tech, one AI darling, one benchmark ETF.
@@ -298,7 +316,7 @@ export default function WatchlistView({
     return () => window.removeEventListener('keydown', handler);
   }, [manageOpen]);
 
-  const hasActiveFilter = wlSignal !== 'all' || wlSector !== 'all' || wlQuery.trim().length > 0 || wlSort !== 'signal' || wlMissingOnly || wlSortOverride;
+  const hasActiveFilter = wlSignal !== 'all' || wlSector !== 'all' || wlQuery.trim().length > 0 || wlSort !== 'signal' || wlMissingOnly || wlSortOverride || minQuality > 0;
   const hasRefinement = wlSector !== 'all' || wlQuery.trim().length > 0 || wlSort !== 'signal';
   const clearFilters = useCallback(() => {
     setWlSignal('all');
@@ -307,7 +325,8 @@ export default function WatchlistView({
     setWlSort('signal');
     setWlMissingOnly(false);
     setWlSortOverride(false);
-  }, []);
+    onMinQualityChange(0);
+  }, [onMinQualityChange]);
 
   const submit = useCallback(() => {
     const sym = input.trim().toUpperCase();
@@ -363,7 +382,6 @@ export default function WatchlistView({
       items: ChipMeta[];
     };
 
-    const BIG_MOVE_ABS_THRESHOLD = 0.03;
     const sectionSpecs: Omit<ChipSection, 'items'>[] = [
       {
         key: 'big_green',
@@ -521,7 +539,7 @@ export default function WatchlistView({
       }
 
       const style = paint(tone, tier, intensity);
-      if (chipColorMode === 'bigmoves' && absReturn < BIG_MOVE_ABS_THRESHOLD) {
+      if (chipColorMode === 'bigmoves' && absReturn < WATCHLIST_BIG_MOVE_ABS_THRESHOLD) {
         continue;
       }
 
@@ -1215,10 +1233,9 @@ export default function WatchlistView({
           {/* ── Unified segmented control ──────────────────────────────
              One row. Six segments. No duplicate groups. Missing is a
              segment here (only when missingSymbols.length > 0). Color
-             accent per Watchlist.md §8. Sticky at top of the list for
-             glanceable context as user scrolls. */}
+             accent per Watchlist.md §8. */}
           <div
-            className="flex flex-wrap items-center gap-2 px-3 py-2 sticky top-0 z-10"
+            className="flex flex-wrap items-center gap-2 px-3 py-2"
             style={{
               background:
                 'linear-gradient(180deg, rgba(15,23,42,0.72) 0%, rgba(15,23,42,0.55) 100%)',
@@ -1317,9 +1334,87 @@ export default function WatchlistView({
               )}
             </div>
 
+            <div
+              className="inline-flex items-center rounded-[12px] p-0.5 gap-0.5"
+              style={{
+                background:
+                  'linear-gradient(135deg, rgba(15,23,42,0.58), rgba(255,255,255,0.032))',
+                border: '1px solid rgba(255,255,255,0.07)',
+                boxShadow:
+                  '0 1px 0 rgba(255,255,255,0.05) inset, 0 10px 26px -22px rgba(0,0,0,0.8)',
+              }}
+              aria-label="Big move filters"
+            >
+              <span className="hidden sm:inline-flex items-center gap-1.5 px-2 text-[10px] font-semibold uppercase text-[var(--text-secondary)]">
+                <Filter className="w-3 h-3" />
+                1W &gt;= 3%
+              </span>
+              {([
+                {
+                  k: 'big_green' as const,
+                  label: 'Big Greens',
+                  count: signalCounts.bigGreen,
+                  accent: '#34d399',
+                  bg: 'linear-gradient(135deg, rgba(16,185,129,0.20), rgba(20,184,166,0.08))',
+                  border: 'rgba(52,211,153,0.34)',
+                  glow: 'rgba(16,185,129,0.24)',
+                  icon: <ArrowUpRight className="w-3.5 h-3.5" />,
+                },
+                {
+                  k: 'big_red' as const,
+                  label: 'Big Reds',
+                  count: signalCounts.bigRed,
+                  accent: '#fb7185',
+                  bg: 'linear-gradient(135deg, rgba(244,63,94,0.20), rgba(251,113,133,0.08))',
+                  border: 'rgba(251,113,133,0.34)',
+                  glow: 'rgba(244,63,94,0.24)',
+                  icon: <ArrowDownRight className="w-3.5 h-3.5" />,
+                },
+              ]).map((seg) => {
+                const active = !wlMissingOnly && wlSignal === seg.k;
+                return (
+                  <button
+                    key={seg.k}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => {
+                      setWlMissingOnly(false);
+                      setWlSignal(active ? 'all' : seg.k);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-[5px] rounded-[9px] text-[11px] font-semibold transition-all duration-[180ms] ease-[cubic-bezier(0.16,1,0.3,1)] active:scale-[0.97] hover:-translate-y-[1px]"
+                    style={{
+                      background: active ? seg.bg : 'transparent',
+                      color: active ? seg.accent : 'var(--text-secondary)',
+                      boxShadow: active
+                        ? `0 0 0 1px ${seg.border}, 0 10px 24px -18px ${seg.glow}`
+                        : 'none',
+                    }}
+                    title={`${seg.label}: 1-week expected move at least ${(WATCHLIST_BIG_MOVE_ABS_THRESHOLD * 100).toFixed(0)}% in magnitude`}
+                  >
+                    <span
+                      className="inline-flex items-center justify-center rounded-full"
+                      style={{
+                        width: 18,
+                        height: 18,
+                        background: active ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.035)',
+                        color: active ? seg.accent : 'rgba(148,163,184,0.78)',
+                      }}
+                    >
+                      {seg.icon}
+                    </span>
+                    <span>{seg.label}</span>
+                    <span className="tabular-nums" style={{ opacity: active ? 0.95 : 0.58 }}>
+                      {seg.count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
             {/* Sorted-by indicator (shown only when column-click override
                 is active, i.e. user clicked a column header). */}
-            {wlSortOverride && sortLevels.length > 0 && (
+            {wlSortOverride && activeWatchlistSortLevels.length > 0 && (
               <div
                 className="inline-flex items-center gap-1 px-2 py-[3px] rounded-[8px] text-[10px]"
                 style={{
@@ -1368,6 +1463,34 @@ export default function WatchlistView({
                 <span className="opacity-50"> / {watchlistRows.length}</span>
               </div>
             </div>
+          </div>
+
+          <div className="mt-2">
+            <QualityFloorSlider
+              value={minQuality}
+              onChange={onMinQualityChange}
+              compact
+            />
+          </div>
+
+          <div
+            className="mt-2 px-3 py-2"
+            style={{
+              background:
+                'linear-gradient(135deg, rgba(15,23,42,0.46), rgba(255,255,255,0.018))',
+              border: '1px solid rgba(255,255,255,0.055)',
+              borderRadius: '14px',
+              boxShadow: '0 1px 0 rgba(255,255,255,0.035) inset',
+            }}
+          >
+            <SortPillStrip
+              sortLevels={activeWatchlistSortLevels}
+              onSort={handleWatchlistPillSort}
+              onClear={resetWatchlistSort}
+              title="Sort"
+              subtitle="watchlist"
+              horizons={sortHorizons}
+            />
           </div>
 
           {/* ── Refine popover ─────────────────────────────────────────
@@ -1541,9 +1664,9 @@ export default function WatchlistView({
               rows={filteredWatchlistRows}
               horizons={horizons}
               updatedAsset={updatedAsset}
-              sortLevels={sortLevels}
+              sortLevels={activeWatchlistSortLevels}
               onSort={handleWatchlistSort}
-              onRemoveSort={onRemoveSort}
+              onRemoveSort={removeWatchlistSort}
               expandedRow={expanded}
               onExpandRow={setExpanded}
               qualityScores={qualityScores}
