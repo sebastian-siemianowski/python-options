@@ -2261,7 +2261,7 @@ function SectorPanels({
                 </div>
 
                 {sectorChartView ? (
-                  <div className="space-y-2.5 p-3">
+                  <div className="space-y-1.5 p-2">
                     {sortedAssets.map((row) => {
                       const ticker = extractTicker(row.asset_label);
                       const isExpandedRow = chartExpandedRow === row.asset_label;
@@ -4269,7 +4269,7 @@ function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRe
       )}
       <div ref={tableContainerRef} className="overflow-auto max-h-[calc(100vh-280px)]">
         {chartView ? (
-          <div className="space-y-2.5 p-3">
+          <div className="space-y-1.5 p-2">
             {pageRows.map((row) => {
               const ticker = extractTicker(row.asset_label);
               const isExpanded = expandedRow === row.asset_label;
@@ -4452,7 +4452,7 @@ function ChartIdentityChip({ value, color, bg, border, title }: {
 }) {
   return (
     <span
-      className="inline-flex h-[21px] min-w-[44px] max-w-full items-center justify-center truncate rounded-md px-2 text-[8.8px] font-extrabold uppercase tracking-[0.04em] tabular-nums transition-transform duration-150 group-hover:translate-y-[-0.5px]"
+      className="inline-flex h-[19px] w-full max-w-full items-center justify-center truncate rounded-[7px] px-1.5 text-[8.3px] font-extrabold uppercase tracking-[0.035em] tabular-nums transition-transform duration-150 group-hover:translate-y-[-0.5px]"
       title={title}
       style={{
         color,
@@ -4473,21 +4473,34 @@ function ChartHorizonMiniTile({ label, expRet }: { label: string; expRet: number
   const absPct = Math.abs(pct ?? 0);
   const color = isFlat ? 'var(--text-muted)' : isUp ? '#34d399' : '#fb7185';
   const bg = isFlat
-    ? 'rgba(100,116,139,0.085)'
+    ? 'rgba(100,116,139,0.075)'
     : isUp
-      ? `rgba(16,185,129,${Math.min(0.22, 0.08 + absPct / 42)})`
-      : `rgba(244,63,94,${Math.min(0.22, 0.08 + absPct / 42)})`;
+      ? `rgba(16,185,129,${Math.min(0.18, 0.075 + absPct / 54)})`
+      : `rgba(244,63,94,${Math.min(0.18, 0.075 + absPct / 54)})`;
   const border = isFlat
-    ? 'rgba(100,116,139,0.16)'
+    ? 'rgba(100,116,139,0.14)'
     : isUp
-      ? 'rgba(16,185,129,0.26)'
-      : 'rgba(244,63,94,0.28)';
+      ? 'rgba(16,185,129,0.24)'
+      : 'rgba(244,63,94,0.26)';
+  const value = pct == null
+    ? '—'
+    : `${pct >= 0 ? '+' : ''}${Math.abs(pct) >= 10 ? pct.toFixed(0) : pct.toFixed(1)}`;
 
   return (
-    <div className="min-w-0 overflow-hidden rounded-lg px-1.5 py-1.5 text-center" style={{ background: bg, border: `1px solid ${border}` }}>
-      <div className="mb-1 text-[7.5px] font-bold uppercase tracking-[0.12em] text-[var(--text-muted)]">{label}</div>
-      <div className="truncate text-[10px] font-extrabold tabular-nums leading-none" style={{ color }}>
-        {pct == null ? '—' : `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`}
+    <div
+      className="relative h-[42px] min-w-0 overflow-hidden rounded-[9px] px-1.5 py-1.5 text-center"
+      title={pct == null ? `${label}: no forecast` : `${label}: ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`}
+      style={{
+        background: `linear-gradient(180deg, ${bg}, rgba(255,255,255,0.012))`,
+        border: `1px solid ${border}`,
+        boxShadow: `inset 0 1px 0 rgba(255,255,255,0.045), 0 10px 18px -18px ${color}`,
+      }}
+    >
+      <div aria-hidden className="absolute inset-x-2 top-0 h-px" style={{ background: `linear-gradient(90deg, transparent, ${color}66, transparent)` }} />
+      <div className="text-[7px] font-bold uppercase tracking-[0.11em] text-[var(--text-muted)]">{label}</div>
+      <div className="mt-1 flex min-w-0 items-baseline justify-center gap-0.5 leading-none" style={{ color }}>
+        <span className="min-w-0 truncate text-[10.5px] font-extrabold tabular-nums tracking-[-0.01em]">{value}</span>
+        {pct != null && <span className="text-[7.4px] font-bold opacity-80">%</span>}
       </div>
     </div>
   );
@@ -4527,32 +4540,44 @@ function ChartAssetRow({ row, ticker, horizons, qualityScore, highlighted, isExp
             onToggleExpand();
           }
         }}
-        className={`group rounded-xl transition-all duration-200 outline-none ${highlighted ? 'aurora-upgrade' : ''}`}
+        className={`group relative overflow-hidden rounded-xl transition-all duration-200 outline-none ${highlighted ? 'aurora-upgrade' : ''}`}
         style={{
           background: isExpanded
-            ? 'linear-gradient(180deg, rgba(139,92,246,0.075), rgba(255,255,255,0.014))'
-            : 'linear-gradient(180deg, rgba(255,255,255,0.026), rgba(255,255,255,0.008))',
-          border: `1px solid ${isExpanded ? 'rgba(167,139,250,0.38)' : 'rgba(255,255,255,0.055)'}`,
-          boxShadow: isExpanded ? '0 10px 34px -20px rgba(139,92,246,0.58)' : '0 1px 0 rgba(255,255,255,0.03) inset',
+            ? `linear-gradient(180deg, ${labelColor}0f, rgba(139,92,246,0.045) 48%, rgba(255,255,255,0.012))`
+            : 'linear-gradient(180deg, rgba(255,255,255,0.032), rgba(255,255,255,0.009))',
+          border: `1px solid ${isExpanded ? 'rgba(167,139,250,0.42)' : 'rgba(255,255,255,0.06)'}`,
+          boxShadow: isExpanded ? `0 14px 42px -28px ${labelColor}, 0 1px 0 rgba(255,255,255,0.05) inset` : '0 1px 0 rgba(255,255,255,0.035) inset',
         }}
       >
-        <div className="grid w-full min-w-0 gap-3 p-3 xl:grid-cols-[minmax(132px,0.38fr)_minmax(0,2.22fr)_minmax(236px,0.76fr)] xl:items-center 2xl:grid-cols-[minmax(150px,0.36fr)_minmax(0,2.28fr)_minmax(292px,0.82fr)]">
-          <div className="flex min-w-0 items-center gap-2.5">
+        <div aria-hidden className="absolute inset-x-3 top-0 h-px opacity-80" style={{ background: `linear-gradient(90deg, transparent, ${labelColor}66, transparent)` }} />
+        <div className="grid w-full min-w-0 gap-2 p-2 xl:grid-cols-[minmax(178px,0.42fr)_minmax(0,2.38fr)_minmax(336px,0.94fr)_30px] xl:items-center 2xl:grid-cols-[minmax(196px,0.40fr)_minmax(0,2.58fr)_minmax(388px,0.98fr)_30px]">
+          <div className="flex min-w-0 items-center gap-2">
             <span
-              className="h-9 w-1 rounded-full flex-shrink-0"
-              style={{ background: labelColor, boxShadow: `0 0 12px -4px ${labelColor}` }}
+              className="h-[62px] w-1 rounded-full flex-shrink-0"
+              style={{ background: labelColor, boxShadow: `0 0 15px -4px ${labelColor}` }}
             />
-            <div className="min-w-0">
-              <span className="block truncate text-[12.5px] font-bold tabular-nums text-[var(--text-primary)]">{ticker}</span>
-              {company && <span className="mt-0.5 block max-w-[138px] truncate text-[9px] leading-tight text-[var(--text-muted)]">{company}</span>}
-              <div className="mt-1.5 flex max-w-[162px] flex-wrap items-center gap-1.5">
-                <ChartIdentityChip
-                  value={compactChartSignalLabel(label)}
-                  color={labelColor}
-                  bg={`${labelColor}12`}
-                  border={`${labelColor}34`}
-                  title={`Current signal: ${label}`}
-                />
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span className="truncate text-[13.2px] font-bold leading-none tabular-nums text-[var(--text-primary)]">{ticker}</span>
+                <span
+                  className="min-w-0 truncate rounded-md px-1.5 py-[1px] text-[7.5px] font-semibold uppercase tracking-[0.08em]"
+                  style={{ background: 'rgba(255,255,255,0.026)', color: 'var(--text-muted)', border: '1px solid rgba(255,255,255,0.045)' }}
+                  title={row.sector || 'Other'}
+                >
+                  {row.sector || 'Other'}
+                </span>
+              </div>
+              {company && <span className="mt-1 block max-w-[178px] truncate text-[8.7px] leading-tight text-[var(--text-muted)]">{company}</span>}
+              <div className="mt-1.5 grid max-w-[190px] grid-cols-3 gap-1">
+                <div className="col-span-3">
+                  <ChartIdentityChip
+                    value={compactChartSignalLabel(label)}
+                    color={labelColor}
+                    bg={`${labelColor}12`}
+                    border={`${labelColor}34`}
+                    title={`Current signal: ${label}`}
+                  />
+                </div>
                 <ChartIdentityChip
                   value={momentumText}
                   color={momentumTone.color}
@@ -4579,30 +4604,28 @@ function ChartAssetRow({ row, ticker, horizons, qualityScore, highlighted, isExp
           </div>
 
           <div
-            className="min-w-0 rounded-lg px-3 py-2"
+            className="min-w-0 rounded-[10px] px-2.5 py-1.5"
             style={{
               background: `linear-gradient(180deg, ${labelColor}10, rgba(255,255,255,0.012))`,
               border: `1px solid ${labelColor}24`,
-              boxShadow: `0 0 18px -15px ${labelColor} inset`,
+              boxShadow: `0 0 22px -17px ${labelColor} inset, 0 10px 24px -28px ${labelColor}`,
             }}
           >
-            <Sparkline ticker={ticker} width={720} height={76} tail={220} variant="reversal" fluid />
+            <Sparkline ticker={ticker} width={760} height={60} tail={220} variant="reversal" fluid />
           </div>
 
           <div
-            className="w-full min-w-0 overflow-hidden rounded-lg p-2"
+            className="flex min-w-0 items-stretch gap-1.5 overflow-hidden rounded-[12px] p-1.5"
             style={{
-              background: 'linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01))',
-              border: '1px solid rgba(255,255,255,0.055)',
+              background: 'radial-gradient(240px 72px at 0% 0%, rgba(167,139,250,0.08), transparent 58%), linear-gradient(180deg, rgba(255,255,255,0.034), rgba(255,255,255,0.01))',
+              border: '1px solid rgba(255,255,255,0.065)',
+              boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04), 0 12px 28px -30px rgba(167,139,250,0.75)',
             }}
           >
-            <div className="mb-1.5 min-w-0 overflow-hidden rounded-lg px-2 py-1.5" style={{ background: 'rgba(255,255,255,0.018)', border: '1px solid rgba(255,255,255,0.055)' }}>
-              <div className="mb-1 truncate text-[7.5px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
-                Reversal
-              </div>
-              <SparklineReversalStateBadge ticker={ticker} tail={220} compact />
+            <div className="w-[66px] shrink-0">
+              <SparklineReversalStateBadge ticker={ticker} tail={220} compact tile />
             </div>
-            <div className="grid min-w-0 grid-cols-3 gap-1.5">
+            <div className="grid min-w-0 flex-1 grid-cols-[repeat(auto-fit,minmax(58px,1fr))] gap-1">
               {chartHorizons.map((h) => {
                 const sig = row.horizon_signals[h] || row.horizon_signals[String(h)];
                 return (
@@ -4611,31 +4634,23 @@ function ChartAssetRow({ row, ticker, horizons, qualityScore, highlighted, isExp
               })}
             </div>
           </div>
-        </div>
-        <div className="flex min-w-0 items-center justify-between gap-2 border-t px-3 py-1.5" style={{ borderColor: 'rgba(255,255,255,0.035)' }}>
-          <span
-            className="min-w-0 truncate rounded px-1.5 py-[1px] text-[8px] font-semibold uppercase tracking-[0.1em]"
-            style={{ background: 'rgba(255,255,255,0.026)', color: 'var(--text-muted)', border: '1px solid rgba(255,255,255,0.045)' }}
-            title={row.sector || 'Other'}
-          >
-            {row.sector || 'Other'}
-          </span>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center justify-end gap-1 xl:flex-col xl:justify-center">
             <button
               type="button"
               onClick={(event) => {
                 event.stopPropagation();
                 onNavigateChart();
               }}
-              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.08em] transition-colors"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-[9px] transition-all hover:brightness-125 active:scale-95"
               style={{
                 color: '#c4b5fd',
                 background: 'rgba(167,139,250,0.08)',
                 border: '1px solid rgba(167,139,250,0.18)',
               }}
+              title="Open full chart"
+              aria-label={`Open full chart for ${ticker}`}
             >
-              <ExternalLink className="h-3 w-3" />
-              Chart
+              <ExternalLink className="h-3.5 w-3.5" />
             </button>
             <ChevronRight
               className="h-3.5 w-3.5 transition-transform duration-200"

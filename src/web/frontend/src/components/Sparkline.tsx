@@ -635,7 +635,7 @@ function SparklineInner({ ticker, width = 60, height = 28, tail = 30, variant = 
 
 export const Sparkline = memo(SparklineInner);
 
-function SparklineReversalStateBadgeInner({ ticker, tail = 220, compact = false }: { ticker: string; tail?: number; compact?: boolean }) {
+function SparklineReversalStateBadgeInner({ ticker, tail = 220, compact = false, tile = false }: { ticker: string; tail?: number; compact?: boolean; tile?: boolean }) {
   const { ref: visibilityRef, isNearViewport } = useNearViewport<HTMLDivElement>();
   const { data } = useQuery({
     queryKey: ['sparkline', ticker, tail],
@@ -650,11 +650,12 @@ function SparklineReversalStateBadgeInner({ ticker, tail = 220, compact = false 
     return (
       <div ref={visibilityRef} className={`flex flex-col items-center gap-0.5 ${compact ? 'min-w-0 w-full' : 'min-w-[62px]'}`}>
         <span
-          className={`inline-flex ${compact ? 'h-[30px] w-full' : 'h-[26px] min-w-[58px]'} items-center justify-center rounded-lg text-[9px] font-bold uppercase tracking-[0.08em]`}
+          className={`inline-flex ${compact ? tile ? 'h-[42px] w-full rounded-[9px]' : 'h-[30px] w-full rounded-lg' : 'h-[26px] min-w-[58px] rounded-lg'} items-center justify-center text-[9px] font-bold uppercase tracking-[0.08em]`}
           style={{
             color: 'var(--text-muted)',
-            background: 'rgba(255,255,255,0.018)',
-            border: '1px solid rgba(255,255,255,0.055)',
+            background: tile ? 'linear-gradient(180deg, rgba(100,116,139,0.075), rgba(255,255,255,0.012))' : 'rgba(255,255,255,0.018)',
+            border: `1px solid ${tile ? 'rgba(100,116,139,0.14)' : 'rgba(255,255,255,0.055)'}`,
+            boxShadow: tile ? 'inset 0 1px 0 rgba(255,255,255,0.045)' : undefined,
           }}
         >
           —
@@ -688,13 +689,15 @@ function SparklineReversalStateBadgeInner({ ticker, tail = 220, compact = false 
   return (
     <div ref={visibilityRef} className={`flex flex-col items-center gap-0.5 ${compact ? 'min-w-0 w-full' : 'min-w-[68px]'}`}>
       <span
-        className={`inline-flex ${compact ? 'h-[30px] w-full flex-col gap-0.5 px-1' : 'h-[26px] min-w-[64px] gap-1.5 px-2'} items-center justify-center rounded-lg tabular-nums`}
+        className={`inline-flex ${compact ? tile ? 'h-[42px] w-full flex-col gap-0.5 rounded-[9px] px-1.5' : 'h-[30px] w-full flex-col gap-0.5 rounded-lg px-1' : 'h-[26px] min-w-[64px] gap-1.5 rounded-lg px-2'} items-center justify-center tabular-nums`}
         title={`Current mini reversal state: ${stateLabel}${ageLabel ? ` for ${ageLabel}` : ''}`}
         style={{
           color: softColor,
-          background: isBuy ? 'rgba(0,245,160,0.115)' : 'rgba(255,55,95,0.115)',
-          border: `1px solid ${isBuy ? 'rgba(0,245,160,0.42)' : 'rgba(255,55,95,0.42)'}`,
-          boxShadow: `0 0 14px -9px ${color}`,
+          background: tile
+            ? `linear-gradient(180deg, ${isBuy ? 'rgba(16,185,129,0.18)' : 'rgba(244,63,94,0.18)'}, rgba(255,255,255,0.012))`
+            : isBuy ? 'rgba(0,245,160,0.115)' : 'rgba(255,55,95,0.115)',
+          border: `1px solid ${isBuy ? tile ? 'rgba(16,185,129,0.24)' : 'rgba(0,245,160,0.42)' : tile ? 'rgba(244,63,94,0.26)' : 'rgba(255,55,95,0.42)'}`,
+          boxShadow: tile ? `inset 0 1px 0 rgba(255,255,255,0.045), 0 10px 18px -18px ${color}` : `0 0 14px -9px ${color}`,
         }}
       >
         {compact ? compactBadgeContent : (
