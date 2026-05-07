@@ -106,8 +106,23 @@ def adaptive_data_quality(
     if df is None or df.empty:
         return df, report
 
+    # yfinance sometimes returns a single-symbol DataFrame with MultiIndex
+    # columns after bulk downloads, e.g. ("Close", "DELL"). The rest of the
+    # tuning stack expects ordinary OHLCV names, so flatten to the price field.
+    canonical_fields = {"open", "high", "low", "close", "adj close", "volume"}
+    if any(isinstance(c, tuple) for c in df.columns):
+        rename_map = {}
+        for col in df.columns:
+            if not isinstance(col, tuple):
+                rename_map[col] = col
+                continue
+            parts = [str(part).strip() for part in col if str(part).strip()]
+            field = next((part for part in parts if part.lower() in canonical_fields), None)
+            rename_map[col] = field or "_".join(parts)
+        df = df.rename(columns=rename_map)
+
     # ── Resolve Volume column (case-insensitive) ────────────────────
-    cols_map = {c.lower(): c for c in df.columns}
+    cols_map = {str(c).lower(): c for c in df.columns}
     vol_col = cols_map.get("volume")
     if vol_col is None:
         # No volume column — cannot apply quality filter

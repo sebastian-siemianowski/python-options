@@ -1121,6 +1121,18 @@ COMPANY_NAMES: Dict[str, str] = {
     "ANET": "Arista Networks, Inc.",
     "SNPS": "Synopsys, Inc.",
     "CDNS": "Cadence Design Systems, Inc.",
+    "KLAC": "KLA Corporation",
+    "TER": "Teradyne, Inc.",
+    "ONTO": "Onto Innovation Inc.",
+    "MKSI": "MKS Instruments, Inc.",
+    "FORM": "FormFactor, Inc.",
+    "ACLS": "Axcelis Technologies, Inc.",
+    "CAMT": "Camtek Ltd.",
+    "NVMI": "Nova Ltd.",
+    "ASM.AS": "ASM International N.V.",
+    "BESI.AS": "BE Semiconductor Industries N.V.",
+    "6146.T": "DISCO Corporation",
+    "6861.T": "Keyence Corporation",
     
     # Cloud & Cybersecurity Infrastructure
     "CRWD": "CrowdStrike Holdings, Inc.",
@@ -1128,6 +1140,8 @@ COMPANY_NAMES: Dict[str, str] = {
     "DDOG": "Datadog, Inc.",
     "SNOW": "Snowflake Inc.",
     "MDB": "MongoDB, Inc.",
+    "NET": "Cloudflare, Inc.",
+    "PSTG": "Pure Storage, Inc.",
     
     # AI Power & Semiconductor Choke Points
     "NVTS": "Navitas Semiconductor Corporation",
@@ -1166,14 +1180,29 @@ COMPANY_NAMES: Dict[str, str] = {
     "PATH": "UiPath Inc.",
     
     # AI Hardware & Edge Compute
+    "DELL": "Dell Technologies Inc.",
+    "CIEN": "Ciena Corporation",
+    "COHR": "Coherent Corp.",
+    "CLS": "Celestica Inc.",
+    "JBL": "Jabil Inc.",
+    "FLEX": "Flex Ltd.",
     "MRVL": "Marvell Technology, Inc.",
     "NXPI": "NXP Semiconductors N.V.",
     "ADI": "Analog Devices, Inc.",
     "ON": "ON Semiconductor Corporation",
     "ARM": "Arm Holdings plc",
+    "RMBS": "Rambus Inc.",
+    "MTSI": "MACOM Technology Solutions Holdings, Inc.",
+    "LSCC": "Lattice Semiconductor Corporation",
+    "SITM": "SiTime Corporation",
     "000660.KS": "SK Hynix Inc.",
     "8035.T": "Tokyo Electron Limited",
     "6723.T": "Renesas Electronics Corporation",
+    "2382.TW": "Quanta Computer Inc.",
+    "3711.TW": "ASE Technology Holding Co., Ltd.",
+    "6669.TW": "Wiwynn Corporation",
+    "3443.TW": "Global Unichip Corp.",
+    "3661.TW": "Alchip Technologies Limited",
     
     # AI Power Semiconductors
     "IFX.DE": "Infineon Technologies AG",
@@ -1189,6 +1218,9 @@ COMPANY_NAMES: Dict[str, str] = {
     "PWR": "Quanta Services, Inc.",
     "VRT": "Vertiv Holdings Co.",
     "JCI": "Johnson Controls International plc",
+    "TT": "Trane Technologies plc",
+    "FIX": "Comfort Systems USA, Inc.",
+    "EME": "EMCOR Group, Inc.",
     
     # Advanced Materials & Manufacturing
     "CRS": "Carpenter Technology Corporation",
@@ -2346,8 +2378,29 @@ DEFAULT_ASSET_UNIVERSE = [
     "ANET",   # Arista Networks — AI data-center networking spine
     "SNPS",   # Synopsys — Chip design software monopoly layer
     "CDNS",   # Cadence Design — Digital silicon design infrastructure
+    "KLAC",   # KLA — Process control / metrology choke point for advanced nodes
+    "TER",    # Teradyne — Automated semiconductor test for AI chips
+    "ONTO",   # Onto Innovation — Advanced packaging inspection and metrology
+    "MKSI",   # MKS Instruments — Vacuum, photonics, and process subsystems
+    "FORM",   # FormFactor — Probe cards and wafer-level test
+    "ACLS",   # Axcelis — Ion implantation equipment
+    "CAMT",   # Camtek — Inspection/metrology for advanced packaging
+    "NVMI",   # Nova — Process control and metrology
+    "ASM.AS", # ASM International — ALD deposition for leading-edge chips
+    "BESI.AS", # BE Semiconductor — Hybrid bonding / advanced packaging
+    "6146.T", # DISCO — Dicing and grinding equipment
+    "6861.T", # Keyence — Precision sensors / machine vision / automation
     "000660.KS", # SK Hynix — Dominant in HBM3/HBM4, NVIDIA's memory supplier
     "8035.T",    # Tokyo Electron — Japanese precision, leading-edge process control
+
+    # AI data-center systems, networking, and optical/storage infrastructure
+    "DELL",   # Dell Technologies — AI servers and enterprise infrastructure
+    "PSTG",   # Pure Storage — High-performance storage for AI workloads
+    "CIEN",   # Ciena — Optical networking for AI data-center traffic
+    "COHR",   # Coherent — Optical transceivers and photonics supply chain
+    "CLS",    # Celestica — AI server manufacturing and integration
+    "JBL",    # Jabil — Electronics manufacturing for data-center hardware
+    "FLEX",   # Flex — Global electronics manufacturing and AI systems supply
 
     # -------------------------
     # AI Hardware / Edge Compute
@@ -2356,7 +2409,16 @@ DEFAULT_ASSET_UNIVERSE = [
     "NXPI",   # NXP Semiconductors — Edge AI + automotive brains
     "ADI",    # Analog Devices — Sensor-to-AI interface layer
     "ON",     # ON Semiconductor — EV + power + edge AI
+    "RMBS",   # Rambus — Memory interface IP/security for high-bandwidth compute
+    "MTSI",   # MACOM — High-speed analog, RF, and optical semiconductor layer
+    "LSCC",   # Lattice Semiconductor — Low-power FPGA / edge AI
+    "SITM",   # SiTime — Precision timing for data-center and AI hardware
     "6723.T", # Renesas Electronics — Embedded + power control, industrial AI
+    "2382.TW", # Quanta Computer — AI server ODM
+    "3711.TW", # ASE Technology — Semiconductor assembly and test
+    "6669.TW", # Wiwynn — Hyperscale / AI server design and manufacturing
+    "3443.TW", # Global Unichip — Custom ASIC design services
+    "3661.TW", # Alchip — HPC / AI ASIC design services
 
     # -------------------------
     # AI Power Semiconductors
@@ -2370,6 +2432,9 @@ DEFAULT_ASSET_UNIVERSE = [
     "VSH",    # Vishay Intertechnology — Essential components
     "2308.TW", # Delta Electronics — Power supplies for hyperscale data centers
     "ETN",    # Eaton Corporation — Grid, UPS, power conditioning
+    "TT",     # Trane Technologies — Data-center thermal management
+    "FIX",    # Comfort Systems USA — Data-center mechanical/electrical buildout
+    "EME",    # EMCOR — Mission-critical electrical/mechanical infrastructure
 
     # -------------------------
     # Industrial / Infrastructure Transition
@@ -2379,6 +2444,7 @@ DEFAULT_ASSET_UNIVERSE = [
     "DDOG",   # Datadog — Cloud observability nervous system
     "SNOW",   # Snowflake — Data-cloud substrate for AI
     "MDB",    # MongoDB — Modern data infrastructure layer
+    "NET",    # Cloudflare — Edge network, security, and AI inference plumbing
 
     # -------------------------
     # Fintech & Digital Finance
@@ -2987,7 +3053,9 @@ SECTOR_MAP = {
         # Juniors & Exploration
         "SLVR", "EXK", "SVM", "AG"
     },
-    "Asian Tech & Manufacturing": {"005930.KS"},
+    "Asian Tech & Manufacturing": {
+        "005930.KS", "2382.TW", "3711.TW", "6669.TW", "3443.TW", "3661.TW", "6861.T"
+    },
     "VanEck ETFs": {"AFK", "ANGL", "CNXT", "EGPT", "GLIN", "MOTG", "IDX", "MLN", "NLR", "DURA"},
     "Options / Structured Products": {
         "TSLD", "PLTI", "QQQO", "METI", "MSFI", "MAGD", "AMDI", "AMZD", "GOOO", "BABI", "BABY", "AAPI", "AVGI", "MSTP"
@@ -2996,18 +3064,29 @@ SECTOR_MAP = {
     "Critical Materials": {"MP", "CRML", "IDR", "FCX", "UAMY"},
     "Space": {"RKLB", "ASTS", "PL", "BKSY", "LUNR", "SPIR", "GSAT", "IRDM", "ASTR", "MDA.TO", "MDALF"},
     "Drones": {"ONDS", "UMAC", "AVAV", "KTOS", "DPRO"},
-    "AI Utility / Infrastructure": {"IREN", "NBIS", "CIFR", "CRWV", "GLXY", "SMCI", "ANET", "VRT", "2308.TW", "ETN"},
-    "AI Software / Data Platforms": {"CFLT", "ESTC", "PATH", "DDOG", "SNOW", "MDB"},
-    "Semiconductor Equipment": {"ASML", "LRCX", "AMAT", "TSM", "ARM", "SNPS", "CDNS", "8035.T"},
+    "AI Utility / Infrastructure": {
+        "IREN", "NBIS", "CIFR", "CRWV", "GLXY", "SMCI", "ANET", "VRT", "2308.TW", "ETN",
+        "DELL", "PSTG", "CIEN", "COHR", "CLS", "JBL", "FLEX", "TT", "FIX", "EME"
+    },
+    "AI Software / Data Platforms": {
+        "CFLT", "ESTC", "PATH", "DDOG", "SNOW", "MDB", "NET", "CRM", "ADBE", "ACN", "ORCL", "PLTR"
+    },
+    "Semiconductor Equipment": {
+        "ASML", "LRCX", "AMAT", "TSM", "ARM", "SNPS", "CDNS", "8035.T",
+        "KLAC", "TER", "ONTO", "MKSI", "FORM", "ACLS", "CAMT", "NVMI", "ASM.AS", "BESI.AS", "6146.T"
+    },
     "AI Power Semiconductors": {"NVTS", "WOLF", "AEHR", "ALAB", "CRDO", "IFX.DE", "STM", "MPWR", "AOSL", "POWI", "VSH"},
-    "AI Hardware / Edge Compute": {"MRVL", "NXPI", "ADI", "ON", "000660.KS", "6723.T"},
+    "AI Hardware / Edge Compute": {
+        "MRVL", "NXPI", "ADI", "ON", "000660.KS", "005930.KS", "6723.T",
+        "MU", "QCOM", "RMBS", "MTSI", "LSCC", "SITM"
+    },
     "Cloud & Cybersecurity": {"CRWD", "ZS"},
     "Fintech": {"HUBS", "AFRM", "NU", "COIN", "PYPL"},
     "Batteries & Energy Tech": {"ENVX", "QS", "FLNC", "ENPH", "BE"},
     "TechBio / AI Drug Discovery": {"RXRX", "SDGR", "ABCL", "NTLA", "TEM"},
     "Biotech Platforms / Genomics": {"VRTX", "ILMN", "PACB", "EXAI"},
     "Quantum Computing": {"IONQ", "QBTS", "ARQQ", "RGTI", "QUBT"},
-    "Industrial Infrastructure": {"PWR", "JCI", "ETN", "2308.TW"},
+    "Industrial Infrastructure": {"PWR", "JCI", "ETN", "2308.TW", "TT", "FIX", "EME"},
     "Growth Screen (Michael Kao List)": {"ASTS", "NUTX", "RCAT", "MU", "SANM", "SEZL", "AMCR", "PSIX", "DLO", "PGY", "FOUR"},
     # -------------------------------------------------------------------------
     # Small-Mid Cap Growth (Top 100 Revenue Screener picks)
@@ -3147,18 +3226,31 @@ KNOWN_SYMBOL_CURRENCIES: Dict[str, str] = {
     # AI & Semiconductors (USD)
     # =========================================================================
     "ASML": "USD", "LRCX": "USD", "AMAT": "USD", "TSM": "USD", "ARM": "USD",
-    "SMCI": "USD", "ANET": "USD", "SNPS": "USD", "CDNS": "USD", "MRVL": "USD",
-    "NXPI": "USD", "ADI": "USD", "ON": "USD", "NVTS": "USD", "WOLF": "USD",
-    "AEHR": "USD", "ALAB": "USD", "CRDO": "USD", "MU": "USD",
+    "SMCI": "USD", "ANET": "USD", "SNPS": "USD", "CDNS": "USD", "KLAC": "USD",
+    "TER": "USD", "ONTO": "USD", "MKSI": "USD", "FORM": "USD", "ACLS": "USD",
+    "CAMT": "USD", "NVMI": "USD", "MRVL": "USD", "NXPI": "USD", "ADI": "USD",
+    "ON": "USD", "RMBS": "USD", "MTSI": "USD", "LSCC": "USD", "SITM": "USD",
+    "NVTS": "USD", "WOLF": "USD", "AEHR": "USD", "ALAB": "USD", "CRDO": "USD", "MU": "USD",
+    "DELL": "USD", "PSTG": "USD", "CIEN": "USD", "COHR": "USD", "CLS": "USD",
+    "JBL": "USD", "FLEX": "USD", "NET": "USD",
     # AI Power Semiconductors (USD)
     "STM": "USD", "MPWR": "USD", "AOSL": "USD", "POWI": "USD", "VSH": "USD", "ETN": "USD",
     
     # AI & Semiconductors (International)
     "000660.KS": "KRW",  # SK Hynix (Korean Won)
     "8035.T": "JPY",     # Tokyo Electron (Japanese Yen)
+    "6146.T": "JPY",     # DISCO (Japanese Yen)
+    "6861.T": "JPY",     # Keyence (Japanese Yen)
     "6723.T": "JPY",     # Renesas Electronics (Japanese Yen)
     "IFX.DE": "EUR",     # Infineon (Euro)
     "2308.TW": "TWD",    # Delta Electronics (Taiwan Dollar)
+    "2382.TW": "TWD",    # Quanta Computer (Taiwan Dollar)
+    "3711.TW": "TWD",    # ASE Technology (Taiwan Dollar)
+    "6669.TW": "TWD",    # Wiwynn (Taiwan Dollar)
+    "3443.TW": "TWD",    # Global Unichip (Taiwan Dollar)
+    "3661.TW": "TWD",    # Alchip (Taiwan Dollar)
+    "ASM.AS": "EUR",     # ASM International (Euro)
+    "BESI.AS": "EUR",    # BE Semiconductor Industries (Euro)
     
     # Cloud & Cybersecurity (USD)
     "CRWD": "USD", "ZS": "USD", "DDOG": "USD", "SNOW": "USD", "MDB": "USD",
@@ -3178,7 +3270,7 @@ KNOWN_SYMBOL_CURRENCIES: Dict[str, str] = {
     "SMR": "USD", "ENVX": "USD", "QS": "USD", "FLNC": "USD", "ENPH": "USD", "BE": "USD",
     
     # Infrastructure (USD)
-    "PWR": "USD", "VRT": "USD", "JCI": "USD", "CRS": "USD", "KMT": "USD",
+    "PWR": "USD", "VRT": "USD", "JCI": "USD", "TT": "USD", "FIX": "USD", "EME": "USD", "CRS": "USD", "KMT": "USD",
     
     # Growth Screen (USD)
     "NUTX": "USD", "SANM": "USD", "SEZL": "USD", "AMCR": "USD", "PSIX": "USD",

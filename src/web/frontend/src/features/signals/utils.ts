@@ -26,6 +26,36 @@ const ISO_CURRENCY_CODES = new Set([
   'TRY', 'USD', 'ZAR',
 ]);
 
+const AI_STOCK_SECTORS = new Set([
+  'AI Utility / Infrastructure',
+  'AI Software / Data Platforms',
+  'Semiconductor Equipment',
+  'AI Power Semiconductors',
+  'AI Hardware / Edge Compute',
+  'Cloud & Cybersecurity',
+  'Asian Tech & Manufacturing',
+  'Industrial Infrastructure',
+  'TechBio / AI Drug Discovery',
+  'Quantum Computing',
+]);
+
+const AI_STOCK_TICKERS = new Set([
+  'AAPL', 'ACN', 'ADBE', 'AMD', 'AMZN', 'ANET', 'ARM', 'AVGO', 'CRM', 'GOOGL',
+  'GOOG', 'META', 'MSFT', 'NVDA', 'ORCL', 'PLTR', 'QCOM', 'TSM',
+  'ASML', 'AMAT', 'LRCX', 'KLAC', 'TER', 'ONTO', 'MKSI', 'FORM', 'ACLS',
+  'CAMT', 'NVMI', 'SNPS', 'CDNS', '8035.T', 'ASM.AS', 'BESI.AS', '6146.T',
+  '6861.T',
+  'MU', 'MRVL', 'MPWR', 'RMBS', 'MTSI', 'LSCC', 'SITM', 'CRDO', 'ALAB',
+  'NVTS', 'WOLF', 'AEHR', 'IFX.DE', 'STM', 'AOSL', 'POWI', 'VSH',
+  '005930.KS', '000660.KS', '2382.TW', '3711.TW', '6669.TW', '3443.TW',
+  '3661.TW', '6723.T',
+  'SMCI', 'DELL', 'PSTG', 'CIEN', 'COHR', 'CLS', 'JBL', 'FLEX', 'VRT',
+  'ETN', 'PWR', 'TT', 'FIX', 'EME', '2308.TW',
+  'CFLT', 'CRWD', 'DDOG', 'ESTC', 'MDB', 'NET', 'PATH', 'SNOW', 'ZS',
+  'NBIS', 'IREN', 'CIFR', 'CRWV', 'GLXY',
+  'RXRX', 'SDGR', 'ABCL', 'TEM', 'IONQ', 'QBTS', 'ARQQ', 'RGTI', 'QUBT',
+]);
+
 export const extractTicker = (label: string): string => {
   if (label.includes('(')) return label.split('(').pop()!.replace(')', '').trim();
   return label;
@@ -149,13 +179,22 @@ export const isFiatCurrencyTicker = (symbol: string | undefined | null): boolean
   let sym = String(symbol || '').trim().toUpperCase();
   if (sym.endsWith('_X')) sym = `${sym.slice(0, -2)}=X`;
   if (!sym.endsWith('=X')) return false;
-  const pair = sym.slice(0, -2).replace(/[\/_-]/g, '');
+  const pair = sym.slice(0, -2).replace(/[/_-]/g, '');
   if (pair.length !== 6) return false;
   return ISO_CURRENCY_CODES.has(pair.slice(0, 3)) && ISO_CURRENCY_CODES.has(pair.slice(3));
 };
 
 export const isCurrencyAsset = (assetLabelOrTicker: string | undefined | null): boolean =>
   isFiatCurrencyTicker(extractTicker(String(assetLabelOrTicker || '').trim()));
+
+export const isAiStockAsset = (
+  assetLabelOrTicker: string | undefined | null,
+  sector?: string | null,
+): boolean => {
+  const ticker = extractTicker(String(assetLabelOrTicker || '').trim()).toUpperCase();
+  if (ticker && AI_STOCK_TICKERS.has(ticker)) return true;
+  return !!sector && AI_STOCK_SECTORS.has(sector);
+};
 
 export const rebuildSectorFromAssets = (sector: SectorGroup, assets: SummaryRow[]): SectorGroup => {
   const counts = { strong_buy: 0, buy: 0, hold: 0, sell: 0, strong_sell: 0, exit: 0 };

@@ -448,13 +448,34 @@ QUALITY_SCORES = {
     "ANET": 82,  # Arista Networks - data center networking
     "SNPS": 85,  # Synopsys - EDA duopoly
     "CDNS": 85,  # Cadence - EDA duopoly
+    "KLAC": 88,  # KLA - process control/metrology choke point
+    "TER": 79,   # Teradyne - automated test leader
+    "ONTO": 75,  # Onto Innovation - advanced packaging metrology
+    "MKSI": 70,  # MKS Instruments - semi process subsystems
+    "FORM": 72,  # FormFactor - probe cards / wafer test
+    "ACLS": 68,  # Axcelis - ion implantation equipment
+    "CAMT": 72,  # Camtek - advanced packaging inspection
+    "NVMI": 78,  # Nova - metrology / process control
+    "ASM.AS": 82, # ASM International - ALD deposition leader
+    "BESI.AS": 80, # BESI - hybrid bonding / advanced packaging
+    "6146.T": 84, # DISCO - wafer dicing/grinding equipment
+    "6861.T": 88, # Keyence - machine vision / sensors, elite margins
     "000660.KS": 72, # SK Hynix - memory
     "8035.T": 78, # Tokyo Electron - semiconductor equipment
     "MRVL": 72,  # Marvell - custom silicon, data center
     "NXPI": 72,  # NXP - automotive/industrial semiconductors
     "ADI": 78,   # Analog Devices - high-performance analog
     "ON": 68,    # ON Semiconductor - auto/industrial
+    "RMBS": 77,  # Rambus - memory interface IP/security
+    "MTSI": 72,  # MACOM - optical/RF/analog semiconductors
+    "LSCC": 70,  # Lattice - low-power FPGA / edge AI
+    "SITM": 62,  # SiTime - precision timing, higher cyclicality
     "6723.T": 65, # Renesas Electronics
+    "2382.TW": 74, # Quanta - AI server ODM
+    "3711.TW": 76, # ASE Technology - assembly/test leader
+    "6669.TW": 73, # Wiwynn - hyperscale AI servers
+    "3443.TW": 72, # Global Unichip - ASIC design
+    "3661.TW": 68, # Alchip - HPC/AI ASIC design, cyclicality
     "IFX.DE": 68, # Infineon Technologies
     "STM": 60,   # STMicroelectronics
     "MPWR": 78,  # Monolithic Power Systems
@@ -470,6 +491,8 @@ QUALITY_SCORES = {
     "DDOG": 78,  # Datadog - observability platform
     "SNOW": 62,  # Snowflake - data cloud, high spend
     "MDB": 60,   # MongoDB - document database
+    "NET": 72,   # Cloudflare - edge network and security platform
+    "PSTG": 72,  # Pure Storage - enterprise storage for AI data
     "HUBS": 74,  # HubSpot - marketing/CRM for SMBs
     "CFLT": 45,  # Confluent - data streaming
     "ESTC": 55,  # Elastic - search/observability
@@ -513,6 +536,15 @@ QUALITY_SCORES = {
     "PWR": 75,   # Quanta Services - utility/infrastructure
     "VRT": 68,   # Vertiv - data center cooling/power
     "JCI": 65,   # Johnson Controls - building tech
+    "DELL": 72,  # Dell - AI servers and enterprise infrastructure
+    "CIEN": 72,  # Ciena - optical networking
+    "COHR": 70,  # Coherent - photonics and optical components
+    "CLS": 72,   # Celestica - AI server manufacturing/integration
+    "JBL": 69,   # Jabil - electronics manufacturing
+    "FLEX": 68,  # Flex - electronics manufacturing
+    "TT": 78,    # Trane - thermal management / HVAC
+    "FIX": 76,   # Comfort Systems - data-center mechanical/electrical work
+    "EME": 75,   # EMCOR - mission-critical electrical/mechanical infra
     "CRS": 55,   # Carpenter Technology - specialty alloys
     "KMT": 48,   # Kennametal - cutting tools
 

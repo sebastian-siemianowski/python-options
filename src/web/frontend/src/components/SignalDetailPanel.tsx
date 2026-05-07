@@ -246,7 +246,7 @@ export interface SignalDetailPanelProps {
   momentum?: number;
   crashRisk?: number;
   /** Horizons from the row (e.g. [7, 30, 90]) — rendered as a small forecast list. */
-  horizonSignals?: Record<string, { p_up?: number; kelly_half?: number; label?: string }>;
+  horizonSignals?: Record<string, { exp_ret?: number; p_up?: number; kelly_half?: number; label?: string }>;
   defaultChartType?: ChartType;
   defaultRange?: RangeKey;
   onNavigateChart: () => void;

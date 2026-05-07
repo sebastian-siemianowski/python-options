@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, useMemo, useEffect, useRef, useCallback, Component, type ReactNode, type ErrorInfo } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -23,6 +22,7 @@ import {
   extractTicker,
   DEFAULT_SIGNAL_SORT,
   defaultSortDirFor,
+  isAiStockAsset,
   isCurrencyAsset,
   isReversalQuickFilter,
   nextSortLevels,
@@ -40,7 +40,7 @@ import {
   ChevronDown,
   TrendingDown, Search, X, BarChart3,
   ArrowUp, ArrowDown,
-  Eye, ChevronUp, Loader2,
+  Eye, ChevronUp, Loader2, Cpu,
 } from 'lucide-react';
 import { formatHorizon, responsiveHorizons } from '../utils/horizons';
 
@@ -48,6 +48,7 @@ import { useWebSocket } from '../hooks/useWebSocket';
 
 const SIGNALS_SHOW_CURRENCIES_LS_KEY = 'signals-show-currencies-v1';
 const SIGNALS_MIN_QUALITY_LS_KEY = 'signals-min-quality-v1';
+const SIGNALS_AI_ONLY_LS_KEY = 'signals-ai-only-v1';
 
 const loadStoredShowCurrencies = (): boolean => {
   if (typeof window === 'undefined') return true;
@@ -141,9 +142,18 @@ function SignalsPageInner() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [expandedSectors, setExpandedSectors] = useState<Set<string>>(new Set());
   const [showCurrencies, setShowCurrencies] = useState<boolean>(() => loadStoredShowCurrencies());
+  const [aiOnly, setAiOnly] = useState<boolean>(() => {
+    try { return localStorage.getItem(SIGNALS_AI_ONLY_LS_KEY) === '1'; } catch { return false; }
+  });
   useEffect(() => {
     try { localStorage.setItem(SIGNALS_SHOW_CURRENCIES_LS_KEY, showCurrencies ? '1' : '0'); } catch { /* ignore */ }
   }, [showCurrencies]);
+  useEffect(() => {
+    try {
+      if (aiOnly) localStorage.setItem(SIGNALS_AI_ONLY_LS_KEY, '1');
+      else localStorage.removeItem(SIGNALS_AI_ONLY_LS_KEY);
+    } catch { /* ignore */ }
+  }, [aiOnly]);
   // EMA-below filters — apply to all three views. Multi-select, AND-combined.
   const [emaFilters, setEmaFilters] = useState<{ p9: boolean; p50: boolean; p600: boolean }>(
     () => {
@@ -313,11 +323,6 @@ function SignalsPageInner() {
     queryFn: api.signalsBySector,
   });
 
-  const strongQ = useQuery({
-    queryKey: ['strongSignals'],
-    queryFn: api.strongSignals,
-  });
-
   const buyQ = useQuery({
     queryKey: ['highConvictionBuy'],
     queryFn: () => api.highConviction('buy'),
@@ -333,14 +338,14 @@ function SignalsPageInner() {
     queryFn: api.qualityScores,
     staleTime: 60_000,
   });
-  const qualityScores = qualityQ.data?.scores ?? {};
+  const qualityScores = useMemo(() => qualityQ.data?.scores ?? {}, [qualityQ.data?.scores]);
 
   const emaQ = useQuery({
     queryKey: ['emaStates'],
     queryFn: api.emaStates,
     staleTime: 5 * 60_000,
   });
-  const emaStates = emaQ.data?.states ?? {};
+  const emaStates = useMemo(() => emaQ.data?.states ?? {}, [emaQ.data?.states]);
 
   const reversalsQ = useQuery({
     queryKey: ['smaReversals', 'exclude-currencies-v2'],
@@ -369,8 +374,8 @@ function SignalsPageInner() {
     );
   }, [emaStates]);
 
-  const rows = data?.summary_rows || [];
-  const allHorizons = data?.horizons || [];
+  const rows = useMemo(() => data?.summary_rows || [], [data?.summary_rows]);
+  const allHorizons = useMemo(() => data?.horizons || [], [data?.horizons]);
   const windowWidth = useWindowWidth();
 
   // Story 3.6: Horizon pill selector with localStorage override
@@ -399,7 +404,7 @@ function SignalsPageInner() {
     try { localStorage.removeItem('signals-horizons'); } catch { /* ignore */ }
   }, []);
   const stats = statsQ.data;
-  const rawSectors = sectorQ.data?.sectors || [];
+  const rawSectors = useMemo(() => sectorQ.data?.sectors || [], [sectorQ.data?.sectors]);
 
   // v1 premium: auto-expand sectors on first load so 'sectors' view isn't an empty shell
   const sectorsAutoExpandedRef = useRef(false);
@@ -439,6 +444,9 @@ function SignalsPageInner() {
   const passesCurrency = useCallback((assetLabelOrTicker: string | undefined | null): boolean => (
     showCurrencies || !isCurrencyAsset(assetLabelOrTicker)
   ), [showCurrencies]);
+  const passesAi = useCallback((assetLabelOrTicker: string | undefined | null, sector?: string | null): boolean => (
+    !aiOnly || isAiStockAsset(assetLabelOrTicker, sector)
+  ), [aiOnly]);
   const passesQuality = useCallback((assetLabel: string | undefined | null): boolean => {
     if (minQuality <= 0) return true;
     const score = qualityScores[extractTicker(String(assetLabel || ''))] ?? 50;
@@ -448,12 +456,18 @@ function SignalsPageInner() {
   const currencyVisibleRows = useMemo(() => (
     showCurrencies ? rows : rows.filter((row) => passesCurrency(row.asset_label))
   ), [rows, showCurrencies, passesCurrency]);
+  const visibleRows = useMemo(() => (
+    aiOnly ? currencyVisibleRows.filter((row) => isAiStockAsset(row.asset_label, row.sector)) : currencyVisibleRows
+  ), [currencyVisibleRows, aiOnly]);
   const currencyAssetCount = useMemo(() => (
     rows.filter((row) => isCurrencyAsset(row.asset_label)).length
   ), [rows]);
+  const aiAssetCount = useMemo(() => (
+    currencyVisibleRows.filter((row) => isAiStockAsset(row.asset_label, row.sector)).length
+  ), [currencyVisibleRows]);
 
   const baseFilteredRows = useMemo(() => {
-    return currencyVisibleRows.filter((row) => {
+    return visibleRows.filter((row) => {
       if (debouncedSearch && !fuzzyMatch(row.asset_label, debouncedSearch)) return false;
       if (!passesEma(row.asset_label)) return false;
       if (filter === 'all') return true;
@@ -464,7 +478,7 @@ function SignalsPageInner() {
       if (filter === 'greens' || filter === 'reds') return rowHorizonColor(row) === filter;
       return label === filter.toUpperCase();
     });
-  }, [currencyVisibleRows, debouncedSearch, filter, fuzzyMatch, passesEma, reversalFlipsQ.data]);
+  }, [visibleRows, debouncedSearch, filter, fuzzyMatch, passesEma, reversalFlipsQ.data]);
   const filteredRows = useMemo(() => (
     baseFilteredRows.filter((row) => passesQuality(row.asset_label))
   ), [baseFilteredRows, passesQuality]);
@@ -474,14 +488,14 @@ function SignalsPageInner() {
 
   // Sectors view: apply EMA predicate at the asset level, drop empty sectors.
   const sectors = useMemo(() => {
-    if (showCurrencies && !emaFilters.p9 && !emaFilters.p50 && !emaFilters.p600 && minQuality <= 0) return rawSectors;
+    if (showCurrencies && !aiOnly && !emaFilters.p9 && !emaFilters.p50 && !emaFilters.p600 && minQuality <= 0) return rawSectors;
     return rawSectors
       .map(sec => rebuildSectorFromAssets(
         sec,
-        sec.assets.filter(a => passesCurrency(a.asset_label) && passesEma(a.asset_label) && passesQuality(a.asset_label)),
+        sec.assets.filter(a => passesCurrency(a.asset_label) && passesAi(a.asset_label, a.sector) && passesEma(a.asset_label) && passesQuality(a.asset_label)),
       ))
       .filter(sec => sec.assets.length > 0);
-  }, [rawSectors, showCurrencies, emaFilters, minQuality, passesCurrency, passesEma, passesQuality]);
+  }, [rawSectors, showCurrencies, aiOnly, emaFilters, minQuality, passesCurrency, passesAi, passesEma, passesQuality]);
 
   // Global sector totals shown in the unified filter card footer.
   const sectorTotals = useMemo(() => ({
@@ -491,9 +505,9 @@ function SignalsPageInner() {
   }), [sectors]);
 
   const reversalQuickCounts = useMemo(() => ({
-    buy: currencyVisibleRows.filter((row) => rowMatchesReversalFilter(row, 'reversal_buy', reversalFlipsQ.data)).length,
-    sell: currencyVisibleRows.filter((row) => rowMatchesReversalFilter(row, 'reversal_sell', reversalFlipsQ.data)).length,
-  }), [currencyVisibleRows, reversalFlipsQ.data]);
+    buy: visibleRows.filter((row) => rowMatchesReversalFilter(row, 'reversal_buy', reversalFlipsQ.data)).length,
+    sell: visibleRows.filter((row) => rowMatchesReversalFilter(row, 'reversal_sell', reversalFlipsQ.data)).length,
+  }), [visibleRows, reversalFlipsQ.data]);
 
   /** Story 3.2: Multi-level sorted rows */
   const sortedRows = useMemo(() => {
@@ -560,7 +574,7 @@ function SignalsPageInner() {
         elapsedSec={jobElapsedSec}
         phaseTitle={jobPhases.length > 0 ? jobPhases[jobPhases.length - 1].title : null}
         filteredRows={filteredRows}
-        totalRows={currencyVisibleRows.length}
+        totalRows={visibleRows.length}
         onRefreshStocks={() => openOrStartJob('stocks')}
         onRunTune={() => openOrStartJob('retune')}
         onRunBoth={() => openOrStartJob('tune-stocks')}
@@ -572,7 +586,7 @@ function SignalsPageInner() {
       />
 
       {/* ── v1 PREMIUM HERO BAND ─────────────────────────────────────── */}
-      <SignalsHero stats={showCurrencies ? stats : undefined} rows={currencyVisibleRows} horizons={horizons} filteredCount={filteredRows.length} wsStatus={wsStatus} />
+      <SignalsHero stats={showCurrencies && !aiOnly ? stats : undefined} rows={visibleRows} horizons={horizons} filteredCount={filteredRows.length} wsStatus={wsStatus} />
 
       {/* Watchlist — always-visible, user-curated tickers persisted server-side */}
       <div className="mb-5 fade-up-delay-1">
@@ -592,8 +606,8 @@ function SignalsPageInner() {
 
       {/* High Conviction — tabbed decision workspace */}
       <HighConvictionTabs
-        buySignals={(buyQ.data?.signals || []).filter((signal) => passesCurrency(signal.ticker))}
-        sellSignals={(sellQ.data?.signals || []).filter((signal) => passesCurrency(signal.ticker))}
+        buySignals={(buyQ.data?.signals || []).filter((signal) => passesCurrency(signal.ticker) && passesAi(signal.ticker, signal.sector))}
+        sellSignals={(sellQ.data?.signals || []).filter((signal) => passesCurrency(signal.ticker) && passesAi(signal.ticker, signal.sector))}
         buyLoading={buyQ.isLoading}
         sellLoading={sellQ.isLoading}
         emaStates={emaStates}
@@ -652,6 +666,51 @@ function SignalsPageInner() {
             size="md"
           />
 
+          <button
+            type="button"
+            onClick={() => setAiOnly((prev) => !prev)}
+            aria-pressed={aiOnly}
+            title={aiOnly ? 'Show the full universe again' : 'Show only AI, semiconductor, data-center, and AI-infrastructure stocks'}
+            className="group relative inline-flex items-center gap-2 overflow-hidden rounded-[11px] px-3 py-[7px] transition-all duration-200 active:scale-[0.98]"
+            style={{
+              background: aiOnly
+                ? 'linear-gradient(135deg, rgba(56,217,245,0.22), rgba(167,139,250,0.20) 48%, rgba(16,185,129,0.16))'
+                : 'linear-gradient(135deg, rgba(255,255,255,0.035), rgba(255,255,255,0.012))',
+              border: `1px solid ${aiOnly ? 'rgba(125,211,252,0.42)' : 'rgba(255,255,255,0.06)'}`,
+              color: aiOnly ? '#e0f2fe' : 'var(--text-secondary)',
+              boxShadow: aiOnly
+                ? '0 0 0 1px rgba(167,139,250,0.16) inset, 0 16px 34px -24px rgba(56,217,245,0.9), 0 0 22px -14px rgba(16,185,129,0.9)'
+                : '0 1px 0 rgba(255,255,255,0.03) inset',
+            }}
+          >
+            {aiOnly && (
+              <span
+                aria-hidden
+                className="absolute inset-x-1 top-0 h-px"
+                style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.72), transparent)' }}
+              />
+            )}
+            <Cpu
+              className="w-3.5 h-3.5"
+              style={{
+                color: aiOnly ? '#67e8f9' : 'var(--text-muted)',
+                filter: aiOnly ? 'drop-shadow(0 0 6px rgba(56,217,245,0.75))' : 'none',
+              }}
+            />
+            <span className="text-[11px] font-bold uppercase tracking-[0.08em] whitespace-nowrap">
+              AI only
+            </span>
+            <span
+              className="inline-flex h-[17px] min-w-[24px] items-center justify-center rounded-md px-1.5 text-[10px] font-bold tabular-nums"
+              style={{
+                background: aiOnly ? 'rgba(2,6,23,0.34)' : 'rgba(255,255,255,0.05)',
+                color: aiOnly ? '#ffffff' : 'var(--text-muted)',
+              }}
+            >
+              {aiAssetCount}
+            </span>
+          </button>
+
           <div className="flex-1 min-w-[20px]" />
 
           {/* Premium Search */}
@@ -682,7 +741,7 @@ function SignalsPageInner() {
             {search && (
               <>
                 <span className="text-[10px] text-[var(--text-muted)] tabular-nums whitespace-nowrap">
-                  {filteredRows.length}/{currencyVisibleRows.length}
+                  {filteredRows.length}/{visibleRows.length}
                 </span>
                 <button onClick={() => setSearch('')} className="text-[var(--text-muted)] hover:text-[var(--accent-rose)] transition-colors duration-120">
                   <X className="w-3 h-3" />
@@ -946,11 +1005,12 @@ function SignalsPageInner() {
           </button>
 
           {/* Clear all */}
-          {(filter !== 'all' || emaFilters.p9 || emaFilters.p50 || emaFilters.p600 || !showCurrencies || search || minQuality > 0) && (
+          {(filter !== 'all' || aiOnly || emaFilters.p9 || emaFilters.p50 || emaFilters.p600 || !showCurrencies || search || minQuality > 0) && (
             <button
               type="button"
               onClick={() => {
                 setFilter('all');
+                setAiOnly(false);
                 setEmaFilters({ p9: false, p50: false, p600: false });
                 setShowCurrencies(true);
                 setSearch('');
@@ -1231,9 +1291,9 @@ function SignalsPageInner() {
       )}
       {view === 'strong' && (
         <StrongSignalsView
-          strongBuy={(strongQ.data?.strong_buy || []).filter(s => passesCurrency(s.symbol) && passesEma(s.symbol))}
-          strongSell={(strongQ.data?.strong_sell || []).filter(s => passesCurrency(s.symbol) && passesEma(s.symbol))}
+          rows={filteredRows}
           filter={filter}
+          qualityScores={qualityScores}
           onNavigateChart={(sym) => navigate(`/charts/${sym}`)}
         />
       )}

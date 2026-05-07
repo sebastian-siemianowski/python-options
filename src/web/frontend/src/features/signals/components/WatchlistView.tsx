@@ -1,5 +1,5 @@
 import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ArrowDownRight, ArrowUpRight, Filter, Layers, Loader2, Plus, Search, SlidersHorizontal, Star, X } from 'lucide-react';
+import { AlertTriangle, ArrowDownRight, ArrowUpRight, Cpu, Filter, Layers, Loader2, Plus, Search, SlidersHorizontal, Star, X } from 'lucide-react';
 import type { ReversalFlipsData, SummaryRow } from '../../../api';
 import { useWatchlist } from '../../../hooks/useWatchlist';
 import AllAssetsTable from './AllAssetsTable';
@@ -11,6 +11,7 @@ import {
   sortSummaryRows,
   extractTicker,
   isReversalQuickFilter,
+  isAiStockAsset,
   reversalFlipForAsset,
   rowHorizonColor,
   rowMatchesReversalFilter,
@@ -96,7 +97,7 @@ export default function WatchlistView({
   type WlClass = 'bullish' | 'bearish' | 'neutral';
   type WlColor = 'greens' | 'reds' | 'mixed';
   type WlBigMove = 'big_green' | 'big_red';
-  type WlSignal = 'all' | WlClass | WlColor | WlBigMove | ReversalQuickFilter;
+  type WlSignal = 'all' | 'ai' | WlClass | WlColor | WlBigMove | ReversalQuickFilter;
   type WlSort = 'signal' | 'momentum' | 'quality' | 'risk' | 'alpha';
   const [wlSignal, setWlSignal] = useState<WlSignal>('all');
   const [wlSector, setWlSector] = useState<string>('all');
@@ -195,9 +196,10 @@ export default function WatchlistView({
   }, [symbols, exp1w]);
 
   const signalCounts = useMemo(() => {
-    let bull = 0, bear = 0, neut = 0, green = 0, red = 0, mixed = 0, bigGreen = 0, bigRed = 0, reversalBuy = 0, reversalSell = 0;
+    let ai = 0, bull = 0, bear = 0, neut = 0, green = 0, red = 0, mixed = 0, bigGreen = 0, bigRed = 0, reversalBuy = 0, reversalSell = 0;
     const qualityRows = watchlistRows.filter((row) => (qualityScores[extractTicker(row.asset_label)] ?? 50) >= minQuality);
     for (const r of qualityRows) {
+      if (isAiStockAsset(r.asset_label, r.sector)) ai++;
       const c = classifyRow(r);
       if (c === 'bullish') bull++;
       else if (c === 'bearish') bear++;
@@ -213,7 +215,7 @@ export default function WatchlistView({
       if (flip?.signal === 'buy') reversalBuy++;
       else if (flip?.signal === 'sell') reversalSell++;
     }
-    return { bull, bear, neut, green, red, mixed, bigGreen, bigRed, reversalBuy, reversalSell };
+    return { ai, bull, bear, neut, green, red, mixed, bigGreen, bigRed, reversalBuy, reversalSell };
   }, [watchlistRows, classifyRow, reversalFlips, expAtHorizon, minQuality, qualityScores]);
 
   const filteredWatchlistRows = useMemo(() => {
@@ -224,6 +226,8 @@ export default function WatchlistView({
       if (wlSignal !== 'all') {
         if (isReversalQuickFilter(wlSignal)) {
           if (!rowMatchesReversalFilter(r, wlSignal, reversalFlips)) return false;
+        } else if (wlSignal === 'ai') {
+          if (!isAiStockAsset(r.asset_label, r.sector)) return false;
         } else if (wlSignal === 'bullish' || wlSignal === 'bearish' || wlSignal === 'neutral') {
           if (classifyRow(r) !== wlSignal) return false;
         } else if (wlSignal === 'big_green' || wlSignal === 'big_red') {
@@ -1257,6 +1261,7 @@ export default function WatchlistView({
             >
               {([
                 { k: 'all' as const, label: 'All', count: watchlistRows.length, accent: '#e2e8f0', bg: 'rgba(226,232,240,0.10)', border: 'rgba(226,232,240,0.20)', dot: null as string | null },
+                { k: 'ai' as const, label: 'AI', count: signalCounts.ai, accent: '#67e8f9', bg: 'linear-gradient(135deg, rgba(56,217,245,0.17), rgba(167,139,250,0.10))', border: 'rgba(125,211,252,0.34)', dot: '#67e8f9' },
                 { k: 'bullish' as const, label: 'Bullish', count: signalCounts.bull, accent: '#34d399', bg: 'rgba(52,211,153,0.12)', border: 'rgba(52,211,153,0.28)', dot: '#34d399' },
                 { k: 'bearish' as const, label: 'Bearish', count: signalCounts.bear, accent: '#f87171', bg: 'rgba(248,113,113,0.12)', border: 'rgba(248,113,113,0.28)', dot: '#f87171' },
                 { k: 'greens' as const, label: 'Greens', count: signalCounts.green, accent: '#6ee7b7', bg: 'rgba(110,231,183,0.12)', border: 'rgba(110,231,183,0.28)', dot: '#6ee7b7' },
@@ -1283,7 +1288,15 @@ export default function WatchlistView({
                     }}
                     title={`${seg.label} (${seg.count})`}
                   >
-                    {seg.dot && (
+                    {seg.k === 'ai' ? (
+                      <Cpu
+                        className="w-3 h-3"
+                        style={{
+                          color: active ? seg.accent : 'var(--text-muted)',
+                          filter: active ? 'drop-shadow(0 0 5px rgba(56,217,245,0.78))' : 'none',
+                        }}
+                      />
+                    ) : seg.dot && (
                       <span
                         className="inline-block rounded-full transition-opacity"
                         style={{
