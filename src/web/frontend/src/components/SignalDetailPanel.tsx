@@ -25,6 +25,7 @@ import {
   type IChartApi,
   type AreaData,
   type SeriesMarker,
+  type Time,
 } from 'lightweight-charts';
 import { ArrowUpRight, BarChart3, TrendingUp, AlertTriangle, ExternalLink, RefreshCw } from 'lucide-react';
 import { api, type OHLCVBar } from '../api';
@@ -64,6 +65,13 @@ interface ReversalModel {
   states: ReversalStatePoint[];
 }
 
+interface RegimeRailSegment {
+  left: number;
+  width: number;
+  trend: ReversalTrend;
+  isFlip: boolean;
+}
+
 const RANGE_DAYS: Record<RangeKey, number> = {
   '1M': 22, '3M': 66, '6M': 132, '1Y': 252, 'MAX': 10000,
 };
@@ -77,21 +85,23 @@ const TV_THEME = Object.freeze({
     fontSize: 10,
   },
   grid: {
-    vertLines: { color: 'rgba(255,255,255,0.025)', style: LineStyle.Solid },
-    horzLines: { color: 'rgba(255,255,255,0.035)', style: LineStyle.Solid },
+    vertLines: { color: 'rgba(255,255,255,0.014)', style: LineStyle.Solid },
+    horzLines: { color: 'rgba(255,255,255,0.026)', style: LineStyle.Solid },
   },
   crosshair: {
     mode: CrosshairMode.Magnet,
-    vertLine: { color: 'rgba(139,92,246,0.45)', width: 1 as const, style: LineStyle.Dashed, labelBackgroundColor: '#1a1036' },
-    horzLine: { color: 'rgba(139,92,246,0.45)', width: 1 as const, style: LineStyle.Dashed, labelBackgroundColor: '#1a1036' },
+    vertLine: { color: 'rgba(196,181,253,0.34)', width: 1 as const, style: LineStyle.Dashed, labelBackgroundColor: '#17112b' },
+    horzLine: { color: 'rgba(196,181,253,0.30)', width: 1 as const, style: LineStyle.Dashed, labelBackgroundColor: '#17112b' },
   },
   rightPriceScale: {
-    borderColor: 'rgba(255,255,255,0.05)',
+    borderColor: 'rgba(255,255,255,0.035)',
   },
   timeScale: {
-    borderColor: 'rgba(255,255,255,0.05)',
+    borderColor: 'rgba(255,255,255,0.035)',
     timeVisible: true,
     secondsVisible: false,
+    barSpacing: 5.4,
+    minBarSpacing: 2.2,
   },
   candles: {
     upColor: '#10b981',
@@ -101,15 +111,15 @@ const TV_THEME = Object.freeze({
     wickDownColor: '#f43f5e',
   },
   area: {
-    lineColor: '#34d399',
-    topColor: 'rgba(16,185,129,0.26)',
+    lineColor: '#5eead4',
+    topColor: 'rgba(16,185,129,0.20)',
     bottomColor: 'rgba(16,185,129,0)',
     lineWidth: 2 as const,
     priceLineVisible: false,
     lastValueVisible: true,
   },
-  volumeUp: 'rgba(16,185,129,0.35)',
-  volumeDown: 'rgba(244,63,94,0.35)',
+  volumeUp: 'rgba(16,185,129,0.22)',
+  volumeDown: 'rgba(244,63,94,0.22)',
 });
 
 function formatPrice(v: number): string {
@@ -240,7 +250,7 @@ function buildReversalModel(bars: OHLCVBar[]): ReversalModel {
         color: trend === 1 ? '#00f5a0' : '#ff375f',
         shape: trend === 1 ? 'arrowUp' : 'arrowDown',
         text: trend === 1 ? 'BUY' : 'SELL',
-        size: 1.35,
+        size: 1.12,
       });
     }
   });
@@ -478,12 +488,17 @@ export default function SignalDetailPanel({
 function TradingViewChart({ bars, reversalBars, chartType }: { bars: OHLCVBar[]; reversalBars: OHLCVBar[]; chartType: ChartType }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const [railSegments, setRailSegments] = useState<RegimeRailSegment[]>([]);
 
   useEffect(() => {
-    if (!containerRef.current) return;
+    if (!containerRef.current) {
+      setRailSegments([]);
+      return;
+    }
 
     const container = containerRef.current;
     const reversal = buildReversalModel(reversalBars);
+    const railRightGutter = 54;
     const chart = createChart(container, {
       layout: TV_THEME.layout,
       grid: TV_THEME.grid,
@@ -541,32 +556,51 @@ function TradingViewChart({ bars, reversalBars, chartType }: { bars: OHLCVBar[];
       })),
     );
 
-    // Reversal regime rail: rendered by lightweight-charts so it shares the exact
-    // same time scale as the price chart instead of relying on a separate DOM rail.
-    if (reversal.states.length > 1) {
-      const regimeSeries = chart.addSeries(HistogramSeries, {
-        priceFormat: { type: 'volume' },
-        priceScaleId: 'regime',
-        color: 'rgba(16,185,129,0.70)',
-        priceLineVisible: false,
-        lastValueVisible: false,
-      });
-      chart.priceScale('regime').applyOptions({
-        scaleMargins: { top: 0.958, bottom: 0.012 },
-        visible: false,
-      });
-      regimeSeries.setData(
-        reversal.states.map((state) => ({
-          time: state.time,
-          value: 1,
-          color: state.trend === 1
-            ? state.isFlip ? 'rgba(0,245,160,0.98)' : 'rgba(16,185,129,0.74)'
-            : state.isFlip ? 'rgba(255,55,95,0.98)' : 'rgba(244,63,94,0.74)',
-        })),
-      );
-    }
-
     chart.timeScale().fitContent();
+
+    const updateRail = () => {
+      if (!containerRef.current || reversal.states.length < 2) {
+        setRailSegments([]);
+        return;
+      }
+
+      const plotWidth = Math.max(0, containerRef.current.clientWidth - railRightGutter);
+      const coords = reversal.states.map((state) => chart.timeScale().timeToCoordinate(state.time as Time));
+      const numericCoords = coords
+        .filter((coord) => coord != null && Number.isFinite(Number(coord)))
+        .map((coord) => Number(coord));
+      const diffs = numericCoords
+        .slice(1)
+        .map((coord, index) => coord - numericCoords[index])
+        .filter((diff) => diff > 0.5)
+        .sort((a, b) => a - b);
+      const medianStep = diffs.length > 0 ? diffs[Math.floor(diffs.length / 2)] : Math.max(2, plotWidth / reversal.states.length);
+
+      const nextSegments: RegimeRailSegment[] = [];
+      reversal.states.forEach((state, index) => {
+        const rawStartCoord = coords[index];
+        const rawEndCoord = index < reversal.states.length - 1
+          ? coords[index + 1]
+          : plotWidth;
+        const rawStart = rawStartCoord == null ? (index === 0 ? 0 : null) : Number(rawStartCoord);
+        const rawEnd = rawEndCoord == null ? null : Number(rawEndCoord);
+
+        if (rawStart == null && rawEnd == null) return;
+
+        const start = rawStart ?? (Number(rawEnd) - medianStep);
+        const end = rawEnd ?? (Number(start) + medianStep);
+        const left = Math.max(0, Math.min(plotWidth, start));
+        const right = Math.max(0, Math.min(plotWidth, index === reversal.states.length - 1 ? plotWidth : end));
+        const width = right - left;
+        if (width <= 0.75) return;
+
+        nextSegments.push({ left, width, trend: state.trend, isFlip: state.isFlip });
+      });
+      setRailSegments(nextSegments);
+    };
+
+    const frame = window.requestAnimationFrame(updateRail);
+    chart.timeScale().subscribeVisibleLogicalRangeChange(updateRail);
 
     // Resize handler
     const ro = new ResizeObserver(() => {
@@ -575,23 +609,86 @@ function TradingViewChart({ bars, reversalBars, chartType }: { bars: OHLCVBar[];
         width: containerRef.current.clientWidth,
         height: containerRef.current.clientHeight,
       });
+      updateRail();
     });
     ro.observe(container);
 
     return () => {
+      window.cancelAnimationFrame(frame);
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(updateRail);
       ro.disconnect();
       chart.remove();
       chartRef.current = null;
+      setRailSegments([]);
     };
   }, [bars, chartType, reversalBars]);
 
   return (
+    <div className="flex h-full min-h-0 flex-col gap-1 overflow-hidden rounded-[12px]">
+      <div
+        ref={containerRef}
+        className="min-h-0 flex-1"
+        style={{ width: '100%' }}
+      />
+      <RegimeRailOverlay segments={railSegments} rightGutter={54} />
+    </div>
+  );
+}
+
+function RegimeRailOverlay({ segments, rightGutter }: { segments: RegimeRailSegment[]; rightGutter: number }) {
+  if (segments.length === 0) return null;
+  const latest = segments[segments.length - 1];
+  const title = `Bottom reversal rail: ${latest.trend === 1 ? 'BUY' : 'SELL'} regime now. Green means BUY regime, red means SELL regime.`;
+
+  return (
     <div
-      ref={containerRef}
-      className="h-full min-h-0"
-      style={{ width: '100%' }}
-      title="Bottom reversal rail: green means BUY regime, red means SELL regime"
-    />
+      className="pointer-events-none relative h-[22px] shrink-0 pt-[4px]"
+      title={title}
+      style={{ marginRight: rightGutter }}
+    >
+      <div
+        className="relative h-[12px] overflow-hidden rounded-full"
+        style={{
+          background: 'linear-gradient(180deg, rgba(255,255,255,0.060), rgba(255,255,255,0.024))',
+          border: '1px solid rgba(255,255,255,0.070)',
+          boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.07), 0 9px 22px -20px rgba(0,0,0,0.9)',
+        }}
+      >
+        {segments.map((segment, index) => (
+          <span
+            key={`${segment.left}-${index}`}
+            className="absolute top-0 h-full"
+            style={{
+              left: segment.left,
+              width: Math.max(1.5, segment.width),
+              background: segment.trend === 1
+                ? 'linear-gradient(180deg, rgba(167,243,208,0.92), rgba(16,185,129,0.58) 58%, rgba(6,78,59,0.40))'
+                : 'linear-gradient(180deg, rgba(253,164,175,0.90), rgba(244,63,94,0.58) 58%, rgba(76,5,25,0.42))',
+              boxShadow: segment.isFlip
+                ? `inset 1px 0 0 rgba(248,250,252,0.76), 0 0 9px ${segment.trend === 1 ? 'rgba(0,245,160,0.42)' : 'rgba(255,55,95,0.42)'}`
+                : 'none',
+              opacity: segment.isFlip ? 1 : 0.86,
+            }}
+          />
+        ))}
+        <span
+          aria-hidden
+          className="absolute inset-x-0 top-0 h-px"
+          style={{ background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.34), transparent)' }}
+        />
+      </div>
+      <span
+        className="absolute right-[-50px] top-[2px] inline-flex h-[16px] w-[40px] items-center justify-center rounded-full text-[7px] font-extrabold uppercase tracking-[0.10em]"
+        style={{
+          color: latest.trend === 1 ? '#bbf7d0' : '#fecdd3',
+          background: latest.trend === 1 ? 'rgba(16,185,129,0.10)' : 'rgba(244,63,94,0.11)',
+          border: `1px solid ${latest.trend === 1 ? 'rgba(16,185,129,0.22)' : 'rgba(244,63,94,0.24)'}`,
+          boxShadow: `0 8px 18px -16px ${latest.trend === 1 ? 'rgba(16,185,129,0.8)' : 'rgba(244,63,94,0.8)'}`,
+        }}
+      >
+        {latest.trend === 1 ? 'BUY' : 'SELL'}
+      </span>
+    </div>
   );
 }
 

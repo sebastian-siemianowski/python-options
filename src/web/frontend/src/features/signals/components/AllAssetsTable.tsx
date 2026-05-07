@@ -40,7 +40,7 @@ function SortIndicator({ col, sortLevels }: { col: SortColumn; sortLevels: { col
 /** Story 3.2: Human-readable sort column name */
 function sortColName(col: SortColumn): string {
   if (col.startsWith('horizon_')) return formatHorizon(parseInt(col.split('_')[1], 10));
-  const names: Record<string, string> = { asset: 'Asset', sector: 'Sector', signal: 'Signal', momentum: 'Momentum', quality: 'Quality', crash_risk: 'Risk' };
+  const names: Record<string, string> = { asset: 'Asset', sector: 'Sector', signal: 'Signal', momentum: 'Momentum', quality: 'Quality', crash_risk: 'Risk', pct30d: '30D' };
   return names[col] || col;
 }
 
@@ -260,8 +260,10 @@ export default function AllAssetsTable({ rows, horizons, updatedAsset, sortLevel
                 </th>
               )}
               {visibleCols.has('pct30d') && (
-                <th className="text-center px-2 py-3 w-[56px]">
-                  <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-[0.06em] font-medium">30D</span>
+                <th className={`text-center px-2 py-3 w-[64px] sortable-th group ${sortLevels.some(s => s.col === 'pct30d') ? 'active' : ''}`}
+                    style={sortLevels.some(s => s.col === 'pct30d') ? { color: 'var(--accent-violet)', textShadow: '0 0 8px var(--violet-30)' } : {}}
+                    onClick={(e) => onSort('pct30d', e.shiftKey)}>
+                  30D <SortIndicator col="pct30d" sortLevels={sortLevels} />
                 </th>
               )}
               {visibleCols.has('sector') && (
@@ -422,7 +424,7 @@ function CosmicSignalRow({ row, ticker, horizons, visibleCols, qualityScore, hig
         {/* 30D pct change */}
         {visibleCols.has('pct30d') && (
           <td className="px-1.5 py-2 text-center">
-            <SparklinePct ticker={ticker} />
+            <SparklinePct ticker={ticker} pct={row.pct_30d} />
           </td>
         )}
         {/* Sector */}
@@ -490,7 +492,7 @@ function CosmicSignalRow({ row, ticker, horizons, visibleCols, qualityScore, hig
               signal={row.nearest_label}
               momentum={row.momentum_score}
               crashRisk={row.crash_risk_score}
-              horizonSignals={row.horizon_signals as any}
+              horizonSignals={row.horizon_signals}
               defaultChartType={detailDefaultChartType}
               onNavigateChart={onNavigateChart}
             />
@@ -559,7 +561,7 @@ export function SectorSignalRow({ row, horizons, visibleCols, qualityScore, high
         {/* 30D pct change */}
         {visibleCols.has('pct30d') && (
           <td className="px-1.5 py-2 text-center">
-            <SparklinePct ticker={ticker} />
+            <SparklinePct ticker={ticker} pct={row.pct_30d} />
           </td>
         )}
         {/* Signal label + strength split */}
@@ -623,7 +625,7 @@ export function SectorSignalRow({ row, horizons, visibleCols, qualityScore, high
               signal={row.nearest_label}
               momentum={row.momentum_score}
               crashRisk={row.crash_risk_score}
-              horizonSignals={row.horizon_signals as any}
+              horizonSignals={row.horizon_signals}
               onNavigateChart={() => onNavigateChart(ticker)}
             />
           </td>

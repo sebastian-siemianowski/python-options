@@ -37,6 +37,13 @@ const BASE_SORT_PILLS: SortPill[] = [
     accent: '#fb7185',
     icon: <Activity className="w-3.5 h-3.5" />,
   },
+  {
+    col: 'pct30d',
+    label: '30D price change',
+    shortLabel: '30D',
+    accent: '#38bdf8',
+    icon: <BarChart3 className="w-3.5 h-3.5" />,
+  },
 ];
 
 export const buildSignalSortPills = (horizons: number[] = DEFAULT_PROJECTION_HORIZONS): SortPill[] => [

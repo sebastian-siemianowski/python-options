@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ChevronRight, Shield, TrendingDown, TrendingUp } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronRight, Shield, TrendingDown, TrendingUp } from 'lucide-react';
 import type { StrongSignalEntry, SummaryRow } from '../../../api';
 import SignalDetailPanel from '../../../components/SignalDetailPanel';
 import { MomentumBadge } from '../../../components/SignalTableVisuals';
@@ -8,6 +8,9 @@ import { extractTicker, type SignalFilter } from '../utils';
 
 type SignalTabKey = 'strong_buy' | 'buy' | 'strong_sell' | 'sell';
 type SignalLabel = 'STRONG BUY' | 'BUY' | 'STRONG SELL' | 'SELL';
+type StrongSortColumn = 'rank' | 'ticker' | 'quality' | 'horizon' | 'exp_ret' | 'probability' | 'momentum';
+type StrongSortDir = 'asc' | 'desc';
+type StrongSortState = { col: StrongSortColumn; dir: StrongSortDir };
 
 const normalizeLabel = (label: string | undefined | null) =>
   (label || '').toUpperCase().replace(/\s+/g, '_');
@@ -79,6 +82,31 @@ const lookupQualityScore = (
   return null;
 };
 
+const entryTicker = (entry: StrongSignalEntry): string => (
+  entry.asset_label?.includes('(')
+    ? entry.asset_label.split('(').pop()!.replace(')', '').trim()
+    : (entry.symbol || entry.asset_label || '--')
+);
+
+const entryCompany = (entry: StrongSignalEntry): string => (
+  entry.asset_label?.includes('(') ? entry.asset_label.split('(')[0].trim() : ''
+);
+
+const horizonSortValue = (horizon: string | undefined | null): number => {
+  const h = String(horizon || '').toUpperCase();
+  if (h.endsWith('D')) return Number.parseInt(h, 10) || 0;
+  if (h.endsWith('W')) return (Number.parseInt(h, 10) || 0) * 7;
+  if (h.endsWith('M')) return (Number.parseInt(h, 10) || 0) * 30;
+  if (h.endsWith('Y')) return (Number.parseInt(h, 10) || 0) * 365;
+  return Number.parseInt(h, 10) || 0;
+};
+
+const defaultSortDirForStrong = (col: StrongSortColumn, isSell: boolean): StrongSortDir => {
+  if (col === 'ticker' || col === 'horizon' || col === 'rank') return 'asc';
+  if (col === 'exp_ret' && isSell) return 'asc';
+  return 'desc';
+};
+
 function BusinessQualityRing({ score, accent }: { score: number | null | undefined; accent: string }) {
   const hasScore = score != null && Number.isFinite(score);
   const pct = hasScore ? Math.max(0, Math.min(100, Math.round(score))) : 0;
@@ -147,6 +175,53 @@ function BusinessQualityRing({ score, accent }: { score: number | null | undefin
   );
 }
 
+function StrongSortHeader({
+  label,
+  col,
+  widthClass,
+  align = 'center',
+  sort,
+  accent,
+  onSort,
+}: {
+  label: string;
+  col: StrongSortColumn;
+  widthClass: string;
+  align?: 'left' | 'center' | 'right';
+  sort: StrongSortState;
+  accent: string;
+  onSort: (col: StrongSortColumn) => void;
+}) {
+  const active = sort.col === col;
+  const Icon = sort.dir === 'asc' ? ArrowUp : ArrowDown;
+  const justify = align === 'left' ? 'justify-start' : align === 'right' ? 'justify-end' : 'justify-center';
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSort(col)}
+      className={`${widthClass} strong-sort-header inline-flex h-6 min-w-0 items-center ${justify} gap-1 rounded-[7px] px-1.5 text-[8.5px] font-bold uppercase tracking-[0.045em] transition-all duration-150`}
+      data-active={active || undefined}
+      style={{
+        color: active ? accent : 'var(--text-muted)',
+        background: active ? `${accent}12` : 'transparent',
+        border: `1px solid ${active ? `${accent}28` : 'transparent'}`,
+      }}
+      title={`Sort by ${label}`}
+      aria-label={`Sort by ${label}`}
+    >
+      <span className="min-w-0 truncate">{label}</span>
+      <Icon
+        className="h-2.5 w-2.5 shrink-0"
+        style={{
+          opacity: active ? 1 : 0.34,
+          color: active ? accent : 'var(--text-muted)',
+        }}
+      />
+    </button>
+  );
+}
+
 /* ── Strong Signals View — Premium Cards ──────────────────────────── */
 function StrongSignalPanel({ entries, accent, label, icon, qualityScores, onNavigateChart }: {
   entries: StrongSignalEntry[]; accent: string; label: string; icon: React.ReactNode;
@@ -156,11 +231,51 @@ function StrongSignalPanel({ entries, accent, label, icon, qualityScores, onNavi
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
   const signalLabel = label.replace(' Signals', '').toUpperCase() as SignalLabel;
   const isSell = signalLabel.includes('SELL');
+  const [sort, setSort] = useState<StrongSortState>(() => ({ col: 'exp_ret', dir: defaultSortDirForStrong('exp_ret', isSell) }));
   useEffect(() => setExpandedIdx(null), [signalLabel]);
+
+  const handleSort = (col: StrongSortColumn) => {
+    setExpandedIdx(null);
+    setSort((prev) => {
+      if (prev.col === col) {
+        return { col, dir: prev.dir === 'desc' ? 'asc' : 'desc' };
+      }
+      return { col, dir: defaultSortDirForStrong(col, isSell) };
+    });
+  };
+
   const sortedEntries = useMemo(() => {
-    const direction = isSell ? 1 : -1;
-    return [...entries].sort((a, b) => direction * ((a.exp_ret ?? 0) - (b.exp_ret ?? 0)));
-  }, [entries, isSell]);
+    const withIndex = entries.map((entry, originalIndex) => ({ entry, originalIndex }));
+    const multiplier = sort.dir === 'asc' ? 1 : -1;
+
+    withIndex.sort((a, b) => {
+      let result = 0;
+      if (sort.col === 'rank') {
+        result = a.originalIndex - b.originalIndex;
+      } else if (sort.col === 'ticker') {
+        result = entryTicker(a.entry).localeCompare(entryTicker(b.entry));
+      } else if (sort.col === 'quality') {
+        const aq = lookupQualityScore(qualityScores, entryTicker(a.entry), a.entry.asset_label) ?? -1;
+        const bq = lookupQualityScore(qualityScores, entryTicker(b.entry), b.entry.asset_label) ?? -1;
+        result = aq - bq;
+      } else if (sort.col === 'horizon') {
+        result = horizonSortValue(a.entry.horizon) - horizonSortValue(b.entry.horizon);
+      } else if (sort.col === 'exp_ret') {
+        result = (a.entry.exp_ret ?? 0) - (b.entry.exp_ret ?? 0);
+      } else if (sort.col === 'probability') {
+        const ap = isSell ? 1 - (a.entry.p_up ?? 0) : (a.entry.p_up ?? 0);
+        const bp = isSell ? 1 - (b.entry.p_up ?? 0) : (b.entry.p_up ?? 0);
+        result = ap - bp;
+      } else if (sort.col === 'momentum') {
+        result = (a.entry.momentum ?? 0) - (b.entry.momentum ?? 0);
+      }
+
+      if (result === 0) return a.originalIndex - b.originalIndex;
+      return result * multiplier;
+    });
+
+    return withIndex.map(({ entry }) => entry);
+  }, [entries, isSell, qualityScores, sort]);
 
   return (
     <div className="strong-signal-inner-panel overflow-hidden" style={{ borderTop: `1px solid ${accent}26` }}>
@@ -179,28 +294,29 @@ function StrongSignalPanel({ entries, accent, label, icon, qualityScores, onNavi
           <p className="text-xs text-[var(--text-muted)]">No {label.toLowerCase()}</p>
         </div>
       ) : (
-        <div className="flex flex-col gap-1.5 px-3 py-3">
+        <div className="overflow-x-auto px-3 py-3">
+          <div className="flex min-w-[980px] flex-col gap-1.5">
           <div
-            className="hidden md:flex items-center gap-3 px-2 py-1.5 text-[9px] font-bold uppercase tracking-[0.14em]"
+            className="hidden items-center gap-3 px-2 py-1.5 text-[9px] font-bold uppercase tracking-[0.14em] md:flex"
             style={{
               color: 'var(--text-muted)',
             }}
           >
-            <span className="w-5 text-center">Rank</span>
+            <StrongSortHeader label="Rank" col="rank" widthClass="w-[48px]" sort={sort} accent={accent} onSort={handleSort} />
             <span className="w-1" aria-hidden />
-            <span className="basis-[260px] max-w-[260px] min-w-0">Ticker / sector</span>
-            <span className="w-[108px] text-center tracking-[0.08em]">Business Quality</span>
-            <span className="w-[58px] text-center">Horizon</span>
-            <span className="min-w-[66px] text-right">Exp. ret</span>
-            <span className="min-w-[76px] text-left">{isSell ? 'P(down)' : 'P(up)'}</span>
-            <span className="min-w-[68px] text-center">Momentum</span>
+            <StrongSortHeader label="Ticker / sector" col="ticker" widthClass="basis-[260px] max-w-[260px] min-w-0" align="left" sort={sort} accent={accent} onSort={handleSort} />
+            <StrongSortHeader label="Business Quality" col="quality" widthClass="w-[128px]" sort={sort} accent={accent} onSort={handleSort} />
+            <StrongSortHeader label="Horizon" col="horizon" widthClass="w-[76px]" sort={sort} accent={accent} onSort={handleSort} />
+            <StrongSortHeader label="Exp. ret" col="exp_ret" widthClass="w-[84px]" align="right" sort={sort} accent={accent} onSort={handleSort} />
+            <StrongSortHeader label={isSell ? 'P(down)' : 'P(up)'} col="probability" widthClass="w-[92px]" align="left" sort={sort} accent={accent} onSort={handleSort} />
+            <StrongSortHeader label="Momentum" col="momentum" widthClass="w-[92px]" sort={sort} accent={accent} onSort={handleSort} />
             <span className="w-4" aria-hidden />
           </div>
           {sortedEntries.map((s, i) => {
             const retPct = s.exp_ret != null ? s.exp_ret * 100 : null;
             const isStandout = retPct != null && Math.abs(retPct) > 5;
-            const ticker = s.asset_label?.includes('(') ? s.asset_label.split('(').pop()!.replace(')', '').trim() : (s.symbol || s.asset_label || '--');
-            const company = s.asset_label?.includes('(') ? s.asset_label.split('(')[0].trim() : '';
+            const ticker = entryTicker(s);
+            const company = entryCompany(s);
             const isExpanded = expandedIdx === i;
             const horizonKey = s.horizon || '30';
             const directionalProb = isSell ? 1 - (s.p_up ?? 0) : (s.p_up ?? 0);
@@ -228,7 +344,7 @@ function StrongSignalPanel({ entries, accent, label, icon, qualityScores, onNavi
                 >
                   {/* Rank */}
                   <span
-                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[9px] text-[10px] font-extrabold tabular-nums"
+                    className="inline-flex h-7 w-[48px] shrink-0 items-center justify-center rounded-[9px] text-[10px] font-extrabold tabular-nums"
                     style={{
                       color: isExpanded ? accent : `${accent}95`,
                       background: isExpanded ? `${accent}16` : 'rgba(255,255,255,0.030)',
@@ -258,12 +374,12 @@ function StrongSignalPanel({ entries, accent, label, icon, qualityScores, onNavi
                       <span className="text-[9px] text-[var(--text-muted)] truncate max-w-[180px] block leading-tight mt-0.5">{company}</span>
                     )}
                   </div>
-                  <div className="w-[108px] shrink-0">
+                  <div className="w-[128px] shrink-0">
                     <BusinessQualityRing score={qualityScore} accent={accent} />
                   </div>
                   {/* Horizon */}
                   <span
-                    className="w-[58px] rounded-[8px] px-2 py-1 text-center text-[10px] font-bold"
+                    className="w-[76px] rounded-[8px] px-2 py-1 text-center text-[10px] font-bold"
                     style={{
                       background: 'linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.015))',
                       color: 'var(--text-secondary)',
@@ -273,11 +389,11 @@ function StrongSignalPanel({ entries, accent, label, icon, qualityScores, onNavi
                     {s.horizon || '--'}
                   </span>
                   {/* Return */}
-                  <span className={`text-right min-w-[66px] tabular-nums font-bold ${isStandout ? 'text-[13px]' : 'text-[11px]'}`} style={{ color: accent }}>
+                  <span className={`w-[84px] text-right tabular-nums font-bold ${isStandout ? 'text-[13px]' : 'text-[11px]'}`} style={{ color: accent }}>
                     {retPct != null ? `${retPct >= 0 ? '+' : ''}${retPct.toFixed(1)}%` : '--'}
                   </span>
                   {/* Probability bar */}
-                  <div className="flex items-center gap-1.5 min-w-[76px]">
+                  <div className="flex w-[92px] items-center gap-1.5">
                     <div className="w-10 h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
                       <div className="h-full rounded-full" style={{ width: `${directionalProb * 100}%`, background: accent }} />
                     </div>
@@ -286,7 +402,9 @@ function StrongSignalPanel({ entries, accent, label, icon, qualityScores, onNavi
                     </span>
                   </div>
                   {/* Momentum */}
-                  <MomentumBadge value={s.momentum} />
+                  <div className="flex w-[92px] justify-center">
+                    <MomentumBadge value={s.momentum} />
+                  </div>
                   {/* Chevron */}
                   <ChevronRight
                     className="w-3.5 h-3.5 ml-1 transition-all duration-200 flex-shrink-0"
@@ -309,6 +427,7 @@ function StrongSignalPanel({ entries, accent, label, icon, qualityScores, onNavi
               </React.Fragment>
             );
           })}
+          </div>
         </div>
       )}
     </div>

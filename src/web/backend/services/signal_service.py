@@ -4,6 +4,7 @@ Signal service — reads cached signal data and high conviction signals.
 Includes in-memory caching to avoid re-reading JSON on every request.
 """
 
+import csv
 import json
 import math
 import os
@@ -20,6 +21,7 @@ HIGH_CONVICTION_DIR = os.path.join(DATA_DIR, "high_conviction")
 # ── In-memory cache ─────────────────────────────────────────────────
 _signal_cache: Dict[str, Any] = {}
 _signal_cache_mtime: float = 0.0
+_price_change_cache: Dict[str, Dict[str, Any]] = {}
 
 
 def _sanitize_for_json(obj: Any) -> Any:
@@ -195,7 +197,67 @@ def _decorate_summary_row(row: Dict[str, Any]) -> Dict[str, Any]:
     raw_sector = row.get("sector", "")
     out["raw_sector"] = raw_sector
     out["sector"] = _display_sector_for_row(row)
+    out["pct_30d"] = _price_change_pct(_row_symbol(row), 30)
     return out
+
+
+def _price_csv_candidates(symbol: str) -> List[str]:
+    cleaned = symbol.strip()
+    if not cleaned:
+        return []
+    variants = [
+        cleaned,
+        cleaned.replace("=X", "_X"),
+        cleaned.replace("/", "-"),
+        cleaned.replace("/", "_"),
+    ]
+    seen = set()
+    paths: List[str] = []
+    for variant in variants:
+        if not variant or variant in seen:
+            continue
+        seen.add(variant)
+        paths.append(os.path.join(DATA_DIR, "prices", f"{variant}.csv"))
+    return paths
+
+
+def _price_change_pct(symbol: str, tail: int = 30) -> Optional[float]:
+    """Return close-to-close percent change over the same tail used by SparklinePct."""
+    for path in _price_csv_candidates(symbol):
+        if not os.path.isfile(path):
+            continue
+        try:
+            mtime = os.path.getmtime(path)
+            cache_key = f"{path}:{tail}"
+            cached = _price_change_cache.get(cache_key)
+            if cached and cached.get("mtime") == mtime:
+                return cached.get("value")
+
+            closes: List[float] = []
+            with open(path, "r", newline="") as f:
+                reader = csv.DictReader(f)
+                for record in reader:
+                    raw = record.get("Close") or record.get("close")
+                    try:
+                        close = float(raw) if raw not in (None, "") else float("nan")
+                    except (TypeError, ValueError):
+                        continue
+                    if math.isfinite(close) and close > 0:
+                        closes.append(close)
+
+            value: Optional[float] = None
+            if len(closes) >= 3:
+                window = closes[-tail:]
+                first = window[0]
+                last = window[-1]
+                if first > 0:
+                    value = ((last - first) / first) * 100.0
+
+            _price_change_cache[cache_key] = {"mtime": mtime, "value": value}
+            return value
+        except (OSError, csv.Error):
+            continue
+    return None
 
 
 def _consolidate_sector(sector: str) -> str:

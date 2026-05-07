@@ -323,6 +323,7 @@ export interface SummaryRow {
   sector: string;
   crash_risk_score: number;
   momentum_score: number;
+  pct_30d?: number | null;
   conviction?: number;
   kelly?: KellyHorizon[];
   signal_ttl?: unknown;

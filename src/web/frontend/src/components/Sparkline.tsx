@@ -727,15 +727,30 @@ export const SparklineReversalStateBadge = memo(SparklineReversalStateBadgeInner
  * 30-day percent change chip, split out from the Sparkline so it can live
  * in its own table column. Shares the same React-Query cache via queryKey.
  */
-function SparklinePctInner({ ticker }: { ticker: string }) {
+function SparklinePctInner({ ticker, pct }: { ticker: string; pct?: number | null }) {
   const { ref: visibilityRef, isNearViewport } = useNearViewport<HTMLSpanElement>();
   const { data } = useQuery({
     queryKey: ['sparkline', ticker],
     queryFn: () => runSparklineRequest(() => api.chartOhlcv(ticker, 30)),
-    enabled: isNearViewport,
+    enabled: pct == null && isNearViewport,
     staleTime: 600_000,
     retry: 1,
   });
+  if (typeof pct === 'number' && Number.isFinite(pct)) {
+    const up = pct >= 0;
+    return (
+      <span
+        ref={visibilityRef}
+        className="inline-block text-[10px] font-mono tabular-nums font-semibold px-1.5 py-0.5 rounded-md"
+        style={{
+          color: up ? 'var(--accent-emerald)' : 'var(--accent-rose)',
+          background: up ? 'rgba(62,232,165,0.10)' : 'rgba(255,107,138,0.10)',
+        }}
+      >
+        {up ? '+' : ''}{pct.toFixed(1)}%
+      </span>
+    );
+  }
   const bars = data?.data;
   if (!bars || bars.length < 3) {
     return <span ref={visibilityRef} className="text-[10px] text-[var(--text-muted)]">—</span>;
