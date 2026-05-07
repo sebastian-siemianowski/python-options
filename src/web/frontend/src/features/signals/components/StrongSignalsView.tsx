@@ -83,30 +83,31 @@ function BusinessQualityRing({ score, accent }: { score: number | null | undefin
   const hasScore = score != null && Number.isFinite(score);
   const pct = hasScore ? Math.max(0, Math.min(100, Math.round(score))) : 0;
   const tone = smaQualityTone(hasScore ? pct : null);
-  const size = 42;
-  const stroke = 4.2;
+  const size = 40;
+  const stroke = 4;
   const radius = (size - stroke) / 2;
   const circumference = 2 * Math.PI * radius;
   const dashOffset = circumference * (1 - pct / 100);
 
   return (
     <div
-      className="strong-quality-ring group relative mx-auto flex h-[46px] w-[62px] items-center justify-center"
+      className="strong-quality-ring relative mx-auto flex h-[44px] w-[108px] items-center justify-center"
       title={hasScore ? `Business quality: ${pct} (${tone.label})` : 'Business quality unavailable'}
       style={{ ['--quality-accent' as string]: tone.color, ['--signal-accent' as string]: accent }}
     >
       <div
-        className="relative flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-full"
+        className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full"
         style={{
           background:
-            `radial-gradient(circle at 50% 40%, ${tone.color}1a 0%, rgba(255,255,255,0.030) 48%, rgba(0,0,0,0.24) 100%)`,
+            `radial-gradient(circle at 50% 38%, ${tone.color}20 0%, rgba(255,255,255,0.030) 46%, rgba(0,0,0,0.26) 100%)`,
           border: `1px solid ${tone.border}`,
           boxShadow: [
-            tone.glow !== 'none' ? tone.glow : null,
-            `0 0 18px -15px ${accent}`,
+            `0 0 0 1px ${tone.color}10`,
+            `0 0 16px -10px ${tone.color}`,
+            `0 0 18px -16px ${accent}`,
             'inset 0 1px 0 rgba(255,255,255,0.10)',
-            '0 12px 22px -18px rgba(0,0,0,0.95)',
-          ].filter(Boolean).join(', '),
+            '0 10px 18px -16px rgba(0,0,0,0.95)',
+          ].join(', '),
         }}
       >
         <svg className="absolute inset-0 h-full w-full -rotate-90" viewBox={`0 0 ${size} ${size}`} aria-hidden>
@@ -130,7 +131,6 @@ function BusinessQualityRing({ score, accent }: { score: number | null | undefin
               strokeDasharray={circumference}
               strokeDashoffset={dashOffset}
               style={{
-                filter: `drop-shadow(0 0 5px ${tone.color}80)`,
                 transition: 'stroke-dashoffset 520ms cubic-bezier(0.16, 1, 0.3, 1), stroke 220ms ease',
               }}
             />
@@ -179,19 +179,17 @@ function StrongSignalPanel({ entries, accent, label, icon, qualityScores, onNavi
           <p className="text-xs text-[var(--text-muted)]">No {label.toLowerCase()}</p>
         </div>
       ) : (
-        <div className="divide-y divide-white/[0.03]">
+        <div className="flex flex-col gap-1.5 px-3 py-3">
           <div
-            className="hidden md:flex items-center gap-3 px-5 py-2 text-[9px] font-bold uppercase tracking-[0.14em]"
+            className="hidden md:flex items-center gap-3 px-2 py-1.5 text-[9px] font-bold uppercase tracking-[0.14em]"
             style={{
               color: 'var(--text-muted)',
-              background: 'rgba(255,255,255,0.012)',
-              borderBottom: '1px solid rgba(255,255,255,0.035)',
             }}
           >
             <span className="w-5 text-center">Rank</span>
             <span className="w-1" aria-hidden />
             <span className="basis-[260px] max-w-[260px] min-w-0">Ticker / sector</span>
-            <span className="w-[62px] text-center">Quality</span>
+            <span className="w-[108px] text-center tracking-[0.08em]">Business Quality</span>
             <span className="w-[58px] text-center">Horizon</span>
             <span className="min-w-[66px] text-right">Exp. ret</span>
             <span className="min-w-[76px] text-left">{isSell ? 'P(down)' : 'P(up)'}</span>
@@ -213,25 +211,46 @@ function StrongSignalPanel({ entries, accent, label, icon, qualityScores, onNavi
                   type="button"
                   onClick={() => setExpandedIdx(p => (p === i ? null : i))}
                   aria-expanded={isExpanded}
-                  className="strong-signal-row-entry w-full flex items-center gap-3 px-5 py-2.5 text-left transition-colors"
+                  className="strong-signal-row-entry relative isolate flex w-full items-center gap-3 overflow-hidden rounded-[14px] px-3.5 py-2.5 text-left transition-all duration-200"
                   data-active={isExpanded || undefined}
                   style={{
+                    ['--row-accent' as string]: accent,
                     animationDelay: `${Math.min(i, 10) * 28}ms`,
-                    background: isExpanded ? `${accent}08` : 'transparent',
-                    borderLeft: isExpanded ? `2px solid ${accent}` : '2px solid transparent',
+                    background: isExpanded
+                      ? `linear-gradient(135deg, ${accent}13, rgba(167,139,250,0.055) 42%, rgba(255,255,255,0.018))`
+                      : 'linear-gradient(180deg, rgba(255,255,255,0.030), rgba(255,255,255,0.010))',
+                    border: `1px solid ${isExpanded ? `${accent}38` : 'rgba(255,255,255,0.055)'}`,
+                    borderLeft: `2px solid ${isExpanded ? accent : `${accent}30`}`,
+                    boxShadow: isExpanded
+                      ? `0 16px 34px -30px ${accent}, inset 0 1px 0 rgba(255,255,255,0.070)`
+                      : 'inset 0 1px 0 rgba(255,255,255,0.040)',
                   }}
                 >
                   {/* Rank */}
-                  <span className="text-[10px] font-bold w-5 text-center tabular-nums" style={{ color: `${accent}60` }}>
+                  <span
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[9px] text-[10px] font-extrabold tabular-nums"
+                    style={{
+                      color: isExpanded ? accent : `${accent}95`,
+                      background: isExpanded ? `${accent}16` : 'rgba(255,255,255,0.030)',
+                      border: `1px solid ${isExpanded ? `${accent}34` : 'rgba(255,255,255,0.045)'}`,
+                    }}
+                  >
                     {i + 1}
                   </span>
                   {/* Color bar */}
-                  <div className="w-1 h-8 rounded-full flex-shrink-0" style={{ background: `${accent}50` }} />
+                  <div className="h-9 w-1 flex-shrink-0 rounded-full" style={{ background: `linear-gradient(180deg, ${accent}, ${accent}44)` }} />
                   {/* Asset info */}
                   <div className="flex-1 min-w-0 md:flex-none md:basis-[260px] md:max-w-[260px]">
                     <div className="flex items-center gap-1.5">
-                      <span className="text-[12px] font-bold text-[#e2e8f0]">{ticker}</span>
-                      <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: 'var(--void-active)', color: 'var(--text-secondary)' }}>
+                      <span className="text-[12.5px] font-extrabold tracking-[0.01em] text-[#f1f5f9]">{ticker}</span>
+                      <span
+                        className="truncate rounded-[7px] px-1.5 py-0.5 text-[8.5px] font-semibold"
+                        style={{
+                          background: `linear-gradient(180deg, ${accent}10, rgba(255,255,255,0.018))`,
+                          color: 'var(--text-secondary)',
+                          border: '1px solid rgba(255,255,255,0.045)',
+                        }}
+                      >
                         {s.sector || 'Other'}
                       </span>
                     </div>
@@ -239,11 +258,18 @@ function StrongSignalPanel({ entries, accent, label, icon, qualityScores, onNavi
                       <span className="text-[9px] text-[var(--text-muted)] truncate max-w-[180px] block leading-tight mt-0.5">{company}</span>
                     )}
                   </div>
-                  <div className="w-[62px] shrink-0">
+                  <div className="w-[108px] shrink-0">
                     <BusinessQualityRing score={qualityScore} accent={accent} />
                   </div>
                   {/* Horizon */}
-                  <span className="w-[58px] text-center text-[10px] px-2 py-0.5 rounded font-medium" style={{ background: 'var(--void-active)', color: 'var(--text-secondary)' }}>
+                  <span
+                    className="w-[58px] rounded-[8px] px-2 py-1 text-center text-[10px] font-bold"
+                    style={{
+                      background: 'linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.015))',
+                      color: 'var(--text-secondary)',
+                      border: '1px solid rgba(255,255,255,0.045)',
+                    }}
+                  >
                     {s.horizon || '--'}
                   </span>
                   {/* Return */}

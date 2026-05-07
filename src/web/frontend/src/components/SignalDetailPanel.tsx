@@ -51,10 +51,17 @@ interface ReversalCandle {
   borderColor: string;
 }
 
+interface ReversalStatePoint {
+  time: string;
+  trend: ReversalTrend;
+  isFlip: boolean;
+}
+
 interface ReversalModel {
   candles: ReversalCandle[];
   area: AreaData<string>[];
   markers: SeriesMarker<string>[];
+  states: ReversalStatePoint[];
 }
 
 const RANGE_DAYS: Record<RangeKey, number> = {
@@ -143,7 +150,7 @@ function computeAtr(bars: OHLCVBar[], period = 14): number[] {
 }
 
 function buildReversalModel(bars: OHLCVBar[]): ReversalModel {
-  if (bars.length === 0) return { candles: [], area: [], markers: [] };
+  if (bars.length === 0) return { candles: [], area: [], markers: [], states: [] };
 
   const atr = computeAtr(bars);
   const multiplier = 2.4;
@@ -153,6 +160,7 @@ function buildReversalModel(bars: OHLCVBar[]): ReversalModel {
   const candles: ReversalCandle[] = [];
   const area: AreaData<string>[] = [];
   const markers: SeriesMarker<string>[] = [];
+  const states: ReversalStatePoint[] = [];
 
   bars.forEach((bar, i) => {
     const prevBar = bars[Math.max(0, i - 1)];
@@ -222,6 +230,7 @@ function buildReversalModel(bars: OHLCVBar[]): ReversalModel {
       topColor: areaTopColor,
       bottomColor: areaBottomColor,
     });
+    states.push({ time: bar.time, trend, isFlip });
 
     if (isFlip) {
       markers.push({
@@ -236,7 +245,7 @@ function buildReversalModel(bars: OHLCVBar[]): ReversalModel {
     }
   });
 
-  return { candles, area, markers };
+  return { candles, area, markers, states };
 }
 
 export interface SignalDetailPanelProps {
@@ -425,7 +434,12 @@ export default function SignalDetailPanel({
           ) : !hasChartData ? (
             <ChartEmpty message={error ? 'Chart unavailable' : 'No data yet'} />
           ) : (
-            <TradingViewChart bars={chartBars} chartType={chartType} key={`${ticker}-${chartType}-${range}`} />
+            <TradingViewChart
+              bars={chartBars}
+              reversalBars={visibleBars}
+              chartType={chartType}
+              key={`${ticker}-${chartType}-${range}`}
+            />
           )}
         </div>
 
@@ -461,7 +475,7 @@ export default function SignalDetailPanel({
 /* TradingView chart (lightweight-charts v5)                                 */
 /* ──────────────────────────────────────────────────────────────────────── */
 
-function TradingViewChart({ bars, chartType }: { bars: OHLCVBar[]; chartType: ChartType }) {
+function TradingViewChart({ bars, reversalBars, chartType }: { bars: OHLCVBar[]; reversalBars: OHLCVBar[]; chartType: ChartType }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
 
@@ -469,6 +483,7 @@ function TradingViewChart({ bars, chartType }: { bars: OHLCVBar[]; chartType: Ch
     if (!containerRef.current) return;
 
     const container = containerRef.current;
+    const reversal = buildReversalModel(reversalBars);
     const chart = createChart(container, {
       layout: TV_THEME.layout,
       grid: TV_THEME.grid,
@@ -489,7 +504,6 @@ function TradingViewChart({ bars, chartType }: { bars: OHLCVBar[]; chartType: Ch
         borderVisible: chartType === 'reversal',
       });
       if (chartType === 'reversal') {
-        const reversal = buildReversalModel(bars);
         candleSeries.setData(reversal.candles);
         createSeriesMarkers(candleSeries, reversal.markers, { zOrder: 'top' });
       } else {
@@ -505,7 +519,6 @@ function TradingViewChart({ bars, chartType }: { bars: OHLCVBar[]; chartType: Ch
       }
     } else {
       const areaSeries = chart.addSeries(AreaSeries, TV_THEME.area);
-      const reversal = buildReversalModel(bars);
       areaSeries.setData(reversal.area);
       createSeriesMarkers(areaSeries, reversal.markers, { zOrder: 'top' });
     }
@@ -528,6 +541,31 @@ function TradingViewChart({ bars, chartType }: { bars: OHLCVBar[]; chartType: Ch
       })),
     );
 
+    // Reversal regime rail: rendered by lightweight-charts so it shares the exact
+    // same time scale as the price chart instead of relying on a separate DOM rail.
+    if (reversal.states.length > 1) {
+      const regimeSeries = chart.addSeries(HistogramSeries, {
+        priceFormat: { type: 'volume' },
+        priceScaleId: 'regime',
+        color: 'rgba(16,185,129,0.70)',
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      chart.priceScale('regime').applyOptions({
+        scaleMargins: { top: 0.958, bottom: 0.012 },
+        visible: false,
+      });
+      regimeSeries.setData(
+        reversal.states.map((state) => ({
+          time: state.time,
+          value: 1,
+          color: state.trend === 1
+            ? state.isFlip ? 'rgba(0,245,160,0.98)' : 'rgba(16,185,129,0.74)'
+            : state.isFlip ? 'rgba(255,55,95,0.98)' : 'rgba(244,63,94,0.74)',
+        })),
+      );
+    }
+
     chart.timeScale().fitContent();
 
     // Resize handler
@@ -545,9 +583,16 @@ function TradingViewChart({ bars, chartType }: { bars: OHLCVBar[]; chartType: Ch
       chart.remove();
       chartRef.current = null;
     };
-  }, [bars, chartType]);
+  }, [bars, chartType, reversalBars]);
 
-  return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />;
+  return (
+    <div
+      ref={containerRef}
+      className="h-full min-h-0"
+      style={{ width: '100%' }}
+      title="Bottom reversal rail: green means BUY regime, red means SELL regime"
+    />
+  );
 }
 
 /* ──────────────────────────────────────────────────────────────────────── */

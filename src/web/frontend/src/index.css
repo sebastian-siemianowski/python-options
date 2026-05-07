@@ -1284,12 +1284,43 @@ button:active:not(:disabled) {
   will-change: transform, opacity, filter;
 }
 
+.strong-signal-row-entry::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--row-accent, #8b5cf6) 10%, transparent), transparent 28%),
+    radial-gradient(440px 120px at 6% 0%, color-mix(in srgb, var(--row-accent, #8b5cf6) 13%, transparent), transparent 62%);
+  opacity: 0;
+  transition: opacity 220ms ease;
+  z-index: -1;
+}
+
+.strong-signal-row-entry::after {
+  content: "";
+  position: absolute;
+  inset-inline: 12px;
+  top: 0;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--row-accent, #8b5cf6) 50%, white 20%), transparent);
+  opacity: 0.32;
+}
+
 .strong-signal-row-entry:hover {
-  filter: brightness(1.08);
+  filter: brightness(1.08) saturate(1.05);
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--row-accent, #8b5cf6) 30%, rgba(255,255,255,0.06));
+}
+
+.strong-signal-row-entry:hover::before,
+.strong-signal-row-entry[data-active="true"]::before {
+  opacity: 1;
 }
 
 .strong-signal-row-entry[data-active="true"] {
-  filter: brightness(1.12);
+  filter: brightness(1.12) saturate(1.08);
 }
 
 .strong-quality-ring {
@@ -1299,14 +1330,13 @@ button:active:not(:disabled) {
 .strong-quality-ring::before {
   content: "";
   position: absolute;
-  width: 46px;
-  height: 46px;
+  width: 48px;
+  height: 48px;
   border-radius: 999px;
   background:
-    radial-gradient(circle, color-mix(in srgb, var(--quality-accent, #c4b5fd) 17%, transparent), transparent 62%),
-    conic-gradient(from 210deg, transparent 0deg, color-mix(in srgb, var(--signal-accent, #8b5cf6) 22%, transparent) 62deg, transparent 132deg);
-  opacity: 0.54;
-  filter: blur(8px);
+    radial-gradient(circle, color-mix(in srgb, var(--quality-accent, #c4b5fd) 16%, transparent) 0%, color-mix(in srgb, var(--quality-accent, #c4b5fd) 8%, transparent) 42%, transparent 68%),
+    conic-gradient(from 210deg, transparent 0deg, color-mix(in srgb, var(--signal-accent, #8b5cf6) 18%, transparent) 64deg, transparent 136deg);
+  opacity: 0.62;
   transform: scale(0.88);
   transition: opacity 220ms ease, transform 260ms cubic-bezier(0.16, 1, 0.3, 1);
   z-index: -1;
@@ -1325,6 +1355,7 @@ button:active:not(:disabled) {
   .strong-signal-panel-stage,
   .strong-signal-panel-head,
   .strong-signal-row-entry,
+  .strong-signal-row-entry::before,
   .strong-quality-ring::before {
     animation: none !important;
     transform: none !important;
