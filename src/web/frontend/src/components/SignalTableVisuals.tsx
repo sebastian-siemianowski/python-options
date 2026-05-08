@@ -3,6 +3,7 @@
  * Gradient strength bars, momentum badges, crash risk heat indicators,
  * horizon micro-arrows -- all with cosmic void aesthetic.
  */
+import type { CSSProperties } from 'react';
 
 /* ── AC-2: Signal Strength Meter (bar + pct) ─────────────────────── */
 export function SignalStrengthMeter({ label, pUp, kelly }: { label: string; pUp?: number; kelly?: number }) {
@@ -31,13 +32,12 @@ export function SignalStrengthMeter({ label, pUp, kelly }: { label: string; pUp?
   }
 
   return (
-    <div className="flex flex-col items-center gap-[3px]" style={{ width: 60 }}>
+    <div className="signal-strength-meter flex flex-col items-center gap-[3px]" style={{ width: 62 }}>
       <div
-        className="relative h-[6px] rounded-[3px] overflow-hidden w-full"
-        style={{ background: 'var(--void-active)' }}
+        className="signal-strength-track relative h-[6px] rounded-[3px] overflow-hidden w-full"
       >
         <div
-          className="absolute inset-y-0 left-0 rounded-[3px]"
+          className="signal-strength-fill absolute inset-y-0 left-0 rounded-[3px]"
           style={{
             width: `${fillPct}%`,
             background: gradient,
@@ -85,7 +85,8 @@ export function SignalLabel({ label }: { label: string }) {
   };
   return (
     <span
-      className="inline-flex items-center justify-center whitespace-nowrap text-[10px] font-semibold px-2.5 py-1 rounded-md leading-none"
+      className="premium-signal-label inline-flex items-center justify-center whitespace-nowrap text-[10px] font-semibold px-2.5 py-1 rounded-md leading-none"
+      data-signal={label.includes('BUY') ? 'buy' : label.includes('SELL') ? 'sell' : label === 'HOLD' ? 'hold' : 'exit'}
       style={{
         color: colorMap[label] || 'var(--text-muted)',
         background: bgMap[label] || 'transparent',
@@ -146,7 +147,7 @@ export function CrashRiskHeat({ score }: { score: number }) {
 
   return (
     <div
-      className="flex flex-col items-center justify-center rounded-md"
+      className="premium-risk-cell flex flex-col items-center justify-center rounded-md"
       title={`Crash risk: ${s.toFixed(0)}% (${tier})`}
       style={{
         minWidth: 48,
@@ -238,7 +239,7 @@ export function HorizonCell({ expRet }: { expRet: number | null | undefined; pUp
 
   return (
     <div
-      className="flex flex-col items-center justify-center rounded-md"
+      className="premium-horizon-cell flex flex-col items-center justify-center rounded-md"
       data-direction={direction}
       data-strong={isStrong}
       style={{
@@ -282,11 +283,13 @@ function qualityBg(score: number): string {
 
 export function QualityCell({ score }: { score: number | null | undefined }) {
   const qs = Math.round(score ?? 50);
+  const accent = qualityColor(qs);
   return (
     <div
-      className="rounded-[4px] mx-auto"
+      className="premium-quality-cell rounded-[4px] mx-auto"
       title={`Quality score: ${qs}`}
       style={{
+        '--quality-accent': accent,
         background: qualityBg(qs),
         height: 26,
         width: 42,
@@ -294,9 +297,9 @@ export function QualityCell({ score }: { score: number | null | undefined }) {
         alignItems: 'center',
         justifyContent: 'center',
         border: '1px solid var(--violet-3)',
-      }}
+      } as CSSProperties}
     >
-      <span className="text-[10px] tabular-nums font-bold" style={{ color: qualityColor(qs) }}>
+      <span className="text-[10px] tabular-nums font-bold" style={{ color: accent }}>
         {qs}
       </span>
     </div>

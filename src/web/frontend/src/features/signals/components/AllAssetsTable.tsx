@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { BarChart3, ChevronRight, X } from 'lucide-react';
 import type { SummaryRow } from '../../../api';
 import { Sparkline, SparklinePct } from '../../../components/Sparkline';
@@ -15,21 +15,19 @@ function SortIndicator({ col, sortLevels }: { col: SortColumn; sortLevels: { col
   const idx = sortLevels.findIndex(s => s.col === col);
   if (idx < 0) {
     return (
-      <svg width="10" height="10" viewBox="0 0 10 10" className="inline ml-0.5 opacity-0 group-hover:opacity-40 transition-opacity" style={{ transition: 'opacity 120ms ease' }}>
+      <svg width="10" height="10" viewBox="0 0 10 10" className="premium-sort-arrow-placeholder inline ml-0.5 opacity-0 group-hover:opacity-30 transition-opacity" style={{ transition: 'opacity 120ms ease' }}>
         <path d="M5 2L8 7H2L5 2Z" fill="currentColor" />
       </svg>
     );
   }
   const level = sortLevels[idx];
   return (
-    <span className="inline-flex items-center gap-0.5 ml-0.5">
-      <svg width="10" height="10" viewBox="0 0 10 10" className={`sort-arrow-rotate ${level.dir === 'asc' ? 'sort-arrow-asc' : ''}`}
-        style={{ color: 'var(--accent-violet)', transition: 'transform 200ms cubic-bezier(0.2,0,0,1)' }}>
+    <span className="premium-sort-indicator inline-flex items-center gap-0.5 ml-0.5">
+      <svg width="10" height="10" viewBox="0 0 10 10" className={`premium-sort-arrow sort-arrow-rotate ${level.dir === 'asc' ? 'sort-arrow-asc' : ''}`}>
         <path d="M5 2L8 7H2L5 2Z" fill="currentColor" />
       </svg>
       {sortLevels.length > 1 && (
-        <span className="inline-flex items-center justify-center w-[14px] h-[14px] rounded-full text-[9px] font-semibold text-white"
-          style={{ background: 'var(--accent-violet)' }}>
+        <span className="premium-sort-rank inline-flex items-center justify-center w-[14px] h-[14px] rounded-full text-[9px] font-semibold">
           {idx + 1}
         </span>
       )}
@@ -61,6 +59,10 @@ const ALL_ASSETS_COLS_LS_KEY = 'signals-visible-cols-v2';
 const ALL_ASSETS_CHART_VIEW_LS_KEY = 'signals-all-assets-chart-view-v1';
 export const SECTOR_CHART_VIEW_LS_KEY = 'signals-sector-chart-view-v1';
 const DEFAULT_VISIBLE_COLS = new Set(ALL_ASSETS_COLUMN_DEFS.map((c) => c.key));
+type PremiumRowStyle = CSSProperties & {
+  '--row-accent': string;
+  '--sort-row-delay': string;
+};
 function loadVisibleCols(): Set<string> {
   try {
     const raw = localStorage.getItem(ALL_ASSETS_COLS_LS_KEY);
@@ -107,8 +109,14 @@ export default function AllAssetsTable({ rows, horizons, updatedAsset, sortLevel
   const [scrolled, setScrolled] = useState(false);
   const [visibleCols, setVisibleCols] = useState<Set<string>>(() => loadVisibleCols());
   const [chartView, setChartView] = useState<boolean>(() => loadAllAssetsChartView());
+  const [sortPulse, setSortPulse] = useState(0);
   const tableContainerRef = useRef<HTMLDivElement>(null);
+  const previousSortSignature = useRef<string | null>(null);
   const pageSize = 50;
+  const sortSignature = useMemo(
+    () => sortLevels.map((s) => `${s.col}:${s.dir}`).join('|'),
+    [sortLevels],
+  );
 
   useEffect(() => {
     try {
@@ -138,8 +146,20 @@ export default function AllAssetsTable({ rows, horizons, updatedAsset, sortLevel
   const resetCols = () => setVisibleCols(new Set(DEFAULT_VISIBLE_COLS));
   const pageRows = disablePagination ? rows : rows.slice(page * pageSize, (page + 1) * pageSize);
   const totalPages = disablePagination ? 1 : Math.ceil(rows.length / pageSize);
+  const animationSignature = `${sortSignature}::${pageRows.map((row) => row.asset_label).join('|')}`;
 
   useEffect(() => { setPage(0); }, [rows.length]);
+
+  useEffect(() => {
+    if (previousSortSignature.current === null) {
+      previousSortSignature.current = animationSignature;
+      return;
+    }
+    if (previousSortSignature.current !== animationSignature) {
+      previousSortSignature.current = animationSignature;
+      setSortPulse((pulse) => pulse + 1);
+    }
+  }, [animationSignature]);
 
   // Detect scroll for sticky header shadow
   useEffect(() => {
@@ -204,16 +224,15 @@ export default function AllAssetsTable({ rows, horizons, updatedAsset, sortLevel
       </div>
       {/* Story 3.2 AC-5: Sort indicator bar */}
       {sortLevels.length > 0 && (
-        <div className="flex items-center gap-2 px-4 h-[28px] text-[10px] text-[var(--text-secondary)]"
-          style={{ background: 'var(--void-hover)' }}>
-          <span>Sorted by </span>
+        <div className="premium-sort-banner flex items-center gap-2 px-4 h-[30px] text-[10px] text-[var(--text-secondary)]">
+          <span className="premium-sort-banner-label">Sorted by</span>
           {sortLevels.map((s, i) => (
-            <span key={s.col} className="inline-flex items-center gap-1">
+            <span key={s.col} className="premium-sort-token inline-flex items-center gap-1">
               {i > 0 && <span className="text-[var(--text-muted)]">, then </span>}
-              <span style={{ color: 'var(--accent-violet)' }}>{sortColName(s.col)}</span>
-              <span className="text-[var(--text-muted)]">({s.dir})</span>
+              <span className="premium-sort-token-name">{sortColName(s.col)}</span>
+              <span className="premium-sort-token-dir">{s.dir}</span>
               <button onClick={() => onRemoveSort(s.col)}
-                className="text-[var(--text-muted)] hover:text-[var(--accent-rose)] transition-colors text-[9px] ml-0.5">
+                className="premium-sort-remove text-[9px] ml-0.5">
                 <X className="w-2.5 h-2.5" />
               </button>
             </span>
@@ -246,60 +265,53 @@ export default function AllAssetsTable({ rows, horizons, updatedAsset, sortLevel
             })}
           </div>
         ) : (
-          <table className="w-full text-sm">
+          <table className="premium-watchlist-table w-full text-sm">
             <thead className={headerCls}>
               <tr>
                 <th className={`text-left px-4 py-3 sortable-th group ${sortLevels.some(s => s.col === 'asset') ? 'active' : ''}`}
-                  style={sortLevels.some(s => s.col === 'asset') ? { color: 'var(--accent-violet)', textShadow: '0 0 8px var(--violet-30)' } : {}}
                   onClick={(e) => onSort('asset', e.shiftKey)}>
                 Asset <SortIndicator col="asset" sortLevels={sortLevels} />
               </th>
               {visibleCols.has('chart') && (
                 <th className="text-center px-2 py-3 w-[124px]">
-                  <span className="text-[10px] text-[var(--text-violet)] uppercase tracking-[0.06em] font-medium">Chart</span>
+                  <span className="premium-static-column-label text-[10px] uppercase tracking-[0.06em] font-medium">Chart</span>
                 </th>
               )}
               {visibleCols.has('pct30d') && (
                 <th className={`text-center px-2 py-3 w-[64px] sortable-th group ${sortLevels.some(s => s.col === 'pct30d') ? 'active' : ''}`}
-                    style={sortLevels.some(s => s.col === 'pct30d') ? { color: 'var(--accent-violet)', textShadow: '0 0 8px var(--violet-30)' } : {}}
                     onClick={(e) => onSort('pct30d', e.shiftKey)}>
                   30D <SortIndicator col="pct30d" sortLevels={sortLevels} />
                 </th>
               )}
               {visibleCols.has('sector') && (
                 <th className={`text-left px-3 py-3 sortable-th group ${sortLevels.some(s => s.col === 'sector') ? 'active' : ''}`}
-                    style={sortLevels.some(s => s.col === 'sector') ? { color: 'var(--accent-violet)', textShadow: '0 0 8px var(--violet-30)' } : {}}
                     onClick={(e) => onSort('sector', e.shiftKey)}>
                   Sector <SortIndicator col="sector" sortLevels={sortLevels} />
                 </th>
               )}
               <th className={`text-center px-3 py-3 sortable-th group ${sortLevels.some(s => s.col === 'signal') ? 'active' : ''}`}
-                  style={sortLevels.some(s => s.col === 'signal') ? { color: 'var(--accent-violet)', textShadow: '0 0 8px var(--violet-30)' } : {}}
                   onClick={(e) => onSort('signal', e.shiftKey)}>
                 Signal <SortIndicator col="signal" sortLevels={sortLevels} />
               </th>
               {visibleCols.has('strength') && (
                 <th className="text-center px-2 py-3 w-[64px]">
-                  <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-[0.06em] font-medium">Strength</span>
+                  <span className="premium-static-column-label text-[10px] uppercase tracking-[0.06em] font-medium">Strength</span>
                 </th>
               )}
               {visibleCols.has('momentum') && (
                 <th className={`text-center px-3 py-3 sortable-th group ${sortLevels.some(s => s.col === 'momentum') ? 'active' : ''}`}
-                    style={sortLevels.some(s => s.col === 'momentum') ? { color: 'var(--accent-violet)', textShadow: '0 0 8px var(--violet-30)' } : {}}
                     onClick={(e) => onSort('momentum', e.shiftKey)}>
                   Mom <SortIndicator col="momentum" sortLevels={sortLevels} />
                 </th>
               )}
               {visibleCols.has('quality') && (
                 <th className={`text-center px-3 py-3 sortable-th group w-[72px] ${sortLevels.some(s => s.col === 'quality') ? 'active' : ''}`}
-                    style={sortLevels.some(s => s.col === 'quality') ? { color: 'var(--accent-violet)', textShadow: '0 0 8px var(--violet-30)' } : {}}
                     onClick={(e) => onSort('quality', e.shiftKey)}>
                   Quality <SortIndicator col="quality" sortLevels={sortLevels} />
                 </th>
               )}
               {visibleCols.has('risk') && (
                 <th className={`text-center px-3 py-3 sortable-th group ${sortLevels.some(s => s.col === 'crash_risk') ? 'active' : ''}`}
-                    style={sortLevels.some(s => s.col === 'crash_risk') ? { color: 'var(--accent-violet)', textShadow: '0 0 8px var(--violet-30)' } : {}}
                     onClick={(e) => onSort('crash_risk', e.shiftKey)}>
                   Risk <SortIndicator col="crash_risk" sortLevels={sortLevels} />
                 </th>
@@ -308,7 +320,6 @@ export default function AllAssetsTable({ rows, horizons, updatedAsset, sortLevel
                 const hCol = `horizon_${h}` as SortColumn;
                 return (
                   <th key={h} className={`text-center px-3 py-3 sortable-th group ${sortLevels.some(s => s.col === hCol) ? 'active' : ''}`}
-                      style={sortLevels.some(s => s.col === hCol) ? { color: 'var(--accent-violet)', textShadow: '0 0 8px var(--violet-30)' } : {}}
                       onClick={(e) => onSort(hCol, e.shiftKey)}>
                     {formatHorizon(h)} <SortIndicator col={hCol} sortLevels={sortLevels} />
                   </th>
@@ -317,8 +328,8 @@ export default function AllAssetsTable({ rows, horizons, updatedAsset, sortLevel
               <th className="w-8 px-2"></th>
             </tr>
           </thead>
-          <tbody>
-            {pageRows.map((row) => {
+          <tbody key={sortPulse} className={sortPulse > 0 ? 'premium-sort-tbody' : undefined}>
+            {pageRows.map((row, rowIndex) => {
               const ticker = extractTicker(row.asset_label);
               const isExpanded = expandedRow === row.asset_label;
               return (
@@ -331,6 +342,7 @@ export default function AllAssetsTable({ rows, horizons, updatedAsset, sortLevel
                   qualityScore={qualityScores[ticker] ?? 50}
                   highlighted={row.asset_label === updatedAsset}
                   isExpanded={isExpanded}
+                  rowIndex={rowIndex}
                   onToggleExpand={() => onExpandRow(isExpanded ? null : row.asset_label)}
                   onNavigateChart={() => onNavigateChart(ticker)}
                   detailDefaultChartType={detailDefaultChartType}
@@ -370,11 +382,12 @@ export default function AllAssetsTable({ rows, horizons, updatedAsset, sortLevel
 }
 
 /* ── Story 3.1: Cosmic Signal Row ────────────────────────────────── */
-function CosmicSignalRow({ row, ticker, horizons, visibleCols, qualityScore, highlighted, isExpanded, onToggleExpand, onNavigateChart, detailDefaultChartType }: {
+function CosmicSignalRow({ row, ticker, horizons, visibleCols, qualityScore, highlighted, isExpanded, rowIndex, onToggleExpand, onNavigateChart, detailDefaultChartType }: {
   row: SummaryRow; ticker: string; horizons: number[];
   visibleCols: Set<string>;
   qualityScore: number;
   highlighted?: boolean; isExpanded: boolean;
+  rowIndex: number;
   onToggleExpand: () => void; onNavigateChart: () => void;
   detailDefaultChartType?: SignalDetailChartType;
 }) {
@@ -385,30 +398,38 @@ function CosmicSignalRow({ row, ticker, horizons, visibleCols, qualityScore, hig
   const kellyVal = nearestHorizon?.kelly_half;
 
   const labelColor = signalLabelColor(label);
+  const rowStyle: PremiumRowStyle = {
+    '--row-accent': labelColor,
+    '--sort-row-delay': `${Math.min(rowIndex * 18, 140)}ms`,
+    ...(isExpanded ? {
+      borderLeft: '2px solid var(--accent-violet)',
+      background: 'rgba(139,92,246,0.055)',
+      boxShadow: 'inset 0 0 22px rgba(139,92,246,0.07)',
+    } : {
+      borderLeft: '2px solid transparent',
+      borderBottom: '1px solid rgba(255,255,255,0.035)',
+    }),
+  };
   return (
     <>
       <tr
         onClick={onToggleExpand}
-        className={`cosmic-row cursor-pointer transition-all duration-150 ${highlighted ? 'aurora-upgrade' : ''} ${isExpanded ? 'signals-row-selected' : 'hover:bg-white/[0.015]'}`}
-        style={isExpanded ? {
-          borderLeft: '2px solid var(--accent-violet)',
-          background: 'rgba(139,92,246,0.05)',
-          boxShadow: 'inset 0 0 20px rgba(139,92,246,0.06)',
-        } : {
-          borderLeft: '2px solid transparent',
-          borderBottom: '1px solid rgba(255,255,255,0.035)',
-        }}
+        className={`cosmic-row premium-signal-row cursor-pointer ${highlighted ? 'aurora-upgrade' : ''} ${isExpanded ? 'signals-row-selected' : ''}`}
+        data-signal={label.includes('BUY') ? 'buy' : label.includes('SELL') ? 'sell' : 'hold'}
+        data-expanded={isExpanded}
+        data-row-parity={rowIndex % 2 === 0 ? 'even' : 'odd'}
+        style={rowStyle}
       >
         {/* Asset */}
-        <td className="px-4 py-2.5 whitespace-nowrap" style={{ height: '40px' }}>
-          <div className="flex items-center gap-2">
-            <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: labelColor }} />
+        <td className="premium-asset-cell px-4 py-2.5 whitespace-nowrap" style={{ height: '42px' }}>
+          <div className="flex items-center gap-2.5">
+            <span className="premium-row-rail flex-shrink-0" style={{ background: labelColor }} />
             <div className="text-left">
-              <span className="font-semibold text-white text-[12px] tabular-nums">
+              <span className="premium-ticker font-semibold text-white text-[12px] tabular-nums">
                 {ticker}
               </span>
               {row.asset_label.includes('(') && (
-                <span className="block text-[9px] text-[var(--text-muted)] truncate max-w-[140px] leading-tight">
+                <span className="premium-asset-name block text-[9px] text-[var(--text-muted)] truncate max-w-[150px] leading-tight">
                   {row.asset_label.split('(')[0].trim()}
                 </span>
               )}
@@ -417,28 +438,28 @@ function CosmicSignalRow({ row, ticker, horizons, visibleCols, qualityScore, hig
         </td>
         {/* AC-1: Sparkline — wider for clarity */}
         {visibleCols.has('chart') && (
-          <td className="px-2 py-2 text-center">
+          <td className="premium-chart-cell px-2 py-2 text-center">
             <Sparkline ticker={ticker} width={108} height={32} />
           </td>
         )}
         {/* 30D pct change */}
         {visibleCols.has('pct30d') && (
-          <td className="px-1.5 py-2 text-center">
+          <td className="premium-data-cell px-1.5 py-2 text-center">
             <SparklinePct ticker={ticker} pct={row.pct_30d} />
           </td>
         )}
         {/* Sector */}
         {visibleCols.has('sector') && (
-          <td className="px-3 py-2 text-[10px] text-[var(--text-secondary)] max-w-[100px] truncate">{row.sector}</td>
+          <td className="premium-sector-cell px-3 py-2 text-[10px] text-[var(--text-secondary)] max-w-[112px] truncate">{row.sector}</td>
         )}
         {/* AC-2: Signal label + strength split */}
-        <td className="px-2 py-2">
+        <td className="premium-data-cell px-2 py-2">
           <div className="flex justify-center">
             <SignalLabel label={label.toUpperCase()} />
           </div>
         </td>
         {visibleCols.has('strength') && (
-          <td className="px-1 py-2">
+          <td className="premium-data-cell px-1 py-2">
             <div className="flex justify-center">
               <SignalStrengthMeter label={label} pUp={pUp} kelly={kellyVal} />
             </div>
@@ -446,19 +467,19 @@ function CosmicSignalRow({ row, ticker, horizons, visibleCols, qualityScore, hig
         )}
         {/* AC-3: Momentum badge */}
         {visibleCols.has('momentum') && (
-          <td className="px-3 py-2 text-center">
+          <td className="premium-data-cell px-3 py-2 text-center">
             <MomentumBadge value={row.momentum_score} />
           </td>
         )}
         {/* Quality score tile */}
         {visibleCols.has('quality') && (
-          <td className="px-2 py-2">
+          <td className="premium-data-cell px-2 py-2">
             <QualityCell score={qualityScore} />
           </td>
         )}
         {/* AC-4: Crash risk heat */}
         {visibleCols.has('risk') && (
-          <td className="px-3 py-2">
+          <td className="premium-data-cell px-3 py-2">
             <div className="flex justify-center">
               <CrashRiskHeat score={row.crash_risk_score} />
             </div>
@@ -468,15 +489,15 @@ function CosmicSignalRow({ row, ticker, horizons, visibleCols, qualityScore, hig
         {visibleCols.has('horizons') && horizons.map((h) => {
           const sig = row.horizon_signals[h] || row.horizon_signals[String(h)];
           return (
-            <td key={h} className="px-2 py-2 text-center">
+            <td key={h} className="premium-data-cell px-2 py-2 text-center">
               <HorizonCell expRet={sig?.exp_ret} pUp={sig?.p_up} />
             </td>
           );
         })}
         {/* Expand indicator */}
-        <td className="px-2 py-2">
+        <td className="premium-data-cell px-2 py-2">
           <ChevronRight
-            className="w-3.5 h-3.5 transition-all duration-200"
+            className="premium-chevron w-3.5 h-3.5 transition-all duration-200"
             style={{
               color: isExpanded ? 'var(--accent-violet)' : 'var(--text-muted)',
               transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',

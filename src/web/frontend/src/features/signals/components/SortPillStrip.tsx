@@ -102,7 +102,8 @@ export default function SortPillStrip({
               key={pill.col}
               type="button"
               onClick={() => onSort(pill.col)}
-              className="group relative inline-flex items-center gap-1.5 overflow-hidden rounded-[11px] px-2.5 py-[5px] text-[11px] font-semibold tabular-nums transition-all duration-[180ms] active:scale-[0.97] hover:-translate-y-[1px]"
+              className="premium-sort-pill group relative inline-flex items-center gap-1.5 overflow-hidden rounded-[11px] px-2.5 py-[5px] text-[11px] font-semibold tabular-nums transition-all duration-[180ms] active:scale-[0.97] hover:-translate-y-[1px]"
+              data-active={isActive}
               style={isActive
                 ? {
                     color: pill.accent,
