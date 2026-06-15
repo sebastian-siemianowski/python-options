@@ -8,7 +8,7 @@ interface SparklineProps {
   width?: number;
   height?: number;
   tail?: number;
-  variant?: 'heikinAshi' | 'reversal';
+  variant?: 'heikinAshi' | 'reversal' | 'extremes' | 'pullback';
   fluid?: boolean;
 }
 
@@ -33,6 +33,8 @@ interface ReversalState {
   trend: 1 | -1;
   age: number | null;
 }
+
+type DecisionState = 'green' | 'red' | 'neutral';
 
 const MAX_CONCURRENT_SPARKLINE_REQUESTS = 14;
 let activeSparklineRequests = 0;
@@ -248,6 +250,129 @@ function getReversalState(bars: OHLCVBar[]): ReversalState | null {
   };
 }
 
+function computeEma(values: number[], period: number): number[] {
+  if (!values.length) return [];
+  const alpha = 2 / (period + 1);
+  const out: number[] = [];
+  let prev = values[0];
+  values.forEach((value, index) => {
+    prev = index === 0 ? value : value * alpha + prev * (1 - alpha);
+    out.push(prev);
+  });
+  return out;
+}
+
+function median(values: number[]): number {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
+function computeAdaptiveExhaustionZ(closes: number[], lookback = 63): number[] {
+  if (!closes.length) return [];
+  const logCloses = closes.map((value) => Math.log(Math.max(value, 1e-9)));
+  const fastLevel = computeEma(logCloses, 21);
+  const slowLevel = computeEma(logCloses, 55);
+  const residuals = logCloses.map((value, index) => value - (fastLevel[index] * 0.62 + slowLevel[index] * 0.38));
+  const returns = logCloses.map((value, index) => (index === 0 ? 0 : value - logCloses[index - 1]));
+  const fallbackVol = computeEma(returns.map((value) => Math.abs(value)), 21).map((value) => Math.max(value * Math.sqrt(21) * 1.25, 1e-5));
+
+  return residuals.map((residual, index) => {
+    const start = Math.max(0, index - lookback + 1);
+    const window = residuals.slice(start, index + 1);
+    const center = median(window);
+    const mad = median(window.map((value) => Math.abs(value - center)));
+    const robustScale = Math.max(mad * 1.4826, fallbackVol[index], 1e-5);
+    return (residual - center) / robustScale;
+  });
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function computeAdaptiveExhaustionScore(closes: number[], lookback = 126): number[] {
+  const z = computeAdaptiveExhaustionZ(closes);
+  return z.map((value, index) => {
+    const start = Math.max(0, index - lookback + 1);
+    const window = z.slice(start, index + 1).filter(Number.isFinite);
+    if (window.length < 8) return clamp(Math.tanh(value / 1.15), -1, 1);
+    const belowOrEqual = window.filter((item) => item <= value).length;
+    const percentile = belowOrEqual / window.length;
+    const percentileScore = percentile * 2 - 1;
+    const zScore = Math.tanh(value / 1.15);
+    return clamp(zScore * 0.62 + percentileScore * 0.38, -1, 1);
+  });
+}
+
+function drawMiniRegimeZones(
+  ctx: CanvasRenderingContext2D,
+  states: DecisionState[],
+  xFor: (index: number) => number,
+  top: number,
+  height: number,
+  width: number,
+) {
+  if (states.length < 2) return;
+  let start = 0;
+  for (let i = 1; i <= states.length; i += 1) {
+    if (i < states.length && states[i] === states[start]) continue;
+    const state = states[start];
+    if (state !== 'neutral') {
+      const x0 = Math.max(0, start === 0 ? 0 : xFor(start));
+      const x1 = Math.min(width, i >= states.length ? width : xFor(i));
+      const green = state === 'green';
+      const zone = ctx.createLinearGradient(0, top, 0, top + height);
+      zone.addColorStop(0, green ? 'rgba(16,185,129,0.115)' : 'rgba(244,63,94,0.115)');
+      zone.addColorStop(1, green ? 'rgba(16,185,129,0.010)' : 'rgba(244,63,94,0.010)');
+      ctx.fillStyle = zone;
+      ctx.fillRect(x0, top, Math.max(1, x1 - x0), height);
+    }
+    start = i;
+  }
+}
+
+function drawBottomDecisionRail(
+  ctx: CanvasRenderingContext2D,
+  states: DecisionState[],
+  xFor: (index: number) => number,
+  width: number,
+  y: number,
+) {
+  ctx.fillStyle = 'rgba(148,163,184,0.13)';
+  ctx.fillRect(0, y, width, 2.4);
+  states.forEach((state, index) => {
+    if (state === 'neutral') return;
+    const x0 = Math.max(0, index === 0 ? 0 : xFor(index - 0.5));
+    const x1 = Math.min(width, index === states.length - 1 ? width : xFor(index + 0.5));
+    ctx.fillStyle = state === 'green' ? 'rgba(16,185,129,0.72)' : 'rgba(244,63,94,0.72)';
+    ctx.fillRect(x0, y, Math.max(1, x1 - x0), 2.4);
+  });
+}
+
+function drawStretchHeat(
+  ctx: CanvasRenderingContext2D,
+  scores: number[],
+  xFor: (index: number) => number,
+  top: number,
+  height: number,
+  width: number,
+) {
+  scores.forEach((score, index) => {
+    const abs = Math.abs(score);
+    const x0 = Math.max(0, index === 0 ? 0 : xFor(index - 0.5));
+    const x1 = Math.min(width, index === scores.length - 1 ? width : xFor(index + 0.5));
+    const alpha = clamp(0.018 + abs * 0.145, 0.018, 0.18);
+    const green = score < 0;
+    const heat = ctx.createLinearGradient(0, top, 0, top + height);
+    heat.addColorStop(0, green ? `rgba(16,185,129,${alpha})` : `rgba(244,63,94,${alpha})`);
+    heat.addColorStop(1, green ? `rgba(16,185,129,${alpha * 0.08})` : `rgba(244,63,94,${alpha * 0.08})`);
+    ctx.fillStyle = heat;
+    ctx.fillRect(x0, top, Math.max(1, x1 - x0), height);
+  });
+}
+
 function drawRoundedPill(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) {
   ctx.beginPath();
   ctx.roundRect(x, y, width, height, radius);
@@ -435,6 +560,195 @@ function drawReversalSparkline(ctx: CanvasRenderingContext2D, bars: OHLCVBar[], 
   ctx.fill();
 }
 
+function drawExtremesSparkline(ctx: CanvasRenderingContext2D, bars: OHLCVBar[], width: number, height: number) {
+  if (bars.length < 8) return;
+  const closes = bars.map((bar) => bar.close);
+  const highs = bars.map((bar) => bar.high);
+  const lows = bars.map((bar) => bar.low);
+  const exhaustionZ = computeAdaptiveExhaustionZ(closes);
+  const exhaustionScore = computeAdaptiveExhaustionScore(closes);
+  const states = exhaustionScore.map((value) => (value <= -0.24 ? 'green' : value >= 0.24 ? 'red' : 'neutral')) as DecisionState[];
+  const minP = Math.min(...lows);
+  const maxP = Math.max(...highs);
+  const range = maxP - minP || 1;
+  const padX = 4;
+  const padTop = 4;
+  const padBottom = 12;
+  const chartW = width - padX * 2;
+  const chartH = height - padTop - padBottom;
+  const xFor = (index: number) => padX + (index / Math.max(1, closes.length - 1)) * chartW;
+  const yFor = (value: number) => padTop + chartH - ((value - minP) / range) * chartH;
+
+  ctx.fillStyle = 'rgba(255,255,255,0.010)';
+  ctx.fillRect(0, 0, width, height);
+  drawStretchHeat(ctx, exhaustionScore, xFor, padTop, chartH, width);
+  drawMiniRegimeZones(ctx, states, xFor, padTop, chartH, width);
+
+  const area = ctx.createLinearGradient(0, padTop, 0, padTop + chartH);
+  area.addColorStop(0, 'rgba(148,163,184,0.12)');
+  area.addColorStop(1, 'rgba(148,163,184,0)');
+  ctx.beginPath();
+  closes.forEach((close, index) => {
+    const x = xFor(index);
+    const y = yFor(close);
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.lineTo(xFor(closes.length - 1), padTop + chartH);
+  ctx.lineTo(xFor(0), padTop + chartH);
+  ctx.closePath();
+  ctx.fillStyle = area;
+  ctx.fill();
+
+  for (let i = 1; i < closes.length; i += 1) {
+    const state = states[i];
+    const score = exhaustionScore[i] ?? 0;
+    const neutralGreen = score < 0 ? clamp(Math.abs(score) * 0.72, 0.18, 0.44) : 0;
+    const neutralRed = score > 0 ? clamp(Math.abs(score) * 0.72, 0.18, 0.44) : 0;
+    const color = state === 'green'
+      ? '#34d399'
+      : state === 'red'
+        ? '#fb7185'
+        : score < 0
+          ? `rgba(52,211,153,${neutralGreen})`
+          : score > 0
+            ? `rgba(251,113,133,${neutralRed})`
+            : 'rgba(203,213,225,0.50)';
+    ctx.beginPath();
+    ctx.moveTo(xFor(i - 1), yFor(closes[i - 1]));
+    ctx.lineTo(xFor(i), yFor(closes[i]));
+    ctx.strokeStyle = color;
+    ctx.lineWidth = state === 'neutral' ? 1.05 : 1.55;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+  }
+
+  drawBottomDecisionRail(ctx, states, xFor, width, height - 4.2);
+
+  const latestState = states[states.length - 1];
+  const latestScore = exhaustionScore[exhaustionScore.length - 1] ?? 0;
+  const latestColor = latestState === 'green' ? '#34d399' : latestState === 'red' ? '#fb7185' : latestScore < 0 ? '#86efac' : latestScore > 0 ? '#fda4af' : '#cbd5e1';
+  const lastX = xFor(closes.length - 1);
+  const lastY = yFor(closes[closes.length - 1]);
+  ctx.beginPath();
+  ctx.arc(lastX, lastY, 4.0, 0, Math.PI * 2);
+  ctx.fillStyle = latestState === 'green'
+    ? 'rgba(16,185,129,0.16)'
+    : latestState === 'red'
+      ? 'rgba(244,63,94,0.16)'
+      : latestScore < 0
+        ? 'rgba(16,185,129,0.09)'
+        : latestScore > 0
+          ? 'rgba(244,63,94,0.09)'
+          : 'rgba(203,213,225,0.10)';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(lastX, lastY, 1.9, 0, Math.PI * 2);
+  ctx.fillStyle = latestColor;
+  ctx.fill();
+
+  const latestZ = exhaustionZ[exhaustionZ.length - 1] ?? 0;
+  ctx.font = '700 7px Inter, system-ui, sans-serif';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = latestColor;
+  ctx.globalAlpha = 0.82;
+  ctx.fillText(`Z ${latestZ >= 0 ? '+' : ''}${latestZ.toFixed(1)}`, width - 5, height - 9);
+  ctx.globalAlpha = 1;
+}
+
+function drawPullbackSparkline(ctx: CanvasRenderingContext2D, bars: OHLCVBar[], width: number, height: number) {
+  if (bars.length < 8) return;
+  const closes = bars.map((bar) => bar.close);
+  const highs = bars.map((bar) => bar.high);
+  const lows = bars.map((bar) => bar.low);
+  const ema20 = computeEma(closes, 20);
+  const ema50 = computeEma(closes, 50);
+  const exhaustionZ = computeAdaptiveExhaustionZ(closes);
+  const states = closes.map((close, index) => {
+    const fast = ema20[index];
+    const slow = ema50[index];
+    const uptrend = fast >= slow;
+    const downtrend = fast < slow;
+    const dist = fast > 0 ? (close - fast) / fast : 0;
+    const nearFast = Math.abs(dist) <= 0.035;
+    if (uptrend && close >= slow && (dist <= 0.012 || (nearFast && exhaustionZ[index] <= -0.25))) return 'green';
+    if (downtrend && close <= slow && (dist >= -0.012 || (nearFast && exhaustionZ[index] >= 0.25))) return 'red';
+    return 'neutral';
+  }) as Array<'green' | 'red' | 'neutral'>;
+
+  const minP = Math.min(...lows, ...ema20, ...ema50);
+  const maxP = Math.max(...highs, ...ema20, ...ema50);
+  const range = maxP - minP || 1;
+  const padX = 4;
+  const padTop = 4;
+  const padBottom = 12;
+  const chartW = width - padX * 2;
+  const chartH = height - padTop - padBottom;
+  const xFor = (index: number) => padX + (index / Math.max(1, closes.length - 1)) * chartW;
+  const yFor = (value: number) => padTop + chartH - ((value - minP) / range) * chartH;
+
+  ctx.fillStyle = 'rgba(255,255,255,0.010)';
+  ctx.fillRect(0, 0, width, height);
+  drawMiniRegimeZones(ctx, states, xFor, padTop, chartH, width);
+
+  const drawLine = (values: number[], color: string, lineWidth: number, alpha = 1) => {
+    ctx.beginPath();
+    values.forEach((value, index) => {
+      const x = xFor(index);
+      const y = yFor(value);
+      if (index === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = color;
+    ctx.lineWidth = lineWidth;
+    ctx.globalAlpha = alpha;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  };
+
+  drawLine(ema50, 'rgba(148,163,184,0.42)', 0.8);
+  drawLine(ema20, 'rgba(125,211,252,0.55)', 0.85);
+
+  for (let i = 1; i < closes.length; i += 1) {
+    const state = states[i];
+    const trendUp = ema20[i] >= ema50[i];
+    const color = state === 'green'
+      ? '#34d399'
+      : state === 'red'
+        ? '#fb7185'
+        : trendUp
+          ? 'rgba(110,231,183,0.64)'
+          : 'rgba(253,164,175,0.62)';
+    ctx.beginPath();
+    ctx.moveTo(xFor(i - 1), yFor(closes[i - 1]));
+    ctx.lineTo(xFor(i), yFor(closes[i]));
+    ctx.strokeStyle = color;
+    ctx.lineWidth = state === 'neutral' ? 1.0 : 1.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+  }
+
+  drawBottomDecisionRail(ctx, states, xFor, width, height - 4.2);
+
+  const last = closes.length - 1;
+  const latestState = states[last];
+  const trendUp = ema20[last] >= ema50[last];
+  const latestColor = latestState === 'green' ? '#34d399' : latestState === 'red' ? '#fb7185' : trendUp ? '#7dd3fc' : '#fda4af';
+  ctx.beginPath();
+  ctx.arc(xFor(last), yFor(closes[last]), 4.0, 0, Math.PI * 2);
+  ctx.fillStyle = latestState === 'green' ? 'rgba(16,185,129,0.16)' : latestState === 'red' ? 'rgba(244,63,94,0.16)' : 'rgba(125,211,252,0.10)';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(xFor(last), yFor(closes[last]), 1.9, 0, Math.PI * 2);
+  ctx.fillStyle = latestColor;
+  ctx.fill();
+}
+
 /**
  * Story 3.1 AC-1: compact row Heikin Ashi chart showing recent trend structure.
  * The percent chip remains real close-to-close performance; the row chart is
@@ -494,6 +808,14 @@ function SparklineInner({ ticker, width = 60, height = 28, tail = 30, variant = 
 
     if (variant === 'reversal') {
       drawReversalSparkline(ctx, bars, renderWidth, height);
+      return;
+    }
+    if (variant === 'extremes') {
+      drawExtremesSparkline(ctx, bars, renderWidth, height);
+      return;
+    }
+    if (variant === 'pullback') {
+      drawPullbackSparkline(ctx, bars, renderWidth, height);
       return;
     }
 
@@ -610,13 +932,19 @@ function SparklineInner({ ticker, width = 60, height = 28, tail = 30, variant = 
   const pctChg = first ? ((last - first) / first) * 100 : 0;
   const up = pctChg >= 0;
   const reversalState = variant === 'reversal' ? getReversalState(bars) : null;
-  const visualUp = variant === 'reversal' ? reversalState?.trend !== -1 : up;
+  const visualUp = variant === 'reversal' ? reversalState?.trend !== -1 : variant === 'extremes' || variant === 'pullback' ? true : up;
+  const titleMap: Record<NonNullable<SparklineProps['variant']>, string> = {
+    heikinAshi: `${tail}-bar Heikin Ashi row chart`,
+    reversal: `${tail}-bar mini reversal chart`,
+    extremes: `${tail}-bar overbought / oversold chart`,
+    pullback: `${tail}-bar pullback trend chart`,
+  };
 
   return (
     <div
       ref={visibilityRef}
       style={{ width: fluid ? '100%' : width, height }}
-      title={variant === 'reversal' ? `${tail}-bar mini reversal chart` : `${tail}-bar Heikin Ashi row chart`}
+      title={titleMap[variant]}
     >
       <canvas
         ref={canvasRef}
@@ -722,6 +1050,186 @@ function SparklineReversalStateBadgeInner({ ticker, tail = 220, compact = false,
 }
 
 export const SparklineReversalStateBadge = memo(SparklineReversalStateBadgeInner);
+
+type LensBadgeVariant = 'reversal' | 'extremes' | 'pullback';
+
+function lensBadgeState(variant: LensBadgeVariant, bars: OHLCVBar[]) {
+  if (variant === 'reversal') {
+    const state = getReversalState(bars);
+    if (!state) return null;
+    const isBuy = state.trend === 1;
+    return {
+      label: isBuy ? 'Buy' : 'Sell',
+      detail: state.age === null ? '' : `${state.age}d`,
+      color: isBuy ? '#00f5a0' : '#ff375f',
+      softColor: isBuy ? '#a7f3d0' : '#fecdd3',
+      bg: isBuy ? 'rgba(16,185,129,0.18)' : 'rgba(244,63,94,0.18)',
+      border: isBuy ? 'rgba(16,185,129,0.24)' : 'rgba(244,63,94,0.26)',
+      title: `Current reversal regime: ${isBuy ? 'BUY' : 'SELL'}`,
+    };
+  }
+
+  const closes = bars.map((bar) => bar.close);
+  if (closes.length < 8) return null;
+
+  if (variant === 'extremes') {
+    const exhaustionZ = computeAdaptiveExhaustionZ(closes);
+    const exhaustionScore = computeAdaptiveExhaustionScore(closes);
+    const latestZ = exhaustionZ[exhaustionZ.length - 1] ?? 0;
+    const latestScore = exhaustionScore[exhaustionScore.length - 1] ?? 0;
+    const zDetail = `Z ${latestZ >= 0 ? '+' : ''}${latestZ.toFixed(1)} · ${Math.round(Math.abs(latestScore) * 100)}`;
+    if (latestScore <= -0.24) {
+      return {
+        label: 'Oversold',
+        detail: zDetail,
+        color: '#34d399',
+        softColor: '#a7f3d0',
+        bg: 'rgba(16,185,129,0.17)',
+        border: 'rgba(16,185,129,0.25)',
+        title: 'Oversold: price is statistically stretched below its adaptive equilibrium',
+      };
+    }
+    if (latestScore >= 0.24) {
+      return {
+        label: 'Overbought',
+        detail: zDetail,
+        color: '#fb7185',
+        softColor: '#fecdd3',
+        bg: 'rgba(244,63,94,0.17)',
+        border: 'rgba(244,63,94,0.28)',
+        title: 'Overbought: price is statistically stretched above its adaptive equilibrium',
+      };
+    }
+    return {
+      label: 'Balanced',
+      detail: zDetail,
+      color: '#94a3b8',
+      softColor: '#cbd5e1',
+      bg: 'rgba(100,116,139,0.10)',
+      border: 'rgba(100,116,139,0.18)',
+      title: 'Balanced: price stretch is inside the normal adaptive range',
+    };
+  }
+
+  const ema20 = computeEma(closes, 20);
+  const ema50 = computeEma(closes, 50);
+  const exhaustionZ = computeAdaptiveExhaustionZ(closes);
+  const last = closes.length - 1;
+  const close = closes[last];
+  const fast = ema20[last];
+  const slow = ema50[last];
+  const uptrend = fast >= slow;
+  const dist = fast > 0 ? (close - fast) / fast : 0;
+  const nearFast = Math.abs(dist) <= 0.035;
+  const latestZ = exhaustionZ[last] ?? 0;
+  const buyDip = uptrend && close >= slow && (dist <= 0.012 || (nearFast && latestZ <= -0.25));
+  const sellBounce = !uptrend && close <= slow && (dist >= -0.012 || (nearFast && latestZ >= 0.25));
+
+  if (buyDip) {
+    return {
+      label: 'Buy dip',
+      detail: 'Trend',
+      color: '#34d399',
+      softColor: '#a7f3d0',
+      bg: 'rgba(16,185,129,0.17)',
+      border: 'rgba(16,185,129,0.25)',
+      title: 'Constructive pullback: uptrend with price near the fast trend line',
+    };
+  }
+  if (sellBounce) {
+    return {
+      label: 'Sell bounce',
+      detail: 'Trend',
+      color: '#fb7185',
+      softColor: '#fecdd3',
+      bg: 'rgba(244,63,94,0.17)',
+      border: 'rgba(244,63,94,0.28)',
+      title: 'Risky bounce: downtrend with price near the fast trend line',
+    };
+  }
+  return {
+    label: uptrend ? 'Trend up' : 'Trend down',
+    detail: uptrend ? 'Above' : 'Below',
+    color: uptrend ? '#7dd3fc' : '#fda4af',
+    softColor: uptrend ? '#bae6fd' : '#fecdd3',
+    bg: uptrend ? 'rgba(14,165,233,0.12)' : 'rgba(244,63,94,0.11)',
+    border: uptrend ? 'rgba(14,165,233,0.20)' : 'rgba(244,63,94,0.20)',
+    title: uptrend ? 'Uptrend, but not a fresh pullback entry zone' : 'Downtrend, but not a fresh sell-bounce zone',
+  };
+}
+
+function SparklineLensStateBadgeInner({ ticker, tail = 220, variant = 'reversal', compact = false, tile = false }: {
+  ticker: string;
+  tail?: number;
+  variant?: LensBadgeVariant;
+  compact?: boolean;
+  tile?: boolean;
+}) {
+  const { ref: visibilityRef, isNearViewport } = useNearViewport<HTMLDivElement>();
+  const { data } = useQuery({
+    queryKey: ['sparkline', ticker, tail],
+    queryFn: () => runSparklineRequest(() => api.chartOhlcv(ticker, tail)),
+    enabled: isNearViewport,
+    staleTime: 600_000,
+    retry: 1,
+  });
+
+  const state = lensBadgeState(variant, validOhlcvBars(data?.data));
+  if (!state) {
+    return (
+      <div ref={visibilityRef} className={`flex flex-col items-center gap-0.5 ${compact ? 'min-w-0 w-full' : 'min-w-[62px]'}`}>
+        <span
+          className={`inline-flex ${compact ? tile ? 'h-[38px] w-full rounded-[9px]' : 'h-[30px] w-full rounded-lg' : 'h-[26px] min-w-[58px] rounded-lg'} items-center justify-center text-[8.4px] font-bold uppercase tracking-[0.08em]`}
+          style={{
+            color: 'var(--text-muted)',
+            background: tile ? 'linear-gradient(180deg, rgba(100,116,139,0.075), rgba(255,255,255,0.012))' : 'rgba(255,255,255,0.018)',
+            border: `1px solid ${tile ? 'rgba(100,116,139,0.14)' : 'rgba(255,255,255,0.055)'}`,
+            boxShadow: tile ? 'inset 0 1px 0 rgba(255,255,255,0.045)' : undefined,
+          }}
+        >
+          —
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div ref={visibilityRef} className={`flex flex-col items-center gap-0.5 ${compact ? 'min-w-0 w-full' : 'min-w-[68px]'}`}>
+      <span
+        className={`inline-flex ${compact ? tile ? 'h-[38px] w-full flex-col gap-[1px] rounded-[9px] px-1' : 'h-[30px] w-full flex-col gap-0.5 rounded-lg px-1' : 'h-[26px] min-w-[64px] gap-1.5 rounded-lg px-2'} items-center justify-center tabular-nums`}
+        title={state.title}
+        style={{
+          color: state.softColor,
+          background: tile ? `linear-gradient(180deg, ${state.bg}, rgba(255,255,255,0.012))` : state.bg,
+          border: `1px solid ${state.border}`,
+          boxShadow: tile ? `inset 0 1px 0 rgba(255,255,255,0.045), 0 10px 18px -18px ${state.color}` : `0 0 14px -9px ${state.color}`,
+        }}
+      >
+        {compact ? (
+          <>
+            <span
+              className="rounded-full"
+              style={{ width: 4, height: 4, background: state.color, boxShadow: `0 0 7px ${state.color}` }}
+            />
+            <span className={`${tile ? 'text-[8.1px]' : 'text-[9px]'} font-extrabold uppercase tracking-[0.035em] leading-none`}>{state.label}</span>
+            {state.detail && <span className={`${tile ? 'text-[7.1px]' : 'text-[8px]'} font-bold leading-none opacity-82`}>{state.detail}</span>}
+          </>
+        ) : (
+          <>
+            <span
+              className="rounded-full"
+              style={{ width: 5, height: 5, background: state.color, boxShadow: `0 0 7px ${state.color}` }}
+            />
+            <span className="text-[9.5px] font-extrabold uppercase tracking-[0.08em]">{state.label}</span>
+          </>
+        )}
+      </span>
+      {!compact && <span className="text-[8.5px] uppercase tracking-[0.12em] text-[var(--text-muted)]">{variant}</span>}
+    </div>
+  );
+}
+
+export const SparklineLensStateBadge = memo(SparklineLensStateBadgeInner);
 
 /**
  * 30-day percent change chip, split out from the Sparkline so it can live

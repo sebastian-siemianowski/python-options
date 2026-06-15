@@ -34,6 +34,7 @@ from web.backend.routers import (
     diagnostics,
     indicators,
     watchlist,
+    politicians,
 )
 
 
@@ -84,6 +85,7 @@ app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
 app.include_router(services.router, prefix="/api/services", tags=["services"])
 app.include_router(diagnostics.router, prefix="/api/diagnostics", tags=["diagnostics"])
 app.include_router(indicators.router, prefix="/api/indicators", tags=["indicators"])
+app.include_router(politicians.router, prefix="/api/politicians", tags=["politicians"])
 
 
 # ── WebSocket endpoint ───────────────────────────────────────────────────────

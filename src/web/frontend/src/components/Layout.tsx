@@ -1,6 +1,6 @@
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { api, type SignalStats, type TuneStats, type DataSummary, type ArenaStatus, type ServicesHealth, type DiagCalibrationFailures } from '../api';
+import { api, type SignalStats, type TuneStats, type DataSummary, type ArenaStatus, type ServicesHealth, type DiagCalibrationFailures, type PoliticiansSummaryResponse } from '../api';
 import {
   LayoutDashboard,
   Signal,
@@ -16,6 +16,7 @@ import {
   ChevronsRight,
   Grid3X3,
   TrendingUp,
+  Landmark,
 } from 'lucide-react';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import CommandPalette from './CommandPalette';
@@ -52,6 +53,22 @@ const badgeColors = {
   fuchsia: 'bg-[rgba(226,122,245,0.12)] text-[var(--accent-fuchsia)] ring-1 ring-[rgba(226,122,245,0.28)]',
   cyan:    'bg-[rgba(56,217,245,0.12)] text-[var(--accent-cyan)] ring-1 ring-[rgba(56,217,245,0.28)]',
 };
+
+function politiciansSourceHealthLine(summary?: PoliticiansSummaryResponse): string {
+  const sourceEntries = summary?.source_health?.sources || {};
+  const statuses = Object.values(sourceEntries)
+    .map((entry) => {
+      if (entry && typeof entry === 'object' && 'status' in entry) {
+        return String((entry as { status?: unknown }).status || 'unknown');
+      }
+      return 'unknown';
+    })
+    .filter(Boolean);
+  if (statuses.length === 0) return 'Source health: no source status yet';
+  const nonOk = statuses.filter((status) => status !== 'ok');
+  if (nonOk.length === 0) return `Source health: ok across ${statuses.length} sources`;
+  return `Source health: ${nonOk.join(', ')}`;
+}
 
 /* ─── Layout component ──────────────────────────────────────────── */
 export default function Layout() {
@@ -131,6 +148,12 @@ export default function Layout() {
     staleTime: 60_000,
     retry: false,
   });
+  const politiciansSummaryQ = useQuery({
+    queryKey: ['politiciansSummary'],
+    queryFn: api.politiciansSummary,
+    staleTime: 60_000,
+    retry: false,
+  });
 
   /* Derived micro-indicator data */
   const ss = signalStatsQ.data as SignalStats | undefined;
@@ -140,6 +163,7 @@ export default function Layout() {
   const hs = healthQ.data as ServicesHealth | undefined;
   const df = diagFailQ.data as DiagCalibrationFailures | undefined;
   const rs = riskQ.data;
+  const ps = politiciansSummaryQ.data as PoliticiansSummaryResponse | undefined;
 
   const allServicesOk = hs
     ? hs.api.status === 'ok' && hs.signal_cache.status !== 'missing' && hs.price_data.status === 'ok'
@@ -205,6 +229,23 @@ export default function Layout() {
           `Temperature: ${rs.combined_temperature.toFixed(2)} (${rs.status})`,
           `Risk: ${rs.risk_temperature.toFixed(2)} | Metals: ${rs.metals_temperature.toFixed(2)}`,
           `Market: ${rs.market_temperature.toFixed(2)}`,
+        ];
+      },
+    },
+    {
+      to: '/politicians', label: 'Politicians', icon: Landmark,
+      badgeFn: () => {
+        const count = ps?.new_tracked_asset_disclosures_7d ?? 0;
+        if (count === 0) return null;
+        return { text: String(count), color: 'cyan' };
+      },
+      tooltipFn: () => {
+        if (!ps) return ['Loading...'];
+        if (ps.status === 'disabled') return ['Disclosure monitoring disabled'];
+        return [
+          ps.newest_disclosure_date ? `Newest disclosure: ${ps.newest_disclosure_date}` : 'Newest disclosure: none',
+          politiciansSourceHealthLine(ps),
+          `${ps.watchlist_trades ?? 0} watchlist matches`,
         ];
       },
     },

@@ -1,12 +1,18 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { BarChart3, ChevronRight, X } from 'lucide-react';
-import type { SummaryRow } from '../../../api';
+import { api, type PoliticiansTradeRow, type SummaryRow } from '../../../api';
 import { Sparkline, SparklinePct } from '../../../components/Sparkline';
 import { SignalLabel, SignalStrengthMeter, MomentumBadge, CrashRiskHeat, HorizonCell, QualityCell } from '../../../components/SignalTableVisuals';
 import { ColumnCustomizer, type ColumnDef } from '../../../components/ColumnCustomizer';
 import SignalDetailPanel, { type SignalDetailChartType } from '../../../components/SignalDetailPanel';
 import { formatHorizon } from '../../../utils/horizons';
-import ChartAssetRow from './ChartAssetRow';
+import ChartAssetRow, {
+  CHART_DECISION_LENS_LS_KEY,
+  CHART_DECISION_LENS_OPTIONS,
+  loadChartDecisionLens,
+  type ChartDecisionLens,
+} from './ChartAssetRow';
 import { signalLabelColor } from '../theme';
 import { extractTicker, type SortColumn, type SortDir } from '../utils';
 
@@ -38,7 +44,7 @@ function SortIndicator({ col, sortLevels }: { col: SortColumn; sortLevels: { col
 /** Story 3.2: Human-readable sort column name */
 function sortColName(col: SortColumn): string {
   if (col.startsWith('horizon_')) return formatHorizon(parseInt(col.split('_')[1], 10));
-  const names: Record<string, string> = { asset: 'Asset', sector: 'Sector', signal: 'Signal', momentum: 'Momentum', quality: 'Quality', crash_risk: 'Risk', pct30d: '30D' };
+  const names: Record<string, string> = { asset: 'Asset', sector: 'Sector', signal: 'Signal', momentum: 'Momentum', quality: 'Quality', crash_risk: 'Risk', pct30d: '30D', politician: 'Politicians' };
   return names[col] || col;
 }
 
@@ -53,12 +59,13 @@ const ALL_ASSETS_COLUMN_DEFS: ColumnDef[] = [
   { key: 'momentum', label: 'Momentum' },
   { key: 'quality', label: 'Quality' },
   { key: 'risk', label: 'Crash risk' },
+  { key: 'politicians', label: 'Politicians', hint: 'context' },
   { key: 'horizons', label: 'Horizons' },
 ];
 const ALL_ASSETS_COLS_LS_KEY = 'signals-visible-cols-v2';
 const ALL_ASSETS_CHART_VIEW_LS_KEY = 'signals-all-assets-chart-view-v1';
 export const SECTOR_CHART_VIEW_LS_KEY = 'signals-sector-chart-view-v1';
-const DEFAULT_VISIBLE_COLS = new Set(ALL_ASSETS_COLUMN_DEFS.map((c) => c.key));
+const DEFAULT_VISIBLE_COLS = new Set(ALL_ASSETS_COLUMN_DEFS.filter((c) => c.key !== 'politicians').map((c) => c.key));
 type PremiumRowStyle = CSSProperties & {
   '--row-accent': string;
   '--sort-row-delay': string;
@@ -93,7 +100,17 @@ export function loadSectorChartView(): boolean {
   }
 }
 
-export default function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRemoveSort, expandedRow, onExpandRow, qualityScores, onNavigateChart, disablePagination, detailDefaultChartType }: {
+export type PoliticianDisclosureBadge = { count: number; windowDays: number };
+type PoliticianTableContext = {
+  count: number;
+  netAmountMidUsd: number;
+  buyAmountMidUsd: number;
+  sellAmountMidUsd: number;
+  avgDelayDays: number | null;
+  politician_activity_score: number;
+};
+
+export default function AllAssetsTable({ rows, horizons, updatedAsset, sortLevels, onSort, onRemoveSort, expandedRow, onExpandRow, qualityScores, onNavigateChart, disablePagination, detailDefaultChartType, politicianBadges }: {
   rows: SummaryRow[]; horizons: number[]; updatedAsset: string | null;
   sortLevels: { col: SortColumn; dir: SortDir }[];
   onSort: (col: SortColumn, shiftKey: boolean) => void;
@@ -104,15 +121,29 @@ export default function AllAssetsTable({ rows, horizons, updatedAsset, sortLevel
   /** When true, render all rows in one scrollable table with no pager UI. */
   disablePagination?: boolean;
   detailDefaultChartType?: SignalDetailChartType;
+  politicianBadges?: Record<string, PoliticianDisclosureBadge>;
 }) {
   const [page, setPage] = useState(0);
   const [scrolled, setScrolled] = useState(false);
   const [visibleCols, setVisibleCols] = useState<Set<string>>(() => loadVisibleCols());
   const [chartView, setChartView] = useState<boolean>(() => loadAllAssetsChartView());
+  const [chartLens, setChartLens] = useState<ChartDecisionLens>(() => loadChartDecisionLens());
   const [sortPulse, setSortPulse] = useState(0);
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const previousSortSignature = useRef<string | null>(null);
   const pageSize = 50;
+  const politiciansVisible = visibleCols.has('politicians');
+  const politiciansQ = useQuery({
+    queryKey: ['politiciansSignalContext', '30d'],
+    queryFn: () => api.politiciansTrades({ limit: 500, from: disclosureWindowStart(30) }),
+    enabled: politiciansVisible,
+    staleTime: 60_000,
+    retry: false,
+  });
+  const politicianContexts = useMemo(
+    () => buildPoliticianContexts(politiciansQ.data?.status === 'ok' ? politiciansQ.data.trades || [] : []),
+    [politiciansQ.data],
+  );
   const sortSignature = useMemo(
     () => sortLevels.map((s) => `${s.col}:${s.dir}`).join('|'),
     [sortLevels],
@@ -133,6 +164,12 @@ export default function AllAssetsTable({ rows, horizons, updatedAsset, sortLevel
     } catch { /* ignore quota / privacy errors */ }
   }, [chartView]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHART_DECISION_LENS_LS_KEY, chartLens);
+    } catch { /* ignore quota / privacy errors */ }
+  }, [chartLens]);
+
   const toggleCol = (key: string) => {
     setVisibleCols((prev) => {
       const def = ALL_ASSETS_COLUMN_DEFS.find((c) => c.key === key);
@@ -144,7 +181,11 @@ export default function AllAssetsTable({ rows, horizons, updatedAsset, sortLevel
     });
   };
   const resetCols = () => setVisibleCols(new Set(DEFAULT_VISIBLE_COLS));
-  const pageRows = disablePagination ? rows : rows.slice(page * pageSize, (page + 1) * pageSize);
+  const displayRows = useMemo(
+    () => sortRowsWithPoliticianContext(rows, sortLevels, politicianContexts),
+    [rows, sortLevels, politicianContexts],
+  );
+  const pageRows = disablePagination ? displayRows : displayRows.slice(page * pageSize, (page + 1) * pageSize);
   const totalPages = disablePagination ? 1 : Math.ceil(rows.length / pageSize);
   const animationSignature = `${sortSignature}::${pageRows.map((row) => row.asset_label).join('|')}`;
 
@@ -183,6 +224,31 @@ export default function AllAssetsTable({ rows, horizons, updatedAsset, sortLevel
           </span>
         </span>
         <div className="flex items-center gap-2">
+          {chartView && (
+            <div
+              className="chart-lens-control hidden items-center gap-1 rounded-[11px] px-1 py-1 md:flex"
+              role="group"
+              aria-label="Chart decision lens"
+            >
+              {CHART_DECISION_LENS_OPTIONS.map((option) => {
+                const active = option.key === chartLens;
+                return (
+                  <button
+                    key={option.key}
+                    type="button"
+                    onClick={() => setChartLens(option.key)}
+                    className="chart-lens-pill"
+                    data-active={active}
+                    title={option.title}
+                    aria-pressed={active}
+                  >
+                    <span className="hidden xl:inline">{option.label}</span>
+                    <span className="xl:hidden">{option.shortLabel}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <button
             type="button"
             aria-pressed={chartView}
@@ -260,6 +326,7 @@ export default function AllAssetsTable({ rows, horizons, updatedAsset, sortLevel
                   onToggleExpand={() => onExpandRow(isExpanded ? null : row.asset_label)}
                   onNavigateChart={() => onNavigateChart(ticker)}
                   detailDefaultChartType={detailDefaultChartType}
+                  chartLens={chartLens}
                 />
               );
             })}
@@ -316,6 +383,13 @@ export default function AllAssetsTable({ rows, horizons, updatedAsset, sortLevel
                   Risk <SortIndicator col="crash_risk" sortLevels={sortLevels} />
                 </th>
               )}
+              {visibleCols.has('politicians') && (
+                <th className={`text-center px-3 py-3 sortable-th group ${sortLevels.some(s => s.col === 'politician') ? 'active' : ''}`}
+                    onClick={(e) => onSort('politician', e.shiftKey)}
+                    title="Public disclosure context only; amount buckets are estimates and filings are delayed.">
+                  Politicians <SortIndicator col="politician" sortLevels={sortLevels} />
+                </th>
+              )}
               {visibleCols.has('horizons') && horizons.map((h) => {
                 const hCol = `horizon_${h}` as SortColumn;
                 return (
@@ -346,6 +420,8 @@ export default function AllAssetsTable({ rows, horizons, updatedAsset, sortLevel
                   onToggleExpand={() => onExpandRow(isExpanded ? null : row.asset_label)}
                   onNavigateChart={() => onNavigateChart(ticker)}
                   detailDefaultChartType={detailDefaultChartType}
+                  politicianBadge={politicianBadges?.[ticker]}
+                  politicianContext={politicianContexts[ticker]}
                 />
               );
             })}
@@ -382,7 +458,7 @@ export default function AllAssetsTable({ rows, horizons, updatedAsset, sortLevel
 }
 
 /* ── Story 3.1: Cosmic Signal Row ────────────────────────────────── */
-function CosmicSignalRow({ row, ticker, horizons, visibleCols, qualityScore, highlighted, isExpanded, rowIndex, onToggleExpand, onNavigateChart, detailDefaultChartType }: {
+function CosmicSignalRow({ row, ticker, horizons, visibleCols, qualityScore, highlighted, isExpanded, rowIndex, onToggleExpand, onNavigateChart, detailDefaultChartType, politicianBadge, politicianContext }: {
   row: SummaryRow; ticker: string; horizons: number[];
   visibleCols: Set<string>;
   qualityScore: number;
@@ -390,6 +466,8 @@ function CosmicSignalRow({ row, ticker, horizons, visibleCols, qualityScore, hig
   rowIndex: number;
   onToggleExpand: () => void; onNavigateChart: () => void;
   detailDefaultChartType?: SignalDetailChartType;
+  politicianBadge?: PoliticianDisclosureBadge;
+  politicianContext?: PoliticianTableContext;
 }) {
   const label = (row.nearest_label || 'HOLD').toUpperCase();
   // Compute composite for strength bar
@@ -428,6 +506,21 @@ function CosmicSignalRow({ row, ticker, horizons, visibleCols, qualityScore, hig
               <span className="premium-ticker font-semibold text-white text-[12px] tabular-nums">
                 {ticker}
               </span>
+              {politicianBadge && politicianBadge.count > 0 && (
+                <a
+                  href={`/politicians?symbol=${encodeURIComponent(ticker)}&watchlist_only=true`}
+                  onClick={(event) => event.stopPropagation()}
+                  className="ml-1 inline-flex items-center rounded-full px-1.5 py-0.5 text-[8px] font-semibold tabular-nums align-middle"
+                  style={{
+                    background: 'rgba(56,217,245,0.12)',
+                    color: 'var(--accent-cyan)',
+                    border: '1px solid rgba(56,217,245,0.28)',
+                  }}
+                  title={`${politicianBadge.count} public politician disclosure${politicianBadge.count === 1 ? '' : 's'} in the last ${politicianBadge.windowDays} days`}
+                >
+                  Pol {politicianBadge.count}
+                </a>
+              )}
               {row.asset_label.includes('(') && (
                 <span className="premium-asset-name block text-[9px] text-[var(--text-muted)] truncate max-w-[150px] leading-tight">
                   {row.asset_label.split('(')[0].trim()}
@@ -485,6 +578,11 @@ function CosmicSignalRow({ row, ticker, horizons, visibleCols, qualityScore, hig
             </div>
           </td>
         )}
+        {visibleCols.has('politicians') && (
+          <td className="premium-data-cell px-3 py-2 text-center">
+            <PoliticianContextCell context={politicianContext} />
+          </td>
+        )}
         {/* AC-5: Horizon cells */}
         {visibleCols.has('horizons') && horizons.map((h) => {
           const sig = row.horizon_signals[h] || row.horizon_signals[String(h)];
@@ -522,6 +620,102 @@ function CosmicSignalRow({ row, ticker, horizons, visibleCols, qualityScore, hig
       )}
     </>
   );
+}
+
+function PoliticianContextCell({ context }: { context?: PoliticianTableContext }) {
+  if (!context || context.count === 0) {
+    return <span className="text-[10px] text-[var(--text-muted)]">—</span>;
+  }
+  const tone = context.netAmountMidUsd >= 0 ? 'var(--accent-emerald)' : 'var(--accent-rose)';
+  const direction = context.netAmountMidUsd >= 0 ? 'net purchases' : 'net sales';
+  return (
+    <div
+      className="inline-flex min-w-[76px] flex-col items-center rounded-[8px] border px-2 py-1"
+      style={{ color: tone, borderColor: 'rgba(56,217,245,0.20)', background: 'rgba(56,217,245,0.06)' }}
+      title={`${context.count} delayed public disclosure${context.count === 1 ? '' : 's'}; ${direction}. Amounts are bucket midpoint estimates. Average filing delay: ${context.avgDelayDays == null ? 'unknown' : `${context.avgDelayDays.toFixed(1)} days`}.`}
+    >
+      <span className="text-[10px] font-semibold tabular-nums">{formatPoliticianAmount(context.netAmountMidUsd)}</span>
+      <span className="text-[8px] text-[var(--text-muted)]">{context.count} disc.</span>
+    </div>
+  );
+}
+
+function buildPoliticianContexts(rows: PoliticiansTradeRow[]): Record<string, PoliticianTableContext> {
+  const contexts: Record<string, PoliticianTableContext & { delayTotal: number; delayCount: number; absAmount: number }> = {};
+  for (const row of rows) {
+    const ticker = String(row.ticker || '').toUpperCase();
+    if (!ticker) continue;
+    const context = contexts[ticker] || {
+      count: 0,
+      netAmountMidUsd: 0,
+      buyAmountMidUsd: 0,
+      sellAmountMidUsd: 0,
+      avgDelayDays: null,
+      politician_activity_score: 0,
+      delayTotal: 0,
+      delayCount: 0,
+      absAmount: 0,
+    };
+    const amount = Number(row.amount_mid_usd || 0);
+    const transaction = String(row.transaction_type || '').toLowerCase();
+    context.count += 1;
+    if (transaction === 'purchase' || transaction === 'received') {
+      context.buyAmountMidUsd += amount;
+      context.netAmountMidUsd += amount;
+    } else if (transaction === 'sale' || transaction === 'sale_partial') {
+      context.sellAmountMidUsd += amount;
+      context.netAmountMidUsd -= amount;
+    }
+    context.absAmount += Math.abs(amount);
+    const delay = Number(row.delay_days);
+    if (Number.isFinite(delay)) {
+      context.delayTotal += delay;
+      context.delayCount += 1;
+    }
+    contexts[ticker] = context;
+  }
+  return Object.fromEntries(Object.entries(contexts).map(([ticker, context]) => {
+    const score = context.absAmount > 0 ? context.netAmountMidUsd / context.absAmount : 0;
+    return [ticker, {
+      count: context.count,
+      netAmountMidUsd: context.netAmountMidUsd,
+      buyAmountMidUsd: context.buyAmountMidUsd,
+      sellAmountMidUsd: context.sellAmountMidUsd,
+      avgDelayDays: context.delayCount ? context.delayTotal / context.delayCount : null,
+      politician_activity_score: Math.max(-1, Math.min(1, score)),
+    }];
+  }));
+}
+
+function sortRowsWithPoliticianContext(
+  rows: SummaryRow[],
+  sortLevels: { col: SortColumn; dir: SortDir }[],
+  contexts: Record<string, PoliticianTableContext>,
+): SummaryRow[] {
+  if (!sortLevels.some((level) => level.col === 'politician')) return rows;
+  const decorated = rows.map((row, index) => ({ row, index, ticker: extractTicker(row.asset_label) }));
+  decorated.sort((a, b) => {
+    for (const level of sortLevels) {
+      if (level.col !== 'politician') continue;
+      const av = contexts[a.ticker]?.politician_activity_score || 0;
+      const bv = contexts[b.ticker]?.politician_activity_score || 0;
+      const cmp = av - bv;
+      if (cmp !== 0) return level.dir === 'desc' ? -cmp : cmp;
+    }
+    return a.index - b.index;
+  });
+  return decorated.map((item) => item.row);
+}
+
+function disclosureWindowStart(windowDays: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() - windowDays);
+  return date.toISOString().slice(0, 10);
+}
+
+function formatPoliticianAmount(value: number): string {
+  const sign = value > 0 ? '+' : value < 0 ? '-' : '';
+  return `${sign}${Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(Math.abs(value))}`;
 }
 
 /* ── Sector signal row — premium with inline expand ───────────────── */

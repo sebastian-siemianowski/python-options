@@ -17,6 +17,7 @@ import {
   Zap,
   Clock,
   BarChart3,
+  Landmark,
 } from 'lucide-react';
 
 /* ─── Types ─────────────────────────────────────────────────────── */
@@ -60,6 +61,7 @@ const PAGES = [
   { id: 'page:/data', label: 'Data', icon: Database, to: '/data' },
   { id: 'page:/arena', label: 'Arena', icon: Swords, to: '/arena' },
   { id: 'page:/diagnostics', label: 'Diagnostics', icon: Stethoscope, to: '/diagnostics' },
+  { id: 'page:/politicians', label: 'Politicians', icon: Landmark, to: '/politicians' },
   { id: 'page:/services', label: 'Services', icon: HeartPulse, to: '/services' },
   { id: 'page:/diagnostics/profitability', label: 'Profitability', icon: BarChart3, to: '/diagnostics/profitability' },
 ];

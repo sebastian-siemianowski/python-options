@@ -1,0 +1,809 @@
+[
+  {
+    "amount_bucket_raw": "$1,001 - $15,000",
+    "asset_name_raw": "NVIDIA Corporation Common Stock",
+    "asset_type": "stock",
+    "coverage_tags": [
+      "stock",
+      "typed_pdf"
+    ],
+    "filer_name": "House Filer 01",
+    "fixture_id": "house-001",
+    "is_amendment": false,
+    "owner": "self",
+    "report_id": "H001",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H001.pdf",
+    "ticker": "NVDA",
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$15,001 - $50,000",
+    "asset_name_raw": "Microsoft Corporation Common Stock",
+    "asset_type": "stock",
+    "coverage_tags": [
+      "spouse_trade",
+      "stock",
+      "typed_pdf"
+    ],
+    "filer_name": "House Filer 02",
+    "fixture_id": "house-002",
+    "is_amendment": false,
+    "owner": "spouse",
+    "report_id": "H002",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H002.pdf",
+    "ticker": "MSFT",
+    "transaction_type": "sale"
+  },
+  {
+    "amount_bucket_raw": "$1,001 - $15,000",
+    "asset_name_raw": "SPDR S&P 500 ETF Trust",
+    "asset_type": "etf",
+    "coverage_tags": [
+      "dependent_child_trade",
+      "etf",
+      "typed_pdf"
+    ],
+    "filer_name": "House Filer 03",
+    "fixture_id": "house-003",
+    "is_amendment": false,
+    "owner": "dependent_child",
+    "report_id": "H003",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H003.pdf",
+    "ticker": "SPY",
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$50,001 - $100,000",
+    "asset_name_raw": "Apple Inc. Common Stock",
+    "asset_type": "stock",
+    "coverage_tags": [
+      "amendment",
+      "stock",
+      "typed_pdf"
+    ],
+    "filer_name": "House Filer 04",
+    "fixture_id": "house-004",
+    "is_amendment": true,
+    "owner": "self",
+    "report_id": "H004",
+    "report_type": "amendment",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H004.pdf",
+    "ticker": "AAPL",
+    "transaction_type": "sale_partial"
+  },
+  {
+    "amount_bucket_raw": "$1,001 - $15,000",
+    "asset_name_raw": "Tesla Inc. Call Option exp 2026-06-21",
+    "asset_type": "option",
+    "coverage_tags": [
+      "option",
+      "spouse_trade",
+      "typed_pdf"
+    ],
+    "filer_name": "House Filer 05",
+    "fixture_id": "house-005",
+    "is_amendment": false,
+    "owner": "spouse",
+    "report_id": "H005",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H005.pdf",
+    "ticker": "TSLA240621C00200000",
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$15,001 - $50,000",
+    "asset_name_raw": "Alphabet Inc. Class A Common Stock",
+    "asset_type": "stock",
+    "coverage_tags": [
+      "multi_line_asset",
+      "stock"
+    ],
+    "filer_name": "House Filer 06",
+    "fixture_id": "house-006",
+    "is_amendment": false,
+    "owner": "self",
+    "report_id": "H006",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H006.pdf",
+    "ticker": "GOOGL",
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$100,001 - $250,000",
+    "asset_name_raw": "United States Treasury Note 4.5%",
+    "asset_type": "bond",
+    "coverage_tags": [
+      "bond",
+      "typed_pdf"
+    ],
+    "filer_name": "House Filer 07",
+    "fixture_id": "house-007",
+    "is_amendment": false,
+    "owner": "joint",
+    "report_id": "H007",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H007.pdf",
+    "ticker": "91282CJK8",
+    "transaction_type": "sale"
+  },
+  {
+    "amount_bucket_raw": "$1,001 - $15,000",
+    "asset_name_raw": "Private Technology Holdings LLC",
+    "asset_type": "unknown",
+    "coverage_tags": [
+      "typed_pdf",
+      "unknown_asset"
+    ],
+    "filer_name": "House Filer 08",
+    "fixture_id": "house-008",
+    "is_amendment": false,
+    "owner": "self",
+    "report_id": "H008",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H008.pdf",
+    "ticker": null,
+    "transaction_type": "exchange"
+  },
+  {
+    "amount_bucket_raw": "$15,001 - $50,000",
+    "asset_name_raw": "Vanguard S&P 500 ETF",
+    "asset_type": "etf",
+    "coverage_tags": [
+      "etf",
+      "spouse_trade",
+      "typed_pdf"
+    ],
+    "filer_name": "House Filer 09",
+    "fixture_id": "house-009",
+    "is_amendment": false,
+    "owner": "spouse",
+    "report_id": "H009",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H009.pdf",
+    "ticker": "VOO",
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$1,001 - $15,000",
+    "asset_name_raw": "JPMorgan Chase & Co. Common Stock",
+    "asset_type": "stock",
+    "coverage_tags": [
+      "stock",
+      "typed_pdf"
+    ],
+    "filer_name": "House Filer 10",
+    "fixture_id": "house-010",
+    "is_amendment": false,
+    "owner": "self",
+    "report_id": "H010",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H010.pdf",
+    "ticker": "JPM",
+    "transaction_type": "sale"
+  },
+  {
+    "amount_bucket_raw": "$1,001 - $15,000",
+    "asset_name_raw": "Amazon.com Inc. Common Stock",
+    "asset_type": "stock",
+    "coverage_tags": [
+      "dependent_child_trade",
+      "stock",
+      "typed_pdf"
+    ],
+    "filer_name": "House Filer 11",
+    "fixture_id": "house-011",
+    "is_amendment": false,
+    "owner": "dependent_child",
+    "report_id": "H011",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H011.pdf",
+    "ticker": "AMZN",
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$15,001 - $50,000",
+    "asset_name_raw": "Exxon Mobil Corporation Common Stock",
+    "asset_type": "stock",
+    "coverage_tags": [
+      "stock",
+      "typed_pdf"
+    ],
+    "filer_name": "House Filer 12",
+    "fixture_id": "house-012",
+    "is_amendment": false,
+    "owner": "self",
+    "report_id": "H012",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H012.pdf",
+    "ticker": "XOM",
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$50,001 - $100,000",
+    "asset_name_raw": "Invesco QQQ Trust",
+    "asset_type": "etf",
+    "coverage_tags": [
+      "etf",
+      "spouse_trade",
+      "typed_pdf"
+    ],
+    "filer_name": "House Filer 13",
+    "fixture_id": "house-013",
+    "is_amendment": false,
+    "owner": "spouse",
+    "report_id": "H013",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H013.pdf",
+    "ticker": "QQQ",
+    "transaction_type": "sale_partial"
+  },
+  {
+    "amount_bucket_raw": "$100,001 - $250,000",
+    "asset_name_raw": "Acme Corporation Bond 5.0% 2032",
+    "asset_type": "bond",
+    "coverage_tags": [
+      "bond",
+      "typed_pdf"
+    ],
+    "filer_name": "House Filer 14",
+    "fixture_id": "house-014",
+    "is_amendment": false,
+    "owner": "self",
+    "report_id": "H014",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H014.pdf",
+    "ticker": "CORP-BOND-01",
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$1,001 - $15,000",
+    "asset_name_raw": "Grayscale Bitcoin Trust ETF",
+    "asset_type": "etf",
+    "coverage_tags": [
+      "etf",
+      "typed_pdf"
+    ],
+    "filer_name": "House Filer 15",
+    "fixture_id": "house-015",
+    "is_amendment": false,
+    "owner": "joint",
+    "report_id": "H015",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H015.pdf",
+    "ticker": "GBTC",
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$15,001 - $50,000",
+    "asset_name_raw": "Netflix Inc. Common Stock",
+    "asset_type": "stock",
+    "coverage_tags": [
+      "stock",
+      "typed_pdf"
+    ],
+    "filer_name": "House Filer 16",
+    "fixture_id": "house-016",
+    "is_amendment": false,
+    "owner": "self",
+    "report_id": "H016",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H016.pdf",
+    "ticker": "NFLX",
+    "transaction_type": "sale"
+  },
+  {
+    "amount_bucket_raw": "$1,001 - $15,000",
+    "asset_name_raw": "UnitedHealth Group Incorporated",
+    "asset_type": "stock",
+    "coverage_tags": [
+      "spouse_trade",
+      "stock",
+      "typed_pdf"
+    ],
+    "filer_name": "House Filer 17",
+    "fixture_id": "house-017",
+    "is_amendment": false,
+    "owner": "spouse",
+    "report_id": "H017",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H017.pdf",
+    "ticker": "UNH",
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$1,001 - $15,000",
+    "asset_name_raw": "Walt Disney Company Common Stock",
+    "asset_type": "stock",
+    "coverage_tags": [
+      "dependent_child_trade",
+      "stock",
+      "typed_pdf"
+    ],
+    "filer_name": "House Filer 18",
+    "fixture_id": "house-018",
+    "is_amendment": false,
+    "owner": "dependent_child",
+    "report_id": "H018",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H018.pdf",
+    "ticker": "DIS",
+    "transaction_type": "sale"
+  },
+  {
+    "amount_bucket_raw": "$15,001 - $50,000",
+    "asset_name_raw": "Vanguard Total Bond Market Mutual Fund",
+    "asset_type": "fund",
+    "coverage_tags": [
+      "fund",
+      "typed_pdf"
+    ],
+    "filer_name": "House Filer 19",
+    "fixture_id": "house-019",
+    "is_amendment": false,
+    "owner": "self",
+    "report_id": "H019",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H019.pdf",
+    "ticker": "MUTFUND-01",
+    "transaction_type": "exchange"
+  },
+  {
+    "amount_bucket_raw": "$1,001 - $15,000",
+    "asset_name_raw": "Microsoft Call Option exp 2026-06-21",
+    "asset_type": "option",
+    "coverage_tags": [
+      "option",
+      "spouse_trade",
+      "typed_pdf"
+    ],
+    "filer_name": "House Filer 20",
+    "fixture_id": "house-020",
+    "is_amendment": false,
+    "owner": "spouse",
+    "report_id": "H020",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H020.pdf",
+    "ticker": "MSFT240621C00400000",
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$50,001 - $100,000",
+    "asset_name_raw": "California Municipal Bond 2035",
+    "asset_type": "bond",
+    "coverage_tags": [
+      "bond",
+      "typed_pdf"
+    ],
+    "filer_name": "House Filer 21",
+    "fixture_id": "house-021",
+    "is_amendment": false,
+    "owner": "self",
+    "report_id": "H021",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H021.pdf",
+    "ticker": "MUNI-BOND-01",
+    "transaction_type": "sale"
+  },
+  {
+    "amount_bucket_raw": "$100,001 - $250,000",
+    "asset_name_raw": "Family Limited Partnership Interest",
+    "asset_type": "unknown",
+    "coverage_tags": [
+      "typed_pdf",
+      "unknown_asset"
+    ],
+    "filer_name": "House Filer 22",
+    "fixture_id": "house-022",
+    "is_amendment": false,
+    "owner": "self",
+    "report_id": "H022",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H022.pdf",
+    "ticker": null,
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$15,001 - $50,000",
+    "asset_name_raw": "Costco Wholesale Corporation",
+    "asset_type": "stock",
+    "coverage_tags": [
+      "spouse_trade",
+      "stock",
+      "typed_pdf"
+    ],
+    "filer_name": "House Filer 23",
+    "fixture_id": "house-023",
+    "is_amendment": false,
+    "owner": "spouse",
+    "report_id": "H023",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H023.pdf",
+    "ticker": "COST",
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$1,001 - $15,000",
+    "asset_name_raw": "iShares Russell 2000 ETF",
+    "asset_type": "etf",
+    "coverage_tags": [
+      "amendment",
+      "dependent_child_trade",
+      "etf",
+      "typed_pdf"
+    ],
+    "filer_name": "House Filer 24",
+    "fixture_id": "house-024",
+    "is_amendment": true,
+    "owner": "dependent_child",
+    "report_id": "H024",
+    "report_type": "amendment",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H024.pdf",
+    "ticker": "IWM",
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$1,001 - $15,000",
+    "asset_name_raw": "Procter & Gamble Company",
+    "asset_type": "stock",
+    "coverage_tags": [
+      "stock",
+      "typed_pdf"
+    ],
+    "filer_name": "House Filer 25",
+    "fixture_id": "house-025",
+    "is_amendment": false,
+    "owner": "self",
+    "report_id": "H025",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "house",
+    "source_url": "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/H025.pdf",
+    "ticker": "PG",
+    "transaction_type": "sale"
+  },
+  {
+    "amount_bucket_raw": "$1,001 - $15,000",
+    "asset_name_raw": "NVIDIA Corporation Common Stock",
+    "asset_type": "stock",
+    "coverage_tags": [
+      "stock"
+    ],
+    "filer_name": "Senate Filer 01",
+    "fixture_id": "senate-001",
+    "is_amendment": false,
+    "owner": "self",
+    "report_id": "S001",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "senate",
+    "source_url": "https://efdsearch.senate.gov/search/view/paper/S001/",
+    "ticker": "NVDA",
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$15,001 - $50,000",
+    "asset_name_raw": "Microsoft Corporation Common Stock",
+    "asset_type": "stock",
+    "coverage_tags": [
+      "spouse_trade",
+      "stock"
+    ],
+    "filer_name": "Senate Filer 02",
+    "fixture_id": "senate-002",
+    "is_amendment": false,
+    "owner": "spouse",
+    "report_id": "S002",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "senate",
+    "source_url": "https://efdsearch.senate.gov/search/view/paper/S002/",
+    "ticker": "MSFT",
+    "transaction_type": "sale"
+  },
+  {
+    "amount_bucket_raw": "$1,001 - $15,000",
+    "asset_name_raw": "SPDR S&P 500 ETF Trust",
+    "asset_type": "etf",
+    "coverage_tags": [
+      "dependent_child_trade",
+      "etf"
+    ],
+    "filer_name": "Senate Filer 03",
+    "fixture_id": "senate-003",
+    "is_amendment": false,
+    "owner": "dependent_child",
+    "report_id": "S003",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "senate",
+    "source_url": "https://efdsearch.senate.gov/search/view/paper/S003/",
+    "ticker": "SPY",
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$1,001 - $15,000",
+    "asset_name_raw": "Apple Put Option exp 2026-06-21",
+    "asset_type": "option",
+    "coverage_tags": [
+      "amendment",
+      "option"
+    ],
+    "filer_name": "Senate Filer 04",
+    "fixture_id": "senate-004",
+    "is_amendment": true,
+    "owner": "self",
+    "report_id": "S004",
+    "report_type": "amendment",
+    "retrieval_date": "2026-05-28",
+    "source": "senate",
+    "source_url": "https://efdsearch.senate.gov/search/view/paper/S004/",
+    "ticker": "AAPL240621P00150000",
+    "transaction_type": "sale"
+  },
+  {
+    "amount_bucket_raw": "$100,001 - $250,000",
+    "asset_name_raw": "United States Treasury Bond 4.5%",
+    "asset_type": "bond",
+    "coverage_tags": [
+      "bond"
+    ],
+    "filer_name": "Senate Filer 05",
+    "fixture_id": "senate-005",
+    "is_amendment": false,
+    "owner": "joint",
+    "report_id": "S005",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "senate",
+    "source_url": "https://efdsearch.senate.gov/search/view/paper/S005/",
+    "ticker": "91282CJK8",
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$50,001 - $100,000",
+    "asset_name_raw": "Private Real Estate Partnership",
+    "asset_type": "unknown",
+    "coverage_tags": [
+      "spouse_trade",
+      "unknown_asset"
+    ],
+    "filer_name": "Senate Filer 06",
+    "fixture_id": "senate-006",
+    "is_amendment": false,
+    "owner": "spouse",
+    "report_id": "S006",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "senate",
+    "source_url": "https://efdsearch.senate.gov/search/view/paper/S006/",
+    "ticker": null,
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$15,001 - $50,000",
+    "asset_name_raw": "Invesco QQQ Trust",
+    "asset_type": "etf",
+    "coverage_tags": [
+      "etf"
+    ],
+    "filer_name": "Senate Filer 07",
+    "fixture_id": "senate-007",
+    "is_amendment": false,
+    "owner": "self",
+    "report_id": "S007",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "senate",
+    "source_url": "https://efdsearch.senate.gov/search/view/paper/S007/",
+    "ticker": "QQQ",
+    "transaction_type": "sale"
+  },
+  {
+    "amount_bucket_raw": "$1,001 - $15,000",
+    "asset_name_raw": "Amazon.com Inc. Common Stock",
+    "asset_type": "stock",
+    "coverage_tags": [
+      "dependent_child_trade",
+      "stock"
+    ],
+    "filer_name": "Senate Filer 08",
+    "fixture_id": "senate-008",
+    "is_amendment": false,
+    "owner": "dependent_child",
+    "report_id": "S008",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "senate",
+    "source_url": "https://efdsearch.senate.gov/search/view/paper/S008/",
+    "ticker": "AMZN",
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$50,001 - $100,000",
+    "asset_name_raw": "Utility Company Bond 2031",
+    "asset_type": "bond",
+    "coverage_tags": [
+      "bond"
+    ],
+    "filer_name": "Senate Filer 09",
+    "fixture_id": "senate-009",
+    "is_amendment": false,
+    "owner": "self",
+    "report_id": "S009",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "senate",
+    "source_url": "https://efdsearch.senate.gov/search/view/paper/S009/",
+    "ticker": "CORP-BOND-02",
+    "transaction_type": "sale"
+  },
+  {
+    "amount_bucket_raw": "$15,001 - $50,000",
+    "asset_name_raw": "Vanguard S&P 500 ETF",
+    "asset_type": "etf",
+    "coverage_tags": [
+      "etf",
+      "spouse_trade"
+    ],
+    "filer_name": "Senate Filer 10",
+    "fixture_id": "senate-010",
+    "is_amendment": false,
+    "owner": "spouse",
+    "report_id": "S010",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "senate",
+    "source_url": "https://efdsearch.senate.gov/search/view/paper/S010/",
+    "ticker": "VOO",
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$1,001 - $15,000",
+    "asset_name_raw": "Grayscale Bitcoin Trust ETF",
+    "asset_type": "etf",
+    "coverage_tags": [
+      "etf"
+    ],
+    "filer_name": "Senate Filer 11",
+    "fixture_id": "senate-011",
+    "is_amendment": false,
+    "owner": "self",
+    "report_id": "S011",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "senate",
+    "source_url": "https://efdsearch.senate.gov/search/view/paper/S011/",
+    "ticker": "GBTC",
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$100,001 - $250,000",
+    "asset_name_raw": "Closely Held Manufacturing LLC",
+    "asset_type": "unknown",
+    "coverage_tags": [
+      "dependent_child_trade",
+      "unknown_asset"
+    ],
+    "filer_name": "Senate Filer 12",
+    "fixture_id": "senate-012",
+    "is_amendment": false,
+    "owner": "dependent_child",
+    "report_id": "S012",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "senate",
+    "source_url": "https://efdsearch.senate.gov/search/view/paper/S012/",
+    "ticker": null,
+    "transaction_type": "exchange"
+  },
+  {
+    "amount_bucket_raw": "$1,001 - $15,000",
+    "asset_name_raw": "JPMorgan Chase & Co. Common Stock",
+    "asset_type": "stock",
+    "coverage_tags": [
+      "stock"
+    ],
+    "filer_name": "Senate Filer 13",
+    "fixture_id": "senate-013",
+    "is_amendment": false,
+    "owner": "self",
+    "report_id": "S013",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "senate",
+    "source_url": "https://efdsearch.senate.gov/search/view/paper/S013/",
+    "ticker": "JPM",
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$1,001 - $15,000",
+    "asset_name_raw": "Microsoft Call Option exp 2026-06-21",
+    "asset_type": "option",
+    "coverage_tags": [
+      "option",
+      "spouse_trade"
+    ],
+    "filer_name": "Senate Filer 14",
+    "fixture_id": "senate-014",
+    "is_amendment": false,
+    "owner": "spouse",
+    "report_id": "S014",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "senate",
+    "source_url": "https://efdsearch.senate.gov/search/view/paper/S014/",
+    "ticker": "MSFT240621C00400000",
+    "transaction_type": "purchase"
+  },
+  {
+    "amount_bucket_raw": "$50,001 - $100,000",
+    "asset_name_raw": "New York Municipal Bond 2034",
+    "asset_type": "bond",
+    "coverage_tags": [
+      "bond",
+      "dependent_child_trade"
+    ],
+    "filer_name": "Senate Filer 15",
+    "fixture_id": "senate-015",
+    "is_amendment": false,
+    "owner": "dependent_child",
+    "report_id": "S015",
+    "report_type": "ptr",
+    "retrieval_date": "2026-05-28",
+    "source": "senate",
+    "source_url": "https://efdsearch.senate.gov/search/view/paper/S015/",
+    "ticker": "MUNI-BOND-02",
+    "transaction_type": "sale"
+  }
+]

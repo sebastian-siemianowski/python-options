@@ -1,10 +1,15 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Activity, ArrowDown, ArrowUp, ChevronRight, Filter, Layers, Shield, Target, TrendingUp } from 'lucide-react';
 import type { ReversalFlipsData, SectorGroup, SummaryRow } from '../../../api';
 import type { ColumnDef } from '../../../components/ColumnCustomizer';
 import { formatHorizon } from '../../../utils/horizons';
-import ChartAssetRow from './ChartAssetRow';
+import ChartAssetRow, {
+  CHART_DECISION_LENS_LS_KEY,
+  CHART_DECISION_LENS_OPTIONS,
+  loadChartDecisionLens,
+  type ChartDecisionLens,
+} from './ChartAssetRow';
 import { SectorSignalRow } from './AllAssetsTable';
 import { signalLabelColor } from '../theme';
 import {
@@ -98,6 +103,13 @@ export default function SectorPanels({
 }) {
   const navigate = useNavigate();
   const [chartExpandedRow, setChartExpandedRow] = useState<string | null>(null);
+  const [chartLens, setChartLens] = useState<ChartDecisionLens>(() => loadChartDecisionLens());
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHART_DECISION_LENS_LS_KEY, chartLens);
+    } catch { /* ignore unavailable storage */ }
+  }, [chartLens]);
 
   const applyRowSort = (arr: SummaryRow[]) => {
     const signalRank: Record<string, number> = { 'STRONG BUY': 5, 'BUY': 4, 'HOLD': 3, 'SELL': 2, 'STRONG SELL': 1, 'EXIT': 0 };
@@ -339,6 +351,30 @@ export default function SectorPanels({
                     ))}
                   </div>
                   <div className="ml-auto flex items-center gap-1.5 text-[var(--text-muted)]">
+                    {sectorChartView && (
+                      <div
+                        className="chart-lens-control mr-2 hidden items-center gap-1 rounded-[11px] px-1 py-1 lg:flex"
+                        role="group"
+                        aria-label="Sector chart decision lens"
+                      >
+                        {CHART_DECISION_LENS_OPTIONS.map((option) => {
+                          const active = option.key === chartLens;
+                          return (
+                            <button
+                              key={option.key}
+                              type="button"
+                              onClick={() => setChartLens(option.key)}
+                              className="chart-lens-pill"
+                              data-active={active}
+                              title={option.title}
+                              aria-pressed={active}
+                            >
+                              {option.shortLabel}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                     <Activity className="w-3 h-3" />
                     <span>Avg Risk: </span>
                     <span className="font-bold tabular-nums" style={{
@@ -365,6 +401,7 @@ export default function SectorPanels({
                           isExpanded={isExpandedRow}
                           onToggleExpand={() => setChartExpandedRow(isExpandedRow ? null : row.asset_label)}
                           onNavigateChart={() => navigate(`/charts/${ticker}`)}
+                          chartLens={chartLens}
                         />
                       );
                     })}

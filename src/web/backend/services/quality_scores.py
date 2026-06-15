@@ -655,6 +655,13 @@ def _combined_quality_scores() -> tuple[dict[str, int], dict]:
                 scores[str(symbol).upper()] = int(round(float(score)))
             except (TypeError, ValueError):
                 continue
+    manual_scores = payload.get("manual_quality_overrides", {})
+    if isinstance(manual_scores, dict):
+        for symbol, score in manual_scores.items():
+            try:
+                scores[str(symbol).upper()] = int(round(float(score)))
+            except (TypeError, ValueError):
+                continue
     return scores, payload
 
 
@@ -676,8 +683,19 @@ def get_all_quality_scores() -> dict:
         formula["method_version"] = payload.get("method_version")
         formula["source"] = payload.get("source")
         formula["coverage"] = payload.get("coverage")
+        if payload.get("manual_quality_overrides"):
+            formula["manual_quality_overrides"] = {
+                "count": len(payload.get("manual_quality_overrides", {})),
+                "source": payload.get("manual_quality_override_source"),
+            }
+    details = payload.get("details", {}) if isinstance(payload.get("details"), dict) else {}
+    manual_details = (
+        payload.get("manual_quality_override_details", {})
+        if isinstance(payload.get("manual_quality_override_details"), dict)
+        else {}
+    )
     return {
         "scores": scores,
-        "details": payload.get("details", {}) if isinstance(payload.get("details"), dict) else {},
+        "details": {**details, **manual_details},
         "formula": formula,
     }

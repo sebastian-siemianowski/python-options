@@ -63,6 +63,16 @@ const DEFAULT_OVERLAYS: Record<OverlayKey, boolean> = {
   sma20: true, sma50: true, sma200: true, bb: true,
   forecastMedian: true, ciUpper: true, ciLower: true, priceLine: true,
 };
+const POLITICIAN_OVERLAY_LS_KEY = 'charts-politician-disclosures-v1';
+
+function loadPoliticianOverlay(): boolean {
+  try {
+    const stored = localStorage.getItem(POLITICIAN_OVERLAY_LS_KEY);
+    return stored == null ? true : stored === '1';
+  } catch {
+    return true;
+  }
+}
 
 /* ── Sub-chart indicator definitions ──────────────────────── */
 type SubIndicatorKey = 'composite' | 'rsi' | 'macd' | 'stochastic' | 'adx' | 'atr' | 'obv' | 'cci' | 'mfi' | 'cmf' | 'roc' | 'bbpctb';
@@ -685,6 +695,7 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
   const volumeSeriesRef = useRef<any>(null);
   const [overlays, setOverlays] = useState<Record<OverlayKey, boolean>>(DEFAULT_OVERLAYS);
   const [subIndicators, setSubIndicators] = useState<Record<SubIndicatorKey, boolean>>(DEFAULT_SUB_INDICATORS);
+  const [showPoliticianOverlay, setShowPoliticianOverlay] = useState(loadPoliticianOverlay);
   const [panelOpen, setPanelOpen] = useState(false);
   const [indicatorPanelOpen, setIndicatorPanelOpen] = useState(false);
   const [timeRange, setTimeRange] = useState<TimeRange>('1Y');
@@ -702,6 +713,10 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
   const noneActive = Object.values(overlays).every(v => !v);
   const activeCount = Object.values(overlays).filter(v => v).length;
   const activeSubCount = Object.values(subIndicators).filter(v => v).length;
+
+  useEffect(() => {
+    try { localStorage.setItem(POLITICIAN_OVERLAY_LS_KEY, showPoliticianOverlay ? '1' : '0'); } catch { /* ignore */ }
+  }, [showPoliticianOverlay]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -751,6 +766,14 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
     queryFn: () => api.chartOhlcv(symbol, 365),
     enabled: !!symbol,
     staleTime: 120_000,
+  });
+
+  const politiciansAssetQ = useQuery({
+    queryKey: ['politiciansChartAsset', symbol],
+    queryFn: () => api.politiciansAsset(symbol),
+    enabled: !!symbol && showPoliticianOverlay,
+    staleTime: 120_000,
+    retry: false,
   });
 
   /* ── Price chart ─────────────────────────────────────────── */
@@ -837,22 +860,29 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
       }
     });
 
-    // Signal markers
+    // Signal and public-disclosure markers
+    const markers: any[] = [];
     const isSB = strongBuy.includes(symbol);
     const isSS = strongSell.includes(symbol);
     if (isSB || isSS) {
       const lastBar = ohlcvQ.data.data[ohlcvQ.data.data.length - 1];
       if (lastBar) {
-        try {
-          (candleSeries as any).setMarkers([{
-            time: lastBar.time,
-            position: isSB ? 'belowBar' : 'aboveBar',
-            color: isSB ? '#3ee8a5' : '#ff6b8a',
-            shape: isSB ? 'arrowUp' : 'arrowDown',
-            text: isSB ? 'STRONG BUY' : 'STRONG SELL',
-          }]);
-        } catch { /* markers not supported in this version */ }
+        markers.push({
+          time: lastBar.time,
+          position: isSB ? 'belowBar' : 'aboveBar',
+          color: isSB ? '#3ee8a5' : '#ff6b8a',
+          shape: isSB ? 'arrowUp' : 'arrowDown',
+          text: isSB ? 'STRONG BUY' : 'STRONG SELL',
+        });
       }
+    }
+    if (showPoliticianOverlay && politiciansAssetQ.data?.status === 'ok') {
+      markers.push(...buildPoliticianDisclosureMarkers(politiciansAssetQ.data.recent_trades || []));
+    }
+    if (markers.length) {
+      try {
+        (candleSeries as any).setMarkers(markers);
+      } catch { /* markers not supported in this version */ }
     }
 
     // SMAs with clean presentation (no price line, no last value label)
@@ -924,7 +954,7 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
     };
     window.addEventListener('resize', handleResize);
     return () => { window.removeEventListener('resize', handleResize); chart.remove(); priceChart.current = null; };
-  }, [ohlcvQ.data, indQ.data, forecastQ.data, showSMA20, showSMA50, showSMA200, showBollinger, showForecastMedian, showCIUpper, showCILower, symbol, strongBuy, strongSell, overlays.priceLine]);
+  }, [ohlcvQ.data, indQ.data, forecastQ.data, showSMA20, showSMA50, showSMA200, showBollinger, showForecastMedian, showCIUpper, showCILower, symbol, strongBuy, strongSell, overlays.priceLine, showPoliticianOverlay, politiciansAssetQ.data]);
 
   /* ── Derived data ────────────────────────────────────────── */
   if (ohlcvQ.isLoading) {
@@ -1132,6 +1162,24 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
               </div>
             ))}
           </div>
+          <button
+            onClick={() => setShowPoliticianOverlay(v => !v)}
+            className={`mt-3 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-[11px] font-medium transition-all duration-200 ${
+              showPoliticianOverlay ? 'bg-[#38d9f5]/10' : 'bg-transparent hover:bg-[#38d9f5]/5'
+            }`}
+            style={{
+              color: showPoliticianOverlay ? 'var(--accent-cyan)' : '#6b7a90',
+              border: showPoliticianOverlay ? '1px solid rgba(56,217,245,0.28)' : '1px solid transparent',
+            }}
+            title="Toggle public politician disclosure markers plotted on disclosure dates"
+          >
+            <span
+              className="w-2 h-2 rounded-full flex-shrink-0"
+              style={{ backgroundColor: showPoliticianOverlay ? 'var(--accent-cyan)' : '#3a3a5a' }}
+            />
+            <span className="flex-1 text-left">Public disclosures</span>
+            <span className="text-[9px] text-[var(--text-muted)]">disclosure date</span>
+          </button>
           <p className="text-[8px] text-[#2a2a3a] mt-2 text-center font-medium">
             1-8 toggle  /  9 all on  /  0 all off  /  L panel
           </p>
@@ -1220,6 +1268,20 @@ function ChartPanel({ symbol, strongBuy, strongSell }: { symbol: string; strongB
             </button>
           );
         })}
+        <button
+          onClick={() => setShowPoliticianOverlay(v => !v)}
+          className={`flex items-center gap-1 text-[9px] transition-all cursor-pointer ${
+            showPoliticianOverlay ? 'hover:opacity-60' : 'opacity-30 hover:opacity-50'
+          }`}
+          style={{ color: 'var(--accent-cyan)' }}
+          title={showPoliticianOverlay ? 'Hide public politician disclosure markers' : 'Show public politician disclosure markers'}
+        >
+          <span
+            className="inline-block h-2 w-2 rounded-full"
+            style={{ backgroundColor: 'var(--accent-cyan)', opacity: showPoliticianOverlay ? 1 : 0.4 }}
+          />
+          <span className={showPoliticianOverlay ? '' : 'line-through'}>Disclosures</span>
+        </button>
       </div>
 
       {/* ── Price Chart ──────────────────────────────────────── */}
@@ -1566,4 +1628,36 @@ function formatVolume(v: number): string {
   if (v >= 1_000_000) return (v / 1_000_000).toFixed(1) + 'M';
   if (v >= 1_000) return (v / 1_000).toFixed(1) + 'K';
   return v.toFixed(0);
+}
+
+function buildPoliticianDisclosureMarkers(trades: Array<Record<string, unknown>>): any[] {
+  const byDate: Record<string, { count: number; buyAmount: number; sellAmount: number }> = {};
+  for (const trade of trades) {
+    const disclosureDate = String(trade.disclosure_date || '').slice(0, 10);
+    if (!disclosureDate) continue;
+    const bucket = byDate[disclosureDate] || { count: 0, buyAmount: 0, sellAmount: 0 };
+    const amount = Number(trade.amount_mid_usd || 0);
+    const type = String(trade.transaction_type || '').toLowerCase();
+    bucket.count += 1;
+    if (type === 'purchase' || type === 'received') bucket.buyAmount += amount;
+    else if (type === 'sale' || type === 'sale_partial') bucket.sellAmount += amount;
+    byDate[disclosureDate] = bucket;
+  }
+  return Object.entries(byDate).map(([date, bucket]) => {
+    const net = bucket.buyAmount - bucket.sellAmount;
+    const mixed = bucket.buyAmount > 0 && bucket.sellAmount > 0;
+    const positive = net >= 0;
+    return {
+      time: date,
+      position: positive ? 'belowBar' : 'aboveBar',
+      color: mixed ? '#f5c542' : positive ? '#3ee8a5' : '#ff6b8a',
+      shape: mixed ? 'circle' : positive ? 'arrowUp' : 'arrowDown',
+      text: `POL ${bucket.count} ${formatDisclosureNet(net)}`,
+    };
+  });
+}
+
+function formatDisclosureNet(value: number): string {
+  const sign = value > 0 ? '+' : value < 0 ? '-' : '';
+  return `${sign}${Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(Math.abs(value))}`;
 }

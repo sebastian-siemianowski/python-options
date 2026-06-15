@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { api } from '../api';
 import type { ServicesHealth, ServiceError } from '../api';
 import PageHeader from '../components/PageHeader';
@@ -7,7 +8,7 @@ import { CosmicErrorCard } from '../components/CosmicErrorState';
 import {
   HeartPulse, Server, Database, HardDrive, Users,
   CheckCircle, AlertTriangle, XCircle, Clock, Cpu, MemoryStick,
-  RefreshCw,
+  RefreshCw, Landmark, ExternalLink,
 } from 'lucide-react';
 
 export default function ServicesPage() {
@@ -82,6 +83,7 @@ export default function ServicesPage() {
         <div className="fade-up" style={{ animationDelay: '100ms' }}><CacheCard data={data.signal_cache} /></div>
         <div className="fade-up" style={{ animationDelay: '150ms' }}><PriceDataCard data={data.price_data} /></div>
         <div className="fade-up" style={{ animationDelay: '200ms' }}><WorkersCard data={data.workers} /></div>
+        <div className="fade-up" style={{ animationDelay: '250ms' }}><PoliticiansCard data={data.politicians} /></div>
       </div>
 
       {/* Error log */}
@@ -93,13 +95,13 @@ export default function ServicesPage() {
 /* ── Status helpers ──────────────────────────────────────────────── */
 function StatusIcon({ status }: { status: string }) {
   if (status === 'ok' || status === 'fresh') return <CheckCircle className="w-5 h-5" style={{ color: 'var(--accent-emerald)' }} />;
-  if (status === 'stale' || status === 'warning') return <AlertTriangle className="w-5 h-5" style={{ color: 'var(--accent-amber)' }} />;
+  if (status === 'stale' || status === 'warning' || status === 'degraded' || status === 'disabled') return <AlertTriangle className="w-5 h-5" style={{ color: 'var(--accent-amber)' }} />;
   return <XCircle className="w-5 h-5" style={{ color: 'var(--accent-rose)' }} />;
 }
 
 function statusBg(status: string) {
   if (status === 'ok' || status === 'fresh') return 'border-emerald-500/10';
-  if (status === 'stale' || status === 'warning') return 'border-amber-500/10';
+  if (status === 'stale' || status === 'warning' || status === 'degraded' || status === 'disabled') return 'border-amber-500/10';
   return 'border-rose-500/10';
 }
 
@@ -193,6 +195,43 @@ function WorkersCard({ data }: { data: ServicesHealth['workers'] }) {
   );
 }
 
+/* ── Politicians Card ─────────────────────────────────────────────── */
+function PoliticiansCard({ data }: { data?: ServicesHealth['politicians'] }) {
+  const sources = data?.sources ? Object.entries(data.sources) : [];
+  const status = data?.status || 'disabled';
+  return (
+    <div className={`glass-card p-4 border-l-2 hover-lift ${statusBg(status)}`}>
+      <div className="flex items-center gap-2 mb-3">
+        <Landmark className="w-4 h-4" style={{ color: 'var(--accent-amber)' }} />
+        <h3 className="text-sm font-medium" style={{ color: 'var(--text-luminous)' }}>Politician Ingestion</h3>
+        <StatusIcon status={status} />
+      </div>
+      <div className="grid grid-cols-2 gap-3 text-xs">
+        <Metric label="Status" value={status} />
+        <Metric label="Data Age" value={formatAge(data?.data_age_seconds)} />
+      </div>
+      <div className="mt-3 space-y-1 text-xs">
+        {sources.slice(0, 3).map(([source, entry]) => (
+          <div key={source} className="flex items-center justify-between gap-3">
+            <span className="text-[var(--text-secondary)]">{source}</span>
+            <span style={{ color: entry.status === 'ok' ? 'var(--accent-emerald)' : 'var(--accent-amber)' }}>
+              {entry.status || 'unknown'}
+            </span>
+          </div>
+        ))}
+        {sources.length === 0 && <div className="text-[var(--text-secondary)]">{data?.message || 'No source status yet'}</div>}
+      </div>
+      <Link
+        to={data?.details_url || '/politicians'}
+        className="mt-3 inline-flex items-center gap-1 text-xs font-medium"
+        style={{ color: 'var(--accent-cyan)' }}
+      >
+        Source Health Details <ExternalLink className="h-3 w-3" />
+      </Link>
+    </div>
+  );
+}
+
 /* ── Metric ──────────────────────────────────────────────────────── */
 function Metric({ icon, label, value, valueColor }: { icon?: React.ReactNode; label: string; value: string; valueColor?: string }) {
   return (
@@ -204,6 +243,14 @@ function Metric({ icon, label, value, valueColor }: { icon?: React.ReactNode; la
       </div>
     </div>
   );
+}
+
+function formatAge(seconds?: number | null): string {
+  if (seconds == null) return 'N/A';
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
+  return `${Math.round(seconds / 86400)}d`;
 }
 
 /* ── Error Log ───────────────────────────────────────────────────── */

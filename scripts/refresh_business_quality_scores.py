@@ -661,12 +661,18 @@ def refresh(limit: int | None, workers: int, force: bool) -> dict[str, Any]:
     if limit:
         universe = universe[:limit]
 
+    existing_payload: dict[str, Any] = {}
     existing_details: dict[str, Any] = {}
-    if OUTPUT_PATH.exists() and not force:
+    if OUTPUT_PATH.exists():
         try:
             existing_payload = json.loads(OUTPUT_PATH.read_text())
-            existing_details = existing_payload.get("details", {})
+            if not isinstance(existing_payload, dict):
+                existing_payload = {}
         except (OSError, json.JSONDecodeError):
+            existing_payload = {}
+    if existing_payload and not force:
+        existing_details = existing_payload.get("details", {})
+        if not isinstance(existing_details, dict):
             existing_details = {}
 
     details: dict[str, Any] = {}
@@ -747,6 +753,13 @@ def refresh(limit: int | None, workers: int, force: bool) -> dict[str, Any]:
         "changed": changed,
         "errors": errors,
     }
+    for key in (
+        "manual_quality_overrides",
+        "manual_quality_override_details",
+        "manual_quality_override_source",
+    ):
+        if key in existing_payload:
+            payload[key] = existing_payload[key]
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")

@@ -2,8 +2,46 @@ import type { ReactNode } from 'react';
 import { ChevronRight, ExternalLink } from 'lucide-react';
 import type { SummaryRow } from '../../../api';
 import SignalDetailPanel, { type SignalDetailChartType } from '../../../components/SignalDetailPanel';
-import { Sparkline, SparklineReversalStateBadge } from '../../../components/Sparkline';
+import { Sparkline, SparklineLensStateBadge } from '../../../components/Sparkline';
 import { signalLabelColor, smaQualityTone } from '../theme';
+
+export type ChartDecisionLens = 'reversal' | 'extremes' | 'pullback';
+
+export const CHART_DECISION_LENS_LS_KEY = 'signals-chart-decision-lens-v1';
+
+export const CHART_DECISION_LENS_OPTIONS: Array<{
+  key: ChartDecisionLens;
+  label: string;
+  shortLabel: string;
+  title: string;
+}> = [
+  {
+    key: 'reversal',
+    label: 'Reversal zones',
+    shortLabel: 'Zones',
+    title: 'Current view: BUY and SELL reversal regimes',
+  },
+  {
+    key: 'extremes',
+    label: 'Overbought / oversold',
+    shortLabel: 'Extremes',
+    title: 'Adaptive exhaustion lens: volatility-normalized stretch from equilibrium',
+  },
+  {
+    key: 'pullback',
+    label: 'Pullback trend',
+    shortLabel: 'Pullback',
+    title: 'EMA trend lens: buyable dips in uptrends and sellable bounces in downtrends',
+  },
+];
+
+export function loadChartDecisionLens(): ChartDecisionLens {
+  try {
+    const raw = localStorage.getItem(CHART_DECISION_LENS_LS_KEY);
+    if (raw === 'extremes' || raw === 'pullback' || raw === 'reversal') return raw;
+  } catch { /* ignore unavailable storage */ }
+  return 'reversal';
+}
 
 interface ChartAssetRowProps {
   row: SummaryRow;
@@ -15,6 +53,7 @@ interface ChartAssetRowProps {
   onToggleExpand: () => void;
   onNavigateChart: () => void;
   detailDefaultChartType?: SignalDetailChartType;
+  chartLens?: ChartDecisionLens;
 }
 
 const CHART_VIEW_HORIZONS = [1, 3, 7, 30, 90, 180];
@@ -29,6 +68,7 @@ export default function ChartAssetRow({
   onToggleExpand,
   onNavigateChart,
   detailDefaultChartType,
+  chartLens = 'reversal',
 }: ChartAssetRowProps) {
   const label = (row.nearest_label || 'HOLD').toUpperCase();
   const labelColor = signalLabelColor(label);
@@ -118,7 +158,7 @@ export default function ChartAssetRow({
               boxShadow: `0 0 22px -17px ${labelColor} inset, 0 10px 24px -28px ${labelColor}`,
             }}
           >
-            <Sparkline ticker={ticker} width={760} height={60} tail={220} variant="reversal" fluid />
+            <Sparkline ticker={ticker} width={760} height={60} tail={220} variant={chartLens} fluid />
           </div>
 
           <div className="flex h-[76px] min-w-0 flex-col">
@@ -145,7 +185,7 @@ export default function ChartAssetRow({
               }}
             >
               <div className="w-[66px] shrink-0">
-                <SparklineReversalStateBadge ticker={ticker} tail={220} compact tile />
+                <SparklineLensStateBadge ticker={ticker} tail={220} variant={chartLens} compact tile />
               </div>
               <div className="grid min-w-0 flex-1 grid-cols-[repeat(auto-fit,minmax(58px,1fr))] gap-1">
                 {chartHorizons.map((h) => {
@@ -189,7 +229,7 @@ export default function ChartAssetRow({
             signal={row.nearest_label}
             momentum={row.momentum_score}
             crashRisk={row.crash_risk_score}
-            horizonSignals={row.horizon_signals as any}
+            horizonSignals={row.horizon_signals}
             defaultChartType={detailDefaultChartType ?? 'area'}
             onNavigateChart={onNavigateChart}
           />

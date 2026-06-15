@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots rectify-indicators tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market chain chain-force chain-dry stocks tune-stocks options-tune options-tune-force options-tune-dry arena arena-data arena-tune arena-results arena-safe-storage arena-safe pit pit-metals pit-full pit-g metals-diag diag diag-pit diag-debug diag-refine verify verify-quick verify-signals verify-signals-quick verify-stocks calibrate-signals web-install web-install-worker redis web-worker web-backend web-frontend web-build web-free-ports web web-stop
+.PHONY: run backtest doctor clear top50 top100 build-russell russell5000 bagger50 fx-plnjpy fx-diagnostics fx-diagnostics-lite fx-calibration fx-model-comparison fx-validate-kalman fx-validate-kalman-plots rectify-indicators tune retune calibrate show-q clear-q tests report top20 data four purge failed setup temp metals debt risk market chain chain-force chain-dry stocks tune-stocks options-tune options-tune-force options-tune-dry arena arena-data arena-tune arena-results arena-safe-storage arena-safe pit pit-metals pit-full pit-g metals-diag diag diag-pit diag-debug diag-refine verify verify-quick verify-signals verify-signals-quick verify-stocks calibrate-signals politicians-sync politicians-backfill politicians-parse politicians-status politicians-test web-install web-install-worker redis web-worker web-backend web-frontend web-build web-free-ports web web-stop
 
 CPU_MINUS_ONE ?= $(shell python3 -c 'import os; print(max(1, (os.cpu_count() or 2) - 1))' 2>/dev/null || echo 1)
 RETUNE_REFRESH_WORKERS ?= $(CPU_MINUS_ONE)
@@ -396,6 +396,29 @@ online-test: .venv/.deps_installed
 tests: .venv/.deps_installed
 	@echo "Running all tests (parallel, multi-process)..."
 	@OFFLINE_MODE=1 TUNING_QUIET=1 .venv/bin/python -m pytest src/tests/ $(ARGS)
+
+politicians-sync: .venv/.deps_installed
+	@echo "Running politician disclosure daily sync task..."
+	@PYTHONPATH=src .venv/bin/python -m ingestion.politicians.cli sync daily $(ARGS)
+
+politicians-backfill: .venv/.deps_installed
+	@if [ -z "$(YEAR)" ]; then echo "YEAR is required, e.g. make politicians-backfill YEAR=2026"; exit 2; fi
+	@echo "Running politician disclosure House backfill for $(YEAR)..."
+	@PYTHONPATH=src .venv/bin/python -m ingestion.politicians.cli house backfill --year $(YEAR) $(ARGS)
+	@PYTHONPATH=src .venv/bin/python -m ingestion.politicians.cli house fetch-pdfs --year $(YEAR)
+
+politicians-parse: .venv/.deps_installed
+	@echo "Parsing local politician disclosure artifacts..."
+	@PYTHONPATH=src .venv/bin/python -m ingestion.politicians.cli parse local $(ARGS)
+
+politicians-status: .venv/.deps_installed
+	@PYTHONPATH=src .venv/bin/python -m ingestion.politicians.cli status $(ARGS)
+
+politicians-test: .venv/.deps_installed
+	@echo "Running politician disclosure tests..."
+	@OFFLINE_MODE=1 TUNING_QUIET=1 PYTHONPATH=src .venv/bin/python -m pytest src/tests/test_politicians_*.py src/tests/test_politician_context_guardrails.py -q $(ARGS)
+	@echo "Building frontend for politician disclosure surfaces..."
+	@cd src/web/frontend && npm run build
 
 # Story 7.3: Profitability regression tests only
 test-profit: .venv/.deps_installed

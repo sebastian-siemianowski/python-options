@@ -1,6 +1,7 @@
 import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, Cpu, Filter, Layers, Loader2, Plus, Search, SlidersHorizontal, Star, X } from 'lucide-react';
-import type { ReversalFlipsData, SummaryRow } from '../../../api';
+import { useQuery } from '@tanstack/react-query';
+import { api, type ReversalFlipsData, type SummaryRow } from '../../../api';
 import { useWatchlist } from '../../../hooks/useWatchlist';
 import AllAssetsTable from './AllAssetsTable';
 import SortPillStrip from './SortPillStrip';
@@ -22,6 +23,13 @@ import {
 
 const WATCHLIST_BIG_MOVE_ABS_THRESHOLD = 0.03;
 const WATCHLIST_BIG_MOVE_HORIZON = 7;
+const POLITICIAN_BADGE_WINDOW_DAYS = 30;
+
+function disclosureWindowStart(windowDays: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() - windowDays);
+  return date.toISOString().slice(0, 10);
+}
 
 /* ── Watchlist View — user-curated tickers with full detail ─────── */
 export default function WatchlistView({
@@ -51,6 +59,17 @@ export default function WatchlistView({
   const [input, setInput] = useState('');
   const [expanded, setExpanded] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const politicianBadgesQ = useQuery({
+    queryKey: ['politiciansWatchlistBadges', symbols.join('|')],
+    queryFn: () => api.politiciansTrades({
+      limit: 500,
+      watchlist_only: true,
+      from: disclosureWindowStart(POLITICIAN_BADGE_WINDOW_DAYS),
+    }),
+    enabled: symbols.length > 0,
+    staleTime: 60_000,
+    retry: false,
+  });
 
   // Build a set of tickers for O(1) lookup. Also build a ticker → row map so
   // we can tell which watchlist symbols are present in the current signal set.
@@ -88,6 +107,22 @@ export default function WatchlistView({
     });
     return { watchlistRows: rowsForWatchlist, missingSymbols: missing };
   }, [allRows, symbols, proxyMap]);
+
+  const politicianBadges = useMemo(() => {
+    const response = politicianBadgesQ.data;
+    if (!response || response.status !== 'ok') return {};
+    if (response.data_age_seconds != null && response.data_age_seconds > 72 * 3600) return {};
+    const badges: Record<string, { count: number; windowDays: number }> = {};
+    for (const row of response.trades || []) {
+      const ticker = String(row.ticker || '').toUpperCase();
+      if (!ticker) continue;
+      badges[ticker] = {
+        count: (badges[ticker]?.count || 0) + 1,
+        windowDays: POLITICIAN_BADGE_WINDOW_DAYS,
+      };
+    }
+    return badges;
+  }, [politicianBadgesQ.data]);
 
   // ── Watchlist-local filters (no pagination — user disliked paging) ───
   // Signal class: STRONG_BUY/BUY/SELL/STRONG_SELL/HOLD via nearest_label.
@@ -1686,6 +1721,7 @@ export default function WatchlistView({
               onNavigateChart={onNavigateChart}
               disablePagination
               detailDefaultChartType="area"
+              politicianBadges={politicianBadges}
             />
           )}
         </>

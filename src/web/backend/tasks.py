@@ -121,3 +121,18 @@ def generate_charts_task(self):
     """Generate signal chart PNGs."""
     cmd = [PYTHON, "-m", "decision.signal_charts"]
     return _run_command(cmd, self, "Chart Generation")
+
+
+@celery_app.task(bind=True, name="politicians_daily_sync")
+def politicians_daily_sync_task(
+    self,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+):
+    """Run daily politician disclosure sync, parse, validation, and cache refresh."""
+    cmd = [PYTHON, "-m", "ingestion.politicians.cli", "sync", "daily"]
+    if date_from:
+        cmd.extend(["--from", date_from])
+    if date_to:
+        cmd.extend(["--to", date_to])
+    return _run_command(cmd, self, "Politician Daily Sync", timeout=1800)

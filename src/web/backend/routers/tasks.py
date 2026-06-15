@@ -22,6 +22,11 @@ class RunTuningRequest(BaseModel):
     symbols: Optional[List[str]] = None
 
 
+class PoliticiansDailySyncRequest(BaseModel):
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+
+
 @router.post("/signals/compute")
 async def trigger_signals(request: ComputeSignalsRequest = ComputeSignalsRequest()):
     """Trigger signal computation in background."""
@@ -60,6 +65,14 @@ async def trigger_charts():
     from web.backend.tasks import generate_charts_task
     task = generate_charts_task.delay()
     return {"task_id": task.id, "task_type": "Chart Generation", "status": "queued"}
+
+
+@router.post("/politicians/daily-sync")
+async def trigger_politicians_daily_sync(request: PoliticiansDailySyncRequest = PoliticiansDailySyncRequest()):
+    """Trigger daily politician disclosure sync in background."""
+    from web.backend.tasks import politicians_daily_sync_task
+    task = politicians_daily_sync_task.delay(date_from=request.date_from, date_to=request.date_to)
+    return {"task_id": task.id, "task_type": "Politician Daily Sync", "status": "queued"}
 
 
 @router.get("/status/{task_id}")

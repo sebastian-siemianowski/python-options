@@ -17,6 +17,7 @@ import DiagnosticsPage from './pages/DiagnosticsPage';
 import ProfitabilityPage from './pages/ProfitabilityPage';
 import HeatmapPage from './pages/HeatmapPage';
 import IndicatorsPage from './pages/IndicatorsPage';
+import PoliticiansPage from './pages/PoliticiansPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -41,7 +42,7 @@ const persister = createSyncStoragePersister({
 
 // Bump this when query response shapes change to invalidate stale caches
 // across all users after a deploy.
-const CACHE_BUSTER = 'v1';
+const CACHE_BUSTER = 'v2-politicians-live-data';
 
 export default function App() {
   return (
@@ -53,7 +54,12 @@ export default function App() {
         buster: CACHE_BUSTER,
         dehydrateOptions: {
           // Only persist successful queries to avoid caching error states.
-          shouldDehydrateQuery: (q) => q.state.status === 'success',
+          // Politician disclosure data is operator-refreshed and must not be
+          // restored from yesterday's browser snapshot after a live parse.
+          shouldDehydrateQuery: (q) => {
+            const key = Array.isArray(q.queryKey) ? q.queryKey[0] : null;
+            return q.state.status === 'success' && !(typeof key === 'string' && key.startsWith('politicians'));
+          },
         },
       }}
     >
@@ -73,6 +79,7 @@ export default function App() {
               <Route path="/diagnostics" element={<DiagnosticsPage />} />
               <Route path="/diagnostics/profitability" element={<ProfitabilityPage />} />
               <Route path="/indicators" element={<IndicatorsPage />} />
+              <Route path="/politicians" element={<PoliticiansPage />} />
               <Route path="/services" element={<ServicesPage />} />
             </Route>
           </Routes>

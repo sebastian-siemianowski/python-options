@@ -1235,6 +1235,61 @@ COMPANY_NAMES: Dict[str, str] = {
     "FLNC": "Fluence Energy, Inc.",
     "ENPH": "Enphase Energy, Inc.",
     "BE": "Bloom Energy Corporation",
+
+    # Curated AI / space / robotics ranking additions (June 2026)
+    "ABBNY": "ABB Ltd.",
+    "ADSK": "Autodesk, Inc.",
+    "AKAM": "Akamai Technologies, Inc.",
+    "AMBA": "Ambarella, Inc.",
+    "AME": "AMETEK, Inc.",
+    "AMKR": "Amkor Technology, Inc.",
+    "APH": "Amphenol Corporation",
+    "AUR": "Aurora Innovation, Inc.",
+    "BABA": "Alibaba Group Holding Limited",
+    "BBAI": "BigBear.ai Holdings, Inc.",
+    "BIDU": "Baidu, Inc.",
+    "CBRS": "Cerebras Systems, Inc.",
+    "CEG": "Constellation Energy Corporation",
+    "CGNX": "Cognex Corporation",
+    "DAIUF": "Daifuku Co., Ltd.",
+    "DT": "Dynatrace, Inc.",
+    "ENTG": "Entegris, Inc.",
+    "EPAM": "EPAM Systems, Inc.",
+    "FANUY": "Fanuc Corporation",
+    "GIB": "CGI Inc.",
+    "GNRC": "Generac Holdings Inc.",
+    "HPE": "Hewlett Packard Enterprise Company",
+    "HUBB": "Hubbell Inc.",
+    "INOD": "Innodata Inc.",
+    "IRM": "Iron Mountain Incorporated",
+    "KBR": "KBR, Inc.",
+    "KYCCF": "Keyence Corporation",
+    "LITE": "Lumentum Holdings Inc.",
+    "MBLY": "Mobileye Global Inc.",
+    "MTZ": "MasTec Inc.",
+    "NVT": "nVent Electric plc",
+    "PANW": "Palo Alto Networks, Inc.",
+    "PH": "Parker-Hannifin Corporation",
+    "ROK": "Rockwell Automation, Inc.",
+    "S": "SentinelOne, Inc.",
+    "SAP": "SAP SE",
+    "SBGSY": "Schneider Electric SE",
+    "SHOP": "Shopify Inc.",
+    "SIEGY": "Siemens AG",
+    "SMCAY": "SMC Corporation",
+    "SNDK": "Sandisk Corporation",
+    "STX": "Seagate Technology Holdings plc",
+    "STRL": "Sterling Infrastructure, Inc.",
+    "SYK": "Stryker Corporation",
+    "TEAM": "Atlassian Corporation",
+    "TTD": "The Trade Desk, Inc.",
+    "TTEK": "Tetra Tech, Inc.",
+    "TWLO": "Twilio Inc.",
+    "UPST": "Upstart Holdings, Inc.",
+    "VST": "Vistra Corp.",
+    "WDC": "Western Digital Corporation",
+    "WDAY": "Workday, Inc.",
+    "YASKY": "Yaskawa Electric Corporation",
     
     # Additional XAGUSD variant
     "XAGUSD": "Silver Spot (XAG/USD)",
@@ -2505,6 +2560,67 @@ DEFAULT_ASSET_UNIVERSE = [
     "PATH",   # UiPath — AI automation layer
 
     # -------------------------
+    # Curated AI Top 100 additions (June 2026)
+    # -------------------------
+    "PANW",   # Palo Alto Networks — AI cybersecurity
+    "SAP",    # SAP — Enterprise AI software
+    "CEG",    # Constellation Energy — AI power / nuclear
+    "HUBB",   # Hubbell — Electrical infrastructure
+    "AMKR",   # Amkor Technology — Advanced packaging
+    "NVT",    # nVent Electric — Electrical infrastructure
+    "SHOP",   # Shopify — Commerce AI software
+    "VST",    # Vistra — AI power / utility
+    "STX",    # Seagate Technology — AI storage
+    "SNDK",   # Sandisk — AI storage / NAND
+    "IRM",    # Iron Mountain — Data centers / information management
+    "ENTG",   # Entegris — Semiconductor materials
+    "WDC",    # Western Digital — AI storage
+    "DT",     # Dynatrace — Observability / AI ops software
+    "HPE",    # Hewlett Packard Enterprise — AI servers / networking
+    "WDAY",   # Workday — Enterprise AI software
+    "AKAM",   # Akamai — Edge cloud / security
+    "MTZ",    # MasTec — Power / datacenter construction
+    "STRL",   # Sterling Infrastructure — Infrastructure construction
+    "LITE",   # Lumentum — AI optical components
+    "GIB",    # CGI — IT services / AI adoption
+    "TEAM",   # Atlassian — Enterprise collaboration AI
+    "CGNX",   # Cognex — Machine vision / industrial AI
+    "TTD",    # The Trade Desk — AI advertising platform
+    "GNRC",   # Generac — Backup power / datacenters
+    "S",      # SentinelOne — AI cybersecurity
+    "CBRS",   # Cerebras Systems — AI accelerator systems
+    "TWLO",   # Twilio — Communications AI software
+    "BIDU",   # Baidu — AI cloud / autonomous / search
+    "BABA",   # Alibaba — AI cloud / ecommerce
+    "TTEK",   # Tetra Tech — Data/analytics services
+    "MBLY",   # Mobileye — Autonomous driving
+    "EPAM",   # EPAM Systems — AI services / software engineering
+    "INOD",   # Innodata — AI data services
+    "AMBA",   # Ambarella — Edge AI vision semiconductors
+    "AUR",    # Aurora Innovation — Autonomous vehicles
+    "UPST",   # Upstart — AI lending software
+    "BBAI",   # BigBear.ai — Decision intelligence / defense AI
+
+    # -------------------------
+    # Curated space / robotics additions (June 2026)
+    # -------------------------
+    "KBR",    # KBR — NASA/defense engineering services
+    "KYCCF",  # Keyence — Machine vision & factory sensors
+    "FANUY",  # Fanuc — Industrial robots & CNC
+    "ABBNY",  # ABB — Industrial automation & robotics
+    "SMCAY",  # SMC — Pneumatics & automation components
+    "SBGSY",  # Schneider Electric — Industrial automation & energy management
+    "SIEGY",  # Siemens — Industrial automation & digital twin
+    "ROK",    # Rockwell Automation — Industrial automation controls
+    "SYK",    # Stryker — Orthopedic surgical robotics
+    "APH",    # Amphenol — Connectors & sensors
+    "DAIUF",  # Daifuku — Material handling automation
+    "YASKY",  # Yaskawa Electric — Industrial robots & motion control
+    "AME",    # AMETEK — Sensors, instrumentation & motion
+    "ADSK",   # Autodesk — Design software for robots/factories
+    "PH",     # Parker-Hannifin — Motion & control systems
+
+    # -------------------------
     # Industrial / Infrastructure Transition
     # -------------------------
     "PWR",    # Quanta Services — Grid + energy infrastructure rebuild
@@ -3023,7 +3139,7 @@ SECTOR_MAP = {
         "CAT", "DE", "EMR", "FDX", "MMM", "UBER", "UNP", "UPS", "TKA", "TKA.DE", "MTX.DE"
     },
     "Defense & Aerospace": {
-        "ACHR", "AIR", "AIRI", "AIRO", "AOUT", "ASTC", "ATI", "ATRO", "AVAV", "AXON", "AZ", "BA", "BAH", "BETA", "BWXT", "BYRN", "CACI", "CAE", "CDRE", "CODA", "CVU", "CW", "DCO", "DFSC", "DPRO", "DRS", "EH", "EMBJ", "ESLT", "EVEX", "EVTL", "FJET", "FLY", "FTAI", "GD", "GE", "GPUS", "HEI", "HEIA", "HEI.A", "HEI-A", "HII", "HOVR", "HWM", "HXL", "HON", "ISSC", "JOBY", "KITT", "KRMN", "KTOS", "LDOS", "LHX", "LMT", "LOAR", "LUNR", "MANT", "MNTS", "MOG.A", "MOG-A", "MRCY", "MSA", "NOC", "NPK", "OPXS", "OSK", "PEW", "PKE", "PL", "POWW", "PRZO", "RCAT", "RDW", "RGR", "RKLB", "RTX", "SAIC", "SARO", "SATL", "SIDU", "SIF", "SKYH", "SPAI", "SPCE", "SPR", "SWBI", "TATT", "TDG", "TDY", "TXT", "VSAT", "VSEC", "VTSI", "VVX", "VWAV", "VOYG", "WWD", "RHM.DE", "AIR.PA", "HO.PA", "HAG.DE", "BA.L", "FACC.VI", "MTX.DE", "R3NK", "R3NK.DE", "KOG.OL", "SAABY", "SAF", "FINMY", "EXA", "EXA.PA", "BKSY", "ASTS", "THEON", "THEON.AS", "KOG", "KOG.OL",
+        "ACHR", "AIR", "AIRI", "AIRO", "AOUT", "ASTC", "ATI", "ATRO", "AVAV", "AXON", "AZ", "BA", "BAH", "BETA", "BWXT", "BYRN", "CACI", "CAE", "CDRE", "CODA", "CVU", "CW", "DCO", "DFSC", "DPRO", "DRS", "EH", "EMBJ", "ESLT", "EVEX", "EVTL", "FJET", "FLY", "FTAI", "GD", "GE", "GPUS", "HEI", "HEIA", "HEI.A", "HEI-A", "HII", "HOVR", "HWM", "HXL", "HON", "ISSC", "JOBY", "KBR", "KITT", "KRMN", "KTOS", "LDOS", "LHX", "LMT", "LOAR", "LUNR", "MANT", "MNTS", "MOG.A", "MOG-A", "MRCY", "MSA", "NOC", "NPK", "OPXS", "OSK", "PEW", "PKE", "PL", "POWW", "PRZO", "RCAT", "RDW", "RGR", "RKLB", "RTX", "SAIC", "SARO", "SATL", "SIDU", "SIF", "SKYH", "SPAI", "SPCE", "SPR", "SWBI", "TATT", "TDG", "TDY", "TXT", "VSAT", "VSEC", "VTSI", "VVX", "VWAV", "VOYG", "WWD", "RHM.DE", "AIR.PA", "HO.PA", "HAG.DE", "BA.L", "FACC.VI", "MTX.DE", "R3NK", "R3NK.DE", "KOG.OL", "SAABY", "SAF", "FINMY", "EXA", "EXA.PA", "BKSY", "ASTS", "THEON", "THEON.AS", "KOG", "KOG.OL",
     },
     "Communication Services": {"CMCSA", "DIS", "T", "TMUS", "VZ"},
     "Consumer Staples": {"CL", "COST", "KO", "MDLZ", "MO", "PEP", "PG", "PM", "WMT"},
@@ -3062,15 +3178,19 @@ SECTOR_MAP = {
     },
     "Nuclear": {"OKLO", "CCJ", "UUUU", "GEV", "LEU", "SMR", "NXE", "UEC"},
     "Critical Materials": {"MP", "CRML", "IDR", "FCX", "UAMY"},
-    "Space": {"RKLB", "ASTS", "PL", "BKSY", "LUNR", "SPIR", "GSAT", "IRDM", "ASTR", "MDA.TO", "MDALF"},
+    "Space": {"RKLB", "ASTS", "PL", "BKSY", "LUNR", "SPIR", "GSAT", "IRDM", "ASTR", "MDA.TO", "MDALF", "KBR"},
     "Drones": {"ONDS", "UMAC", "AVAV", "KTOS", "DPRO"},
     "AI Utility / Infrastructure": {
         "IREN", "NBIS", "CIFR", "CRWV", "GLXY", "SMCI", "ANET", "VRT", "2308.TW", "ETN",
         "DELL", "PSTG", "CIEN", "COHR", "CLS", "JBL", "FLEX", "TT", "FIX", "EME"
     },
     "AI Software / Data Platforms": {
-        "CFLT", "ESTC", "PATH", "DDOG", "SNOW", "MDB", "NET", "CRM", "ADBE", "ACN", "ORCL", "PLTR"
+        "CFLT", "ESTC", "PATH", "DDOG", "SNOW", "MDB", "NET", "CRM", "ADBE", "ACN", "ORCL", "PLTR",
+        "AKAM", "BABA", "BBAI", "BIDU", "DT", "EPAM", "GIB", "HPE", "INOD", "PANW", "SAP", "S",
+        "SHOP", "TEAM", "TTD", "TWLO", "WDAY"
     },
+    "AI Storage / Materials": {"AMKR", "ENTG", "IRM", "LITE", "SNDK", "STX", "WDC"},
+    "AI Power / Infrastructure": {"CEG", "GNRC", "HUBB", "MTZ", "NVT", "STRL", "TTEK", "VST"},
     "Semiconductor Equipment": {
         "ASML", "LRCX", "AMAT", "TSM", "ARM", "SNPS", "CDNS", "8035.T",
         "KLAC", "TER", "ONTO", "MKSI", "FORM", "ACLS", "CAMT", "NVMI", "ASM.AS", "BESI.AS", "6146.T"
@@ -3078,7 +3198,11 @@ SECTOR_MAP = {
     "AI Power Semiconductors": {"NVTS", "WOLF", "AEHR", "ALAB", "CRDO", "IFX.DE", "STM", "MPWR", "AOSL", "POWI", "VSH"},
     "AI Hardware / Edge Compute": {
         "MRVL", "NXPI", "ADI", "ON", "000660.KS", "005930.KS", "6723.T",
-        "MU", "QCOM", "RMBS", "MTSI", "LSCC", "SITM"
+        "MU", "QCOM", "RMBS", "MTSI", "LSCC", "SITM", "AMBA", "CBRS"
+    },
+    "Robotics & Automation": {
+        "ABBNY", "ADSK", "AME", "APH", "AUR", "CGNX", "DAIUF", "FANUY", "KYCCF", "MBLY",
+        "PH", "ROK", "SBGSY", "SIEGY", "SMCAY", "SYK", "YASKY"
     },
     "Cloud & Cybersecurity": {"CRWD", "ZS"},
     "Fintech": {"HUBS", "AFRM", "NU", "COIN", "PYPL"},
@@ -3298,6 +3422,19 @@ KNOWN_SYMBOL_CURRENCIES: Dict[str, str] = {
     
     # Critical Materials (USD)
     "MP": "USD", "CRML": "USD", "IDR": "USD", "UAMY": "USD",
+
+    # Curated AI / space / robotics additions (USD, including US-traded ADR/OTC)
+    "ABBNY": "USD", "ADSK": "USD", "AKAM": "USD", "AMBA": "USD", "AME": "USD",
+    "AMKR": "USD", "APH": "USD", "AUR": "USD", "BABA": "USD", "BBAI": "USD",
+    "BIDU": "USD", "CBRS": "USD", "CEG": "USD", "CGNX": "USD", "DAIUF": "USD",
+    "DT": "USD", "ENTG": "USD", "EPAM": "USD", "FANUY": "USD", "GIB": "USD",
+    "GNRC": "USD", "HPE": "USD", "HUBB": "USD", "INOD": "USD", "IRM": "USD",
+    "KBR": "USD", "KYCCF": "USD", "LITE": "USD", "MBLY": "USD", "MTZ": "USD",
+    "NVT": "USD", "PANW": "USD", "PH": "USD", "ROK": "USD", "S": "USD",
+    "SAP": "USD", "SBGSY": "USD", "SHOP": "USD", "SIEGY": "USD", "SMCAY": "USD",
+    "SNDK": "USD", "STX": "USD", "STRL": "USD", "SYK": "USD", "TEAM": "USD",
+    "TTD": "USD", "TTEK": "USD", "TWLO": "USD", "UPST": "USD", "VST": "USD",
+    "WDC": "USD", "WDAY": "USD", "YASKY": "USD",
     
     # =========================================================================
     # ETFs (USD)

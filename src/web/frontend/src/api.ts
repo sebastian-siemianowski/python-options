@@ -21,6 +21,25 @@ export const api = {
   overview: () => fetchApi<OverviewData>('/api/overview'),
   health: () => fetchApi<{ status: string; service: string }>('/api/health'),
 
+  // Politicians
+  politiciansNotice: () => fetchApi<PoliticiansNoticeResponse>('/api/politicians/notice'),
+  politiciansSummary: () => fetchApi<PoliticiansSummaryResponse>('/api/politicians/summary'),
+  politiciansSourceHealth: () => fetchApi<PoliticiansSourceHealthResponse>('/api/politicians/source-health'),
+  politiciansRefreshCache: () => postApi<{ status: string; cache: string; cleared_entries: number }>('/api/politicians/refresh-cache'),
+  politiciansSync: () => postApi<PoliticiansSyncResponse>('/api/politicians/sync', {}),
+  politiciansTrades: (params: PoliticiansTradeQuery = {}) => {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') query.set(key, String(value));
+    });
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    return fetchApi<PoliticiansTradesResponse>(`/api/politicians/trades${suffix}`);
+  },
+  politiciansAsset: (symbol: string, windowDays = 180) =>
+    fetchApi<PoliticiansAssetResponse>(`/api/politicians/assets/${encodeURIComponent(symbol)}?window_days=${windowDays}`),
+  politiciansFiler: (filerId: string, windowDays = 180) =>
+    fetchApi<PoliticiansFilerResponse>(`/api/politicians/filers/${encodeURIComponent(filerId)}?window_days=${windowDays}`),
+
   // Signals
   signalSummary: () => fetchApi<SignalSummaryData>('/api/signals/summary'),
   signalStats: () => fetchApi<SignalStats>('/api/signals/stats'),
@@ -145,6 +164,234 @@ export interface WatchlistResponse {
 
 export interface WatchlistProxyMapResponse {
   proxies: Record<string, string>;
+}
+
+export interface PoliticiansDataUseNotice {
+  title: string;
+  summary: string;
+  bullets: string[];
+  official_sources: string[];
+  reviewed_at: string;
+}
+
+export interface PoliticiansNoticeResponse {
+  feature: 'politicians';
+  status: 'notice_only' | 'available' | 'disabled' | 'ok' | 'missing_data';
+  enabled: boolean;
+  compliance_mode: 'research_only' | 'internal' | 'public';
+  requested_compliance_mode: string;
+  compliance_mode_valid: boolean;
+  valid_compliance_modes: string[];
+  disabled_reason?: string | null;
+  endpoint?: string | null;
+  message?: string;
+  generated_at?: string;
+  data_age_seconds?: number | null;
+  data_use_notice: PoliticiansDataUseNotice;
+}
+
+export interface PoliticiansSourceHealth {
+  updated_at: string | null;
+  sources: Record<string, unknown>;
+}
+
+export interface PoliticiansChamberSummary {
+  trade_count: number;
+  buy_count: number;
+  sell_count: number;
+  buy_amount_mid_usd: number;
+  sell_amount_mid_usd: number;
+  net_buy_amount_mid_usd: number;
+}
+
+export interface PoliticiansSummaryMetrics {
+  total_trades: number;
+  new_disclosures_7d: number;
+  new_disclosures_last_7_days: number;
+  new_tracked_asset_disclosures_7d: number;
+  new_watchlist_disclosures_7d: number;
+  tracked_asset_trades: number;
+  watchlist_trades: number;
+  late_filings: number;
+  newest_disclosure_date: string | null;
+  source_health: PoliticiansSourceHealth;
+  by_chamber: Record<string, PoliticiansChamberSummary>;
+}
+
+export interface PoliticiansSummaryResponse extends PoliticiansNoticeResponse, PoliticiansSummaryMetrics {
+  status: 'ok' | 'disabled';
+  summary: PoliticiansSummaryMetrics;
+}
+
+export interface PoliticiansTradeQuery {
+  limit?: number;
+  offset?: number;
+  symbol?: string;
+  filer?: string;
+  chamber?: string;
+  party?: string;
+  state?: string;
+  transaction_type?: string;
+  transaction_side?: 'purchase' | 'sale';
+  owner?: string;
+  flag?: string;
+  tracked_only?: boolean;
+  watchlist_only?: boolean;
+  top_traders_only?: boolean;
+  stock_linked_only?: boolean;
+  from?: string;
+  to?: string;
+}
+
+export interface PoliticiansTradePage {
+  limit: number | null;
+  offset: number;
+  returned: number;
+  total: number;
+  has_next: boolean;
+}
+
+export interface PoliticiansTradeRow extends Record<string, unknown> {
+  trade_id?: string;
+  ticker?: string;
+  filer_name?: string;
+  chamber?: string;
+  party?: string;
+  state?: string;
+  transaction_type?: string;
+  owner?: string;
+  disclosure_date?: string;
+  successful_trader_rank?: number;
+  successful_trader_overall_rank?: number;
+  successful_trader_score?: number;
+  successful_trader_return_pct?: number;
+  successful_trader_win_rate?: number;
+  successful_trader_required_profile?: boolean;
+  official_source_url: string | null;
+}
+
+export interface PoliticiansSuccessfulTrader {
+  rank: number;
+  overall_rank: number;
+  filer_key: string;
+  filer_name: string;
+  chamber?: string | null;
+  party?: string | null;
+  state?: string | null;
+  total_trades: number;
+  scored_trades: number;
+  coverage: number;
+  win_rate: number;
+  average_signed_return_pct: number;
+  median_signed_return_pct: number;
+  success_score: number;
+  amount_mid_usd: number;
+  top_tickers: string[];
+  included_by_requested_profile: boolean;
+}
+
+export interface PoliticiansSuccessfulTraders {
+  methodology: {
+    label: string;
+    description: string;
+    horizon_days: number;
+    min_holding_days: number;
+    as_of_date: string;
+    required_profiles: string[];
+  };
+  limit: number;
+  scored_trade_count: number;
+  unscored_trade_count: number;
+  eligible_trader_count: number;
+  leaderboard: PoliticiansSuccessfulTrader[];
+}
+
+export interface PoliticiansTradesResponse extends PoliticiansNoticeResponse {
+  status: 'ok' | 'disabled' | 'missing_data';
+  filter?: PoliticiansTradeQuery;
+  page?: PoliticiansTradePage;
+  total?: number;
+  trades?: PoliticiansTradeRow[];
+  successful_traders?: PoliticiansSuccessfulTraders;
+}
+
+export interface PoliticiansAssetResponse extends PoliticiansNoticeResponse {
+  status: 'ok' | 'disabled' | 'missing_data';
+  symbol?: string;
+  window_days?: number;
+  total?: number;
+  total_symbol_trades?: number;
+  recent_trades?: PoliticiansTradeRow[];
+  trades?: PoliticiansTradeRow[];
+  unique_filers?: string[];
+  unique_filer_count?: number;
+  buy_sell_imbalance?: Record<string, number>;
+  amount_estimates?: Record<string, number>;
+  activity?: Record<string, unknown>;
+  disclosure_timeline?: Array<Record<string, number | string>>;
+  known_limitations?: Array<{ code: string; message: string }>;
+}
+
+export interface PoliticiansFilerMetadata {
+  filer_id: string;
+  filer_name: string | null;
+  chamber?: string | null;
+  party?: string | null;
+  state?: string | null;
+  source?: string | null;
+  committee_enrichment?: string[];
+  committee_data_source?: string;
+  metadata_complete: boolean;
+}
+
+export interface PoliticiansFilerResponse extends PoliticiansNoticeResponse {
+  status: 'ok' | 'disabled' | 'missing_data';
+  filer_id?: string;
+  window_days?: number;
+  metadata?: PoliticiansFilerMetadata;
+  total?: number;
+  total_filer_trades?: number;
+  recent_trades?: PoliticiansTradeRow[];
+  top_tickers?: Array<Record<string, number | string>>;
+  top_sectors?: Array<Record<string, number | string>>;
+  delay_stats?: Record<string, number | null>;
+  ownership_breakdown?: Record<'self' | 'spouse' | 'dependent_child' | 'joint' | 'unknown', number>;
+  source_documents?: Array<Record<string, string | null | undefined>>;
+}
+
+export interface PoliticiansSourceEntry {
+  status: 'ok' | 'degraded' | 'offline' | 'disabled';
+  last_sync_time: string | null;
+  newest_filing: string | null;
+  parse_success_rate: number | null;
+  trade_count: number;
+  parse_error_count: number;
+  low_confidence_rows: number;
+  recent_errors: unknown[];
+  remediation: string;
+}
+
+export interface PoliticiansSourceHealthResponse extends PoliticiansNoticeResponse {
+  status: 'ok' | 'disabled';
+  overall_status?: 'ok' | 'degraded' | 'offline' | 'disabled';
+  sources?: Record<string, PoliticiansSourceEntry>;
+  source_health?: PoliticiansSourceHealth;
+  confidence_buckets?: Record<'high' | 'warning' | 'quarantined', number>;
+  parse_error_count?: number;
+}
+
+export interface PoliticiansSyncResponse {
+  task?: 'politicians_daily_sync';
+  status: 'ok' | 'degraded' | 'disabled';
+  offline_mode?: boolean;
+  safe_to_rerun?: boolean;
+  started_at?: string;
+  finished_at?: string;
+  date_window?: { from: string; to: string };
+  steps?: Record<string, Record<string, unknown>>;
+  counts?: Record<string, number>;
+  errors?: string[];
+  message?: string;
 }
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -610,6 +857,22 @@ export interface ServicesHealth {
     oldest_hours?: number;
     total_size_mb?: number;
   };
+  politicians?: {
+    status: string;
+    data_age_seconds: number | null;
+    sources: Record<string, {
+      status?: string;
+      last_sync_time?: string | null;
+      newest_filing?: string | null;
+      parse_success_rate?: number | null;
+      recent_error_count?: number;
+    }>;
+    overall_source_status?: string;
+    details_url: string;
+    source_health_url: string;
+    degraded_blocks_app: boolean;
+    message?: string;
+  };
   workers: {
     status: string;
     redis: { status: string; used_memory_human?: string; error?: string; message?: string };
@@ -622,6 +885,9 @@ export interface ServiceError {
   source: string;
   message: string;
   timestamp: string;
+  filing_id?: string;
+  parser_version?: string;
+  exception_class?: string;
 }
 
 // ── Tasks ───────────────────────────────────────────────────────────

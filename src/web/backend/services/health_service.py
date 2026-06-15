@@ -16,14 +16,28 @@ _MAX_ERRORS = 50
 _START_TIME = time.time()
 
 
-def log_error(source: str, message: str) -> None:
+def log_error(
+    source: str,
+    message: str,
+    *,
+    filing_id: str | None = None,
+    parser_version: str | None = None,
+    exception_class: str | None = None,
+) -> None:
     """Record an error in the in-memory log."""
     global _error_log
-    _error_log.append({
+    entry = {
         "source": source,
         "message": str(message)[:500],
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-    })
+    }
+    if filing_id:
+        entry["filing_id"] = filing_id
+    if parser_version:
+        entry["parser_version"] = parser_version
+    if exception_class:
+        entry["exception_class"] = exception_class
+    _error_log.append(entry)
     if len(_error_log) > _MAX_ERRORS:
         _error_log = _error_log[-_MAX_ERRORS:]
 
@@ -39,6 +53,7 @@ def get_full_health() -> Dict[str, Any]:
         "api": _check_api(),
         "signal_cache": _check_signal_cache(),
         "price_data": _check_price_data(),
+        "politicians": _check_politicians_ingestion(),
         "workers": _check_workers(),
         "recent_errors": get_recent_errors(10),
     }
@@ -139,6 +154,47 @@ def _check_workers() -> Dict[str, Any]:
     else:
         result["status"] = "unavailable"
     return result
+
+
+def _check_politicians_ingestion() -> Dict[str, Any]:
+    """Politician disclosure ingestion health; advisory, not app-fatal."""
+    try:
+        from web.backend.services.politicians_service import get_politicians_source_health_response
+    except Exception as exc:
+        return {
+            "status": "degraded",
+            "data_age_seconds": None,
+            "sources": {},
+            "details_url": "/politicians",
+            "source_health_url": "/api/politicians/source-health",
+            "degraded_blocks_app": False,
+            "message": f"Unable to load politician health: {type(exc).__name__}: {exc}",
+        }
+
+    response = get_politicians_source_health_response()
+    if response.get("status") == "disabled":
+        status = "disabled"
+    else:
+        status = str(response.get("overall_status") or response.get("status") or "degraded")
+    sources = {
+        source: {
+            "status": entry.get("status"),
+            "last_sync_time": entry.get("last_sync_time"),
+            "newest_filing": entry.get("newest_filing"),
+            "parse_success_rate": entry.get("parse_success_rate"),
+            "recent_error_count": len(entry.get("recent_errors", [])),
+        }
+        for source, entry in (response.get("sources") or {}).items()
+    }
+    return {
+        "status": status,
+        "data_age_seconds": response.get("data_age_seconds"),
+        "sources": sources,
+        "overall_source_status": response.get("overall_status"),
+        "details_url": "/politicians",
+        "source_health_url": "/api/politicians/source-health",
+        "degraded_blocks_app": False,
+    }
 
 
 def _check_redis() -> Dict[str, str]:

@@ -7,6 +7,8 @@ mplfinance
 tqdm
 rich
 lxml
+pypdf
+curl_cffi
 hmmlearn
 numba
 pytest-xdist

@@ -15,7 +15,7 @@ export type SignalFilter =
   | 'reversal_buy'
   | 'reversal_sell';
 export type ReversalQuickFilter = 'reversal_buy' | 'reversal_sell';
-export type SortColumn = 'asset' | 'sector' | 'signal' | 'momentum' | 'quality' | 'crash_risk' | 'pct30d' | `horizon_${number}`;
+export type SortColumn = 'asset' | 'sector' | 'signal' | 'momentum' | 'quality' | 'crash_risk' | 'pct30d' | 'politician' | `horizon_${number}`;
 export type SortDir = 'asc' | 'desc';
 export type SignalSortLevel = { col: SortColumn; dir: SortDir };
 export const DEFAULT_SIGNAL_SORT: SignalSortLevel = { col: 'quality', dir: 'desc' };
@@ -144,6 +144,7 @@ const sortValueForColumn = (
   if (col === 'quality') return qualityScores[extractTicker(row.asset_label)] ?? 50;
   if (col === 'crash_risk') return row.crash_risk_score ?? 0;
   if (col === 'pct30d') return row.pct_30d ?? 0;
+  if (col === 'politician') return Number((row as SummaryRow & { politician_activity_score?: number }).politician_activity_score ?? 0);
   if (col.startsWith('horizon_')) {
     const horizon = Number.parseInt(col.slice('horizon_'.length), 10);
     return Number.isFinite(horizon) ? horizonExpReturn(row, horizon) : 0;
